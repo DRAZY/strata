@@ -257,7 +257,15 @@ impl StrataApp {
     pub(super) fn about_window(&mut self, ctx: &egui::Context) {
         let mut open = self.about_open;
         egui::Window::new("About Strata").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            let icon = ctx.data_mut(|d| d.get_temp::<egui::TextureHandle>(egui::Id::new("about-icon"))).unwrap_or_else(|| {
+                let data = eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon-app.png")).expect("bundled icon");
+                let image = egui::ColorImage::from_rgba_unmultiplied([data.width as usize, data.height as usize], &data.rgba);
+                let tex = ctx.load_texture("about-icon", image, egui::TextureOptions::LINEAR);
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new("about-icon"), tex.clone()));
+                tex
+            });
             ui.vertical_centered(|ui| {
+                ui.add(egui::Image::new(&icon).fit_to_exact_size(egui::vec2(96.0, 96.0)));
                 ui.heading("Strata");
                 ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
                 ui.add_space(6.0);

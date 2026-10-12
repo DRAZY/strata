@@ -1329,7 +1329,8 @@ impl StrataApp {
     /// Hints over an empty window.
     fn welcome(&self, ctx: &egui::Context) {
         let rect = ctx.content_rect();
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("welcome")));
+        // The background layer: above the editor, below windows like About.
+        let painter = ctx.layer_painter(egui::LayerId::background());
         let hl = &self.docs[0].highlighter;
         let (fg, accent) = (hl.foreground(), hl.caret());
         let center = rect.center() + vec2(if self.sidebar.visible && self.sidebar.root.is_some() { 130.0 } else { 0.0 }, -60.0);
@@ -1846,7 +1847,8 @@ impl eframe::App for StrataApp {
             }
             self.completion.show(ctx, d);
         }
-        if self.docs.len() == 1 && self.docs[0].is_blank() && self.layout.groups() == 1 && !self.palette.open {
+        let dialog_open = self.palette.open || self.about_open || self.licenses_open;
+        if self.docs.len() == 1 && self.docs[0].is_blank() && self.layout.groups() == 1 && !dialog_open {
             self.welcome(ctx);
         }
         if let Some(spec) = self.dev_palette.take() {
@@ -1855,6 +1857,7 @@ impl eframe::App for StrataApp {
                 // "split:2" puts the current tab in a second pane.
                 "split" => self.move_to_pane(q.parse::<usize>().unwrap_or(2).saturating_sub(1)),
                 "p" => self.open_palette(ctx, palette::Mode::Files, q),
+                "about" => self.about_open = true,
                 _ => self.open_palette(ctx, palette::Mode::Commands, q),
             }
         }

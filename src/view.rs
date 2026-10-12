@@ -822,10 +822,14 @@ impl EditorView {
             ui.ctx().request_repaint();
         }
 
-        // The part the editor shows.
-        let top = mm.top() + (self.scroll.y / m.row_h - first as f32) * MM_ROW;
-        let view = Rect::from_min_size(pos2(mm.left(), top), vec2(mm.width(), m.text.height() / m.row_h * MM_ROW));
-        painter.rect_filled(view, 0.0, fg.gamma_multiply(0.07));
+        // The part the editor shows, outlined only while the pointer is over the
+        // minimap (Sublime's default), so short files don't get a gray block.
+        let hovered = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| mm.contains(p));
+        if hovered {
+            let top = mm.top() + (self.scroll.y / m.row_h - first as f32) * MM_ROW;
+            let view = Rect::from_min_size(pos2(mm.left(), top), vec2(mm.width(), m.text.height() / m.row_h * MM_ROW));
+            painter.rect_filled(view, 0.0, fg.gamma_multiply(0.07));
+        }
 
         let max_cols = ((mm.width() - 8.0) / MM_COL) as usize;
         let tab = ed.tab_width.max(1);

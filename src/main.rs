@@ -37,7 +37,7 @@ fn main() -> eframe::Result {
             .with_inner_size([1100.0, 720.0])
             .with_title("Strata")
             // Otherwise eframe shows its own logo in the Dock and taskbar.
-            .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-1024.png")).expect("bundled icon")),
+            .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-app.png")).expect("bundled icon")),
         ..Default::default()
     };
     eframe::run_native(
