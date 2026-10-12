@@ -4,7 +4,6 @@
 #![allow(clippy::single_range_in_vec_init)]
 
 mod app;
-#[allow(dead_code)] // wired into the app separately
 mod build;
 mod buffer;
 mod commands;

@@ -2,8 +2,6 @@
 //! unit-testable. Every command applies to every selection, so multiple
 //! cursors only need UI to create them.
 
-// Some commands aren't bound to keys/menus yet; drop this once they are.
-#![allow(dead_code)]
 
 use crate::buffer::Buffer;
 use crate::find::{self, Query};

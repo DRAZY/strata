@@ -31,6 +31,12 @@ pub struct Settings {
     pub show_status_bar: bool,
     /// Soft-wrap every file. Prose syntaxes (Markdown, plain text…) wrap regardless.
     pub word_wrap: bool,
+    /// Column for Wrap Paragraph at Ruler.
+    pub wrap_width: usize,
+    /// Offer word completions while typing (Ctrl+Space always works).
+    pub auto_complete: bool,
+    /// Detect tabs vs spaces (and the width) from each file when it opens.
+    pub detect_indentation: bool,
     /// Restore open tabs, unsaved text included, instead of asking on quit.
     pub hot_exit: bool,
 }
@@ -46,6 +52,9 @@ impl Default for Settings {
             show_tabs: true,
             show_status_bar: true,
             word_wrap: false,
+            wrap_width: 80,
+            detect_indentation: true,
+            auto_complete: true,
             hot_exit: true,
         }
     }
@@ -182,6 +191,14 @@ impl SessionLock {
         let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("session.lock")).ok()?;
         f.try_lock().ok()?;
         Some(Self(f))
+    }
+}
+
+impl Drop for SessionLock {
+    /// Unlock explicitly: a child process forked meanwhile (builds) shares the
+    /// open file, and closing our handle alone would leave the lock held.
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
     }
 }
 

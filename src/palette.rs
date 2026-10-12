@@ -21,6 +21,8 @@ pub enum Mode {
     Files,
     Theme,
     Syntax,
+    /// A list the app supplies (e.g. Build With…); picking one sends `Event::Chose`.
+    Choice,
 }
 
 /// What the app should do. `preview` events are undone by `Cancel`.
@@ -34,6 +36,7 @@ pub enum Event {
     GotoLine { line: usize, preview: bool },
     Theme { name: String, preview: bool },
     Syntax(String),
+    Chose(usize),
     Cancel,
 }
 
@@ -64,6 +67,7 @@ enum Pick {
     Line(usize),
     Theme(String),
     Syntax(String),
+    Choice(usize),
 }
 
 pub struct Palette {
@@ -80,6 +84,9 @@ pub struct Palette {
     rows_key: Option<(String, Mode, usize)>,
     /// Row whose preview was last sent, so moving the selection previews once.
     previewed: Option<usize>,
+    /// Items for `Mode::Choice`, and the field's placeholder.
+    choices: Vec<String>,
+    choice_hint: String,
     /// Editor commands as (id, palette name, shortcut label).
     editor_cmds: Vec<(&'static str, &'static str, String)>,
 }
@@ -99,6 +106,8 @@ impl Palette {
             rows_key: None,
             previewed: None,
             editor_cmds,
+            choices: Vec::new(),
+            choice_hint: String::new(),
         }
     }
 
@@ -127,6 +136,13 @@ impl Palette {
             self.selected = self.rows.iter().position(|r| r.label == current).unwrap_or(0);
             self.previewed = Some(self.selected);
         }
+    }
+
+    /// Offer `choices` to pick from; the app gets `Event::Chose(index)`.
+    pub fn show_choices(&mut self, hint: &str, choices: Vec<String>, ctx: Context, egui_ctx: &egui::Context) {
+        self.choices = choices;
+        self.choice_hint = hint.to_owned();
+        self.show_mode(Mode::Choice, "", ctx, egui_ctx);
     }
 
     pub fn close(&mut self) {
@@ -161,6 +177,10 @@ impl Palette {
             Mode::Syntax => {
                 let names = crate::highlight::syntax_names();
                 rank_rows(&self.text, &names, |n| n, |n| Pick::Syntax(n.to_string()), |_| String::new())
+            }
+            Mode::Choice => {
+                let items: Vec<(usize, &String)> = self.choices.iter().enumerate().collect();
+                rank_rows(&self.text, &items, |c| c.1, |c| Pick::Choice(c.0), |_| String::new())
             }
         };
         // Streaming file results shouldn't yank the selection around.
@@ -266,6 +286,7 @@ impl Palette {
                         Mode::Files => "Go to file  ·  :line  ·  @symbol",
                         Mode::Theme => "Color scheme",
                         Mode::Syntax => "Syntax",
+                        Mode::Choice => self.choice_hint.as_str(),
                     };
                     let field = ui.add(
                         egui::TextEdit::singleline(&mut self.text)
@@ -356,6 +377,7 @@ impl Palette {
             Pick::Line(l) => out.push(Event::GotoLine { line: l, preview: false }),
             Pick::Theme(t) => out.push(Event::Theme { name: t, preview: false }),
             Pick::Syntax(s) => out.push(Event::Syntax(s)),
+            Pick::Choice(i) => out.push(Event::Chose(i)),
             Pick::File(p) => {
                 out.push(Event::Open(p));
                 // "file:42" → line 42 once the file is open; "file@x" → symbol picker in it.

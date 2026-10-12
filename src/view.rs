@@ -121,6 +121,11 @@ impl EditorView {
         self.center_cursor = true;
     }
 
+    /// Screen rect of the primary caret as last painted (for popups).
+    pub fn caret_rect(&self) -> Option<Rect> {
+        self.caret_rect
+    }
+
     pub fn has_focus(&self, ctx: &egui::Context) -> bool {
         ctx.memory(|m| m.has_focus(self.id))
     }
@@ -740,6 +745,13 @@ impl EditorView {
                 }
 
                 if sub == 0 {
+                    // Bookmarked lines get a marker at the left of the gutter.
+                    let marks = ed.bookmarks();
+                    let k = marks.partition_point(|&b| b < line_start);
+                    if marks.get(k).is_some_and(|&b| b <= line_end) {
+                        let c = pos2(m.gutter.left() + m.char_w * 0.9, y + m.row_h / 2.0);
+                        painter.circle_filled(c, (m.row_h * 0.2).max(3.0), caret_color);
+                    }
                     let num_color = if on_caret_line { fg } else { gutter_fg };
                     painter.text(
                         pos2(m.gutter.right() - m.char_w * 1.5, y),

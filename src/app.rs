@@ -66,6 +66,10 @@ pub struct StrataApp {
     about_open: bool,
     #[cfg(target_os = "macos")]
     native_menu: Option<crate::menus::native::NativeMenu>,
+    build: crate::build::Build,
+    /// Build With… choices offered in the palette.
+    build_choices: Vec<crate::build::BuildChoice>,
+    completion: completion::Completion,
     /// Encoding chosen in the status bar: (reopen?, encoding), applied after drawing.
     pending_encoding: Option<(bool, crate::encoding::Encoding)>,
     /// Input synthesized by menu items (copy, paste, undo…) for the next frame.
@@ -74,6 +78,7 @@ pub struct StrataApp {
     dev_palette: Option<String>,
 }
 
+mod completion;
 mod features;
 mod menu_model;
 
@@ -116,7 +121,11 @@ impl StrataApp {
             native_menu: None,
             pending_events: Vec::new(),
             pending_encoding: None,
+            build: crate::build::Build::new(None),
+            build_choices: Vec::new(),
+            completion: completion::Completion::default(),
         };
+        app.build = crate::build::Build::new(app.config.clone());
         if let Some(dir) = app.config.clone() {
             app.session_lock = SessionLock::acquire(&dir);
             if app.session_lock.is_none() {
@@ -283,6 +292,7 @@ impl StrataApp {
         if !preview {
             self.remember_file(&path);
         }
+        let guessed = if self.settings.detect_indentation { doc.editor.guess_indentation() } else { None };
         // Replace an earlier preview, or a blank untitled tab, in the focused pane.
         let g = self.focus_group;
         let shown = self.group_active(g);
@@ -297,6 +307,12 @@ impl StrataApp {
             self.activate(i);
         } else {
             self.push_doc(doc);
+        }
+        // Follow the file's own indentation (tabs vs spaces, width).
+        if let Some((spaces, width)) = guessed {
+            let e = &mut self.docs[self.active].editor;
+            e.use_spaces = spaces;
+            e.tab_width = width;
         }
     }
 
@@ -689,6 +705,31 @@ impl StrataApp {
                 self.move_to_pane((g + 1).min(self.layout.groups() - 1));
             }
             Cmd::FocusGroup(g) => self.focus_pane(g as usize),
+            Cmd::Build => {
+                self.save_all();
+                self.reload_build_systems();
+                let bctx = self.build_context();
+                if let Err(e) = self.build.build(&bctx) {
+                    self.status = e;
+                }
+            }
+            Cmd::BuildWith => {
+                self.reload_build_systems();
+                let bctx = self.build_context();
+                self.build_choices = self.build.choices(&bctx);
+                let labels = self.build_choices.iter().map(|c| c.label.clone()).collect();
+                let pctx = self.palette_context();
+                self.palette.show_choices("Build with…", labels, pctx, ctx);
+            }
+            Cmd::CancelBuild => self.build.cancel(),
+            Cmd::NextResult | Cmd::PrevResult => {
+                let r = if cmd == Cmd::NextResult { self.build.next_result() } else { self.build.prev_result() };
+                if let Some(crate::build::BuildAction::Goto(p, line, col)) = r {
+                    self.open_at(p, line, col..col);
+                }
+            }
+            Cmd::ToggleBuildResults => self.build.visible = !self.build.visible,
+            Cmd::ShowCompletions => self.completion.open(&mut self.docs[self.active], true),
             Cmd::CloseWindow => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::RevertFile => self.revert(),
             Cmd::ClearRecent => self.clear_recent(),
@@ -789,20 +830,38 @@ impl StrataApp {
         }
     }
 
+    /// Pick up edits to user build systems; report broken ones.
+    fn reload_build_systems(&mut self) {
+        let errors = self.build.reload_systems();
+        if !errors.is_empty() {
+            self.status = format!("Build systems: {}", errors.join("; "));
+        }
+    }
+
+    fn build_context(&self) -> crate::build::BuildContext {
+        let d = &self.docs[self.active];
+        crate::build::BuildContext { file: d.path.clone(), folder: self.sidebar.root.clone(), syntax: Some(d.highlighter.syntax_name().to_owned()) }
+    }
+
     fn open_palette(&mut self, ctx: &egui::Context, mode: palette::Mode, prefix: &str) {
         let d = &mut self.docs[self.active];
         let sels = d.editor.selections().iter().map(|s| s.range()).collect();
         let primary = d.editor.selections().iter().position(|s| *s == d.editor.primary()).unwrap_or(0);
         self.palette_restore = Some((self.active, sels, primary));
-        let pctx = palette::Context {
+        let pctx = self.palette_context();
+        self.palette.show_mode(mode, prefix, pctx, ctx);
+    }
+
+    fn palette_context(&mut self) -> palette::Context {
+        let d = &mut self.docs[self.active];
+        palette::Context {
             text: d.editor.text_snapshot(),
             syntax: d.highlighter.syntax_name().to_owned(),
             lines: d.editor.buffer.len_lines(),
             root: self.sidebar.root.clone(),
             theme: self.settings.theme.clone(),
             open: self.docs.iter().filter_map(|d| d.path.clone()).collect(),
-        };
-        self.palette.show_mode(mode, prefix, pctx, ctx);
+        }
     }
 
     fn goto_line(&mut self, line: usize) {
@@ -848,6 +907,15 @@ impl StrataApp {
                     self.persist_settings();
                 }
                 Event::Syntax(s) => self.doc().highlighter.set_syntax(&s),
+                Event::Chose(i) => {
+                    if let Some(choice) = self.build_choices.get(i).cloned() {
+                        self.save_all();
+                        let bctx = self.build_context();
+                        if let Err(e) = self.build.build_with(&choice, &bctx) {
+                            self.status = e;
+                        }
+                    }
+                }
                 Event::Cancel => {
                     self.apply_settings();
                     if let Some((i, sels, primary)) = self.palette_restore.take()
@@ -899,6 +967,42 @@ impl StrataApp {
             "jump_bracket" => e.jump_to_bracket(),
             "select_all" => e.select_all(),
             "single_selection" => e.collapse_to_primary(),
+            "paste_and_indent" => {
+                if let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
+                    e.paste_and_indent(&text);
+                }
+            }
+            "delete_to_end" => e.delete_to_line_end(),
+            "delete_to_start" => e.delete_to_line_start(),
+            "transpose" => e.transpose(),
+            "title_case" => e.title_case(),
+            "swap_case" => e.swap_case(),
+            "shuffle" => e.shuffle_lines(),
+            "sel_sort" => e.sort_selections(),
+            "sel_reverse" => e.reverse_selections(),
+            "sel_unique" => e.unique_selections(),
+            "sel_shuffle" => e.shuffle_selections(),
+            "invert_selection" => e.invert_selection(),
+            "expand_word" => e.expand_to_word(),
+            "expand_paragraph" => e.expand_to_paragraph(),
+            "expand_indentation" => e.expand_to_indentation(),
+            "wrap_paragraph" => e.wrap_paragraph(self.settings.wrap_width),
+            "reindent" => e.reindent(),
+            "to_spaces" => e.convert_indentation(true),
+            "to_tabs" => e.convert_indentation(false),
+            "guess_indent" => match e.guess_indentation() {
+                Some((spaces, width)) => {
+                    e.use_spaces = spaces;
+                    e.tab_width = width;
+                    self.status = format!("Indentation: {} {width}", if spaces { "spaces," } else { "tabs, width" });
+                }
+                None => self.status = "No indented lines to guess from".into(),
+            },
+            "bookmark_toggle" => e.toggle_bookmark(),
+            "bookmark_next" => e.next_bookmark(),
+            "bookmark_prev" => e.prev_bookmark(),
+            "bookmark_clear" => e.clear_bookmarks(),
+            "bookmark_select" => e.select_all_bookmarks(),
             "undo" => e.undo(),
             "redo" => e.redo(),
             _ => return,
@@ -1538,6 +1642,12 @@ impl eframe::App for StrataApp {
             ctx.input_mut(|i| i.events.extend(events));
         }
         self.handle_shortcuts(ctx);
+        self.build.poll(ctx);
+        let typed_word = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t.chars().all(|c| c.is_alphanumeric() || c == '_'))));
+        if self.completion.is_open() {
+            let d = &mut self.docs[self.active];
+            self.completion.keys(ctx, d);
+        }
         self.devshot.tick(ctx);
         self.style_chrome(ctx);
 
@@ -1613,6 +1723,12 @@ impl eframe::App for StrataApp {
         if self.about_open {
             self.about_window(ctx);
         }
+        if self.build.visible && self.distraction.is_none() {
+            let action = egui::Panel::bottom("build").resizable(true).default_size(180.0).show(ui, |ui| self.build.show(ui)).inner;
+            if let Some(crate::build::BuildAction::Goto(p, line, col)) = action {
+                self.open_at(p, line, col..col);
+            }
+        }
         match self.pending_encoding.take() {
             Some((true, e)) => self.reopen_with_encoding(e),
             Some((false, e)) => self.save_with_encoding(e),
@@ -1668,6 +1784,13 @@ impl eframe::App for StrataApp {
         }
 
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.panes(ui));
+        {
+            let d = &mut self.docs[self.active];
+            if self.settings.auto_complete || self.completion.is_open() {
+                self.completion.after_edit(d, typed_word && self.settings.auto_complete);
+            }
+            self.completion.show(ctx, d);
+        }
         if self.docs.len() == 1 && self.docs[0].is_blank() && self.layout.groups() == 1 && !self.palette.open {
             self.welcome(ctx);
         }
@@ -1886,9 +2009,11 @@ mod tests {
     fn every_palette_editor_command_runs() {
         let mut app = app_with("b\na\nb\n");
         app.doc().highlighter.set_syntax("Python");
-        for c in EDITOR_COMMANDS {
+        // Paste and Indent reads the real clipboard, so it's left out here.
+        for c in EDITOR_COMMANDS.iter().filter(|c| c.id != "paste_and_indent") {
             app.run_editor(c.id);
         }
+        app.docs[0].editor = Editor::new(Buffer::from_str("b\na\n"));
         app.doc().editor.select_ranges(&[0..0], 0);
         app.run_editor("toggle_comment");
         assert!(text(&app).starts_with('#'), "{}", text(&app));

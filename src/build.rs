@@ -1010,16 +1010,19 @@ impl Build {
     }
 
     /// Final status ("[Finished in 1.2s]", "[Cancelled]", …) once the build ended.
+    #[cfg(test)]
     pub fn status(&self) -> Option<&str> {
         self.finished.as_deref()
     }
 
     /// The whole panel text.
+    #[cfg(test)]
     pub fn output_text(&self) -> String {
         self.out.text()
     }
 
     /// Parsed result locations (0-based line/col), oldest first.
+    #[cfg(test)]
     pub fn results(&self) -> impl Iterator<Item = &BuildResult> {
         self.out.results.iter()
     }

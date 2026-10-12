@@ -52,6 +52,31 @@ pub const EDITOR_COMMANDS: &[EdCmd] = &[
     ed("expand_brackets", "Selection: Expand Selection to Brackets", &[(CTRL_SHIFT, Key::M)]),
     ed("jump_bracket", "Goto: Jump to Matching Bracket", &[(CTRL, Key::M)]),
     ed("single_selection", "Selection: Single Selection", &[]),
+    ed("paste_and_indent", "Edit: Paste and Indent", &[(CMD_SHIFT, Key::V)]),
+    ed("delete_to_end", "Edit: Text: Delete to End", if MAC { &[(CTRL, Key::K)] } else { &[] }),
+    ed("delete_to_start", "Edit: Text: Delete to Beginning", if MAC { &[(CMD, Key::Backspace)] } else { &[] }),
+    ed("transpose", "Edit: Text: Transpose", if MAC { &[(CTRL, Key::T)] } else { &[] }),
+    ed("title_case", "Edit: Convert Case: Title Case", &[]),
+    ed("swap_case", "Edit: Convert Case: Swap Case", &[]),
+    ed("shuffle", "Edit: Permute Lines: Shuffle", &[]),
+    ed("sel_sort", "Edit: Permute Selections: Sort", &[]),
+    ed("sel_reverse", "Edit: Permute Selections: Reverse", &[]),
+    ed("sel_unique", "Edit: Permute Selections: Unique", &[]),
+    ed("sel_shuffle", "Edit: Permute Selections: Shuffle", &[]),
+    ed("invert_selection", "Selection: Invert Selection", &[]),
+    ed("expand_word", "Selection: Expand Selection to Word", &[]),
+    ed("expand_paragraph", "Selection: Expand Selection to Paragraph", &[]),
+    ed("expand_indentation", "Selection: Expand Selection to Indentation", &[(CMD_SHIFT, Key::J)]),
+    ed("wrap_paragraph", "Edit: Wrap Paragraph at Ruler", if MAC { &[(CMD_ALT, Key::Q)] } else { &[(ALT, Key::Q)] }),
+    ed("reindent", "Edit: Line: Reindent", &[]),
+    ed("to_spaces", "View: Indentation: Convert Indentation to Spaces", &[]),
+    ed("to_tabs", "View: Indentation: Convert Indentation to Tabs", &[]),
+    ed("guess_indent", "View: Indentation: Guess Settings From Buffer", &[]),
+    ed("bookmark_toggle", "Goto: Bookmarks: Toggle Bookmark", &[(CMD, Key::F2)]),
+    ed("bookmark_next", "Goto: Bookmarks: Next Bookmark", &[(NONE, Key::F2)]),
+    ed("bookmark_prev", "Goto: Bookmarks: Previous Bookmark", &[(SHIFT, Key::F2)]),
+    ed("bookmark_clear", "Goto: Bookmarks: Clear Bookmarks", &[(CMD_SHIFT, Key::F2)]),
+    ed("bookmark_select", "Goto: Bookmarks: Select All Bookmarks", &[(ALT, Key::F2)]),
     ed("select_all", "Selection: Select All", &[(CMD, Key::A)]),
     ed("undo", "Edit: Undo", &[(CMD, Key::Z)]),
     ed("redo", "Edit: Redo", if MAC { &[(CMD_SHIFT, Key::Z)] } else { &[(CMD, Key::Y)] }),
@@ -165,6 +190,7 @@ impl StrataApp {
                 Item::new("Cut", Act::Cut).key(CMD, Key::X),
                 Item::new("Copy", Act::Copy).key(CMD, Key::C),
                 Item::new("Paste", Act::Paste).key(CMD, Key::V),
+                e("Paste and Indent", "paste_and_indent"),
                 SEP(),
                 sub(
                     "Line",
@@ -177,15 +203,45 @@ impl StrataApp {
                         e("Duplicate Line", "duplicate"),
                         e("Delete Line", "delete_line"),
                         e("Join Lines", "join"),
+                        e("Reindent", "reindent"),
                     ],
                 ),
                 sub("Comment", vec![e("Toggle Comment", "toggle_comment")]),
-                sub("Text", vec![e("Insert Line Before", "line_before"), e("Insert Line After", "line_after"), SEP(), e("Trim Trailing Whitespace", "trim")]),
-                sub("Convert Case", vec![e("Upper Case", "upper"), e("Lower Case", "lower")]),
+                sub(
+                    "Text",
+                    vec![
+                        e("Insert Line Before", "line_before"),
+                        e("Insert Line After", "line_after"),
+                        SEP(),
+                        e("Delete to End", "delete_to_end"),
+                        e("Delete to Beginning", "delete_to_start"),
+                        SEP(),
+                        e("Transpose", "transpose"),
+                        e("Trim Trailing Whitespace", "trim"),
+                    ],
+                ),
+                sub(
+                    "Bookmarks",
+                    vec![
+                        e("Toggle Bookmark", "bookmark_toggle"),
+                        e("Next Bookmark", "bookmark_next"),
+                        e("Previous Bookmark", "bookmark_prev"),
+                        e("Clear Bookmarks", "bookmark_clear"),
+                        e("Select All Bookmarks", "bookmark_select"),
+                    ],
+                ),
+                sub("Convert Case", vec![e("Title Case", "title_case"), e("Upper Case", "upper"), e("Lower Case", "lower"), e("Swap Case", "swap_case")]),
+                SEP(),
+                e("Wrap Paragraph at Ruler", "wrap_paragraph"),
+                c("Show Completions", Cmd::ShowCompletions),
                 SEP(),
                 e("Sort Lines", "sort"),
                 e("Sort Lines (Case Sensitive)", "sort_case"),
-                sub("Permute Lines", vec![e("Reverse", "reverse"), e("Unique", "unique")]),
+                sub("Permute Lines", vec![e("Reverse", "reverse"), e("Unique", "unique"), e("Shuffle", "shuffle")]),
+                sub(
+                    "Permute Selections",
+                    vec![e("Sort", "sel_sort"), e("Reverse", "sel_reverse"), e("Unique", "sel_unique"), e("Shuffle", "sel_shuffle")],
+                ),
             ],
         ));
 
@@ -196,10 +252,14 @@ impl StrataApp {
                 e("Add Previous Line", "cursor_above"),
                 e("Add Next Line", "cursor_below"),
                 e("Single Selection", "single_selection"),
+                e("Invert Selection", "invert_selection"),
                 SEP(),
                 Item::new("Select All", Act::SelectAll).key(CMD, Key::A),
                 e("Expand Selection to Line", "expand_line"),
+                e("Expand Selection to Word", "expand_word"),
+                e("Expand Selection to Paragraph", "expand_paragraph"),
                 e("Expand Selection to Brackets", "expand_brackets"),
+                e("Expand Selection to Indentation", "expand_indentation"),
             ],
         ));
 
@@ -235,6 +295,7 @@ impl StrataApp {
             .collect();
         let mut indentation = vec![Item::new("Indent Using Spaces", Act::Named("toggle_spaces".into())).checked(self.settings.translate_tabs_to_spaces), SEP()];
         indentation.extend((1..=8).map(|n| Item::new(format!("Tab Width: {n}"), Act::TabWidth(n)).checked(self.settings.tab_size == n)));
+        indentation.extend([SEP(), e("Guess Settings From Buffer", "guess_indent"), SEP(), e("Convert Indentation to Spaces", "to_spaces"), e("Convert Indentation to Tabs", "to_tabs")]);
         let ending = d.editor.buffer.line_ending();
         m.push((
             "View".into(),
@@ -297,10 +358,39 @@ impl StrataApp {
                 SEP(),
                 sub("Switch File", vec![c("Next File", Cmd::NextTab), c("Previous File", Cmd::PrevTab)]),
                 e("Jump to Matching Bracket", "jump_bracket"),
+                SEP(),
+                sub(
+                    "Bookmarks",
+                    vec![
+                        e("Toggle Bookmark", "bookmark_toggle"),
+                        e("Next Bookmark", "bookmark_next"),
+                        e("Previous Bookmark", "bookmark_prev"),
+                        e("Clear Bookmarks", "bookmark_clear"),
+                        e("Select All Bookmarks", "bookmark_select"),
+                    ],
+                ),
             ],
         ));
 
-        m.push(("Tools".into(), vec![c("Command Palette…", Cmd::CommandPalette)]));
+        let running = self.build.is_running();
+        m.push((
+            "Tools".into(),
+            vec![
+                c("Command Palette…", Cmd::CommandPalette),
+                SEP(),
+                c("Build", Cmd::Build),
+                c("Build With…", Cmd::BuildWith),
+                c("Cancel Build", Cmd::CancelBuild).enabled(running),
+                sub(
+                    "Build Results",
+                    vec![
+                        c(if self.build.visible { "Hide Build Results" } else { "Show Build Results" }, Cmd::ToggleBuildResults),
+                        c("Next Result", Cmd::NextResult),
+                        c("Previous Result", Cmd::PrevResult),
+                    ],
+                ),
+            ],
+        ));
 
         let mut folders: Vec<Item> = self.recent_folders.iter().map(|p| Item::new(p.display().to_string(), Act::OpenRecentFolder(p.clone()))).collect();
         if folders.is_empty() {

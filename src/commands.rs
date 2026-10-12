@@ -63,6 +63,13 @@ pub enum Cmd {
     RefreshFolders,
     About,
     Documentation,
+    Build,
+    BuildWith,
+    CancelBuild,
+    NextResult,
+    PrevResult,
+    ToggleBuildResults,
+    ShowCompletions,
 }
 
 impl Cmd {
@@ -131,6 +138,13 @@ impl Cmd {
         Cmd::RefreshFolders,
         Cmd::About,
         Cmd::Documentation,
+        Cmd::Build,
+        Cmd::BuildWith,
+        Cmd::CancelBuild,
+        Cmd::NextResult,
+        Cmd::PrevResult,
+        Cmd::ToggleBuildResults,
+        Cmd::ShowCompletions,
     ];
 
     pub fn name(self) -> &'static str {
@@ -199,6 +213,14 @@ impl Cmd {
             Cmd::RefreshFolders => "Project: Refresh Folders",
             Cmd::About => "Help: About Strata",
             Cmd::Documentation => "Help: Documentation",
+            Cmd::Build => "Tools: Build",
+            Cmd::BuildWith => "Tools: Build With…",
+            Cmd::CancelBuild => "Tools: Cancel Build",
+            Cmd::NextResult => "Tools: Build Results: Next Result",
+            Cmd::PrevResult => "Tools: Build Results: Previous Result",
+            Cmd::ToggleBuildResults => "Tools: Build Results: Show/Hide",
+            Cmd::ShowCompletions => "Edit: Show Completions",
+
 
         }
     }
@@ -262,6 +284,13 @@ impl Cmd {
             Cmd::RefreshFolders => &[],
             Cmd::About => &[],
             Cmd::Documentation => &[],
+            Cmd::Build => &[(CMD, Key::B)],
+            Cmd::BuildWith => &[(CMD_SHIFT, Key::B)],
+            Cmd::CancelBuild => if MAC { &[(CTRL, Key::C)] } else { &[] },
+            Cmd::NextResult => &[(NONE, Key::F4)],
+            Cmd::PrevResult => &[(SHIFT, Key::F4)],
+            Cmd::ToggleBuildResults => &[],
+            Cmd::ShowCompletions => &[(CTRL, Key::Space)],
             Cmd::ToggleWordWrap => if MAC { &[(CMD_ALT, Key::W)] } else { &[(ALT_SHIFT, Key::W)] },
             // Sublime's layout keys: Alt+Cmd+N on macOS, Alt+Shift+N elsewhere.
             Cmd::LayoutSingle => if MAC { &[(CMD_ALT, Key::Num1)] } else { &[(ALT_SHIFT, Key::Num1)] },
