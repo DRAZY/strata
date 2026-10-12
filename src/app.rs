@@ -1049,6 +1049,23 @@ impl eframe::App for StrataApp {
                 self.save_session();
             }
         }
+        // Files and folders dropped on the window open in tabs / the sidebar.
+        let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_owned()).filter(|p| !p.as_os_str().is_empty()).collect());
+        for p in dropped {
+            if p.is_dir() {
+                self.sidebar.open_folder(p);
+            } else {
+                self.open_path(p, false);
+            }
+        }
+        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop")));
+            let r = ctx.content_rect().shrink(12.0);
+            let accent = self.docs[self.active].highlighter.caret();
+            painter.rect_filled(r, 10.0, Color32::from_black_alpha(120));
+            painter.rect_stroke(r, 10.0, Stroke::new(2.0, accent), egui::StrokeKind::Inside);
+            painter.text(r.center(), egui::Align2::CENTER_CENTER, "Drop to open", FontId::proportional(22.0), accent);
+        }
         if now - self.last_disk_check > 1.0 {
             self.last_disk_check = now;
             let d = self.doc();
