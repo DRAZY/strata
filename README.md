@@ -47,6 +47,17 @@ macOS runner and a Windows x64 runner.
 Dev aid: `STRATA_SCREENSHOT=out.ppm cargo run -- file` renders the window,
 saves a screenshot, and exits.
 
+## Test build for macOS (Apple silicon)
+
+```sh
+scripts/package-macos.sh   # → dist/Strata-<version>-arm64.dmg
+```
+
+The app is ad-hoc signed, not notarized. On the Mac that built it, it opens
+normally. On another Mac, the first launch is blocked by Gatekeeper: right-click
+Strata.app → Open, or run `xattr -dr com.apple.quarantine /Applications/Strata.app`.
+Opening files by double-clicking in Finder isn't wired up yet; use Cmd+O.
+
 ## Current state (M0, first build)
 
 Working: window, open/save, syntax highlighting for ~50 languages, line
