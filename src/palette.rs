@@ -173,7 +173,7 @@ impl Palette {
             .filter(|c| **c != Cmd::CommandPalette)
             .map(|&c| (c.name().to_owned(), c.shortcut_label().unwrap_or_default(), Pick::Cmd(c)))
             .collect();
-        items.extend(self.editor_cmds.iter().map(|&(id, name, keys)| (name.to_owned(), keys.to_owned(), Pick::Editor(id))));
+        items.extend(self.editor_cmds.iter().map(|&(id, name, keys)| (name.to_owned(), crate::keys::spaced(keys), Pick::Editor(id))));
         items.extend(crate::highlight::syntax_names().into_iter().map(|s| (format!("Set Syntax: {s}"), String::new(), Pick::Syntax(s.to_owned()))));
         rank_rows(&self.text, &items, |i| &i.0, |i| i.2.clone(), |i| i.1.clone())
     }

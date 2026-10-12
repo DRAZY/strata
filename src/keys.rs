@@ -49,6 +49,18 @@ pub fn take(ctx: &Context, mods: Modifiers, key: Key) -> bool {
     })
 }
 
+/// A space after each modifier glyph, so "⇧⌘P" reads as three symbols.
+pub fn spaced(label: &str) -> String {
+    let mut out = String::with_capacity(label.len() * 2);
+    for c in label.chars() {
+        out.push(c);
+        if matches!(c, '⌃' | '⌥' | '⇧' | '⌘') {
+            out.push(' ');
+        }
+    }
+    out
+}
+
 /// "⇧⌘P" on macOS, "Ctrl+Shift+P" elsewhere.
 pub fn label(mods: Modifiers, key: Key) -> String {
     let (alt, shift, cmd, ctrl) = norm(mods, true);
@@ -81,7 +93,7 @@ pub fn label(mods: Modifiers, key: Key) -> String {
         if cmd {
             s.push('⌘');
         }
-        s + name
+        spaced(&(s + name))
     } else {
         let mut parts = Vec::new();
         if ctrl {

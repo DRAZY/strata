@@ -54,12 +54,17 @@ pub fn ensure_cjk(ctx: &Context, text: &str) {
     }
 }
 
-/// macOS shortcut glyphs (⇧ ⌥ ⌃) aren't in egui's fonts; Apple Symbols has them.
+/// macOS shortcut glyphs (⇧ ⌥ ⌃ ⌘) aren't all in egui's fonts. San Francisco,
+/// the font macOS menus use, draws them at matching size and baseline.
 pub fn install_symbol_fallback(ctx: &Context) {
     if !cfg!(target_os = "macos") {
         return;
     }
-    let Ok(bytes) = std::fs::read("/System/Library/Fonts/Apple Symbols.ttf") else { return };
+    let Some(bytes) = ["/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Apple Symbols.ttf"].iter().find_map(|f| std::fs::read(f).ok()) else {
+        return;
+    };
+    // Ahead of egui's own fonts for these symbols only would need per-glyph
+    // routing; as the highest-priority fallback after Ubuntu it covers them.
     let families = vec![InsertFontFamily { family: FontFamily::Proportional, priority: FontPriority::Lowest }];
-    ctx.add_font(FontInsert::new("apple-symbols", FontData::from_owned(bytes), families));
+    ctx.add_font(FontInsert::new("macos-symbols", FontData::from_owned(bytes), families));
 }
