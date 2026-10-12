@@ -22,6 +22,8 @@ const BLINK: f64 = 0.53;
 const BLINK_FOR: f64 = 15.0;
 
 pub struct EditorView {
+    /// Distinct per view, so several editors can share a window (split panes).
+    pub id: Id,
     scroll: Vec2,
     pub font_size: f32,
     /// Widest line seen so far; bounds horizontal scrolling.
@@ -67,6 +69,7 @@ impl Metrics {
 impl EditorView {
     pub fn new() -> Self {
         Self {
+            id: Id::new("strata-editor"),
             scroll: Vec2::ZERO,
             font_size: 14.0,
             max_width: 0.0,
@@ -95,6 +98,10 @@ impl EditorView {
         self.center_cursor = true;
     }
 
+    pub fn has_focus(&self, ctx: &egui::Context) -> bool {
+        ctx.memory(|m| m.has_focus(self.id))
+    }
+
     /// Give the editor keyboard focus on the next frame.
     pub fn focus(&mut self) {
         self.wants_focus = true;
@@ -102,7 +109,7 @@ impl EditorView {
 
     /// `matches`: sorted find results to outline (empty when find is closed).
     pub fn show(&mut self, ui: &mut Ui, ed: &mut Editor, hl: &mut Highlighter, matches: &[Range<usize>]) {
-        let id = Id::new("strata-editor");
+        let id = self.id;
         let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
         let resp = ui.interact(rect, id, Sense::click_and_drag());
 

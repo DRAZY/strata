@@ -37,6 +37,9 @@ impl Document {
     }
 
     pub fn from_buffer(path: Option<PathBuf>, buffer: Buffer) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let mut view = EditorView::new();
+        view.id = egui::Id::new(("strata-editor", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         let mut highlighter = Highlighter::new();
         highlighter.detect(path.as_deref(), &buffer.line_text(0));
         Self {
@@ -44,7 +47,7 @@ impl Document {
             path,
             editor: Editor::new(buffer),
             highlighter,
-            view: EditorView::new(),
+            view,
             finder: Finder::default(),
             preview: false,
             restored_dirty: false,
