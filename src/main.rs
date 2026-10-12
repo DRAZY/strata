@@ -1,5 +1,7 @@
 // No console window behind the editor on Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+// `select_ranges(&[a..b])` is a one-selection list, not a mistaken range array.
+#![allow(clippy::single_range_in_vec_init)]
 
 mod app;
 mod buffer;

@@ -330,12 +330,11 @@ impl StrataApp {
     fn open_settings(&mut self) {
         let Some(dir) = self.config.clone() else { return };
         let path = Settings::path(&dir);
-        if !path.exists() {
-            if let Err(e) = self.settings.save(&dir) {
+        if !path.exists()
+            && let Err(e) = self.settings.save(&dir) {
                 self.status = format!("Could not write settings: {e}");
                 return;
             }
-        }
         self.open_path(path, false);
     }
 
@@ -356,11 +355,10 @@ impl StrataApp {
     }
 
     fn persist_settings(&mut self) {
-        if let Some(dir) = &self.config {
-            if let Err(e) = self.settings.save(dir) {
+        if let Some(dir) = &self.config
+            && let Err(e) = self.settings.save(dir) {
                 self.status = format!("Could not write settings: {e}");
             }
-        }
     }
 
     fn zoom(&mut self, delta: f32) {
@@ -594,12 +592,11 @@ impl StrataApp {
                 Event::Syntax(s) => self.doc().highlighter.set_syntax(&s),
                 Event::Cancel => {
                     self.apply_settings();
-                    if let Some((i, sels, primary)) = self.palette_restore.take() {
-                        if let Some(d) = self.docs.get_mut(i) {
+                    if let Some((i, sels, primary)) = self.palette_restore.take()
+                        && let Some(d) = self.docs.get_mut(i) {
                             d.editor.select_ranges(&sels, primary);
                             d.view.reveal_centered();
                         }
-                    }
                 }
             }
             if !self.palette.open {
@@ -1030,14 +1027,12 @@ impl StrataApp {
             let (down, pos) = ui.input(|i| (i.pointer.primary_down(), i.pointer.hover_pos()));
             if !down {
                 self.dragging_tab = None;
-            } else if let Some(p) = pos {
-                if let Some(to) = rects.iter().position(|r| p.x >= r.left() && p.x < r.right()) {
-                    if to != from {
+            } else if let Some(p) = pos
+                && let Some(to) = rects.iter().position(|r| p.x >= r.left() && p.x < r.right())
+                    && to != from {
                         action = Some(TabAction::Move(from, to));
                         self.dragging_tab = Some(to);
                     }
-                }
-            }
         }
         action
     }
@@ -1059,12 +1054,11 @@ impl StrataApp {
             if d.conflict {
                 ui.separator();
                 ui.colored_label(Color32::from_rgb(0xe5, 0x9e, 0x40), "Changed on disk");
-                if ui.small_button("Reload").on_hover_text("Discard your edits and load the file from disk").clicked() {
-                    if let Some(bytes) = d.path.as_ref().and_then(|p| std::fs::read(p).ok()) {
+                if ui.small_button("Reload").on_hover_text("Discard your edits and load the file from disk").clicked()
+                    && let Some(bytes) = d.path.as_ref().and_then(|p| std::fs::read(p).ok()) {
                         d.reload(Buffer::from_bytes(&bytes));
                         d.restored_dirty = false;
                     }
-                }
             }
             ui.separator();
             ui.label(&self.status);
@@ -1183,6 +1177,7 @@ impl eframe::App for StrataApp {
                 d.preview = false;
             }
             d.view.font_size = self.settings.font_size;
+            d.view.minimap = self.settings.minimap;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
 

@@ -218,7 +218,7 @@ impl Highlighter {
                 return false;
             }
             budget -= 1;
-            if line % CHUNK == 0 && line / CHUNK == self.checkpoints.len() {
+            if line.is_multiple_of(CHUNK) && line / CHUNK == self.checkpoints.len() {
                 self.checkpoints.push((parse.clone(), high.clone()));
             }
             let text = buffer.line_text(line);

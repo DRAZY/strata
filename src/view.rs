@@ -13,6 +13,13 @@ use std::ops::Range;
 use std::sync::Arc;
 
 const SCROLLBAR_W: f32 = 10.0;
+const MINIMAP_W: f32 = 110.0;
+/// Minimap scale: pixels per line and per column.
+const MM_ROW: f32 = 2.0;
+const MM_COL: f32 = 1.0;
+/// Caret blink half-period, and how long it blinks after the last activity.
+const BLINK: f64 = 0.53;
+const BLINK_FOR: f64 = 15.0;
 
 pub struct EditorView {
     scroll: Vec2,
@@ -31,6 +38,11 @@ pub struct EditorView {
     box_from: Option<(usize, usize)>,
     /// Cmd/Ctrl+K pressed; the next key completes a chord.
     chord_k: bool,
+    pub minimap: bool,
+    /// Caret blink restarts whenever the text or cursor changes.
+    blink_epoch: f64,
+    blink_key: (u64, usize, usize),
+    caret_on: bool,
 }
 
 /// Per-frame geometry shared by input handling and painting.
@@ -43,6 +55,7 @@ struct Metrics {
     text: Rect,
     /// Screen x of display column 0, already scrolled.
     origin_x: f32,
+    minimap: Option<Rect>,
 }
 
 impl Metrics {
@@ -64,6 +77,10 @@ impl EditorView {
             caret_rect: None,
             box_from: None,
             chord_k: false,
+            minimap: true,
+            blink_epoch: 0.0,
+            blink_key: (0, 0, 0),
+            caret_on: true,
         }
     }
 
@@ -82,7 +99,6 @@ impl EditorView {
     pub fn focus(&mut self) {
         self.wants_focus = true;
     }
-
 
     /// `matches`: sorted find results to outline (empty when find is closed).
     pub fn show(&mut self, ui: &mut Ui, ed: &mut Editor, hl: &mut Highlighter, matches: &[Range<usize>]) {
@@ -118,13 +134,16 @@ impl EditorView {
             ui.ctx().set_cursor_icon(CursorIcon::Text);
         }
         self.scrollbar(ui, ed, &m, id);
+        self.minimap_input(ui, ed, &m, id);
         if std::mem::take(&mut self.scroll_to_cursor) {
             self.reveal_cursor(ui, ed, &m, hl);
         }
         self.clamp_scroll(ed, &m);
         m.origin_x = m.text.left() + m.char_w - self.scroll.x;
+        self.blink(ui, ed, resp.has_focus());
 
         self.paint(ui, ed, hl, &m, resp.has_focus(), matches);
+        self.paint_minimap(ui, ed, hl, &m);
 
         if resp.has_focus() {
             // Enables the OS input method and positions its candidate window.
@@ -149,11 +168,14 @@ impl EditorView {
         let digits = ed.buffer.len_lines().to_string().len().max(3);
         let gutter_w = (digits as f32 + 3.0) * char_w;
         let gutter = Rect::from_min_size(rect.min, vec2(gutter_w, rect.height()));
+        // The minimap hides itself in narrow windows.
+        let mm_w = if self.minimap && rect.width() > 640.0 { MINIMAP_W } else { 0.0 };
         let text = Rect::from_min_max(
             pos2(rect.left() + gutter_w, rect.top()),
-            pos2(rect.right() - SCROLLBAR_W, rect.bottom()),
+            pos2(rect.right() - SCROLLBAR_W - mm_w, rect.bottom()),
         );
-        Metrics { full: rect, font, row_h, char_w, gutter, text, origin_x: text.left() + char_w - self.scroll.x }
+        let minimap = (mm_w > 0.0).then(|| Rect::from_min_max(pos2(text.right(), rect.top()), pos2(text.right() + mm_w, rect.bottom())));
+        Metrics { full: rect, font, row_h, char_w, gutter, text, origin_x: text.left() + char_w - self.scroll.x, minimap }
     }
 
     fn page_lines(m: &Metrics) -> isize {
@@ -426,7 +448,7 @@ impl EditorView {
     }
 
     fn scrollbar(&mut self, ui: &Ui, ed: &Editor, m: &Metrics, id: Id) {
-        let track = Rect::from_min_max(pos2(m.text.right(), m.text.top()), pos2(m.text.right() + SCROLLBAR_W, m.text.bottom()));
+        let track = Rect::from_min_max(pos2(m.full.right() - SCROLLBAR_W, m.text.top()), pos2(m.full.right(), m.text.bottom()));
         let content = Self::content_height(ed, m);
         let h = m.text.height();
         if content <= h + 1.0 {
@@ -469,6 +491,14 @@ impl EditorView {
         let preedit_chars = self.preedit.chars().count();
         self.caret_rect = None;
         crate::fonts::ensure_cjk(ui.ctx(), &self.preedit);
+        let line_hl = hl.line_highlight();
+        let guide = hl.guide();
+        let gutter_fg = hl.gutter_foreground().unwrap_or_else(|| fg.gamma_multiply(0.35));
+        let bracket = ed.matching_bracket(primary_head).filter(|_| ed.primary().is_empty());
+        let word = selected_text(ed);
+        let tab = ed.tab_width.max(1);
+        // Indent of the last non-blank line, so guides run through blank lines.
+        let mut indent_above = 0;
 
         for line in first..=last {
             let y = m.line_top(line, self.scroll.y);
@@ -488,7 +518,23 @@ impl EditorView {
 
             let on_caret_line = caret_lines.contains(&line);
             if on_caret_line && ed.selections().iter().all(|s| s.is_empty()) {
-                text_painter.rect_filled(row, 0.0, Color32::from_white_alpha(8));
+                text_painter.rect_filled(row, 0.0, line_hl);
+            }
+
+            // Indent guides at each tab stop inside the leading whitespace.
+            let indent = if text.trim().is_empty() {
+                indent_above
+            } else {
+                let mut col = 0;
+                for c in text.chars().take_while(|c| *c == ' ' || *c == '\t') {
+                    col = if c == '\t' { col + tab - col % tab } else { col + 1 };
+                }
+                indent_above = col;
+                col
+            };
+            for k in (tab..indent).step_by(tab) {
+                let x = (m.origin_x + k as f32 * m.char_w).round() + 0.5;
+                text_painter.line_segment([pos2(x, y), pos2(x, y + m.row_h)], Stroke::new(1.0, guide));
             }
 
             let line_end = ed.buffer.line_end(line);
@@ -526,6 +572,29 @@ impl EditorView {
                 next_match += 1;
             }
 
+            // Other occurrences of the selected text, outlined faintly.
+            if let Some(w) = &word {
+                for (byte, _) in text.match_indices(w.as_str()) {
+                    let a = line_start + text[..byte].chars().count();
+                    let b = a + w.chars().count();
+                    if ed.selections().iter().any(|s| s.start() == a && s.end() == b) {
+                        continue;
+                    }
+                    let rect = Rect::from_min_max(pos2(x_at(a), y + 1.0), pos2(x_at(b), y + m.row_h - 1.0));
+                    text_painter.rect_stroke(rect, 2.0, Stroke::new(1.0, fg.gamma_multiply(0.3)), egui::StrokeKind::Inside);
+                }
+            }
+
+            // The bracket pair around the caret is underlined.
+            if let Some((a, b)) = bracket {
+                for p in [a, b] {
+                    if p >= line_start && p < line_end {
+                        let under = Rect::from_min_max(pos2(x_at(p), y + m.row_h - 2.0), pos2(x_at(p + 1), y + m.row_h - 0.5));
+                        text_painter.rect_filled(under, 0.0, caret_color);
+                    }
+                }
+            }
+
             text_painter.galley(pos2(m.origin_x, y), galley.clone(), fg);
 
             for s in ed.selections() {
@@ -538,13 +607,15 @@ impl EditorView {
                     self.caret_rect = Some(caret);
                 }
                 if focused {
-                    text_painter.rect_filled(caret, 0.0, caret_color);
+                    if self.caret_on {
+                        text_painter.rect_filled(caret, 0.0, caret_color);
+                    }
                 } else {
                     text_painter.rect_stroke(caret, 0.0, Stroke::new(1.0, caret_color.gamma_multiply(0.4)), egui::StrokeKind::Inside);
                 }
             }
 
-            let num_color = if on_caret_line { fg } else { fg.gamma_multiply(0.35) };
+            let num_color = if on_caret_line { fg } else { gutter_fg };
             painter.text(
                 pos2(m.gutter.right() - m.char_w * 1.5, y),
                 Align2::RIGHT_TOP,
@@ -554,6 +625,113 @@ impl EditorView {
             );
         }
     }
+}
+
+impl EditorView {
+    fn blink(&mut self, ui: &Ui, ed: &Editor, focused: bool) {
+        let now = ui.input(|i| i.time);
+        let key = (ed.version(), ed.primary().head, ed.selections().len());
+        if key != self.blink_key || !self.preedit.is_empty() {
+            self.blink_key = key;
+            self.blink_epoch = now;
+        }
+        let t = now - self.blink_epoch;
+        if !focused || t > BLINK_FOR {
+            self.caret_on = true;
+            return;
+        }
+        self.caret_on = ((t / BLINK) as u64).is_multiple_of(2);
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(BLINK - t % BLINK + 0.005));
+    }
+
+    /// First line shown in the minimap: it pans in step with the editor.
+    fn minimap_first(&self, ed: &Editor, m: &Metrics, mm: Rect) -> usize {
+        let lines = ed.buffer.len_lines();
+        let cap = (mm.height() / MM_ROW) as usize;
+        if lines <= cap {
+            return 0;
+        }
+        let max_scroll = (Self::content_height(ed, m) - m.text.height()).max(1.0);
+        ((lines - cap) as f32 * (self.scroll.y / max_scroll).clamp(0.0, 1.0)) as usize
+    }
+
+    /// Click or drag in the minimap to scroll there.
+    fn minimap_input(&mut self, ui: &Ui, ed: &Editor, m: &Metrics, id: Id) {
+        let Some(mm) = m.minimap else { return };
+        let resp = ui.interact(mm, id.with("minimap"), Sense::click_and_drag());
+        if let Some(p) = resp.interact_pointer_pos() {
+            let first = self.minimap_first(ed, m, mm);
+            let line = first as f32 + (p.y - mm.top()) / MM_ROW;
+            let visible = m.text.height() / m.row_h;
+            self.scroll.y = (line - visible / 2.0) * m.row_h;
+        }
+    }
+
+    fn paint_minimap(&self, ui: &Ui, ed: &Editor, hl: &mut Highlighter, m: &Metrics) {
+        let Some(mm) = m.minimap else { return };
+        let painter = ui.painter_at(mm);
+        let fg = hl.foreground();
+        painter.rect_filled(mm, 0.0, hl.background());
+        let lines = ed.buffer.len_lines();
+        let first = self.minimap_first(ed, m, mm);
+        let last = (first + (mm.height() / MM_ROW) as usize).min(lines - 1);
+        if !hl.prepare(&ed.buffer, first..=last) {
+            ui.ctx().request_repaint();
+        }
+
+        // The part the editor shows.
+        let top = mm.top() + (self.scroll.y / m.row_h - first as f32) * MM_ROW;
+        let view = Rect::from_min_size(pos2(mm.left(), top), vec2(mm.width(), m.text.height() / m.row_h * MM_ROW));
+        painter.rect_filled(view, 0.0, fg.gamma_multiply(0.07));
+
+        let max_cols = ((mm.width() - 8.0) / MM_COL) as usize;
+        let tab = ed.tab_width.max(1);
+        for line in first..=last {
+            let y = mm.top() + (line - first) as f32 * MM_ROW;
+            let text = ed.buffer.line_text(line);
+            let spans = hl.line(line);
+            let color_at = |byte: usize| {
+                spans.as_ref().and_then(|v| v.iter().find(|s| s.range.contains(&byte))).map_or(fg, |s| s.color)
+            };
+            // Runs of non-blank chars of one color become one small bar.
+            let mut col = 0;
+            let mut run: Option<(usize, Color32)> = None;
+            let flush = |run: &mut Option<(usize, Color32)>, end: usize| {
+                if let Some((start, c)) = run.take() {
+                    let r = Rect::from_min_max(pos2(mm.left() + 4.0 + start as f32 * MM_COL, y), pos2(mm.left() + 4.0 + end as f32 * MM_COL, y + MM_ROW - 0.6));
+                    painter.rect_filled(r, 0.0, c.gamma_multiply(0.75));
+                }
+            };
+            for (byte, c) in text.char_indices() {
+                if col >= max_cols {
+                    break;
+                }
+                let next = if c == '\t' { col + tab - col % tab } else { col + 1 };
+                if c.is_whitespace() {
+                    flush(&mut run, col);
+                } else {
+                    let color = color_at(byte);
+                    if run.is_some_and(|(_, rc)| rc != color) {
+                        flush(&mut run, col);
+                    }
+                    run.get_or_insert((col, color));
+                }
+                col = next;
+            }
+            flush(&mut run, col.min(max_cols));
+        }
+    }
+}
+
+/// The primary selection's text, if it's a short single-line string worth
+/// highlighting elsewhere in the view.
+fn selected_text(ed: &Editor) -> Option<String> {
+    let p = ed.primary();
+    if p.is_empty() || p.end() - p.start() > 200 {
+        return None;
+    }
+    let t = ed.buffer.slice(p.range());
+    (!t.contains('\n') && !t.trim().is_empty()).then_some(t)
 }
 
 /// Text spliced into a line for display only (IME composition).
@@ -735,9 +913,9 @@ mod tests {
         let mut h = Harness::new("first\nsecond\nthird");
         let row = h.row_h();
         // Far right of line 2 → end of "second".
-        click(&mut h, pos2(700.0, row * 1.5), Modifiers::NONE);
+        click(&mut h, pos2(600.0, row * 1.5), Modifiers::NONE);
         assert_eq!(h.ed.primary().head, 12);
-        click(&mut h, pos2(700.0, row * 2.5), Modifiers::COMMAND);
+        click(&mut h, pos2(600.0, row * 2.5), Modifiers::COMMAND);
         assert_eq!(h.ed.selections().len(), 2);
         h.frame(vec![Event::Text("!".into())]);
         assert_eq!(h.text(), "first\nsecond!\nthird!");
@@ -834,6 +1012,33 @@ mod tests {
         out.textures_delta.clear();
         let ime = out.platform_output.ime.expect("IME enabled while focused");
         assert!(ime.rect.contains(ime.cursor_rect.center()));
+    }
+
+    #[test]
+    fn minimap_click_scrolls_and_narrow_windows_hide_it() {
+        let text: String = (0..2_000).map(|i| format!("line {i}\n")).collect();
+        let mut h = Harness::new(&text);
+        // The minimap sits between the text and the scrollbar.
+        click(&mut h, pos2(800.0 - 10.0 - 50.0, 590.0), Modifiers::NONE);
+        assert!(h.view.scroll.y > 0.0, "clicking low in the minimap scrolls down");
+        assert_eq!(h.ed.primary().head, 0, "and doesn't move the caret");
+        let mut hidden = false;
+        let mut out = h.ctx.run_ui(RawInput::default(), |ui| {
+            hidden = h.view.metrics(ui, &h.ed, Rect::from_min_size(Pos2::ZERO, vec2(500.0, 400.0))).minimap.is_none();
+        });
+        out.textures_delta.clear();
+        assert!(hidden);
+    }
+
+    #[test]
+    fn selected_text_ignores_multiline_and_blank() {
+        let mut ed = Editor::new(Buffer::from_str("ab ab\ncd"));
+        ed.select_ranges(&[0..2], 0);
+        assert_eq!(selected_text(&ed).as_deref(), Some("ab"));
+        ed.select_ranges(&[0..7], 0);
+        assert_eq!(selected_text(&ed), None);
+        ed.select_ranges(&[2..3], 0);
+        assert_eq!(selected_text(&ed), None);
     }
 
     #[test]
