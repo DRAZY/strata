@@ -35,8 +35,18 @@ pub type LineSpans = Arc<Vec<Span>>;
 
 /// Loaded once and shared by every tab.
 static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
-static THEMES: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
-pub const DEFAULT_THEME: &str = "base16-ocean.dark";
+static THEMES: LazyLock<ThemeSet> = LazyLock::new(|| {
+    let mut set = ThemeSet::load_defaults();
+    for (name, src) in [
+        ("Strata Dark", include_str!("../assets/themes/Strata Dark.tmTheme")),
+        ("Strata Light", include_str!("../assets/themes/Strata Light.tmTheme")),
+    ] {
+        let theme = ThemeSet::load_from_reader(&mut std::io::Cursor::new(src)).expect("bundled theme parses");
+        set.themes.insert(name.into(), theme);
+    }
+    set
+});
+pub const DEFAULT_THEME: &str = "Strata Dark";
 
 /// Every bundled theme name, sorted.
 pub fn theme_names() -> Vec<&'static str> {
@@ -92,6 +102,20 @@ impl Highlighter {
             .selection
             .map(to_color)
             .unwrap_or(Color32::from_rgb(0x4f, 0x5b, 0x66))
+    }
+
+    /// Background of the line(s) holding a cursor.
+    pub fn line_highlight(&self) -> Color32 {
+        self.theme.settings.line_highlight.map(to_color).unwrap_or(Color32::from_white_alpha(8))
+    }
+
+    pub fn gutter_foreground(&self) -> Option<Color32> {
+        self.theme.settings.gutter_foreground.map(to_color)
+    }
+
+    /// Indent guides.
+    pub fn guide(&self) -> Color32 {
+        self.theme.settings.guide.map(to_color).unwrap_or_else(|| self.foreground().gamma_multiply(0.12))
     }
 
     pub fn caret(&self) -> Color32 {
@@ -272,6 +296,16 @@ mod tests {
         // Rust keyword `let` should not be the plain foreground color.
         let spans = h.line(160).unwrap();
         assert_ne!(spans[0].color, h.foreground());
+    }
+
+    #[test]
+    fn bundled_strata_themes_load() {
+        let mut h = Highlighter::new();
+        assert_eq!(h.theme_name(), "Strata Dark");
+        assert!(!h.is_light());
+        h.set_theme("Strata Light");
+        assert!(h.is_light());
+        assert!(theme_names().contains(&"Solarized (dark)"));
     }
 
     #[test]
