@@ -10,23 +10,26 @@ Reference point: Sublime Text 4 (build 4215), observed behavior only.
 
 ## M1 — The signature features
 - [x] IME / CJK input with inline composition
-- [x] Multiple cursors: Cmd/Ctrl+click, Cmd+D, select all occurrences (column select todo)
-- [ ] Goto Anything (fuzzy file open, `@` symbol, `:` line, `#` term)
-- [ ] Command palette (fuzzy over all commands)
-- [ ] Split panes / layouts, tabs, minimap
+- [x] Multiple cursors: Cmd/Ctrl+click, Cmd+D, select all occurrences, add above/below, split into lines, column select
+- [x] Goto Anything (fuzzy file open, `@` symbol, `:` line; `#` term todo)
+- [x] Command palette (fuzzy over all commands)
+- [x] Tabs (preview tabs, reorder, reopen closed), minimap
+- [ ] Split panes / layouts
 - [x] Syntax highlighting via `.sublime-syntax` (syntect, incremental)
-- [ ] Color schemes via `.tmTheme`; light/dark auto-switch
+- [x] Color schemes via `.tmTheme` (Strata Dark/Light + bundled); light/dark auto-switch todo
+- [x] Editing commands: comments, indent, line moves, duplicate, join, sort, case, brackets, auto-pairs
 
 ## M2 — Project scale
 - [x] Sidebar folder tree (projects & workspaces todo)
 - [x] Find in files (ripgrep's `ignore` walker, parallel)
-- [ ] Hot exit: restore unsaved buffers across restarts
+- [x] Hot exit: restore unsaved buffers across restarts
+- [x] Reload files changed on disk (flag conflicts with unsaved edits)
 - [ ] Git status gutter + sidebar badges
 - [ ] Indexing: Goto Definition / symbol index
 
 ## M3 — Ecosystem
 - [ ] Plugin API (Lua or WASM) + package manager
-- [ ] JSON settings with per-syntax overrides; keymap files
+- [x] JSON settings (per-syntax overrides and keymap files todo)
 - [ ] Vim mode (equivalent of "Vintage")
 - [ ] LSP client
 - [ ] CLI launcher (`strata file.txt`, `strata -w` wait mode)

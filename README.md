@@ -2,7 +2,7 @@
 
 A fast, open-source, keyboard-first text editor in the spirit of Sublime Text.
 
-> Status: pre-alpha scaffold. Icon: `assets/icon.svg`.
+> Status: alpha. Icon: `assets/icon.svg`.
 
 ## Goals
 
@@ -35,37 +35,92 @@ See `docs/FEATURES.md` for the feature spec and roadmap.
 Requires Rust (install from https://rustup.rs).
 
 ```sh
-cargo run --release -- path/to/file.rs
+cargo run --release -- path/to/file.rs     # or a folder, which opens in the sidebar
 ```
 
-Shortcuts (Cmd on macOS, Ctrl on Windows): **O** open, **Shift+O** open
-folder, **S** save, **Shift+S** save as, **N** new, **\\** toggle sidebar,
-**+ / −** font size. `strata path/to/folder` opens a folder in the sidebar.
-Unsaved changes prompt before open, new, sidebar clicks and quitting.
+## Shortcuts
 
-Multi-cursor & search:
+Cmd on macOS, Ctrl on Windows unless noted. Every command is also in the
+command palette, which shows its shortcut.
 
-| Action | macOS | Windows |
+| | macOS | Windows |
 |---|---|---|
-| Add next occurrence | Cmd+D | Ctrl+D |
-| Select all occurrences | Ctrl+Cmd+G | Alt+F3 |
-| Add cursor | Cmd+click | Ctrl+click |
-| Back to one cursor | Esc | Esc |
-| Find / Replace | Cmd+F / Cmd+Opt+F | Ctrl+F / Ctrl+H |
-| Next / previous match | Cmd+G / Shift+Cmd+G | F3 / Shift+F3 |
-| Find in folder | Cmd+Shift+F | Ctrl+Shift+F |
-| In the find bar | Enter next, Shift+Enter previous, Alt+Enter Find All (a cursor per match) | same |
-| In the replace field | Enter replace, Cmd+Enter replace all | Ctrl+Enter replace all |
+| **Command palette** | ⇧⌘P | Ctrl+Shift+P |
+| **Goto Anything** (files; `:42` line; `@name` symbol; `file:42`) | ⌘P | Ctrl+P |
+| Go to line / symbol | ⌃G / ⌘R | Ctrl+G / Ctrl+R |
+| New tab / close tab / reopen closed | ⌘N / ⌘W / ⇧⌘T | Ctrl+N / Ctrl+W / Ctrl+Shift+T |
+| Next / previous tab | ⌃Tab, ⌥⌘→, ⇧⌘] | Ctrl+Tab, Ctrl+PgDn |
+| Tab 1–9 | ⌘1…⌘9 | Alt+1…Alt+9 |
+| Open / open folder / save / save as / save all | ⌘O / ⇧⌘O / ⌘S / ⇧⌘S / ⌥⌘S | Ctrl+… |
+| Toggle sidebar / full screen | ⌘\\ / ⌃⌘F | Ctrl+\\ / F11 |
+| Settings | ⌘, | Ctrl+, |
+| Add next occurrence / all occurrences | ⌘D / ⌃⌘G | Ctrl+D / Alt+F3 |
+| Add cursor / cursor above, below | ⌘click / ⌃⇧↑↓ | Ctrl+click / Ctrl+Alt+↑↓ |
+| Column (box) selection | ⌥drag or middle-drag | Alt+drag or middle-drag |
+| Split selection into lines / expand to line | ⇧⌘L / ⌘L | Ctrl+Shift+L / Ctrl+L |
+| Toggle comment | ⌘/ | Ctrl+/ |
+| Indent / unindent | ⌘] / ⌘[ (or Tab / ⇧Tab) | Ctrl+] / Ctrl+[ |
+| Duplicate / delete line | ⇧⌘D / ⌃⇧K | Ctrl+Shift+D / Ctrl+Shift+K |
+| Move line up / down | ⌃⌘↑ / ⌃⌘↓ | Ctrl+Shift+↑ / ↓ |
+| Join lines / insert line after, before | ⌘J / ⌘↩, ⇧⌘↩ | Ctrl+J / Ctrl+Enter, Ctrl+Shift+Enter |
+| Jump to / select inside brackets | ⌃M / ⌃⇧M | Ctrl+M / Ctrl+Shift+M |
+| Upper / lower case | ⌘K ⌘U / ⌘K ⌘L | Ctrl+K Ctrl+U / Ctrl+K Ctrl+L |
+| Sort lines | F5 | F9 |
+| Find / replace | ⌘F / ⌥⌘F | Ctrl+F / Ctrl+H |
+| Next / previous match | ⌘G / ⇧⌘G | F3 / Shift+F3 |
+| Find in folder | ⇧⌘F | Ctrl+Shift+F |
 
-Find options: regex (`.*`, with `$1` groups in replacements), case-sensitive
-(`Aa`), whole word. Replace All is a single undo step.
+In the find bar: Enter next, Shift+Enter previous, Alt+Enter Find All (a cursor
+per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
+
+## What works
+
+- **Tabs** with preview tabs (single-click in the sidebar previews; edit or
+  double-click to keep), drag to reorder, middle-click to close, Open Files list.
+- **Hot exit**: quitting never asks. Open tabs, cursors and unsaved text
+  (including untitled tabs) come back next launch. The session is also saved
+  every few seconds, so a crash loses little.
+- **Outside changes**: a file changed on disk reloads if the tab is clean; a tab
+  with unsaved edits is flagged instead, with a Reload button in the status bar.
+- **Command palette and Goto Anything** with fuzzy matching, live preview of
+  lines, symbols and color schemes (Esc puts things back).
+- **Editing**: multiple cursors everywhere, auto-closing brackets and quotes
+  (typing a closer steps over it), comment toggling for ~40 languages, line
+  moves, duplicate, join, sort, case changes, bracket matching.
+- **View**: minimap, indent guides, matching-bracket underline, outlines on
+  other occurrences of the selection, blinking caret, CJK/IME input.
+- **Strata Dark / Strata Light** color schemes plus syntect's bundled ones.
+  The window chrome follows the scheme.
+- **Sidebar**: folder tree with New File / New Folder / Rename / Copy Path /
+  Reveal in Finder; find in folder (parallel, respects .gitignore).
+- **Settings** in `settings.json` (⌘, opens it; saving applies it): font size,
+  theme, tab size, spaces vs tabs, minimap, hot exit. Stored in
+  `~/Library/Application Support/Strata` (macOS) or `%APPDATA%\Strata` (Windows).
+- Status bar: syntax picker, tab size, line ending conversion, color scheme.
+- Drag files or folders onto the window to open them.
+
+Measured on an M-series Mac (release build): a 95 MB, 1.6M-line Python file
+opens and renders highlighted in ~0.6 s.
+
+Known gaps: no split panes, no word wrap, no replace-in-files, no native macOS
+menu bar (use the command palette), Finder "Open With" isn't wired up (drag the
+file onto the window, or use ⌘O), vertical cursor moves treat CJK characters as
+one column wide. The find bar re-scans the whole file after each edit, which is
+noticeable on ~100 MB files. The bundled grammars come from syntect's defaults;
+their licensing must be verified before a public release.
+
+## Development
+
+`cargo test` runs editor-core unit tests plus headless egui tests that drive
+the real widget and the whole window with simulated keys and clicks.
 
 CI (`.github/workflows/build.yml`) builds release binaries on an Apple silicon
 macOS runner and a Windows x64 runner.
 
-Dev aid: `STRATA_SCREENSHOT=out.ppm cargo run -- file` renders the window,
-saves a screenshot, and exits. Add `STRATA_DEV_FIND=query` (and
-`STRATA_DEV_FIND_REGEX=1`) to capture it with the find/replace bar open.
+Dev aids (all pair with `STRATA_SCREENSHOT=out.ppm`, which renders the window,
+saves a screenshot and exits): `STRATA_DEV_FIND=query` (+ `STRATA_DEV_FIND_REGEX=1`),
+`STRATA_DEV_FIND_IN_FILES=query`, `STRATA_DEV_PALETTE="p:query"` or
+`"cmd:query"`. `STRATA_CONFIG_DIR=dir` uses a separate settings/session folder.
 
 ## Test build for macOS (Apple silicon)
 
@@ -76,35 +131,3 @@ scripts/package-macos.sh   # → dist/Strata-<version>-arm64.dmg
 The app is ad-hoc signed, not notarized. On the Mac that built it, it opens
 normally. On another Mac, the first launch is blocked by Gatekeeper: right-click
 Strata.app → Open, or run `xattr -dr com.apple.quarantine /Applications/Strata.app`.
-Opening files by double-clicking in Finder isn't wired up yet; use Cmd+O.
-
-## Current state (M0)
-
-Working: rope buffer (`ropey`) with a custom editor widget that paints only
-visible lines; incremental syntax highlighting (checkpointed parser state,
-per-frame budget); multiple cursors (Cmd/Ctrl+click, Esc to collapse) with
-every command applied to all of them; undo/redo with typing coalesced into one
-step; Sublime-style copy/cut of the whole line when nothing is selected; smart
-Home; word jumps (Option on macOS, Ctrl on Windows); CRLF files stay CRLF;
-draggable scrollbar; open/save; Cmd+D / select-all-occurrences; find/replace
-bar with regex, case and whole-word options, live match outlines and counts.
-Searching re-scans the whole file after each edit while the bar is open, so
-very large files (~100 MB) will feel it.
-
-Measured on an M-series Mac (release build): a 95 MB, 1.6M-line Python file
-opens and renders highlighted in ~0.6 s.
-
-Also: IME input for Chinese/Japanese/Korean (composition shown inline at the
-caret, candidate window follows it; system CJK fonts load the first time CJK
-text appears); sidebar file tree; find in folder (parallel, respects
-.gitignore, skips binaries and files over 20 MB, stops at 10,000 hits).
-
-Known gaps: no tabs (one file at a time), no replace-in-files, no word wrap,
-no file watching (use the sidebar's refresh button), vertical cursor moves
-treat CJK characters as one column wide,
-Tab with a selection replaces it instead of indenting, no Shift+Tab unindent,
-no caret blink. The bundled grammars come from syntect's defaults; their
-licensing must be verified before a public release.
-
-Tests: `cargo test` runs editor-core unit tests plus headless egui tests that
-drive the real widget with simulated keys and clicks.
