@@ -83,8 +83,37 @@ pub struct Editor {
     pub use_spaces: bool,
     /// Sorted char positions; they move with edits.
     bookmarks: Vec<usize>,
+    /// Emacs-style marks, one per cursor at the time they were set; they
+    /// move with edits like bookmarks.
+    marks: Vec<usize>,
+    /// Index into `marks` of the primary cursor's mark.
+    mark_primary: usize,
+    /// Selection-only changes, oldest first, for soft undo.
+    sel_past: Vec<SelStep>,
+    /// Selection changes stepped back over by soft undo, newest last.
+    sel_future: Vec<SelStep>,
+    /// Merge class of the selection change about to happen (see `SelStep`).
+    sel_merge: u8,
     rng: Rng,
 }
+
+/// Soft-undo history entries kept at most.
+const SEL_HISTORY: usize = 200;
+
+/// One selection-only change. `state` names the text it applies to (see
+/// `Editor::text_state`), so steps from text that no longer exists are skipped.
+struct SelStep {
+    state: (u64, usize),
+    before: (Vec<Selection>, usize),
+    after: (Vec<Selection>, usize),
+    /// Consecutive changes of the same nonzero class (plain moves, extending
+    /// moves, drags) fold into one step.
+    merge: u8,
+}
+
+const MERGE_MOVE: u8 = 1;
+const MERGE_EXTEND: u8 = 2;
+const MERGE_DRAG: u8 = 3;
 
 /// xorshift64*: tiny seedable PRNG for the shuffle commands.
 #[derive(Clone, Copy)]
@@ -216,6 +245,77 @@ fn swap_case(s: &str) -> String {
     out
 }
 
+fn capitalize(w: &str) -> String {
+    let mut chars = w.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars.flat_map(char::to_lowercase)).collect(),
+        None => String::new(),
+    }
+}
+
+/// Word separators for the case conversions.
+fn is_case_sep(c: char) -> bool {
+    c == '_' || c == '-' || is_indent(c)
+}
+
+/// Words of an identifier-like phrase: split at separators and case changes
+/// (`fooBar`, `FooBAR` → Foo BAR, `HTTPServer` → HTTP Server). Digits stay
+/// with the word before them (`utf8Decoder` → utf8 Decoder).
+fn split_words(s: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    for chunk in s.split(is_case_sep) {
+        let cs: Vec<char> = chunk.chars().collect();
+        let mut cur = String::new();
+        for (i, &c) in cs.iter().enumerate() {
+            let prev = i.checked_sub(1).map(|j| cs[j]);
+            let next = cs.get(i + 1);
+            let boundary = c.is_uppercase()
+                && prev.is_some_and(|p| {
+                    p.is_lowercase() || p.is_numeric() || (p.is_uppercase() && next.is_some_and(|n| n.is_lowercase()))
+                });
+            if boundary && !cur.is_empty() {
+                words.push(std::mem::take(&mut cur));
+            }
+            cur.push(c);
+        }
+        if !cur.is_empty() {
+            words.push(cur);
+        }
+    }
+    words
+}
+
+/// Re-case every run of words and separators in `s` with `join`; other
+/// chars (punctuation, line breaks) and a run's edge separators (`__init__`)
+/// are kept.
+fn convert_phrases(s: &str, join: &dyn Fn(&[String]) -> String) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut phrase = String::new();
+    let flush = |phrase: &mut String, out: &mut String| {
+        let body = phrase.trim_matches(is_case_sep);
+        if body.is_empty() {
+            out.push_str(phrase);
+        } else {
+            let lead = phrase.len() - phrase.trim_start_matches(is_case_sep).len();
+            let trail = phrase.trim_end_matches(is_case_sep).len();
+            out.push_str(&phrase[..lead]);
+            out.push_str(&join(&split_words(body)));
+            out.push_str(&phrase[trail..]);
+        }
+        phrase.clear();
+    };
+    for c in s.chars() {
+        if c.is_alphanumeric() || is_case_sep(c) {
+            phrase.push(c);
+        } else {
+            flush(&mut phrase, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut phrase, &mut out);
+    out
+}
+
 /// Chars that may make up a line-comment (or quote/bullet) marker.
 fn is_comment_char(c: char) -> bool {
     "/#-;*%!>|".contains(c)
@@ -294,6 +394,11 @@ impl Editor {
             tab_width: 4,
             use_spaces: true,
             bookmarks: Vec::new(),
+            marks: Vec::new(),
+            mark_primary: 0,
+            sel_past: Vec::new(),
+            sel_future: Vec::new(),
+            sel_merge: 0,
             rng: Rng::from_time(),
         }
     }
@@ -389,10 +494,46 @@ impl Editor {
 
     // ---- selection bookkeeping -----------------------------------------
 
+    /// A selection-only change: recorded for soft undo.
     fn set_selections(&mut self, sels: Vec<Selection>, primary_head: usize) {
+        let before = (self.sels.clone(), self.primary);
+        let merge = std::mem::take(&mut self.sel_merge);
+        self.place_selections(sels, primary_head);
+        let same = |a: &[Selection], b: &[Selection]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.anchor == y.anchor && x.head == y.head)
+        };
+        if same(&before.0, &self.sels) && before.1 == self.primary {
+            return;
+        }
+        self.sel_future.clear();
+        let state = self.text_state();
+        let after = (self.sels.clone(), self.primary);
+        if let Some(last) = self.sel_past.last_mut()
+            && merge != 0
+            && last.merge == merge
+            && last.state == state
+            && same(&last.after.0, &before.0)
+        {
+            last.after = after;
+            return;
+        }
+        if self.sel_past.len() >= SEL_HISTORY {
+            self.sel_past.remove(0);
+        }
+        self.sel_past.push(SelStep { state, before, after, merge });
+    }
+
+    /// Selections set by an edit or undo; not a soft-undo step of its own.
+    fn place_selections(&mut self, sels: Vec<Selection>, primary_head: usize) {
         self.next_whole_word = false;
         self.sels = sels;
         self.normalize(primary_head);
+    }
+
+    /// Identifies the current text in undo history: the top transaction and
+    /// how many changes it holds (typing coalesces into it).
+    fn text_state(&self) -> (u64, usize) {
+        (self.current_id(), self.undo.last().map_or(0, |t| t.changes.len()))
     }
 
     /// Sort, merge overlaps, and re-find the primary selection.
@@ -434,23 +575,25 @@ impl Editor {
         self.changed_from = Some(self.changed_from.map_or(line, |l| l.min(line)));
     }
 
-    /// Replace `remove` chars at `at` with `text`; bookmarks inside the
-    /// removed span collapse to its start, later ones shift.
+    /// Replace `remove` chars at `at` with `text`; bookmarks and marks inside
+    /// the removed span collapse to its start, later ones shift.
     fn splice(&mut self, at: usize, remove: usize, text: &str) {
         self.note_change(at);
         self.buffer.remove(at..at + remove);
         self.buffer.insert(at, text);
-        if self.bookmarks.is_empty() {
+        if self.bookmarks.is_empty() && self.marks.is_empty() {
             return;
         }
         let n = text.chars().count();
-        for b in &mut self.bookmarks {
+        let shift = |b: &mut usize| {
             if *b >= at + remove && *b > at {
                 *b = *b + n - remove;
             } else if *b > at {
                 *b = at;
             }
-        }
+        };
+        self.bookmarks.iter_mut().for_each(shift);
+        self.marks.iter_mut().for_each(shift);
         self.bookmarks.dedup();
     }
 
@@ -501,7 +644,7 @@ impl Editor {
             new_sels = self.sels.clone();
             primary_head = self.primary().head;
         }
-        self.set_selections(new_sels, primary_head);
+        self.place_selections(new_sels, primary_head);
         self.record(changes, before, kind);
     }
 
@@ -532,7 +675,7 @@ impl Editor {
             delta += text.chars().count() as isize - (end - start) as isize;
             changes.push(Change { at, removed, inserted: text });
         }
-        self.set_selections(sels, primary_head);
+        self.place_selections(sels, primary_head);
         self.record(changes, before, kind);
     }
 
@@ -550,6 +693,7 @@ impl Editor {
             return;
         }
         self.redo.clear();
+        self.sel_future.clear();
 
         let saved_id = self.saved_id;
         if let (Some(k), true, Some(last)) = (kind, self.can_coalesce, self.undo.last_mut())
@@ -577,7 +721,7 @@ impl Editor {
             self.splice(c.at, c.inserted.chars().count(), &c.removed);
         }
         let head = t.before.first().map_or(0, |s| s.head);
-        self.set_selections(t.before.clone(), head);
+        self.place_selections(t.before.clone(), head);
         self.redo.push(t);
         self.can_coalesce = false;
     }
@@ -588,7 +732,7 @@ impl Editor {
             self.splice(c.at, c.removed.chars().count(), &c.inserted);
         }
         let head = t.after.first().map_or(0, |s| s.head);
-        self.set_selections(t.after.clone(), head);
+        self.place_selections(t.after.clone(), head);
         self.undo.push(t);
         self.can_coalesce = false;
     }
@@ -741,6 +885,18 @@ impl Editor {
             })
             .collect();
         self.apply(edits, Some(EditKind::Deleting));
+    }
+
+    /// Edit ▸ Text ▸ Delete Word Forward.
+    #[allow(dead_code)] // wired by app.rs
+    pub fn delete_word_forward(&mut self) {
+        self.delete_forward(true);
+    }
+
+    /// Edit ▸ Text ▸ Delete Word Backward.
+    #[allow(dead_code)] // wired by app.rs
+    pub fn delete_word_backward(&mut self) {
+        self.backspace(true);
     }
 
     pub fn delete_to_line_start(&mut self) {
@@ -1271,9 +1427,14 @@ impl Editor {
 
     /// Rewrite each selection's text (a cursor's word when empty).
     fn transform_selected(&mut self, f: impl Fn(&str) -> String) {
+        self.transform_selected_with(Self::word_range_at, f);
+    }
+
+    /// Rewrite each selection's text (a cursor's `range_at` when empty).
+    fn transform_selected_with(&mut self, range_at: fn(&Self, usize) -> Range<usize>, f: impl Fn(&str) -> String) {
         let mut ranges: Vec<Range<usize>> = Vec::new();
         for s in &self.sels {
-            let r = if s.is_empty() { self.word_range_at(s.head) } else { s.range() };
+            let r = if s.is_empty() { range_at(self, s.head) } else { s.range() };
             if !r.is_empty() && ranges.last().is_none_or(|last| r.start >= last.end) {
                 ranges.push(r);
             }
@@ -1446,6 +1607,7 @@ impl Editor {
                 Selection { anchor, head, goal }
             })
             .collect();
+        self.sel_merge = if extend { MERGE_EXTEND } else { MERGE_MOVE };
         self.set_selections(sels, primary_head);
         self.can_coalesce = false;
     }
@@ -1623,6 +1785,7 @@ impl Editor {
         let mut sels = self.sels.clone();
         sels[self.primary].head = pos;
         sels[self.primary].goal = None;
+        self.sel_merge = MERGE_DRAG;
         self.set_selections(sels, pos);
     }
 
@@ -1804,6 +1967,15 @@ impl Editor {
     pub fn sort_selections(&mut self) {
         self.permute_selections(|mut t| {
             t.sort();
+            t
+        });
+    }
+
+    /// Sort the selections' texts ignoring case (ties keep their order).
+    #[allow(dead_code)] // wired by app.rs
+    pub fn sort_selections_case_insensitive(&mut self) {
+        self.permute_selections(|mut t| {
+            t.sort_by_cached_key(|x| x.to_lowercase());
             t
         });
     }
@@ -2182,6 +2354,368 @@ impl Editor {
         let sels = self.bookmarks.iter().map(|&b| Selection::cursor(b)).collect();
         self.set_selections(sels, first);
         self.can_coalesce = false;
+    }
+
+    // ---- mark (Edit ▸ Mark) ------------------------------------------------
+
+    #[allow(dead_code)] // wired by app.rs
+    pub fn has_mark(&self) -> bool {
+        !self.marks.is_empty()
+    }
+
+    /// Set a mark at each cursor, replacing the old marks.
+    #[allow(dead_code)] // wired by app.rs
+    pub fn set_mark(&mut self) {
+        self.marks = self.sels.iter().map(|s| s.head).collect();
+        self.mark_primary = self.primary;
+    }
+
+    #[allow(dead_code)] // wired by app.rs
+    pub fn clear_mark(&mut self) {
+        self.marks.clear();
+        self.mark_primary = 0;
+    }
+
+    /// The mark paired with selection `i`: the one at the same index when
+    /// there are as many marks as selections, else the primary mark.
+    fn mark_for(&self, i: usize) -> usize {
+        let k = if self.marks.len() == self.sels.len() { i } else { self.mark_primary };
+        let m = self.marks.get(k).or(self.marks.last());
+        m.map_or(0, |&m| m.min(self.buffer.len_chars()))
+    }
+
+    /// Each selection runs from its mark to its head.
+    #[allow(dead_code)] // wired by app.rs
+    pub fn select_to_mark(&mut self) {
+        if self.marks.is_empty() {
+            return;
+        }
+        let sels: Vec<Selection> = (0..self.sels.len())
+            .map(|i| Selection { anchor: self.mark_for(i), head: self.sels[i].head, goal: None })
+            .collect();
+        let head = sels[self.primary].head;
+        self.set_selections(sels, head);
+        self.can_coalesce = false;
+    }
+
+    /// Delete from each cursor to its mark as one step; returns the deleted
+    /// text (pieces joined by line breaks) for the yank buffer.
+    #[allow(dead_code)] // wired by app.rs
+    pub fn delete_to_mark(&mut self) -> String {
+        if self.marks.is_empty() {
+            return String::new();
+        }
+        let spans: Vec<Range<usize>> = (0..self.sels.len())
+            .map(|i| {
+                let (h, m) = (self.sels[i].head, self.mark_for(i));
+                h.min(m)..h.max(m)
+            })
+            .collect();
+        let mut sorted = spans.clone();
+        sorted.sort_by_key(|r| r.start);
+        let mut merged: Vec<Range<usize>> = Vec::new();
+        for r in sorted {
+            match merged.last_mut() {
+                Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+                _ => merged.push(r),
+            }
+        }
+        merged.retain(|r| !r.is_empty());
+        if merged.is_empty() {
+            return String::new();
+        }
+        let ending = self.buffer.line_ending().as_str();
+        let text = merged.iter().map(|r| self.buffer.slice(r.clone())).collect::<Vec<_>>().join(ending);
+        let edits: Vec<Edit> = merged.into_iter().map(|r| (r, String::new())).collect();
+        let sels: Vec<Selection> = spans.iter().map(|r| Selection::cursor(map_pos(&edits, r.start, false))).collect();
+        let head = sels[self.primary].head;
+        self.apply_then(edits, None, sels, head);
+        text
+    }
+
+    /// Cursors jump to their marks; the marks move to where the cursors were.
+    #[allow(dead_code)] // wired by app.rs
+    pub fn swap_with_mark(&mut self) {
+        if self.marks.is_empty() {
+            return;
+        }
+        let sels: Vec<Selection> = (0..self.sels.len()).map(|i| Selection::cursor(self.mark_for(i))).collect();
+        let head = sels[self.primary].head;
+        self.marks = self.sels.iter().map(|s| s.head).collect();
+        self.mark_primary = self.primary;
+        self.set_selections(sels, head);
+        self.can_coalesce = false;
+    }
+
+    // ---- soft undo -----------------------------------------------------------
+
+    fn restore_selections(&mut self, (sels, primary): (Vec<Selection>, usize)) {
+        self.next_whole_word = false;
+        self.primary = primary.min(sels.len().saturating_sub(1));
+        self.sels = sels;
+        self.can_coalesce = false;
+    }
+
+    /// Step back one selection change if that came last, else undo an edit.
+    #[allow(dead_code)] // wired by app.rs
+    pub fn soft_undo(&mut self) {
+        let state = self.text_state();
+        if self.sel_past.last().is_some_and(|s| s.state == state)
+            && let Some(step) = self.sel_past.pop()
+        {
+            self.restore_selections(step.before.clone());
+            self.sel_future.push(step);
+            return;
+        }
+        self.undo();
+        // Steps recorded on text that no longer exists can't be restored.
+        let state = self.text_state();
+        while self.sel_past.last().is_some_and(|s| s.state != state) {
+            self.sel_past.pop();
+        }
+    }
+
+    /// Redo what `soft_undo` stepped back over, selection changes and edits in order.
+    #[allow(dead_code)] // wired by app.rs
+    pub fn soft_redo(&mut self) {
+        let state = self.text_state();
+        if self.sel_future.last().is_some_and(|s| s.state == state)
+            && let Some(step) = self.sel_future.pop()
+        {
+            self.restore_selections(step.after.clone());
+            self.sel_past.push(step);
+            return;
+        }
+        self.redo();
+        let state = self.text_state();
+        while self.sel_future.last().is_some_and(|s| s.state != state) {
+            self.sel_future.pop();
+        }
+    }
+
+    // ---- case conversion ------------------------------------------------------
+
+    #[allow(dead_code)] // wired by app.rs
+    pub fn lower_camel_case(&mut self) {
+        self.convert_case(|w| {
+            w.iter().enumerate().map(|(i, w)| if i == 0 { w.to_lowercase() } else { capitalize(w) }).collect()
+        });
+    }
+
+    #[allow(dead_code)] // wired by app.rs
+    pub fn upper_camel_case(&mut self) {
+        self.convert_case(|w| w.iter().map(|w| capitalize(w)).collect());
+    }
+
+    #[allow(dead_code)] // wired by app.rs
+    pub fn snake_case(&mut self) {
+        self.convert_case(|w| w.iter().map(|w| w.to_lowercase()).collect::<Vec<_>>().join("_"));
+    }
+
+    #[allow(dead_code)] // wired by app.rs
+    pub fn kebab_case(&mut self) {
+        self.convert_case(|w| w.iter().map(|w| w.to_lowercase()).collect::<Vec<_>>().join("-"));
+    }
+
+    /// Rejoin the words of each selection (a cursor's identifier when empty).
+    fn convert_case(&mut self, join: impl Fn(&[String]) -> String) {
+        self.transform_selected_with(Self::ident_range_at, |s| convert_phrases(s, &join));
+    }
+
+    /// The identifier at `pos`, `-` included (kebab-case) except at its edges.
+    fn ident_range_at(&self, pos: usize) -> Range<usize> {
+        let line = self.buffer.line_of(pos);
+        let (start, end) = (self.buffer.line_start(line), self.buffer.line_end(line));
+        let part = |c: char| is_ident(c) || c == '-';
+        let (mut a, mut b) = (pos, pos);
+        while a > start && part(self.buffer.char(a - 1)) {
+            a -= 1;
+        }
+        while b < end && part(self.buffer.char(b)) {
+            b += 1;
+        }
+        while a < b && self.buffer.char(a) == '-' {
+            a += 1;
+        }
+        while b > a && self.buffer.char(b - 1) == '-' {
+            b -= 1;
+        }
+        if a == b { self.word_range_at(pos) } else { a..b }
+    }
+
+    // ---- expand selection -----------------------------------------------------
+
+    /// The smallest candidate strictly containing `s`, as a forward selection; else `s`.
+    fn smallest_around(s: &Selection, candidates: Vec<Range<usize>>) -> Selection {
+        let r = s.range();
+        candidates
+            .into_iter()
+            .filter(|c| c.start <= r.start && r.end <= c.end && c.len() > r.len())
+            .min_by_key(|c| c.len())
+            .map_or(*s, |c| span(c.start, c.end, true))
+    }
+
+    /// Bracket pairs (only `{}` with `curly`) enclosing all of `r`, innermost first.
+    fn enclosing_pairs(&self, r: &Range<usize>, curly: bool) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let mut from = r.start;
+        for _ in 0..64 {
+            let Some((o, c)) = self.enclosing_brackets(from) else { break };
+            if c >= r.end && (!curly || self.buffer.char(o) == '{') {
+                out.push((o, c));
+            }
+            from = o;
+        }
+        out
+    }
+
+    /// Expansion targets for the pair `o`..=`c` around `r`: its contents, then
+    /// the pair itself. When the brackets sit alone at the ends of their lines,
+    /// the contents are the lines between (`full_lines`: with the last break),
+    /// matching the indentation block; the raw contents stay a target only
+    /// when `r` reaches outside those lines.
+    fn pair_candidates(&self, o: usize, c: usize, r: &Range<usize>, full_lines: bool, out: &mut Vec<Range<usize>>) {
+        let (lo, lc) = (self.buffer.line_of(o), self.buffer.line_of(c));
+        let own_lines = lc > lo + 1
+            && self.buffer.slice(o + 1..self.buffer.line_end(lo)).trim().is_empty()
+            && self.buffer.slice(self.buffer.line_start(lc)..c).trim().is_empty();
+        let inner = if !own_lines {
+            o + 1..c
+        } else if full_lines {
+            self.buffer.line_start(lo + 1)..self.buffer.line_start(lc)
+        } else {
+            self.buffer.line_start(lo + 1)..self.buffer.line_end(lc - 1)
+        };
+        if !(inner.start <= r.start && r.end <= inner.end) {
+            out.push(o + 1..c);
+        }
+        out.extend([inner, o..c + 1]);
+    }
+
+    /// The quote pair on `r`'s line around it (open before, close at or after).
+    fn enclosing_quotes(&self, r: &Range<usize>) -> Option<(usize, usize)> {
+        let line = self.buffer.line_of(r.start);
+        if self.buffer.line_of(r.end) != line {
+            return None;
+        }
+        let ls = self.buffer.line_start(line);
+        let mut open: Option<(usize, char)> = None;
+        let mut escaped = false;
+        for (i, c) in self.buffer.line_chars(line).enumerate() {
+            let p = ls + i;
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = open.is_some();
+            } else if let Some((o, q)) = open {
+                if c == q {
+                    if o < r.start && p >= r.end {
+                        return Some((o, p));
+                    }
+                    open = None;
+                }
+            } else if matches!(c, '"' | '\'' | '`') {
+                open = Some((p, c));
+            }
+        }
+        None
+    }
+
+    /// Indentation blocks around `lines`, innermost first, as (first line,
+    /// last line, header line above with less indent). Blank lines inside
+    /// count, at the edges they don't.
+    fn indent_blocks(&self, lines: Range<usize>) -> Vec<(usize, usize, Option<usize>)> {
+        let width = |l: usize| self.indent_width(&self.buffer.line_text(l));
+        let Some(mut w) = lines.clone().filter(|&l| !self.is_blank(l)).map(width).min() else {
+            return Vec::new();
+        };
+        let last = self.buffer.len_lines() - 1;
+        let (mut a, mut b) = (lines.start, lines.end - 1);
+        let mut out = Vec::new();
+        for _ in 0..64 {
+            let fits = |l: usize| self.is_blank(l) || width(l) >= w;
+            while a > 0 && fits(a - 1) {
+                a -= 1;
+            }
+            while b < last && fits(b + 1) {
+                b += 1;
+            }
+            while a < b && self.is_blank(a) {
+                a += 1;
+            }
+            while b > a && self.is_blank(b) {
+                b -= 1;
+            }
+            let header = (0..a).rev().find(|&l| !self.is_blank(l));
+            out.push((a, b, header));
+            let Some(h) = header else { break };
+            w = width(h);
+            a = h;
+        }
+        out
+    }
+
+    /// Grow each selection to the next larger unit: word, inside the nearest
+    /// quotes/brackets, including them, whole lines, the indentation block
+    /// (then with its header line), the whole buffer.
+    #[allow(dead_code)] // wired by app.rs
+    pub fn expand_selection(&mut self) {
+        self.map_selections(|e, s| {
+            let r = s.range();
+            let mut cands = vec![e.word_range_at(r.start)];
+            if let Some((o, c)) = e.enclosing_quotes(&r) {
+                cands.extend([o + 1..c, o..c + 1]);
+            }
+            for (o, c) in e.enclosing_pairs(&r, false) {
+                e.pair_candidates(o, c, &r, true, &mut cands);
+            }
+            let lines = e.sel_lines(s);
+            cands.push(e.buffer.line_start(lines.start)..e.buffer.line_start(lines.end));
+            for (a, b, header) in e.indent_blocks(lines) {
+                let end = e.buffer.line_start(b + 1);
+                cands.push(e.buffer.line_start(a)..end);
+                if let Some(h) = header {
+                    cands.push(e.buffer.line_start(h)..end);
+                }
+            }
+            cands.push(0..e.buffer.len_chars());
+            Self::smallest_around(s, cands)
+        });
+    }
+
+    /// Like `expand_to_line`, but repeating adds the line above.
+    #[allow(dead_code)] // wired by app.rs
+    pub fn expand_to_line_upward(&mut self) {
+        self.map_selections(|e, s| {
+            let lines = e.sel_lines(s);
+            let mut start = e.buffer.line_start(lines.start);
+            let end = e.buffer.line_start(lines.end);
+            if !s.is_empty() && s.start() == start && s.end() == end && lines.start > 0 {
+                start = e.buffer.line_start(lines.start - 1);
+            }
+            span(start, end, false)
+        });
+    }
+
+    /// Select the contents of the innermost enclosing `{}` or indentation
+    /// block; again to include the braces (or the block's header line).
+    #[allow(dead_code)] // wired by app.rs
+    pub fn expand_to_block(&mut self) {
+        self.map_selections(|e, s| {
+            let r = s.range();
+            let mut cands = Vec::new();
+            for (o, c) in e.enclosing_pairs(&r, true) {
+                e.pair_candidates(o, c, &r, false, &mut cands);
+            }
+            for (a, b, header) in e.indent_blocks(e.sel_lines(s)) {
+                let end = e.buffer.line_end(b);
+                cands.push(e.buffer.line_start(a)..end);
+                if let Some(h) = header {
+                    cands.push(e.buffer.line_start(h)..end);
+                }
+            }
+            Self::smallest_around(s, cands)
+        });
     }
 
     // ---- word completion ---------------------------------------------------
@@ -3226,5 +3760,307 @@ mod tests {
         e.click(2, false);
         assert_eq!(e.word_prefix_at_cursor(), None);
         assert!(e.completions(5).is_empty());
+    }
+
+    #[test]
+    fn split_words_on_case_and_separators() {
+        let w = |s: &str| split_words(s);
+        assert_eq!(w("fooBar"), ["foo", "Bar"]);
+        assert_eq!(w("FooBAR"), ["Foo", "BAR"]);
+        assert_eq!(w("HTTPServer"), ["HTTP", "Server"]);
+        assert_eq!(w("utf8Decoder"), ["utf8", "Decoder"]);
+        assert_eq!(w("HTTP2Server"), ["HTTP2", "Server"]);
+        assert_eq!(w("foo_bar-baz  qux"), ["foo", "bar", "baz", "qux"]);
+    }
+
+    #[test]
+    fn case_conversions() {
+        let src = "let fooBar = HTTPServer;\n";
+        let mut e = ed(src);
+        e.click(5, false);
+        e.add_cursor(15);
+        e.snake_case();
+        assert_eq!(text(&e), "let foo_bar = http_server;\n");
+        assert_eq!(ranges(&e), vec![5..5, 16..16], "cursors keep their offset in the word");
+        assert_one_step(&mut e, src);
+        e.kebab_case();
+        assert_eq!(text(&e), "let foo-bar = http-server;\n");
+        e.upper_camel_case();
+        assert_eq!(text(&e), "let FooBar = HttpServer;\n", "a cursor takes the whole kebab word");
+        e.lower_camel_case();
+        assert_eq!(text(&e), "let fooBar = httpServer;\n");
+
+        let src = "Some words here\nmore_words.__private_thing";
+        let mut e = ed(src);
+        e.select_all();
+        e.snake_case();
+        assert_eq!(text(&e), "some_words_here\nmore_words.__private_thing");
+        e.kebab_case();
+        assert_eq!(text(&e), "some-words-here\nmore-words.__private-thing", "edge separators kept");
+        assert_eq!(e.primary().range(), 0..text(&e).chars().count());
+        e.lower_camel_case();
+        assert_eq!(text(&e), "someWordsHere\nmoreWords.__privateThing");
+    }
+
+    #[test]
+    fn sort_selections_ignoring_case() {
+        let src = "b, a, C, A";
+        let pick = |e: &mut Editor| e.select_ranges(&[0..1, 3..4, 6..7, 9..10], 0);
+        let mut e = ed(src);
+        pick(&mut e);
+        e.sort_selections_case_insensitive();
+        assert_eq!(text(&e), "a, A, b, C", "ties keep their order");
+        assert_one_step(&mut e, src);
+        let mut e = ed(src);
+        pick(&mut e);
+        e.sort_selections();
+        assert_eq!(text(&e), "A, C, a, b");
+    }
+
+    #[test]
+    fn expand_selection_grows_through_units() {
+        let src = "fn f() {\n    call(\"hi there\", x);\n    y;\n}\n";
+        let mut e = ed(src);
+        e.click(23, false); // in "there"
+        let mut got = Vec::new();
+        for _ in 0..8 {
+            e.expand_selection();
+            got.push(e.primary().range());
+        }
+        assert_eq!(
+            got,
+            vec![
+                22..27, // word
+                19..27, // inside the quotes
+                18..28, // with the quotes
+                18..31, // inside the parens
+                17..32, // with the parens
+                9..34,  // the line
+                9..41,  // the indentation block (= inside the braces)
+                7..42,  // with the braces
+            ]
+        );
+        e.expand_selection();
+        assert_eq!(e.primary().range(), 0..43, "the whole buffer");
+        e.expand_selection();
+        assert_eq!(e.primary().range(), 0..43);
+
+        let mut e = ed("ab cd\nef");
+        e.click(1, false);
+        e.add_cursor(4);
+        e.expand_selection();
+        assert_eq!(ranges(&e), vec![0..2, 3..5]);
+        e.expand_selection();
+        assert_eq!(ranges(&e), vec![0..6], "both grow to the line and merge");
+    }
+
+    #[test]
+    fn expand_to_line_upward_repeats_upward() {
+        let mut e = ed("ab\ncd\nef");
+        e.click(4, false);
+        e.expand_to_line_upward();
+        assert_eq!(e.primary().range(), 3..6);
+        assert_eq!(e.primary().head, 3, "head at the top");
+        e.expand_to_line_upward();
+        assert_eq!(e.primary().range(), 0..6);
+        e.expand_to_line_upward();
+        assert_eq!(e.primary().range(), 0..6, "nothing above");
+        let mut e = ed("a\nb\nc\nd\n");
+        e.click(2, false);
+        e.add_cursor(6);
+        e.expand_to_line_upward();
+        e.expand_to_line_upward();
+        assert_eq!(ranges(&e), vec![0..4, 4..8]);
+    }
+
+    #[test]
+    fn expand_to_block_braces_and_indentation() {
+        let src = "fn f() {\n    call(\"hi there\", x);\n    y;\n}\n";
+        let mut e = ed(src);
+        e.click(36, false); // in "y;"
+        e.expand_to_block();
+        assert_eq!(e.primary().range(), 9..40, "the lines inside the braces");
+        e.expand_to_block();
+        assert_eq!(e.primary().range(), 7..42, "with the braces");
+
+        let mut e = ed("def f():\n    a\n\n    b\nc\n");
+        e.click(13, false);
+        e.expand_to_block();
+        assert_eq!(e.primary().range(), 9..21, "indented block, blank line inside");
+        e.expand_to_block();
+        assert_eq!(e.primary().range(), 0..21, "with its header");
+
+        let mut e = ed("{ a }\n{ b }\n");
+        e.click(2, false);
+        e.add_cursor(8);
+        e.expand_to_block();
+        assert_eq!(ranges(&e), vec![1..4, 7..10]);
+        e.expand_to_block();
+        assert_eq!(ranges(&e), vec![0..5, 6..11]);
+    }
+
+    #[test]
+    fn mark_select_swap_delete() {
+        let src = "one two three\n";
+        let mut e = ed(src);
+        assert!(!e.has_mark());
+        e.click(4, false);
+        e.set_mark();
+        assert!(e.has_mark());
+        e.click(13, false);
+        e.select_to_mark();
+        assert_eq!(e.primary(), Selection { anchor: 4, head: 13, goal: None });
+        // The mark follows edits, undo and redo.
+        e.click(0, false);
+        e.insert_text("xx");
+        e.click(15, false);
+        e.select_to_mark();
+        assert_eq!(e.primary().range(), 6..15);
+        e.undo();
+        e.click(13, false);
+        e.select_to_mark();
+        assert_eq!(e.primary().range(), 4..13);
+        e.redo();
+        e.click(15, false);
+        e.select_to_mark();
+        assert_eq!(e.primary().range(), 6..15);
+        e.undo();
+        e.click(13, false);
+        e.swap_with_mark();
+        assert_eq!(ranges(&e), vec![4..4]);
+        e.swap_with_mark();
+        assert_eq!(ranges(&e), vec![13..13], "the mark moved to the old cursor");
+        assert_eq!(e.delete_to_mark(), "two three");
+        assert_eq!(text(&e), "one \n");
+        assert_eq!(ranges(&e), vec![4..4]);
+        assert_one_step(&mut e, src);
+        e.clear_mark();
+        assert!(!e.has_mark());
+        e.click(2, false);
+        e.select_to_mark();
+        assert_eq!(ranges(&e), vec![2..2], "no mark: nothing happens");
+        assert_eq!(e.delete_to_mark(), "");
+    }
+
+    #[test]
+    fn mark_per_cursor() {
+        let src = "ab\ncd\n";
+        let mut e = ed(src);
+        e.click(0, false);
+        e.add_cursor(3);
+        e.set_mark();
+        e.move_end(false);
+        e.select_to_mark();
+        assert_eq!(ranges(&e), vec![0..2, 3..5]);
+        e.move_end(false);
+        assert_eq!(e.delete_to_mark(), "ab\ncd");
+        assert_eq!(text(&e), "\n\n");
+        assert_eq!(ranges(&e), vec![0..0, 1..1]);
+        assert_one_step(&mut e, src);
+        e.undo();
+        // One cursor, two marks: the primary mark (the last added cursor's) is used.
+        e.click(5, false);
+        e.select_to_mark();
+        assert_eq!(e.primary().range(), 3..5);
+    }
+
+    #[test]
+    fn soft_undo_steps_through_selections_and_edits() {
+        let mut e = ed("abc def\nghi\n");
+        e.click(1, false);
+        e.insert_text("X");
+        e.move_right(false, false);
+        e.move_right(false, false);
+        e.move_right(false, false); // consecutive moves: one step
+        e.click(10, false);
+        let heads = |e: &Editor| e.selections().iter().map(|s| s.head).collect::<Vec<_>>();
+        assert_eq!(heads(&e), [10]);
+        e.soft_undo();
+        assert_eq!(heads(&e), [5]);
+        e.soft_undo();
+        assert_eq!(heads(&e), [2]);
+        e.soft_undo();
+        assert_eq!(text(&e), "abc def\nghi\n", "then the edit");
+        assert_eq!(heads(&e), [1]);
+        e.soft_undo();
+        assert_eq!(heads(&e), [0]);
+        e.soft_redo();
+        assert_eq!(heads(&e), [1]);
+        e.soft_redo();
+        assert_eq!(text(&e), "aXbc def\nghi\n");
+        assert_eq!(heads(&e), [2]);
+        e.soft_redo();
+        assert_eq!(heads(&e), [5]);
+        e.soft_redo();
+        assert_eq!(heads(&e), [10]);
+        e.soft_redo();
+        assert_eq!(heads(&e), [10], "nothing left to redo");
+        // Plain undo ignores selection history.
+        e.undo();
+        assert_eq!(text(&e), "abc def\nghi\n");
+    }
+
+    #[test]
+    fn soft_undo_removes_added_cursors() {
+        let mut e = ed("a\nb\nc\n");
+        e.click(0, false);
+        e.add_cursor(2);
+        e.add_cursor(4);
+        e.insert_text("-");
+        assert_eq!(text(&e), "-a\n-b\n-c\n");
+        e.soft_undo();
+        assert_eq!(text(&e), "a\nb\nc\n");
+        assert_eq!(ranges(&e), vec![0..0, 2..2, 4..4]);
+        e.soft_undo();
+        assert_eq!(ranges(&e), vec![0..0, 2..2]);
+        e.soft_undo();
+        assert_eq!(ranges(&e), vec![0..0]);
+        // A new selection change drops the selection redo side; the edit stays redoable.
+        e.click(4, false);
+        e.soft_redo();
+        assert_eq!(text(&e), "-a\n-b\n-c\n");
+        assert_eq!(ranges(&e), vec![1..1, 4..4, 7..7]);
+        // Bounded history.
+        for i in 0..300 {
+            e.click(i % 6, false);
+        }
+        assert_eq!(e.sel_past.len(), SEL_HISTORY);
+    }
+
+    #[test]
+    fn soft_undo_interleaves_and_skips_stale_steps() {
+        let mut e = ed("");
+        e.insert_text("a");
+        e.select_word_at(0);
+        e.click(1, false);
+        e.insert_text("b"); // a new step: the click broke coalescing
+        e.soft_undo();
+        assert_eq!(text(&e), "a");
+        e.soft_undo();
+        assert_eq!(e.primary().range(), 0..1, "back to the word selection");
+        e.soft_undo();
+        assert_eq!(ranges(&e), vec![1..1]);
+        e.soft_undo();
+        assert_eq!(text(&e), "");
+        // A drag inside coalesced typing leaves no restorable text state.
+        let mut e = ed("");
+        e.insert_text("a");
+        e.drag_to(0);
+        e.insert_text("b");
+        assert_eq!(text(&e), "b");
+        e.soft_undo();
+        assert_eq!(text(&e), "");
+        assert!(e.sel_past.is_empty());
+    }
+
+    #[test]
+    fn delete_word_wrappers() {
+        let mut e = ed("foo bar baz");
+        e.click(4, false);
+        e.delete_word_forward();
+        assert_eq!(text(&e), "foo  baz");
+        e.delete_word_backward();
+        assert_eq!(text(&e), " baz");
+        assert_eq!(ranges(&e), vec![0..0]);
     }
 }
