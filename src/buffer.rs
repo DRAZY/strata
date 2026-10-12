@@ -133,6 +133,16 @@ impl Buffer {
             .to_string()
     }
 
+    /// The line's chars without its line break, without allocating.
+    pub fn line_chars(&self, line: usize) -> impl Iterator<Item = char> + '_ {
+        self.rope.slice(self.line_start(line)..self.line_end(line)).chars()
+    }
+
+    /// Every line (break included) as string chunks, without allocating.
+    pub fn line_chunks(&self) -> impl Iterator<Item = impl Iterator<Item = &str>> {
+        self.rope.lines().map(|l| l.chunks())
+    }
+
     pub fn slice(&self, range: Range<usize>) -> String {
         self.rope.slice(range).to_string()
     }
