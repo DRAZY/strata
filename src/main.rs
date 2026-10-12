@@ -22,6 +22,7 @@ mod session;
 mod sidebar;
 mod symbols;
 mod view;
+mod wrap;
 
 use std::path::PathBuf;
 

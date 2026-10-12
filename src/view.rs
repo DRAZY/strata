@@ -4,6 +4,7 @@
 use crate::editor::Editor;
 use crate::highlight::{Highlighter, Span};
 use crate::lang::{self, CommentTokens};
+use crate::wrap::{self, LineRows, WrapIndex};
 use egui::text::{CCursor, LayoutJob, TextFormat};
 use egui::{
     Align2, Color32, CursorIcon, Event, EventFilter, FontId, Galley, Id, Key, Modifiers,
@@ -45,6 +46,13 @@ pub struct EditorView {
     blink_epoch: f64,
     blink_key: (u64, usize, usize),
     caret_on: bool,
+    /// Soft wrap at the window edge (inactive on huge buffers, see `wrap_active`).
+    pub wrap: bool,
+    wrap_index: WrapIndex,
+    /// Wrap width of the last frame, to keep the top line in place when it changes.
+    last_wrap: Option<usize>,
+    /// First line shown last frame.
+    top_line: usize,
 }
 
 /// Per-frame geometry shared by input handling and painting.
@@ -58,11 +66,17 @@ struct Metrics {
     /// Screen x of display column 0, already scrolled.
     origin_x: f32,
     minimap: Option<Rect>,
+    /// Wrap width in columns while wrapping.
+    wrap: Option<usize>,
 }
 
 impl Metrics {
-    fn line_top(&self, line: usize, scroll_y: f32) -> f32 {
-        self.text.top() + line as f32 * self.row_h - scroll_y
+    fn row_top(&self, row: usize, scroll_y: f32) -> f32 {
+        self.text.top() + row as f32 * self.row_h - scroll_y
+    }
+
+    fn line_rows(&self, ed: &Editor, line: usize) -> LineRows {
+        LineRows::new(ed.buffer.line_chars(line), self.wrap, ed.tab_width)
     }
 }
 
@@ -84,7 +98,16 @@ impl EditorView {
             blink_epoch: 0.0,
             blink_key: (0, 0, 0),
             caret_on: true,
+            wrap: false,
+            wrap_index: WrapIndex::default(),
+            last_wrap: None,
+            top_line: 0,
         }
+    }
+
+    /// Wrap is on and the buffer is small enough to wrap.
+    pub fn wrap_active(&self, ed: &Editor) -> bool {
+        self.wrap && ed.buffer.len_chars() <= wrap::MAX_CHARS
     }
 
     /// Scroll the primary cursor into view on the next frame.
@@ -133,6 +156,13 @@ impl EditorView {
         if let Some(line) = ed.take_changed_from() {
             hl.invalidate_from(line);
         }
+        if let Some(cols) = m.wrap {
+            self.wrap_index.update(&ed.buffer, ed.version(), cols, ed.tab_width);
+        }
+        if m.wrap != self.last_wrap {
+            self.last_wrap = m.wrap;
+            self.scroll.y = self.line_row(&m, self.top_line) as f32 * m.row_h;
+        }
         self.handle_mouse(ui, ed, &resp, &m);
         if resp.hovered() {
             self.scroll -= ui.input(|i| i.smooth_scroll_delta);
@@ -147,6 +177,7 @@ impl EditorView {
         }
         self.clamp_scroll(ed, &m);
         m.origin_x = m.text.left() + m.char_w - self.scroll.x;
+        self.top_line = self.row_line(ed, &m, (self.scroll.y / m.row_h) as usize).0;
         self.blink(ui, ed, resp.has_focus());
 
         self.paint(ui, ed, hl, &m, resp.has_focus(), matches);
@@ -182,7 +213,39 @@ impl EditorView {
             pos2(rect.right() - SCROLLBAR_W - mm_w, rect.bottom()),
         );
         let minimap = (mm_w > 0.0).then(|| Rect::from_min_max(pos2(text.right(), rect.top()), pos2(text.right() + mm_w, rect.bottom())));
-        Metrics { full: rect, font, row_h, char_w, gutter, text, origin_x: text.left() + char_w - self.scroll.x, minimap }
+        // Text starts one column in; keep one more free at the right edge.
+        let wrap = self.wrap_active(ed).then(|| ((text.width() / char_w).floor() as usize).saturating_sub(2).max(20));
+        let scroll_x = if wrap.is_some() { 0.0 } else { self.scroll.x };
+        Metrics { full: rect, font, row_h, char_w, gutter, text, origin_x: text.left() + char_w - scroll_x, minimap, wrap }
+    }
+
+    // ---- visual rows (one per line without wrap) --------------------------
+
+    fn total_rows(&self, ed: &Editor, m: &Metrics) -> usize {
+        if m.wrap.is_some() { self.wrap_index.rows() } else { ed.buffer.len_lines() }
+    }
+
+    /// First visual row of `line`.
+    fn line_row(&self, m: &Metrics, line: usize) -> usize {
+        if m.wrap.is_some() { self.wrap_index.first_row(line) } else { line }
+    }
+
+    /// (line, row within the line) of visual row `row`.
+    fn row_line(&self, ed: &Editor, m: &Metrics, row: usize) -> (usize, usize) {
+        if m.wrap.is_some() {
+            self.wrap_index.line_of_row(row)
+        } else {
+            (row.min(ed.buffer.len_lines() - 1), 0)
+        }
+    }
+
+    /// Visual row of the caret at `pos`.
+    fn pos_row(&self, ed: &Editor, m: &Metrics, pos: usize) -> usize {
+        let line = ed.buffer.line_of(pos);
+        if m.wrap.is_none() {
+            return line;
+        }
+        self.line_row(m, line) + m.line_rows(ed, line).row_of(pos - ed.buffer.line_start(line))
     }
 
     fn page_lines(m: &Metrics) -> isize {
@@ -273,15 +336,15 @@ impl EditorView {
             Key::ArrowDown if cmd => ed.move_doc_end(shift),
             Key::ArrowLeft => ed.move_left(word, shift),
             Key::ArrowRight => ed.move_right(word, shift),
-            Key::ArrowUp => ed.move_vertical(-1, shift),
-            Key::ArrowDown => ed.move_vertical(1, shift),
+            Key::ArrowUp => move_rows(ed, m, -1, shift),
+            Key::ArrowDown => move_rows(ed, m, 1, shift),
             Key::Home if mods.command => ed.move_doc_start(shift),
             Key::End if mods.command => ed.move_doc_end(shift),
             Key::Home => ed.move_home(shift),
             Key::End => ed.move_end(shift),
             Key::PageUp | Key::PageDown => {
                 let n = Self::page_lines(m) * if key == Key::PageUp { -1 } else { 1 };
-                ed.move_vertical(n, shift);
+                move_rows(ed, m, n, shift);
                 self.scroll.y += n as f32 * m.row_h;
             }
             Key::Enter if mods.command && shift => ed.insert_line_before(),
@@ -387,45 +450,59 @@ impl EditorView {
         ui.ctx().request_repaint();
     }
 
+    /// Visual row under screen y (negative above the first row).
+    fn row_at(&self, m: &Metrics, y: f32) -> f32 {
+        ((y - m.text.top() + self.scroll.y) / m.row_h).floor()
+    }
+
+    /// The line and its rows at visual row `row`, which row of the line it is,
+    /// and that row laid out plain.
+    fn hit_row(&self, ui: &Ui, ed: &Editor, m: &Metrics, row: usize) -> (usize, LineRows, usize, Arc<Galley>) {
+        let (line, sub) = self.row_line(ed, m, row.min(self.total_rows(ed, m) - 1));
+        let text = ed.buffer.line_text(line);
+        let lr = LineRows::new(text.chars(), m.wrap, ed.tab_width);
+        let sub = sub.min(lr.rows() - 1);
+        let r = lr.range(sub);
+        let bytes = byte_offsets(&text, &[r.start, r.end]);
+        let style = Styled { text: &text, spans: None, font: &m.font, fg: Color32::WHITE, tab: ed.tab_width };
+        let galley = layout_segment(ui, &style, bytes[0]..bytes[1], lr.dcols[r.start], None);
+        (line, lr, sub, galley)
+    }
+
     /// Line and display column under `p`, extending past line ends.
     fn pos_to_line_col(&self, ui: &Ui, ed: &Editor, m: &Metrics, p: Pos2) -> (usize, usize) {
-        let raw = ((p.y - m.text.top() + self.scroll.y) / m.row_h).floor().max(0.0);
-        let line = (raw as usize).min(ed.buffer.len_lines() - 1);
-        let text = ed.buffer.line_text(line);
-        let galley = layout_line(ui, &text, None, &m.font, Color32::WHITE, ed.tab_width);
+        let row = self.row_at(m, p.y).max(0.0) as usize;
+        let (line, lr, sub, galley) = self.hit_row(ui, ed, m, row);
+        let r = lr.range(sub);
         let x = p.x - m.origin_x;
         let col = if x <= galley.size().x {
             galley.cursor_from_pos(vec2(x, m.row_h * 0.5)).index.0
         } else {
-            let end = ed.display_col(ed.buffer.line_end(line));
-            end + ((x - galley.size().x) / m.char_w).round() as usize
+            lr.dcols[r.end] - lr.dcols[r.start] + ((x - galley.size().x) / m.char_w).round() as usize
         };
-        (line, col)
+        (line, lr.dcols[r.start] + col)
     }
 
     fn pos_to_char(&self, ui: &Ui, ed: &Editor, m: &Metrics, p: Pos2) -> usize {
-        let raw = ((p.y - m.text.top() + self.scroll.y) / m.row_h).floor();
-        let last = ed.buffer.len_lines() - 1;
-        if raw < 0.0 {
+        let row = self.row_at(m, p.y);
+        if row < 0.0 {
             return 0;
         }
-        let line = (raw as usize).min(last);
-        let text = ed.buffer.line_text(line);
-        let galley = layout_line(ui, &text, None, &m.font, Color32::WHITE, ed.tab_width);
-        let dcol = galley.cursor_from_pos(vec2(p.x - m.origin_x, m.row_h * 0.5)).index.0;
-        ed.pos_at_display_col(line, dcol)
+        let (line, lr, sub, galley) = self.hit_row(ui, ed, m, row as usize);
+        let col = galley.cursor_from_pos(vec2(p.x - m.origin_x, m.row_h * 0.5)).index.0;
+        ed.buffer.line_start(line) + lr.off_at_col(sub, col)
     }
 
     // ---- scrolling -------------------------------------------------------
 
-    fn content_height(ed: &Editor, m: &Metrics) -> f32 {
+    fn content_height(&self, ed: &Editor, m: &Metrics) -> f32 {
         // Allow scrolling the last line up to the top, like Sublime.
-        (ed.buffer.len_lines().saturating_sub(1)) as f32 * m.row_h + m.text.height()
+        (self.total_rows(ed, m).saturating_sub(1)) as f32 * m.row_h + m.text.height()
     }
 
     fn clamp_scroll(&mut self, ed: &Editor, m: &Metrics) {
-        let max_y = (Self::content_height(ed, m) - m.text.height()).max(0.0);
-        let max_x = (self.max_width + m.char_w * 4.0 - m.text.width()).max(0.0);
+        let max_y = (self.content_height(ed, m) - m.text.height()).max(0.0);
+        let max_x = if m.wrap.is_some() { 0.0 } else { (self.max_width + m.char_w * 4.0 - m.text.width()).max(0.0) };
         self.scroll.y = self.scroll.y.clamp(0.0, max_y);
         self.scroll.x = self.scroll.x.clamp(0.0, max_x);
     }
@@ -433,7 +510,7 @@ impl EditorView {
     fn reveal_cursor(&mut self, ui: &Ui, ed: &Editor, m: &Metrics, hl: &Highlighter) {
         let head = ed.primary().head;
         let line = ed.buffer.line_of(head);
-        let top = line as f32 * m.row_h;
+        let top = self.pos_row(ed, m, head) as f32 * m.row_h;
         let off_screen = top < self.scroll.y || top + m.row_h > self.scroll.y + m.text.height();
         if std::mem::take(&mut self.center_cursor) && off_screen {
             self.scroll.y = top - (m.text.height() - m.row_h) / 2.0;
@@ -441,6 +518,9 @@ impl EditorView {
             self.scroll.y = top;
         } else if top + m.row_h > self.scroll.y + m.text.height() {
             self.scroll.y = top + m.row_h - m.text.height();
+        }
+        if m.wrap.is_some() {
+            return;
         }
         let text = ed.buffer.line_text(line);
         let galley = layout_line(ui, &text, None, &m.font, hl.foreground(), ed.tab_width);
@@ -456,7 +536,7 @@ impl EditorView {
 
     fn scrollbar(&mut self, ui: &Ui, ed: &Editor, m: &Metrics, id: Id) {
         let track = Rect::from_min_max(pos2(m.full.right() - SCROLLBAR_W, m.text.top()), pos2(m.full.right(), m.text.bottom()));
-        let content = Self::content_height(ed, m);
+        let content = self.content_height(ed, m);
         let h = m.text.height();
         if content <= h + 1.0 {
             return;
@@ -480,9 +560,11 @@ impl EditorView {
         let text_painter = ui.painter_at(m.text);
         painter.rect_filled(m.full, 0.0, hl.background());
 
-        let lines = ed.buffer.len_lines();
-        let first = (self.scroll.y / m.row_h).floor() as usize;
-        let last = (first + (m.text.height() / m.row_h).ceil() as usize).min(lines - 1);
+        let total = self.total_rows(ed, m);
+        let first_row = ((self.scroll.y / m.row_h).floor() as usize).min(total - 1);
+        let last_row = (first_row + (m.text.height() / m.row_h).ceil() as usize).min(total - 1);
+        let (first, first_sub) = self.row_line(ed, m, first_row);
+        let last = self.row_line(ed, m, last_row).0;
         if !hl.prepare(&ed.buffer, first..=last) {
             ui.ctx().request_repaint();
         }
@@ -506,27 +588,20 @@ impl EditorView {
         let tab = ed.tab_width.max(1);
         // Indent of the last non-blank line, so guides run through blank lines.
         let mut indent_above = 0;
+        let all_empty = ed.selections().iter().all(|s| s.is_empty());
 
-        for line in first..=last {
-            let y = m.line_top(line, self.scroll.y);
-            let row = Rect::from_min_size(pos2(m.text.left(), y), vec2(m.text.width(), m.row_h));
+        let (mut row, mut line, mut sub0) = (first_row, first, first_sub);
+        while row <= last_row && line < ed.buffer.len_lines() {
             let text = ed.buffer.line_text(line);
             crate::fonts::ensure_cjk(ui.ctx(), &text);
             let spans = hl.line(line);
+            let style = Styled { text: &text, spans: spans.as_deref().map(|v| v.as_slice()), font: &m.font, fg, tab };
+            let lr = LineRows::new(text.chars(), m.wrap, tab);
+            let mut bytes = byte_offsets(&text, &lr.starts);
+            bytes.push(text.len());
             let line_start = ed.buffer.line_start(line);
-            // The IME composition is drawn inline at the primary caret.
-            let composing = line == primary_line && preedit_chars > 0;
-            let insert = composing.then(|| {
-                let byte = text.char_indices().nth(primary_head - line_start).map_or(text.len(), |(b, _)| b);
-                Insert { byte, text: &self.preedit }
-            });
-            let galley = layout_line_with(ui, &text, spans.as_deref().map(|v| v.as_slice()), &m.font, fg, ed.tab_width, insert);
-            self.max_width = self.max_width.max(galley.size().x);
-
+            let line_end = line_start + lr.len();
             let on_caret_line = caret_lines.contains(&line);
-            if on_caret_line && ed.selections().iter().all(|s| s.is_empty()) {
-                text_painter.rect_filled(row, 0.0, line_hl);
-            }
 
             // Indent guides at each tab stop inside the leading whitespace.
             let indent = if text.trim().is_empty() {
@@ -539,97 +614,139 @@ impl EditorView {
                 indent_above = col;
                 col
             };
-            for k in (tab..indent).step_by(tab) {
-                let x = (m.origin_x + k as f32 * m.char_w).round() + 0.5;
-                text_painter.line_segment([pos2(x, y), pos2(x, y + m.row_h)], Stroke::new(1.0, guide));
-            }
 
-            let line_end = ed.buffer.line_end(line);
-            let x_at = |pos: usize| {
-                let shift = if composing && pos >= primary_head { preedit_chars } else { 0 };
-                let dcol = ed.display_col(pos) + shift;
-                m.origin_x + galley.pos_from_cursor(CCursor::new(dcol)).min.x
-            };
-            for s in ed.selections() {
-                if s.is_empty() || s.end() < line_start || s.start() > line_end {
-                    continue;
-                }
-                let a = s.start().max(line_start);
-                let b = s.end().min(line_end);
-                // Show the selected line break as a little extra width.
-                let extra = if s.end() > line_end { m.char_w * 0.6 } else { 0.0 };
-                let r = Rect::from_min_max(pos2(x_at(a), y), pos2(x_at(b) + extra, y + m.row_h));
-                text_painter.rect_filled(r, 2.0, sel_color);
-            }
+            // Other occurrences of the selected text, to be outlined faintly.
+            let occurrences: Vec<(usize, usize)> = word.as_ref().map_or_else(Vec::new, |w| {
+                text.match_indices(w.as_str())
+                    .map(|(byte, _)| {
+                        let a = line_start + text[..byte].chars().count();
+                        (a, a + w.chars().count())
+                    })
+                    .filter(|&(a, b)| !ed.selections().iter().any(|s| s.start() == a && s.end() == b))
+                    .collect()
+            });
 
-            // Outline find matches on this line (a match may span lines).
-            while let Some(r) = matches.get(next_match) {
-                if r.start > line_end {
+            for sub in sub0..lr.rows() {
+                if row > last_row {
                     break;
                 }
-                let a = r.start.max(line_start);
-                let b = r.end.min(line_end);
-                if b > a {
-                    let rect = Rect::from_min_max(pos2(x_at(a), y), pos2(x_at(b), y + m.row_h));
-                    text_painter.rect_stroke(rect, 2.0, Stroke::new(1.0, fg.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                let y = m.row_top(row, self.scroll.y);
+                row += 1;
+                let rect = Rect::from_min_size(pos2(m.text.left(), y), vec2(m.text.width(), m.row_h));
+                let r = lr.range(sub);
+                let last_sub = lr.is_last(sub);
+                let (row_start, row_end) = (line_start + r.start, line_start + r.end);
+                let in_row = |pos: usize| pos >= row_start && (pos < row_end || (last_sub && pos == row_end));
+                let dcol0 = lr.dcols[r.start];
+                // The IME composition is drawn inline at the primary caret.
+                let composing = line == primary_line && preedit_chars > 0 && in_row(primary_head);
+                let insert = composing.then(|| {
+                    let byte = byte_offsets(&text, &[primary_head - line_start])[0];
+                    Insert { byte, text: &self.preedit }
+                });
+                let galley = layout_segment(ui, &style, bytes[sub]..bytes[sub + 1], dcol0, insert);
+                if m.wrap.is_none() {
+                    self.max_width = self.max_width.max(galley.size().x);
                 }
-                if r.end > line_end {
-                    break;
-                }
-                next_match += 1;
-            }
 
-            // Other occurrences of the selected text, outlined faintly.
-            if let Some(w) = &word {
-                for (byte, _) in text.match_indices(w.as_str()) {
-                    let a = line_start + text[..byte].chars().count();
-                    let b = a + w.chars().count();
-                    if ed.selections().iter().any(|s| s.start() == a && s.end() == b) {
+                if on_caret_line && all_empty {
+                    text_painter.rect_filled(rect, 0.0, line_hl);
+                }
+                if sub == 0 {
+                    for k in (tab..indent).step_by(tab) {
+                        let x = (m.origin_x + k as f32 * m.char_w).round() + 0.5;
+                        text_painter.line_segment([pos2(x, y), pos2(x, y + m.row_h)], Stroke::new(1.0, guide));
+                    }
+                }
+
+                let x_at = |pos: usize| {
+                    let shift = if composing && pos >= primary_head { preedit_chars } else { 0 };
+                    let dcol = lr.dcols[pos.saturating_sub(line_start).min(lr.len())] - dcol0 + shift;
+                    m.origin_x + galley.pos_from_cursor(CCursor::new(dcol)).min.x
+                };
+                for s in ed.selections() {
+                    if s.is_empty() || s.end() < row_start || s.start() > row_end {
                         continue;
                     }
-                    let rect = Rect::from_min_max(pos2(x_at(a), y + 1.0), pos2(x_at(b), y + m.row_h - 1.0));
-                    text_painter.rect_stroke(rect, 2.0, Stroke::new(1.0, fg.gamma_multiply(0.3)), egui::StrokeKind::Inside);
+                    let a = s.start().max(row_start);
+                    let b = s.end().min(row_end);
+                    // Show the selected line break as a little extra width.
+                    let extra = if last_sub && s.end() > line_end { m.char_w * 0.6 } else { 0.0 };
+                    if a == b && extra == 0.0 {
+                        continue;
+                    }
+                    let r = Rect::from_min_max(pos2(x_at(a), y), pos2(x_at(b) + extra, y + m.row_h));
+                    text_painter.rect_filled(r, 2.0, sel_color);
                 }
-            }
 
-            // The bracket pair around the caret is underlined.
-            if let Some((a, b)) = bracket {
-                for p in [a, b] {
-                    if p >= line_start && p < line_end {
-                        let under = Rect::from_min_max(pos2(x_at(p), y + m.row_h - 2.0), pos2(x_at(p + 1), y + m.row_h - 0.5));
-                        text_painter.rect_filled(under, 0.0, caret_color);
+                // Outline find matches on this row (a match may span rows and lines).
+                while let Some(r) = matches.get(next_match) {
+                    if r.start > row_end {
+                        break;
+                    }
+                    let a = r.start.max(row_start);
+                    let b = r.end.min(row_end);
+                    if b > a {
+                        let rect = Rect::from_min_max(pos2(x_at(a), y), pos2(x_at(b), y + m.row_h));
+                        text_painter.rect_stroke(rect, 2.0, Stroke::new(1.0, fg.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                    }
+                    if r.end > row_end {
+                        break;
+                    }
+                    next_match += 1;
+                }
+
+                for &(a, b) in &occurrences {
+                    let (a, b) = (a.max(row_start), b.min(row_end));
+                    if b > a {
+                        let rect = Rect::from_min_max(pos2(x_at(a), y + 1.0), pos2(x_at(b), y + m.row_h - 1.0));
+                        text_painter.rect_stroke(rect, 2.0, Stroke::new(1.0, fg.gamma_multiply(0.3)), egui::StrokeKind::Inside);
                     }
                 }
-            }
 
-            text_painter.galley(pos2(m.origin_x, y), galley.clone(), fg);
-
-            for s in ed.selections() {
-                if ed.buffer.line_of(s.head) != line {
-                    continue;
-                }
-                let x = x_at(s.head);
-                let caret = Rect::from_min_size(pos2(x - 1.0, y), vec2(2.0, m.row_h));
-                if s.head == primary_head {
-                    self.caret_rect = Some(caret);
-                }
-                if focused {
-                    if self.caret_on {
-                        text_painter.rect_filled(caret, 0.0, caret_color);
+                // The bracket pair around the caret is underlined.
+                if let Some((a, b)) = bracket {
+                    for p in [a, b] {
+                        if p >= row_start && p < row_end {
+                            let under = Rect::from_min_max(pos2(x_at(p), y + m.row_h - 2.0), pos2(x_at(p + 1), y + m.row_h - 0.5));
+                            text_painter.rect_filled(under, 0.0, caret_color);
+                        }
                     }
-                } else {
-                    text_painter.rect_stroke(caret, 0.0, Stroke::new(1.0, caret_color.gamma_multiply(0.4)), egui::StrokeKind::Inside);
+                }
+
+                text_painter.galley(pos2(m.origin_x, y), galley.clone(), fg);
+
+                for (s, &caret_line) in ed.selections().iter().zip(&caret_lines) {
+                    if caret_line != line || !in_row(s.head) {
+                        continue;
+                    }
+                    let x = x_at(s.head);
+                    let caret = Rect::from_min_size(pos2(x - 1.0, y), vec2(2.0, m.row_h));
+                    if s.head == primary_head {
+                        self.caret_rect = Some(caret);
+                    }
+                    if focused {
+                        if self.caret_on {
+                            text_painter.rect_filled(caret, 0.0, caret_color);
+                        }
+                    } else {
+                        text_painter.rect_stroke(caret, 0.0, Stroke::new(1.0, caret_color.gamma_multiply(0.4)), egui::StrokeKind::Inside);
+                    }
+                }
+
+                if sub == 0 {
+                    let num_color = if on_caret_line { fg } else { gutter_fg };
+                    painter.text(
+                        pos2(m.gutter.right() - m.char_w * 1.5, y),
+                        Align2::RIGHT_TOP,
+                        (line + 1).to_string(),
+                        m.font.clone(),
+                        num_color,
+                    );
                 }
             }
-
-            let num_color = if on_caret_line { fg } else { gutter_fg };
-            painter.text(
-                pos2(m.gutter.right() - m.char_w * 1.5, y),
-                Align2::RIGHT_TOP,
-                (line + 1).to_string(),
-                m.font.clone(),
-                num_color,
-            );
+            sub0 = 0;
+            line += 1;
         }
     }
 }
@@ -653,13 +770,13 @@ impl EditorView {
 
     /// First line shown in the minimap: it pans in step with the editor.
     fn minimap_first(&self, ed: &Editor, m: &Metrics, mm: Rect) -> usize {
-        let lines = ed.buffer.len_lines();
+        let rows = self.total_rows(ed, m);
         let cap = (mm.height() / MM_ROW) as usize;
-        if lines <= cap {
+        if rows <= cap {
             return 0;
         }
-        let max_scroll = (Self::content_height(ed, m) - m.text.height()).max(1.0);
-        ((lines - cap) as f32 * (self.scroll.y / max_scroll).clamp(0.0, 1.0)) as usize
+        let max_scroll = (self.content_height(ed, m) - m.text.height()).max(1.0);
+        ((rows - cap) as f32 * (self.scroll.y / max_scroll).clamp(0.0, 1.0)) as usize
     }
 
     /// Click or drag in the minimap to scroll there.
@@ -668,9 +785,9 @@ impl EditorView {
         let resp = ui.interact(mm, id.with("minimap"), Sense::click_and_drag());
         if let Some(p) = resp.interact_pointer_pos() {
             let first = self.minimap_first(ed, m, mm);
-            let line = first as f32 + (p.y - mm.top()) / MM_ROW;
+            let row = first as f32 + (p.y - mm.top()) / MM_ROW;
             let visible = m.text.height() / m.row_h;
-            self.scroll.y = (line - visible / 2.0) * m.row_h;
+            self.scroll.y = (row - visible / 2.0) * m.row_h;
         }
     }
 
@@ -679,10 +796,12 @@ impl EditorView {
         let painter = ui.painter_at(mm);
         let fg = hl.foreground();
         painter.rect_filled(mm, 0.0, hl.background());
-        let lines = ed.buffer.len_lines();
+        let rows = self.total_rows(ed, m);
         let first = self.minimap_first(ed, m, mm);
-        let last = (first + (mm.height() / MM_ROW) as usize).min(lines - 1);
-        if !hl.prepare(&ed.buffer, first..=last) {
+        let last = (first + (mm.height() / MM_ROW) as usize).min(rows - 1);
+        let (first_line, first_sub) = self.row_line(ed, m, first);
+        let last_line = self.row_line(ed, m, last).0;
+        if !hl.prepare(&ed.buffer, first_line..=last_line) {
             ui.ctx().request_repaint();
         }
 
@@ -693,41 +812,100 @@ impl EditorView {
 
         let max_cols = ((mm.width() - 8.0) / MM_COL) as usize;
         let tab = ed.tab_width.max(1);
-        for line in first..=last {
-            let y = mm.top() + (line - first) as f32 * MM_ROW;
+        let (mut row, mut line, mut sub0) = (first, first_line, first_sub);
+        while row <= last && line < ed.buffer.len_lines() {
             let text = ed.buffer.line_text(line);
             let spans = hl.line(line);
             let color_at = |byte: usize| {
                 spans.as_ref().and_then(|v| v.iter().find(|s| s.range.contains(&byte))).map_or(fg, |s| s.color)
             };
-            // Runs of non-blank chars of one color become one small bar.
-            let mut col = 0;
-            let mut run: Option<(usize, Color32)> = None;
-            let flush = |run: &mut Option<(usize, Color32)>, end: usize| {
-                if let Some((start, c)) = run.take() {
-                    let r = Rect::from_min_max(pos2(mm.left() + 4.0 + start as f32 * MM_COL, y), pos2(mm.left() + 4.0 + end as f32 * MM_COL, y + MM_ROW - 0.6));
-                    painter.rect_filled(r, 0.0, c.gamma_multiply(0.75));
-                }
-            };
-            for (byte, c) in text.char_indices() {
-                if col >= max_cols {
+            let starts = if m.wrap.is_some() { LineRows::new(text.chars(), m.wrap, tab).starts } else { vec![0] };
+            let mut bytes = byte_offsets(&text, &starts);
+            bytes.push(text.len());
+            for sub in sub0..starts.len() {
+                if row > last {
                     break;
                 }
-                let next = if c == '\t' { col + tab - col % tab } else { col + 1 };
-                if c.is_whitespace() {
-                    flush(&mut run, col);
-                } else {
-                    let color = color_at(byte);
-                    if run.is_some_and(|(_, rc)| rc != color) {
-                        flush(&mut run, col);
+                let y = mm.top() + (row - first) as f32 * MM_ROW;
+                row += 1;
+                // Runs of non-blank chars of one color become one small bar.
+                let mut col = 0;
+                let mut run: Option<(usize, Color32)> = None;
+                let flush = |run: &mut Option<(usize, Color32)>, end: usize| {
+                    if let Some((start, c)) = run.take() {
+                        let r = Rect::from_min_max(pos2(mm.left() + 4.0 + start as f32 * MM_COL, y), pos2(mm.left() + 4.0 + end as f32 * MM_COL, y + MM_ROW - 0.6));
+                        painter.rect_filled(r, 0.0, c.gamma_multiply(0.75));
                     }
-                    run.get_or_insert((col, color));
+                };
+                for (byte, c) in text[bytes[sub]..bytes[sub + 1]].char_indices() {
+                    if col >= max_cols {
+                        break;
+                    }
+                    let next = if c == '\t' { col + tab - col % tab } else { col + 1 };
+                    if c.is_whitespace() {
+                        flush(&mut run, col);
+                    } else {
+                        let color = color_at(bytes[sub] + byte);
+                        if run.is_some_and(|(_, rc)| rc != color) {
+                            flush(&mut run, col);
+                        }
+                        run.get_or_insert((col, color));
+                    }
+                    col = next;
                 }
-                col = next;
+                flush(&mut run, col.min(max_cols));
             }
-            flush(&mut run, col.min(max_cols));
+            sub0 = 0;
+            line += 1;
         }
     }
+}
+
+/// Byte offsets of ascending char offsets into `text`.
+fn byte_offsets(text: &str, offs: &[usize]) -> Vec<usize> {
+    let mut bytes = text.char_indices().map(|(b, _)| b).chain(std::iter::once(text.len()));
+    let (mut k, mut b) = (0, bytes.next());
+    offs.iter()
+        .map(|&o| {
+            while k < o {
+                b = bytes.next();
+                k += 1;
+            }
+            b.unwrap_or(text.len())
+        })
+        .collect()
+}
+
+/// Move each caret by `n` visual rows, keeping its column within the row
+/// (by buffer lines when not wrapping).
+fn move_rows(ed: &mut Editor, m: &Metrics, n: isize, extend: bool) {
+    if m.wrap.is_none() {
+        return ed.move_vertical(n, extend);
+    }
+    ed.move_heads(extend, |e, s| {
+        let mut line = e.buffer.line_of(s.head);
+        let mut lr = m.line_rows(e, line);
+        let off = s.head - e.buffer.line_start(line);
+        let goal = s.goal().unwrap_or_else(|| lr.col_in_row(off));
+        let mut sub = lr.row_of(off) as isize + n;
+        while sub < 0 {
+            if line == 0 {
+                return (0, None);
+            }
+            line -= 1;
+            lr = m.line_rows(e, line);
+            sub += lr.rows() as isize;
+        }
+        while sub >= lr.rows() as isize {
+            if line + 1 >= e.buffer.len_lines() {
+                return (e.buffer.len_chars(), None);
+            }
+            sub -= lr.rows() as isize;
+            line += 1;
+            lr = m.line_rows(e, line);
+        }
+        (e.buffer.line_start(line) + lr.off_at_col(sub as usize, goal), Some(goal))
+    });
 }
 
 /// The primary selection's text, if it's a short single-line string worth
@@ -747,54 +925,67 @@ struct Insert<'a> {
     text: &'a str,
 }
 
-/// Lay out one line with tabs expanded, colored by `spans` when available.
-fn layout_line(ui: &Ui, text: &str, spans: Option<&[Span]>, font: &FontId, fg: Color32, tab: usize) -> Arc<Galley> {
-    layout_line_with(ui, text, spans, font, fg, tab, None)
-}
-
-fn layout_line_with(
-    ui: &Ui,
-    text: &str,
-    spans: Option<&[Span]>,
-    font: &FontId,
+/// A line's text and how to color it.
+struct Styled<'a> {
+    text: &'a str,
+    spans: Option<&'a [Span]>,
+    font: &'a FontId,
     fg: Color32,
     tab: usize,
-    insert: Option<Insert>,
-) -> Arc<Galley> {
+}
+
+/// Lay out one line with tabs expanded, colored by `spans` when available.
+fn layout_line(ui: &Ui, text: &str, spans: Option<&[Span]>, font: &FontId, fg: Color32, tab: usize) -> Arc<Galley> {
+    let style = Styled { text, spans, font, fg, tab };
+    layout_segment(ui, &style, 0..text.len(), 0, None)
+}
+
+/// Lay out the `range` bytes of a line, which start at display column `col`
+/// (so tabs land on the line's tab stops). `insert` is in line bytes.
+fn layout_segment(ui: &Ui, s: &Styled, range: Range<usize>, col: usize, insert: Option<Insert>) -> Arc<Galley> {
+    let (text, font, fg) = (s.text, s.font, s.fg);
     // Flatten into (byte range, format) segments, then splice the insert in.
-    let valid = spans.filter(|s| !s.is_empty() && s.last().is_none_or(|l| l.range.end <= text.len()));
-    let mut segments: Vec<(std::ops::Range<usize>, TextFormat)> = match valid {
+    let valid = s.spans.filter(|s| !s.is_empty() && s.last().is_none_or(|l| l.range.end <= text.len()));
+    let mut segments: Vec<(Range<usize>, TextFormat)> = match valid {
         Some(spans) => spans
             .iter()
+            .filter(|span| span.range.end > range.start && span.range.start < range.end)
             .map(|span| {
                 let mut fmt = TextFormat::simple(font.clone(), span.color);
                 fmt.italics = span.italic;
                 if span.underline {
                     fmt.underline = Stroke::new(1.0, span.color);
                 }
-                (span.range.clone(), fmt)
+                (span.range.start.max(range.start)..span.range.end.min(range.end), fmt)
             })
             .collect(),
-        None => vec![(0..text.len(), TextFormat::simple(font.clone(), fg))],
+        None => vec![(range.clone(), TextFormat::simple(font.clone(), fg))],
+    };
+    let ime = || {
+        let mut ime = TextFormat::simple(font.clone(), fg);
+        ime.underline = Stroke::new(1.0, fg);
+        ime
     };
     let mut pieces: Vec<(&str, TextFormat)> = Vec::with_capacity(segments.len() + 2);
-    let mut insert = insert.filter(|i| i.byte <= text.len());
-    for (range, fmt) in segments.drain(..) {
-        if let Some(ins) = insert.as_ref().filter(|i| i.byte >= range.start && i.byte <= range.end) {
-            pieces.push((&text[range.start..ins.byte], fmt.clone()));
-            let mut ime = TextFormat::simple(font.clone(), fg);
-            ime.underline = Stroke::new(1.0, fg);
-            pieces.push((ins.text, ime));
-            pieces.push((&text[ins.byte..range.end], fmt));
+    let mut insert = insert.filter(|i| i.byte >= range.start && i.byte <= range.end);
+    for (r, fmt) in segments.drain(..) {
+        if let Some(ins) = insert.as_ref().filter(|i| i.byte >= r.start && i.byte <= r.end) {
+            pieces.push((&text[r.start..ins.byte], fmt.clone()));
+            pieces.push((ins.text, ime()));
+            pieces.push((&text[ins.byte..r.end], fmt));
             insert = None;
         } else {
-            pieces.push((&text[range], fmt));
+            pieces.push((&text[r], fmt));
         }
+    }
+    if let Some(ins) = insert {
+        pieces.push((ins.text, ime()));
     }
 
     let mut job = LayoutJob::default();
     job.wrap.max_width = f32::INFINITY;
-    let mut col = 0;
+    let tab = s.tab.max(1);
+    let mut col = col;
     let mut push = |job: &mut LayoutJob, piece: &str, fmt: TextFormat| {
         let mut out = String::with_capacity(piece.len());
         for c in piece.chars() {
@@ -848,7 +1039,11 @@ mod tests {
             self.frame_with(events, Modifiers::NONE);
         }
 
-        fn frame_with(&mut self, mut events: Vec<Event>, modifiers: Modifiers) {
+        fn frame_with(&mut self, events: Vec<Event>, modifiers: Modifiers) {
+            self.frame_out(events, modifiers);
+        }
+
+        fn frame_out(&mut self, mut events: Vec<Event>, modifiers: Modifiers) -> egui::FullOutput {
             events.insert(0, Event::ModifiersChanged(modifiers));
             let raw = RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
@@ -861,6 +1056,7 @@ mod tests {
             });
             // No GPU here: discard font-atlas uploads instead of applying them.
             out.textures_delta.clear();
+            out
         }
 
         fn text(&self) -> String {
@@ -1060,5 +1256,100 @@ mod tests {
         assert!(h.view.scroll.y >= (last as f32 + 1.0) * row - 600.0);
         h.frame(vec![key(Key::Home, Modifiers::COMMAND)]);
         assert_eq!(h.view.scroll.y, 0.0);
+    }
+
+    /// A buffer of long lines with wrap on; returns the wrap width.
+    fn wrapped(text: &str) -> (Harness, usize) {
+        let mut h = Harness::new(text);
+        h.view.wrap = true;
+        h.frame(vec![]);
+        let cols = h.view.last_wrap.expect("wrapping");
+        (h, cols)
+    }
+
+    fn rows_of(h: &Harness, line: usize, cols: usize) -> LineRows {
+        LineRows::new(h.ed.buffer.line_chars(line), Some(cols), h.ed.tab_width)
+    }
+
+    fn long_line(words: usize) -> String {
+        (0..words).map(|i| format!("word{i:03} ")).collect()
+    }
+
+    #[test]
+    fn click_on_continuation_row() {
+        let (mut h, cols) = wrapped(&long_line(60));
+        let lr = rows_of(&h, 0, cols);
+        assert!(lr.rows() > 2);
+        let caret = h.view.caret_rect.expect("caret painted");
+        let row = h.row_h();
+        let char_w = h.ctx.fonts_mut(|f| f.glyph_width(&FontId::monospace(14.0), 'M'));
+        // Column 3 of the second row.
+        click(&mut h, pos2(caret.center().x + char_w * 3.0, caret.top() + row * 1.5), Modifiers::NONE);
+        assert_eq!(h.ed.primary().head, lr.starts[1] + 3);
+        // Far right of the second row stays on that row (fresh view: no double click).
+        let (mut h, _) = wrapped(&long_line(60));
+        click(&mut h, pos2(caret.center().x + char_w * (cols as f32 + 0.6), caret.top() + row * 1.5), Modifiers::NONE);
+        assert_eq!(h.ed.primary().head, lr.starts[2] - 1);
+    }
+
+    #[test]
+    fn down_moves_by_visual_row() {
+        let text = format!("{}\nshort", long_line(30));
+        let (mut h, cols) = wrapped(&text);
+        let lr = rows_of(&h, 0, cols);
+        h.frame(vec![key(Key::ArrowRight, Modifiers::NONE); 4]);
+        h.frame(vec![key(Key::ArrowDown, Modifiers::NONE)]);
+        assert_eq!(h.ed.primary().head, lr.starts[1] + 4, "same line, next row, same column");
+        h.frame(vec![key(Key::ArrowDown, Modifiers::SHIFT)]);
+        assert_eq!(h.ed.primary().range(), lr.starts[1] + 4..lr.starts[2] + 4);
+        for _ in 2..lr.rows() {
+            h.frame(vec![key(Key::ArrowDown, Modifiers::NONE)]);
+        }
+        let short = h.ed.buffer.line_start(1);
+        assert_eq!(h.ed.primary().head, short + 4, "the next line keeps the goal column");
+        h.frame(vec![key(Key::ArrowUp, Modifiers::NONE)]);
+        assert_eq!(h.ed.buffer.line_of(h.ed.primary().head), 0);
+        assert_eq!(h.ed.primary().head, lr.starts[lr.rows() - 1] + 4);
+    }
+
+    #[test]
+    fn end_of_buffer_stays_visible_when_wrapped() {
+        let text: String = (0..200).map(|_| long_line(40) + "\n").collect::<String>() + &long_line(40);
+        let (mut h, _) = wrapped(&text);
+        h.frame(vec![key(Key::End, Modifiers::COMMAND)]);
+        h.frame(vec![]);
+        assert_eq!(h.ed.primary().head, h.ed.buffer.len_chars());
+        let caret = h.view.caret_rect.expect("caret painted");
+        assert!(caret.bottom() <= 600.5 && caret.top() >= 0.0, "{caret:?}");
+        assert_eq!(h.view.scroll.x, 0.0);
+        h.frame(vec![key(Key::Home, Modifiers::COMMAND)]);
+        assert_eq!(h.view.scroll.y, 0.0);
+    }
+
+    #[test]
+    fn selection_across_row_boundary_paints_both_rows() {
+        let (mut h, cols) = wrapped(&long_line(30));
+        let lr = rows_of(&h, 0, cols);
+        let sel = h.hl.selection();
+        let count_sel_rects = |h: &mut Harness| {
+            let out = h.frame_out(vec![], Modifiers::NONE);
+            out.shapes.iter().filter(|c| matches!(&c.shape, egui::Shape::Rect(r) if r.fill == sel)).count()
+        };
+        h.ed.select_ranges(&[lr.starts[1] - 3..lr.starts[1] + 3], 0);
+        assert_eq!(count_sel_rects(&mut h), 2);
+        h.ed.select_ranges(&[lr.starts[1]..lr.starts[1] + 3], 0);
+        assert_eq!(count_sel_rects(&mut h), 1, "a selection starting a row stays on it");
+    }
+
+    #[test]
+    fn wrap_off_restores_horizontal_scroll() {
+        let (mut h, _) = wrapped(&long_line(60));
+        h.frame(vec![key(Key::End, Modifiers::NONE)]);
+        assert_eq!(h.view.scroll.x, 0.0);
+        assert!(h.view.scroll.y >= 0.0);
+        h.view.wrap = false;
+        h.frame(vec![key(Key::Home, Modifiers::NONE), key(Key::End, Modifiers::NONE)]);
+        assert!(h.view.scroll.x > 0.0, "long line scrolls sideways again");
+        assert!(h.view.last_wrap.is_none());
     }
 }

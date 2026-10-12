@@ -35,6 +35,10 @@ impl Selection {
     pub fn range(&self) -> Range<usize> {
         self.start()..self.end()
     }
+
+    pub fn goal(&self) -> Option<usize> {
+        self.goal
+    }
 }
 
 /// One replacement, recorded in the coordinates at the time it was applied.
@@ -1319,7 +1323,9 @@ impl Editor {
         i
     }
 
-    fn move_each(&mut self, extend: bool, f: impl Fn(&Self, &Selection) -> (usize, Option<usize>)) {
+    /// Move every head to `f`'s position with its new goal column; without
+    /// `extend` the anchor follows.
+    pub fn move_heads(&mut self, extend: bool, f: impl Fn(&Self, &Selection) -> (usize, Option<usize>)) {
         let primary_before = self.primary;
         let mut primary_head = 0;
         let sels: Vec<Selection> = self
@@ -1340,7 +1346,7 @@ impl Editor {
     }
 
     pub fn move_left(&mut self, word: bool, extend: bool) {
-        self.move_each(extend, |e, s| {
+        self.move_heads(extend, |e, s| {
             if !extend && !s.is_empty() && !word {
                 (s.start(), None)
             } else if word {
@@ -1352,7 +1358,7 @@ impl Editor {
     }
 
     pub fn move_right(&mut self, word: bool, extend: bool) {
-        self.move_each(extend, |e, s| {
+        self.move_heads(extend, |e, s| {
             if !extend && !s.is_empty() && !word {
                 (s.end(), None)
             } else if word {
@@ -1365,7 +1371,7 @@ impl Editor {
 
     /// Move by `lines` (negative = up), keeping the goal column.
     pub fn move_vertical(&mut self, lines: isize, extend: bool) {
-        self.move_each(extend, |e, s| {
+        self.move_heads(extend, |e, s| {
             let goal = s.goal.unwrap_or_else(|| e.display_col(s.head));
             let line = e.buffer.line_of(s.head) as isize;
             let last = e.buffer.len_lines() as isize - 1;
@@ -1382,7 +1388,7 @@ impl Editor {
 
     /// Smart home: first non-blank character, then column 0.
     pub fn move_home(&mut self, extend: bool) {
-        self.move_each(extend, |e, s| {
+        self.move_heads(extend, |e, s| {
             let line = e.buffer.line_of(s.head);
             let start = e.buffer.line_start(line);
             let indent = e
@@ -1397,15 +1403,15 @@ impl Editor {
     }
 
     pub fn move_end(&mut self, extend: bool) {
-        self.move_each(extend, |e, s| (e.buffer.line_end(e.buffer.line_of(s.head)), None));
+        self.move_heads(extend, |e, s| (e.buffer.line_end(e.buffer.line_of(s.head)), None));
     }
 
     pub fn move_doc_start(&mut self, extend: bool) {
-        self.move_each(extend, |_, _| (0, None));
+        self.move_heads(extend, |_, _| (0, None));
     }
 
     pub fn move_doc_end(&mut self, extend: bool) {
-        self.move_each(extend, |e, _| (e.buffer.len_chars(), None));
+        self.move_heads(extend, |e, _| (e.buffer.len_chars(), None));
     }
 
     pub fn select_all(&mut self) {
@@ -1622,7 +1628,7 @@ impl Editor {
     /// Ctrl+M: move to the matching bracket, keeping the caret on the same
     /// side (inside/outside) of the pair; else to the enclosing closer.
     pub fn jump_to_bracket(&mut self) {
-        self.move_each(false, |e, s| {
+        self.move_heads(false, |e, s| {
             if let Some((b, m)) = e.matching_bracket(s.head) {
                 let opener = m > b;
                 let outside = (b == s.head) == opener;
