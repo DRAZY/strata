@@ -83,10 +83,6 @@ impl EditorView {
         self.wants_focus = true;
     }
 
-    /// Call after loading a different file.
-    pub fn reset(&mut self) {
-        *self = Self { font_size: self.font_size, ..Self::new() };
-    }
 
     /// `matches`: sorted find results to outline (empty when find is closed).
     pub fn show(&mut self, ui: &mut Ui, ed: &mut Editor, hl: &mut Highlighter, matches: &[Range<usize>]) {

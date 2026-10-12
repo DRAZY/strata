@@ -52,7 +52,69 @@ pub struct StrataApp {
 }
 
 /// Editor commands offered in the command palette: (id, name, shortcut label).
-const EDITOR_COMMANDS: &[(&str, &str, &str)] = &[];
+/// The editor widget owns the keys; the labels here only document them.
+#[cfg(target_os = "macos")]
+const EDITOR_COMMANDS: &[(&str, &str, &str)] = &[
+    ("toggle_comment", "Edit: Toggle Comment", "⌘/"),
+    ("indent", "Edit: Indent", "⌘]"),
+    ("outdent", "Edit: Unindent", "⌘["),
+    ("duplicate", "Edit: Duplicate Line", "⇧⌘D"),
+    ("delete_line", "Edit: Delete Line", "⌃⇧K"),
+    ("move_up", "Edit: Move Line Up", "⌃⌘↑"),
+    ("move_down", "Edit: Move Line Down", "⌃⌘↓"),
+    ("join", "Edit: Join Lines", "⌘J"),
+    ("line_after", "Edit: Insert Line After", "⌘↩"),
+    ("line_before", "Edit: Insert Line Before", "⇧⌘↩"),
+    ("upper", "Edit: Convert to Upper Case", "⌘K ⌘U"),
+    ("lower", "Edit: Convert to Lower Case", "⌘K ⌘L"),
+    ("sort", "Edit: Sort Lines", "F5"),
+    ("sort_case", "Edit: Sort Lines (Case Sensitive)", "⌃F5"),
+    ("reverse", "Edit: Reverse Lines", ""),
+    ("unique", "Edit: Remove Duplicate Lines", ""),
+    ("trim", "Edit: Trim Trailing Whitespace", ""),
+    ("expand_line", "Selection: Expand to Line", "⌘L"),
+    ("split_lines", "Selection: Split into Lines", "⇧⌘L"),
+    ("cursor_above", "Selection: Add Cursor Above", "⌃⇧↑"),
+    ("cursor_below", "Selection: Add Cursor Below", "⌃⇧↓"),
+    ("next_occurrence", "Selection: Add Next Occurrence", "⌘D"),
+    ("all_occurrences", "Selection: Select All Occurrences", "⌃⌘G"),
+    ("expand_brackets", "Selection: Expand to Brackets", "⌃⇧M"),
+    ("jump_bracket", "Goto: Matching Bracket", "⌃M"),
+    ("select_all", "Selection: Select All", "⌘A"),
+    ("undo", "Edit: Undo", "⌘Z"),
+    ("redo", "Edit: Redo", "⇧⌘Z"),
+];
+#[cfg(not(target_os = "macos"))]
+const EDITOR_COMMANDS: &[(&str, &str, &str)] = &[
+    ("toggle_comment", "Edit: Toggle Comment", "Ctrl+/"),
+    ("indent", "Edit: Indent", "Ctrl+]"),
+    ("outdent", "Edit: Unindent", "Ctrl+["),
+    ("duplicate", "Edit: Duplicate Line", "Ctrl+Shift+D"),
+    ("delete_line", "Edit: Delete Line", "Ctrl+Shift+K"),
+    ("move_up", "Edit: Move Line Up", "Ctrl+Shift+↑"),
+    ("move_down", "Edit: Move Line Down", "Ctrl+Shift+↓"),
+    ("join", "Edit: Join Lines", "Ctrl+J"),
+    ("line_after", "Edit: Insert Line After", "Ctrl+Enter"),
+    ("line_before", "Edit: Insert Line Before", "Ctrl+Shift+Enter"),
+    ("upper", "Edit: Convert to Upper Case", "Ctrl+K Ctrl+U"),
+    ("lower", "Edit: Convert to Lower Case", "Ctrl+K Ctrl+L"),
+    ("sort", "Edit: Sort Lines", "F9"),
+    ("sort_case", "Edit: Sort Lines (Case Sensitive)", "Ctrl+F9"),
+    ("reverse", "Edit: Reverse Lines", ""),
+    ("unique", "Edit: Remove Duplicate Lines", ""),
+    ("trim", "Edit: Trim Trailing Whitespace", ""),
+    ("expand_line", "Selection: Expand to Line", "Ctrl+L"),
+    ("split_lines", "Selection: Split into Lines", "Ctrl+Shift+L"),
+    ("cursor_above", "Selection: Add Cursor Above", "Ctrl+Alt+↑"),
+    ("cursor_below", "Selection: Add Cursor Below", "Ctrl+Alt+↓"),
+    ("next_occurrence", "Selection: Add Next Occurrence", "Ctrl+D"),
+    ("all_occurrences", "Selection: Select All Occurrences", "Alt+F3"),
+    ("expand_brackets", "Selection: Expand to Brackets", "Ctrl+Shift+M"),
+    ("jump_bracket", "Goto: Matching Bracket", "Ctrl+M"),
+    ("select_all", "Selection: Select All", "Ctrl+A"),
+    ("undo", "Edit: Undo", "Ctrl+Z"),
+    ("redo", "Edit: Redo", "Ctrl+Y"),
+];
 
 impl StrataApp {
     pub fn new(path: Option<PathBuf>, config: Option<PathBuf>) -> Self {
@@ -121,6 +183,7 @@ impl StrataApp {
     fn push_doc(&mut self, mut doc: Document) {
         doc.highlighter.set_theme(&self.settings.theme);
         doc.editor.tab_width = self.settings.tab_size;
+        doc.editor.use_spaces = self.settings.translate_tabs_to_spaces;
         let at = if self.docs.is_empty() { 0 } else { self.active + 1 };
         self.docs.insert(at, doc);
         self.activate(at);
@@ -161,6 +224,7 @@ impl StrataApp {
         if let Some(i) = reuse {
             doc.highlighter.set_theme(&self.settings.theme);
             doc.editor.tab_width = self.settings.tab_size;
+            doc.editor.use_spaces = self.settings.translate_tabs_to_spaces;
             self.docs[i] = doc;
             self.activate(i);
         } else {
@@ -287,6 +351,7 @@ impl StrataApp {
         for d in &mut self.docs {
             d.highlighter.set_theme(&self.settings.theme);
             d.editor.tab_width = self.settings.tab_size;
+            d.editor.use_spaces = self.settings.translate_tabs_to_spaces;
         }
     }
 
@@ -544,7 +609,46 @@ impl StrataApp {
         }
     }
 
-    fn run_editor(&mut self, _id: &str) {}
+    fn run_editor(&mut self, id: &str) {
+        let d = &mut self.docs[self.active];
+        let e = &mut d.editor;
+        match id {
+            "toggle_comment" => match crate::lang::comment_tokens(d.highlighter.syntax_name()) {
+                (Some(token), _) => e.toggle_comment(token),
+                (None, Some((open, close))) => e.toggle_block_comment(open, close),
+                _ => self.status = format!("No comment syntax for {}", d.highlighter.syntax_name()),
+            },
+            "indent" => e.indent(),
+            "outdent" => e.outdent(),
+            "duplicate" => e.duplicate_lines(),
+            "delete_line" => e.delete_lines(),
+            "move_up" => e.move_lines(true),
+            "move_down" => e.move_lines(false),
+            "join" => e.join_lines(),
+            "line_after" => e.insert_line_after(),
+            "line_before" => e.insert_line_before(),
+            "upper" => e.swap_case_upper(),
+            "lower" => e.swap_case_lower(),
+            "sort" => e.sort_lines(false),
+            "sort_case" => e.sort_lines(true),
+            "reverse" => e.reverse_lines(),
+            "unique" => e.unique_lines(),
+            "trim" => e.trim_trailing_whitespace(),
+            "expand_line" => e.expand_to_line(),
+            "split_lines" => e.split_into_lines(),
+            "cursor_above" => e.add_cursor_vertical(-1),
+            "cursor_below" => e.add_cursor_vertical(1),
+            "next_occurrence" => e.select_next_occurrence(),
+            "all_occurrences" => e.select_all_occurrences(),
+            "expand_brackets" => e.expand_to_brackets(),
+            "jump_bracket" => e.jump_to_bracket(),
+            "select_all" => e.select_all(),
+            "undo" => e.undo(),
+            "redo" => e.redo(),
+            _ => return,
+        }
+        d.view.reveal();
+    }
 
     fn title(&self) -> String {
         let d = &self.docs[self.active];
@@ -1368,6 +1472,18 @@ mod tests {
         assert_eq!(ed(&back).primary().head, 16);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "saved\n", "disk untouched until you save");
         std::fs::remove_dir_all(config).ok();
+    }
+
+    #[test]
+    fn every_palette_editor_command_runs() {
+        let mut app = app_with("b\na\nb\n");
+        app.doc().highlighter.set_syntax("Python");
+        for (id, _, _) in EDITOR_COMMANDS {
+            app.run_editor(id);
+        }
+        app.doc().editor.select_ranges(&[0..0], 0);
+        app.run_editor("toggle_comment");
+        assert!(text(&app).starts_with('#'), "{}", text(&app));
     }
 
     #[test]

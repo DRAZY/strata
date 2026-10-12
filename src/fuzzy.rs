@@ -27,6 +27,7 @@ const NEG: i32 = i32::MIN / 4;
 
 /// Score `candidate` against `query`: the score (higher is better) and the
 /// matched char indices in `candidate`, ascending. `None` if it doesn't match.
+#[cfg(test)]
 pub fn score(query: &str, candidate: &str) -> Option<(i32, Vec<usize>)> {
     let pattern = Pattern::new(query);
     let mut scratch = Scratch::default();

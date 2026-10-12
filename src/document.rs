@@ -139,9 +139,10 @@ impl Document {
     /// Swap in new text, keeping the cursor on (about) the same spot.
     pub fn reload(&mut self, buffer: Buffer) {
         let head = self.editor.primary().head.min(buffer.len_chars());
-        let tab_width = self.editor.tab_width;
+        let (tab_width, use_spaces) = (self.editor.tab_width, self.editor.use_spaces);
         self.editor = Editor::new(buffer);
         self.editor.tab_width = tab_width;
+        self.editor.use_spaces = use_spaces;
         self.editor.select_ranges(&[head..head], 0);
         self.highlighter.invalidate_from(0);
         self.finder = Finder::default();

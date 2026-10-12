@@ -1093,7 +1093,6 @@ impl Editor {
         });
     }
 
-    #[allow(dead_code)] // No default key binding; for a future command palette.
     pub fn reverse_lines(&mut self) {
         self.transform_lines(|mut lines| {
             lines.reverse();
@@ -1102,7 +1101,6 @@ impl Editor {
     }
 
     /// Drop repeated lines, keeping the first of each.
-    #[allow(dead_code)] // No default key binding; for a future command palette.
     pub fn unique_lines(&mut self) {
         self.transform_lines(|lines| {
             let mut seen = std::collections::HashSet::new();
@@ -1139,7 +1137,6 @@ impl Editor {
     }
 
     /// Strip trailing whitespace from the covered lines (whole buffer for a lone cursor).
-    #[allow(dead_code)] // No default key binding; for a future command palette.
     pub fn trim_trailing_whitespace(&mut self) {
         let (blocks, _) = self.transform_blocks();
         let edits = blocks

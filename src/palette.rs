@@ -283,6 +283,8 @@ impl Palette {
                     }
                     if self.mode == Mode::Files && !self.files.is_ready() && self.ctx.as_ref().is_some_and(|c| c.root.is_some()) {
                         ui.label(egui::RichText::new(format!("Indexing… {} files", self.files.paths().len())).small().weak());
+                    } else if self.mode == Mode::Files && self.files.is_truncated() {
+                        ui.label(egui::RichText::new(format!("Only the first {} files are indexed", crate::files::FILE_LIMIT)).small().weak());
                     }
                     ui.add_space(4.0);
                     let row_h = 26.0;
