@@ -26,26 +26,56 @@ impl LineEnding {
 pub struct Buffer {
     rope: Rope,
     line_ending: LineEnding,
+    /// The file wasn't valid UTF-8: saving would replace the bad bytes.
+    pub lossy: bool,
 }
 
 impl Buffer {
     pub fn from_str(text: &str) -> Self {
         let rope = Rope::from_str(text);
         let line_ending = detect_line_ending(&rope);
-        Self { rope, line_ending }
+        Self { rope, line_ending, lossy: false }
     }
 
-    /// Invalid UTF-8 is replaced rather than refused, so any file opens.
+    /// Invalid UTF-8 is replaced rather than refused, so any file opens
+    /// (and `lossy` records that it happened).
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        Self::from_str(&String::from_utf8_lossy(bytes))
+        let text = String::from_utf8_lossy(bytes);
+        let lossy = matches!(text, std::borrow::Cow::Owned(_));
+        Self { lossy, ..Self::from_str(&text) }
     }
 
+    /// Save without ever leaving a half-written file: write a temp file next
+    /// to the target, flush it to disk, then rename it over the original.
+    /// Symlinks are followed, so the link stays a link.
     pub fn write_to(&self, path: &Path) -> std::io::Result<()> {
+        let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        let dir = target.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let tmp = dir.join(format!(".{name}.strata-{}.tmp", std::process::id()));
+        match self.write_file(&tmp) {
+            Ok(()) => {
+                if let Ok(meta) = std::fs::metadata(&target) {
+                    let _ = std::fs::set_permissions(&tmp, meta.permissions());
+                }
+                std::fs::rename(&tmp, &target).inspect_err(|_| {
+                    let _ = std::fs::remove_file(&tmp);
+                })
+            }
+            // Can't create files in the folder (but maybe can write the file): write in place.
+            Err(_) => {
+                let _ = std::fs::remove_file(&tmp);
+                self.write_file(&target)
+            }
+        }
+    }
+
+    fn write_file(&self, path: &Path) -> std::io::Result<()> {
         let mut out = BufWriter::new(std::fs::File::create(path)?);
         for chunk in self.rope.chunks() {
             out.write_all(chunk.as_bytes())?;
         }
-        out.flush()
+        out.into_inner().map_err(|e| e.into_error())?.sync_all()
     }
 
     pub fn line_ending(&self) -> LineEnding {
@@ -150,5 +180,31 @@ mod tests {
     fn lossy_utf8_opens() {
         let b = Buffer::from_bytes(b"ok\xffok");
         assert_eq!(b.line_text(0), "ok\u{fffd}ok");
+        assert!(b.lossy);
+        assert!(!Buffer::from_bytes("café".as_bytes()).lossy);
+    }
+
+    #[test]
+    fn save_replaces_atomically_and_keeps_symlinks_and_mode() {
+        let dir = std::env::temp_dir().join(format!("strata-buf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real.sh");
+        std::fs::write(&real, "old").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::os::unix::fs::symlink(&real, dir.join("link.sh")).unwrap();
+            Buffer::from_str("new").write_to(&dir.join("link.sh")).unwrap();
+            assert!(std::fs::symlink_metadata(dir.join("link.sh")).unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o755);
+        }
+        #[cfg(not(unix))]
+        Buffer::from_str("new").write_to(&real).unwrap();
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
+        let leftovers = std::fs::read_dir(&dir).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".tmp")).count();
+        assert_eq!(leftovers, 0);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

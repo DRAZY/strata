@@ -23,6 +23,8 @@ pub struct Document {
     pub disk_mtime: Option<SystemTime>,
     /// The file changed on disk while this tab had unsaved edits.
     pub conflict: bool,
+    /// The file was deleted or moved away outside Strata.
+    pub deleted: bool,
 }
 
 pub fn mtime(path: &Path) -> Option<SystemTime> {
@@ -47,6 +49,7 @@ impl Document {
             preview: false,
             restored_dirty: false,
             conflict: false,
+            deleted: false,
         }
     }
 
@@ -92,6 +95,7 @@ impl Document {
         self.editor.mark_saved();
         self.restored_dirty = false;
         self.conflict = false;
+        self.deleted = false;
         self.disk_mtime = mtime(&path);
         if self.path.as_ref() != Some(&path) {
             self.highlighter.detect(Some(&path), &self.editor.buffer.line_text(0));
@@ -106,7 +110,16 @@ impl Document {
     pub fn check_disk(&mut self) -> bool {
         let Some(path) = &self.path else { return false };
         let now = mtime(path);
-        if now.is_none() || now == self.disk_mtime {
+        if now.is_none() {
+            // Gone from disk: keep the text as unsaved so hot exit backs it up.
+            if self.disk_mtime.is_some() && !path.exists() {
+                self.deleted = true;
+                self.restored_dirty = true;
+                self.disk_mtime = None;
+            }
+            return false;
+        }
+        if now == self.disk_mtime {
             return false;
         }
         if self.is_dirty() {
@@ -134,6 +147,11 @@ impl Document {
         let b = &self.editor.buffer;
         let at = (b.line_start(line - 1) + col - 1).min(b.line_end(line - 1));
         self.editor.select_ranges(&[at..at], 0);
+    }
+
+    /// True if saving would overwrite changes made outside Strata.
+    pub fn changed_on_disk(&self) -> bool {
+        self.conflict || self.path.as_deref().and_then(mtime).is_some_and(|now| Some(now) != self.disk_mtime)
     }
 
     /// Swap in new text, keeping the cursor on (about) the same spot.
@@ -174,6 +192,13 @@ mod tests {
         doc.disk_mtime = Some(SystemTime::UNIX_EPOCH);
         assert!(!doc.check_disk(), "unsaved edits are kept");
         assert!(doc.conflict);
+        assert!(doc.changed_on_disk());
+
+        std::fs::remove_file(&path).unwrap();
+        doc.conflict = false;
+        doc.disk_mtime = Some(SystemTime::UNIX_EPOCH);
+        doc.check_disk();
+        assert!(doc.deleted && doc.is_dirty(), "a deleted file's text is kept as unsaved");
         std::fs::remove_dir_all(dir).ok();
     }
 

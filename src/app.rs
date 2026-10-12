@@ -6,7 +6,7 @@ use crate::devshot::DevShot;
 use crate::document::Document;
 use crate::find::{self, Query};
 use crate::palette::{self, Palette};
-use crate::session::{Session, Settings, TabState};
+use crate::session::{Session, SessionLock, Settings, TabState};
 use crate::sidebar::{self, Sidebar};
 use egui::{Color32, FontId, Key, Rect, Sense, Stroke, pos2, vec2};
 use std::path::PathBuf;
@@ -47,6 +47,9 @@ pub struct StrataApp {
     palette: Palette,
     /// Selections to put back if a palette preview (line, symbol) is cancelled.
     palette_restore: Option<(usize, Vec<std::ops::Range<usize>>, usize)>,
+    /// Held while this window owns the session; None means hot exit is off
+    /// for this window (another Strata has the session, or tests).
+    session_lock: Option<SessionLock>,
     /// Dev aid: STRATA_DEV_PALETTE="p:query" (or "cmd:query") opens a panel on the first frame.
     dev_palette: Option<String>,
 }
@@ -138,8 +141,15 @@ impl StrataApp {
             palette: Palette::new(EDITOR_COMMANDS),
             palette_restore: None,
             dev_palette: std::env::var("STRATA_DEV_PALETTE").ok(),
+            session_lock: None,
         };
-        if app.settings.hot_exit {
+        if let Some(dir) = app.config.clone() {
+            app.session_lock = SessionLock::acquire(&dir);
+            if app.session_lock.is_none() {
+                app.status = "Another Strata window owns the session: this one asks before closing unsaved tabs".into();
+            }
+        }
+        if app.hot_exit() {
             app.restore_session();
         }
         match path {
@@ -171,6 +181,10 @@ impl StrataApp {
             app.find.query.regex = std::env::var_os("STRATA_DEV_FIND_REGEX").is_some();
         }
         app
+    }
+
+    fn hot_exit(&self) -> bool {
+        self.settings.hot_exit && self.session_lock.is_some()
     }
 
     fn doc(&mut self) -> &mut Document {
@@ -269,6 +283,7 @@ impl StrataApp {
         if i >= self.docs.len() || !self.confirm_close(i) {
             return false;
         }
+        self.dragging_tab = None;
         let doc = self.docs.remove(i);
         if let Some(p) = doc.path {
             self.closed.retain(|c| c != &p);
@@ -301,6 +316,9 @@ impl StrataApp {
             _ => rfd::FileDialog::new().set_file_name(self.docs[i].name()).save_file(),
         };
         let Some(path) = target else { return false };
+        if !self.confirm_overwrite(i, &path) {
+            return false;
+        }
         match self.docs[i].write_to(path.clone()) {
             Ok(()) => {
                 self.status = format!("Saved {}", path.display());
@@ -317,12 +335,46 @@ impl StrataApp {
         }
     }
 
+    /// Saving would clobber outside changes or bytes that aren't UTF-8: ask first.
+    fn confirm_overwrite(&self, i: usize, path: &std::path::Path) -> bool {
+        let d = &self.docs[i];
+        let same_file = d.path.as_deref() == Some(path);
+        let mut reasons = Vec::new();
+        if same_file && d.changed_on_disk() {
+            reasons.push("It was changed by another program since you opened it; saving replaces those changes.");
+        }
+        if d.editor.buffer.lossy {
+            reasons.push("It isn't valid UTF-8; saving replaces the unreadable bytes with \u{FFFD}.");
+        }
+        if reasons.is_empty() {
+            return true;
+        }
+        let ok = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title("Overwrite file?")
+            .set_description(format!("{}\n\n{}", d.name(), reasons.join("\n\n")))
+            .set_buttons(rfd::MessageButtons::OkCancelCustom("Save Anyway".into(), "Cancel".into()))
+            .show();
+        matches!(ok, rfd::MessageDialogResult::Ok | rfd::MessageDialogResult::Yes) || ok == rfd::MessageDialogResult::Custom("Save Anyway".into())
+    }
+
     fn save_all(&mut self) {
+        let mut failed = Vec::new();
+        let mut saved = 0;
         for i in 0..self.docs.len() {
             if self.docs[i].is_dirty() && self.docs[i].path.is_some() {
-                self.save(i, false);
+                if self.save(i, false) {
+                    saved += 1;
+                } else {
+                    failed.push(self.docs[i].name());
+                }
             }
         }
+        self.status = if failed.is_empty() {
+            format!("Saved {saved} file{}", if saved == 1 { "" } else { "s" })
+        } else {
+            format!("Not saved: {}", failed.join(", "))
+        };
     }
 
     // ---- settings --------------------------------------------------------
@@ -370,19 +422,29 @@ impl StrataApp {
 
     fn restore_session(&mut self) {
         let Some(dir) = self.config.clone() else { return };
-        let Some(session) = Session::load(&dir) else { return };
+        let session = match Session::load(&dir) {
+            Ok(Some(s)) => s,
+            Ok(None) => return,
+            Err(e) => return self.set_aside_backups(&dir, &e),
+        };
         let backups = Session::backups(&dir);
+        let mut unreadable = Vec::new();
         for tab in &session.tabs {
             let doc = match (&tab.backup, &tab.path) {
                 (Some(name), path) => match std::fs::read(backups.join(name)) {
                     Ok(bytes) => {
                         let mut d = Document::from_buffer(path.clone(), Buffer::from_bytes(&bytes));
                         d.restored_dirty = true;
-                        // Whatever is on disk now is what a save would overwrite.
-                        d.disk_mtime = path.as_deref().and_then(crate::document::mtime);
+                        d.disk_mtime = tab.disk_mtime;
+                        // Edited while Strata was closed (a git pull, another editor)?
+                        d.conflict = tab.conflict || path.as_deref().and_then(crate::document::mtime).is_some_and(|now| Some(now) != tab.disk_mtime);
+                        d.deleted = path.as_ref().is_some_and(|p| !p.exists());
                         Some(d)
                     }
-                    Err(_) => None,
+                    Err(e) => {
+                        unreadable.push(format!("{name}: {e}"));
+                        None
+                    }
                 },
                 (None, Some(path)) if path.exists() => Document::open(path.clone()).ok(),
                 _ => None,
@@ -397,10 +459,27 @@ impl StrataApp {
             self.push_doc(doc);
         }
         self.active = session.active.min(self.docs.len().saturating_sub(1));
+        if !unreadable.is_empty() {
+            self.set_aside_backups(&dir, &unreadable.join("; "));
+        }
         if let Some(folder) = session.folder.filter(|f| f.is_dir()) {
             self.sidebar.open_folder(folder);
             self.sidebar.visible = session.sidebar_visible;
         }
+    }
+
+    /// The session couldn't be fully restored: keep every backup out of
+    /// reach of pruning and say where it went.
+    fn set_aside_backups(&mut self, dir: &std::path::Path, why: &str) {
+        self.status = match Session::quarantine_backups(dir) {
+            Ok(to) => format!("Couldn't restore the last session ({why}). Unsaved text was kept in {}", to.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => format!("Couldn't restore the last session ({why})"),
+            Err(e) => {
+                // Can't move them, so don't risk pruning them either.
+                self.session_lock = None;
+                format!("Couldn't restore the last session ({why}) or set its backups aside ({e}); session saving is off")
+            }
+        };
     }
 
     /// Changes whenever saving the session would write something different.
@@ -415,7 +494,7 @@ impl StrataApp {
     }
 
     fn save_session(&mut self) -> bool {
-        let Some(dir) = self.config.clone() else { return false };
+        let Some(dir) = self.config.clone().filter(|_| self.session_lock.is_some()) else { return false };
         let mut backups = Vec::new();
         let mut tabs = Vec::new();
         for (n, d) in self.docs.iter().enumerate() {
@@ -423,7 +502,7 @@ impl StrataApp {
                 continue;
             }
             let backup = d.is_dirty().then(|| {
-                let name = format!("{n}.txt");
+                let name = Session::backup_name(n);
                 backups.push((name.clone(), d.editor.buffer.slice(0..d.editor.buffer.len_chars())));
                 name
             });
@@ -432,6 +511,8 @@ impl StrataApp {
                 backup,
                 cursor: d.editor.primary().head,
                 syntax: Some(d.highlighter.syntax_name().to_owned()),
+                disk_mtime: d.disk_mtime,
+                conflict: d.conflict,
             });
         }
         let session = Session {
@@ -1051,6 +1132,14 @@ impl StrataApp {
                 pos.push_str(&format!("  ·  {selected} selected"));
             }
             ui.label(pos);
+            if d.deleted {
+                ui.separator();
+                ui.colored_label(Color32::from_rgb(0xe5, 0x9e, 0x40), "Deleted on disk (save to recreate)");
+            }
+            if d.editor.buffer.lossy {
+                ui.separator();
+                ui.colored_label(Color32::from_rgb(0xe5, 0x9e, 0x40), "Not UTF-8").on_hover_text("Some bytes couldn't be read as UTF-8 and show as \u{FFFD}. Saving would replace them.");
+            }
             if d.conflict {
                 ui.separator();
                 ui.colored_label(Color32::from_rgb(0xe5, 0x9e, 0x40), "Changed on disk");
@@ -1131,7 +1220,7 @@ impl eframe::App for StrataApp {
 
         if ctx.input(|i| i.viewport().close_requested()) {
             // Hot exit: unsaved work goes into the session instead of a prompt.
-            let saved = self.settings.hot_exit && self.save_session();
+            let saved = self.hot_exit() && self.save_session();
             if !saved {
                 for i in 0..self.docs.len() {
                     if !self.confirm_close(i) {
@@ -1143,7 +1232,7 @@ impl eframe::App for StrataApp {
         } else if now - self.last_session_save > 5.0 {
             // Also save as you go, so a crash loses at most a few seconds.
             self.last_session_save = now;
-            if self.settings.hot_exit && self.session_fingerprint() != self.session_key {
+            if self.hot_exit() && self.session_fingerprint() != self.session_key {
                 self.save_session();
             }
         }
@@ -1221,7 +1310,6 @@ impl eframe::App for StrataApp {
                         if let Some(rest) = d.path.as_ref().and_then(|p| p.strip_prefix(&from).ok()) {
                             let new = if rest.as_os_str().is_empty() { to.clone() } else { to.join(rest) };
                             d.highlighter.detect(Some(&new), &d.editor.buffer.line_text(0));
-                            d.disk_mtime = crate::document::mtime(&new);
                             d.path = Some(new);
                         }
                     }
@@ -1242,11 +1330,12 @@ impl eframe::App for StrataApp {
             Some(TabAction::Close(i)) => {
                 self.close_tab(i);
             }
-            Some(TabAction::Move(from, to)) => {
+            Some(TabAction::Move(from, to)) if from < self.docs.len() && to < self.docs.len() => {
                 let d = self.docs.remove(from);
                 self.docs.insert(to, d);
                 self.active = to;
             }
+            Some(TabAction::Move(..)) => self.dragging_tab = None,
             Some(TabAction::New) => self.push_doc(Document::untitled()),
             None => {}
         }
@@ -1455,6 +1544,7 @@ mod tests {
         app.push_doc(Document::untitled());
         app.doc().editor.insert_text("scratch");
         assert!(app.save_session());
+        drop(app); // releases the session lock
 
         let mut back = StrataApp::new(None, Some(config.clone()));
         assert_eq!(back.docs.len(), 2);
@@ -1479,6 +1569,52 @@ mod tests {
         app.doc().editor.select_ranges(&[0..0], 0);
         app.run_editor("toggle_comment");
         assert!(text(&app).starts_with('#'), "{}", text(&app));
+    }
+
+    #[test]
+    fn second_window_neither_restores_nor_saves_the_session() {
+        let config = temp_dir("lock");
+        let mut first = StrataApp::new(None, Some(config.clone()));
+        first.doc().editor.insert_text("mine");
+        assert!(first.save_session());
+        let mut second = StrataApp::new(None, Some(config.clone()));
+        assert!(second.docs[0].is_blank(), "didn't restore the first window's tabs");
+        second.doc().editor.insert_text("theirs");
+        assert!(!second.save_session());
+        drop((first, second));
+        let back = StrataApp::new(None, Some(config.clone()));
+        assert_eq!(text(&back), "mine");
+        std::fs::remove_dir_all(config).ok();
+    }
+
+    #[test]
+    fn broken_session_keeps_backups_and_restored_conflicts_are_flagged() {
+        let config = temp_dir("broken");
+        let file = config.join("a.txt");
+        std::fs::write(&file, "v1").unwrap();
+        let mut app = StrataApp::new(Some(file.clone()), Some(config.clone()));
+        app.doc().editor.insert_text("edit ");
+        assert!(app.save_session());
+        drop(app);
+        // Someone changes the file while Strata is closed.
+        std::fs::write(&file, "v2 from git pull").unwrap();
+        let session = std::fs::read_to_string(config.join("session.json")).unwrap();
+        let mut json: serde_json::Value = serde_json::from_str(&session).unwrap();
+        json["tabs"][0]["disk_mtime"] = serde_json::json!({"secs_since_epoch": 1, "nanos_since_epoch": 0});
+        std::fs::write(config.join("session.json"), json.to_string()).unwrap();
+        let app = StrataApp::new(None, Some(config.clone()));
+        assert!(app.docs[0].conflict, "outside change while closed is flagged");
+        drop(app);
+
+        std::fs::write(config.join("session.json"), "").unwrap();
+        let mut app = StrataApp::new(None, Some(config.clone()));
+        assert!(app.status.contains("Unsaved text was kept"), "{}", app.status);
+        app.doc().editor.insert_text("x");
+        app.save_session();
+        let kept = std::fs::read_dir(&config).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("backups.recovered")).unwrap();
+        let backup = std::fs::read_dir(kept.path()).unwrap().next().unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(backup.path()).unwrap(), "edit v1");
+        std::fs::remove_dir_all(config).ok();
     }
 
     #[test]

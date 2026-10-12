@@ -66,7 +66,7 @@ impl Settings {
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug)]
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
 #[serde(default)]
 pub struct Session {
     pub folder: Option<PathBuf>,
@@ -75,7 +75,7 @@ pub struct Session {
     pub tabs: Vec<TabState>,
 }
 
-#[derive(Serialize, Deserialize, Default, Debug)]
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
 #[serde(default)]
 pub struct TabState {
     pub path: Option<PathBuf>,
@@ -83,6 +83,11 @@ pub struct TabState {
     pub backup: Option<String>,
     pub cursor: usize,
     pub syntax: Option<String>,
+    /// The file's modification time when the tab last matched it, to spot
+    /// changes made while Strata was closed.
+    pub disk_mtime: Option<std::time::SystemTime>,
+    /// The file changed on disk while the tab had unsaved edits.
+    pub conflict: bool,
 }
 
 impl Session {
@@ -94,20 +99,45 @@ impl Session {
         dir.join("backups")
     }
 
-    pub fn load(dir: &Path) -> Option<Self> {
-        serde_json::from_str(&std::fs::read_to_string(Self::path(dir)).ok()?).ok()
+    /// `Ok(None)` when there is no session yet; `Err` when one exists but can't be read.
+    pub fn load(dir: &Path) -> Result<Option<Self>, String> {
+        match std::fs::read_to_string(Self::path(dir)) {
+            Ok(text) => serde_json::from_str(&text).map(Some).map_err(|e| format!("session.json: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("session.json: {e}")),
+        }
     }
 
-    /// Writes session.json last, so a crash mid-save keeps the old session intact.
+    /// Move every backup aside so no later save prunes text that couldn't be
+    /// restored. Returns the folder they went to.
+    pub fn quarantine_backups(dir: &Path) -> std::io::Result<PathBuf> {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let to = dir.join(format!("backups.recovered-{stamp}"));
+        std::fs::rename(Self::backups(dir), &to)?;
+        Ok(to)
+    }
+
+    /// A backup name never used before, so an old session.json can't point
+    /// at a file that now holds another tab's text.
+    pub fn backup_name(tab: usize) -> String {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        format!("{nanos}-{tab}.txt")
+    }
+
+    /// Every file is flushed to disk before session.json is replaced, and
+    /// stale backups are pruned only after that, so a crash at any point
+    /// leaves either the old or the new session intact.
     pub fn save(&self, dir: &Path, backups: &[(String, String)]) -> std::io::Result<()> {
         let bdir = Self::backups(dir);
         std::fs::create_dir_all(&bdir)?;
         for (name, text) in backups {
-            std::fs::write(bdir.join(name), text)?;
+            write_synced(&bdir.join(name), text)?;
         }
         let tmp = dir.join("session.json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(self)?)?;
+        write_synced(&tmp, &serde_json::to_string_pretty(self)?)?;
         std::fs::rename(&tmp, Self::path(dir))?;
+        #[cfg(unix)]
+        std::fs::File::open(dir)?.sync_all()?;
         // Drop backups no tab refers to any more.
         let keep: Vec<&str> = self.tabs.iter().filter_map(|t| t.backup.as_deref()).collect();
         for entry in std::fs::read_dir(&bdir)?.flatten() {
@@ -116,6 +146,26 @@ impl Session {
             }
         }
         Ok(())
+    }
+}
+
+fn write_synced(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()
+}
+
+/// Held for the app's lifetime: only one running Strata owns the session.
+pub struct SessionLock(#[allow(dead_code)] std::fs::File);
+
+impl SessionLock {
+    /// `None` if another Strata already holds it.
+    pub fn acquire(dir: &Path) -> Option<Self> {
+        std::fs::create_dir_all(dir).ok()?;
+        let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("session.lock")).ok()?;
+        f.try_lock().ok()?;
+        Some(Self(f))
     }
 }
 
@@ -138,11 +188,37 @@ mod tests {
         std::fs::create_dir_all(Session::backups(&dir)).unwrap();
         std::fs::write(Session::backups(&dir).join("old.txt"), "stale").unwrap();
         s.save(&dir, &[("1.txt".into(), "unsaved".into())]).unwrap();
-        let back = Session::load(&dir).unwrap();
+        let back = Session::load(&dir).unwrap().unwrap();
         assert_eq!(back.active, 1);
         assert_eq!(back.tabs[0].cursor, 5);
         assert_eq!(std::fs::read_to_string(Session::backups(&dir).join("1.txt")).unwrap(), "unsaved");
         assert!(!Session::backups(&dir).join("old.txt").exists());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn broken_session_is_an_error_and_backups_can_be_set_aside() {
+        let dir = std::env::temp_dir().join(format!("strata-session-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(Session::load(&dir), Ok(None));
+        std::fs::create_dir_all(Session::backups(&dir)).unwrap();
+        std::fs::write(Session::backups(&dir).join("1-0.txt"), "precious").unwrap();
+        std::fs::write(dir.join("session.json"), "").unwrap();
+        assert!(Session::load(&dir).is_err());
+        let moved = Session::quarantine_backups(&dir).unwrap();
+        assert_eq!(std::fs::read_to_string(moved.join("1-0.txt")).unwrap(), "precious");
+        assert_ne!(Session::backup_name(0), Session::backup_name(0));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn only_one_instance_holds_the_lock() {
+        let dir = std::env::temp_dir().join(format!("strata-lock-{}", std::process::id()));
+        let a = SessionLock::acquire(&dir);
+        assert!(a.is_some());
+        assert!(SessionLock::acquire(&dir).is_none());
+        drop(a);
+        assert!(SessionLock::acquire(&dir).is_some());
         std::fs::remove_dir_all(dir).ok();
     }
 
