@@ -2,6 +2,9 @@
 //! unit-testable. Every command applies to every selection, so multiple
 //! cursors only need UI to create them.
 
+// Some commands aren't bound to keys/menus yet; drop this once they are.
+#![allow(dead_code)]
+
 use crate::buffer::Buffer;
 use crate::find::{self, Query};
 use std::ops::Range;
@@ -76,6 +79,37 @@ pub struct Editor {
     pub tab_width: usize,
     /// Indent with `tab_width` spaces rather than a tab character.
     pub use_spaces: bool,
+    /// Sorted char positions; they move with edits.
+    bookmarks: Vec<usize>,
+    rng: Rng,
+}
+
+/// xorshift64*: tiny seedable PRNG for the shuffle commands.
+#[derive(Clone, Copy)]
+struct Rng(u64);
+
+impl Rng {
+    fn from_time() -> Self {
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+        Rng(t.map_or(0x9E37_79B9_7F4A_7C15, |d| d.as_nanos() as u64) | 1)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// Fisher-Yates.
+    fn shuffle<T>(&mut self, v: &mut [T]) {
+        for i in (1..v.len()).rev() {
+            let j = (self.next_u64() % (i as u64 + 1)) as usize;
+            v.swap(i, j);
+        }
+    }
 }
 
 /// A replacement: char range in the text before the edit, and its new text.
@@ -142,6 +176,65 @@ fn is_indent(c: char) -> bool {
     c == ' ' || c == '\t'
 }
 
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn title_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_word = false;
+    for c in s.chars() {
+        if c.is_alphanumeric() {
+            if in_word {
+                out.extend(c.to_lowercase());
+            } else {
+                out.extend(c.to_uppercase());
+            }
+            in_word = true;
+        } else {
+            // "don't" stays one word.
+            in_word = in_word && (c == '\'' || c == '\u{2019}');
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn swap_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_lowercase() {
+            out.extend(c.to_uppercase());
+        } else if c.is_uppercase() {
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Chars that may make up a line-comment (or quote/bullet) marker.
+fn is_comment_char(c: char) -> bool {
+    "/#-;*%!>|".contains(c)
+}
+
+/// The comment marker shared by every line (already stripped of indent),
+/// e.g. `//` or `#`; empty when there is none.
+fn common_comment_prefix<'a>(bodies: &[&'a str]) -> &'a str {
+    let marker = |b: &str| b.chars().take_while(|&c| is_comment_char(c) || is_indent(c)).count();
+    let first = bodies[0];
+    let mut n = marker(first);
+    for b in &bodies[1..] {
+        let m = marker(b);
+        n = first[..n].chars().zip(b[..m].chars()).take_while(|(x, y)| x == y).count();
+    }
+    first[..n].trim_end()
+}
+
+/// Chars scanned on each side of the cursor for word completions.
+const COMPLETION_SCAN: usize = 1_000_000;
+
 /// Map `pos` through sorted edits (old coordinates). At an insertion point,
 /// `after` puts it past the inserted text; inside a replaced range it lands
 /// at the range's start (or end of the new text with `after`).
@@ -198,6 +291,8 @@ impl Editor {
             next_whole_word: false,
             tab_width: 4,
             use_spaces: true,
+            bookmarks: Vec::new(),
+            rng: Rng::from_time(),
         }
     }
 
@@ -337,6 +432,26 @@ impl Editor {
         self.changed_from = Some(self.changed_from.map_or(line, |l| l.min(line)));
     }
 
+    /// Replace `remove` chars at `at` with `text`; bookmarks inside the
+    /// removed span collapse to its start, later ones shift.
+    fn splice(&mut self, at: usize, remove: usize, text: &str) {
+        self.note_change(at);
+        self.buffer.remove(at..at + remove);
+        self.buffer.insert(at, text);
+        if self.bookmarks.is_empty() {
+            return;
+        }
+        let n = text.chars().count();
+        for b in &mut self.bookmarks {
+            if *b >= at + remove && *b > at {
+                *b = *b + n - remove;
+            } else if *b > at {
+                *b = at;
+            }
+        }
+        self.bookmarks.dedup();
+    }
+
     // ---- the one edit primitive ------------------------------------------
 
     /// Apply one replacement per selection (same order as `self.sels`).
@@ -363,10 +478,8 @@ impl Editor {
             let at = (start as isize + delta) as usize;
             let n = text.chars().count();
             if end > start || n > 0 {
-                self.note_change(at);
                 let removed = self.buffer.slice(at..at + (end - start));
-                self.buffer.remove(at..at + (end - start));
-                self.buffer.insert(at, &text);
+                self.splice(at, end - start, &text);
                 changes.push(Change { at, removed, inserted: text });
             }
             let keep = match land {
@@ -413,9 +526,7 @@ impl Editor {
             if removed == text {
                 continue;
             }
-            self.note_change(at);
-            self.buffer.remove(at..at + (end - start));
-            self.buffer.insert(at, &text);
+            self.splice(at, end - start, &text);
             delta += text.chars().count() as isize - (end - start) as isize;
             changes.push(Change { at, removed, inserted: text });
         }
@@ -461,9 +572,7 @@ impl Editor {
     pub fn undo(&mut self) {
         let Some(t) = self.undo.pop() else { return };
         for c in t.changes.iter().rev() {
-            self.note_change(c.at);
-            self.buffer.remove(c.at..c.at + c.inserted.chars().count());
-            self.buffer.insert(c.at, &c.removed);
+            self.splice(c.at, c.inserted.chars().count(), &c.removed);
         }
         let head = t.before.first().map_or(0, |s| s.head);
         self.set_selections(t.before.clone(), head);
@@ -474,9 +583,7 @@ impl Editor {
     pub fn redo(&mut self) {
         let Some(t) = self.redo.pop() else { return };
         for c in &t.changes {
-            self.note_change(c.at);
-            self.buffer.remove(c.at..c.at + c.removed.chars().count());
-            self.buffer.insert(c.at, &c.inserted);
+            self.splice(c.at, c.removed.chars().count(), &c.inserted);
         }
         let head = t.after.first().map_or(0, |s| s.head);
         self.set_selections(t.after.clone(), head);
@@ -1108,7 +1215,7 @@ impl Editor {
         });
     }
 
-    fn transform_lines(&mut self, f: impl Fn(Vec<String>) -> Vec<String>) {
+    fn transform_lines(&mut self, mut f: impl FnMut(Vec<String>) -> Vec<String>) {
         let ending = self.buffer.line_ending().as_str();
         let (blocks, whole) = self.transform_blocks();
         let edits: Vec<Edit> = blocks
@@ -1562,6 +1669,592 @@ impl Editor {
         sels.push(Selection { anchor: pos, head: pos, goal: Some(goal) });
         self.set_selections(sels, pos);
         self.can_coalesce = false;
+    }
+
+    // ---- more text commands ------------------------------------------------
+
+    /// Paste, shifting the pasted lines so the first one takes the target
+    /// line's indentation (relative indentation inside the paste is kept).
+    pub fn paste_and_indent(&mut self, text: &str) {
+        let src = text.replace("\r\n", "\n");
+        let lines: Vec<&str> = src.split('\n').collect();
+        let blank = |l: &str| l.trim().is_empty();
+        let Some(first) = lines.iter().find(|l| !blank(l)) else {
+            return self.paste(text);
+        };
+        let ending = self.buffer.line_ending().as_str();
+        let base = self.indent_width(first);
+        let whole_lines = src.ends_with('\n');
+        let edits = self
+            .sels
+            .iter()
+            .map(|s| {
+                let line = self.buffer.line_of(s.start());
+                let ls = self.buffer.line_start(line);
+                let target = self.indent_width(&self.buffer.line_text(line));
+                let at_indent = self.buffer.slice(ls..s.start()).chars().all(is_indent);
+                let range = if !at_indent {
+                    s.range()
+                } else if whole_lines && s.is_empty() {
+                    ls..ls
+                } else {
+                    ls..s.end()
+                };
+                let out: Vec<String> = lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| {
+                        let body = l.trim_start_matches(is_indent);
+                        if blank(l) {
+                            String::new()
+                        } else if i == 0 && !at_indent {
+                            body.to_owned()
+                        } else {
+                            let w = (self.indent_width(l) + target).saturating_sub(base);
+                            self.indent_string(w, self.use_spaces) + body
+                        }
+                    })
+                    .collect();
+                (range, out.join(ending))
+            })
+            .collect();
+        self.apply(edits, None);
+    }
+
+    /// Delete to the end of the line; at the end, delete the line break.
+    pub fn delete_to_line_end(&mut self) {
+        let edits = self
+            .sels
+            .iter()
+            .map(|s| {
+                let end = self.buffer.line_end(self.buffer.line_of(s.head));
+                let range = if !s.is_empty() {
+                    s.range()
+                } else if s.head < end {
+                    s.head..end
+                } else {
+                    s.head..self.right(s.head)
+                };
+                (range, String::new())
+            })
+            .collect();
+        self.apply(edits, None);
+    }
+
+    /// Cursors: swap the chars around each (the last two at a line end) and
+    /// step right. Selections: each takes the next selection's text.
+    pub fn transpose(&mut self) {
+        if !self.all_empty() {
+            return self.permute_selections(|mut t| {
+                t.rotate_left(1);
+                t
+            });
+        }
+        let mut edits: Vec<Edit> = Vec::new();
+        let mut heads = Vec::with_capacity(self.sels.len());
+        for s in &self.sels {
+            let line = self.buffer.line_of(s.head);
+            let (ls, le) = (self.buffer.line_start(line), self.buffer.line_end(line));
+            let mid = if s.head >= le { le.saturating_sub(1) } else { s.head };
+            let r = mid.saturating_sub(1)..mid + 1;
+            if mid <= ls || edits.last().is_some_and(|(last, _)| last.end > r.start) {
+                heads.push(s.head);
+                continue;
+            }
+            let (a, b) = (self.buffer.char(mid - 1), self.buffer.char(mid));
+            heads.push(r.end);
+            edits.push((r, format!("{b}{a}")));
+        }
+        let sels: Vec<Selection> = heads.into_iter().map(Selection::cursor).collect();
+        let head = sels[self.primary].head;
+        self.apply_then(edits, None, sels, head);
+    }
+
+    pub fn title_case(&mut self) {
+        self.transform_selected(title_case);
+    }
+
+    pub fn swap_case(&mut self) {
+        self.transform_selected(swap_case);
+    }
+
+    /// Shuffle the selected lines (or the whole buffer for a lone cursor).
+    pub fn shuffle_lines(&mut self) {
+        let mut rng = self.rng;
+        self.transform_lines(|mut lines| {
+            rng.shuffle(&mut lines);
+            lines
+        });
+        self.rng = rng;
+    }
+
+    pub fn shuffle_selections(&mut self) {
+        let mut rng = self.rng;
+        self.permute_selections(|mut t| {
+            rng.shuffle(&mut t);
+            t
+        });
+        self.rng = rng;
+    }
+
+    pub fn sort_selections(&mut self) {
+        self.permute_selections(|mut t| {
+            t.sort();
+            t
+        });
+    }
+
+    pub fn reverse_selections(&mut self) {
+        self.permute_selections(|mut t| {
+            t.reverse();
+            t
+        });
+    }
+
+    /// Repeated selection texts become empty, keeping the first of each.
+    pub fn unique_selections(&mut self) {
+        self.permute_selections(|t| {
+            let mut seen = std::collections::HashSet::new();
+            t.into_iter().map(|x| if seen.insert(x.clone()) { x } else { String::new() }).collect()
+        });
+    }
+
+    /// Rearrange the selections' texts among themselves (needs two or more);
+    /// each selection then covers its new text.
+    fn permute_selections(&mut self, f: impl FnOnce(Vec<String>) -> Vec<String>) {
+        if self.sels.len() < 2 {
+            return;
+        }
+        let texts = self.sels.iter().map(|s| self.buffer.slice(s.range())).collect();
+        let edits: Vec<Edit> = self.sels.iter().zip(f(texts)).map(|(s, t)| (s.range(), t)).collect();
+        let sels: Vec<Selection> = self
+            .sels
+            .iter()
+            .zip(&edits)
+            .map(|(s, (r, t))| {
+                let a = map_pos(&edits, r.start, false);
+                span(a, a + t.chars().count(), s.head >= s.anchor)
+            })
+            .collect();
+        let head = sels[self.primary].head;
+        self.apply_then(edits, None, sels, head);
+    }
+
+    // ---- indentation -------------------------------------------------------
+
+    /// Display width of a line's leading whitespace.
+    fn indent_width(&self, line_text: &str) -> usize {
+        line_text.chars().take_while(|&c| is_indent(c)).fold(0, |col, c| self.advance_col(col, c))
+    }
+
+    /// Indentation `width` columns wide, as spaces or as tabs (plus spaces for the remainder).
+    fn indent_string(&self, width: usize, spaces: bool) -> String {
+        if spaces {
+            " ".repeat(width)
+        } else {
+            "\t".repeat(width / self.tab_width) + &" ".repeat(width % self.tab_width)
+        }
+    }
+
+    /// Re-indent leading whitespace with tabs or spaces: every line, or the
+    /// covered lines when something is selected. Also sets `use_spaces`.
+    pub fn convert_indentation(&mut self, to_spaces: bool) {
+        let lines: Vec<usize> =
+            if self.all_empty() { (0..self.buffer.len_lines()).collect() } else { self.covered_lines() };
+        let edits = lines
+            .into_iter()
+            .filter_map(|l| {
+                let old = self.indent_of(l);
+                let new = self.indent_string(self.indent_width(&old), to_spaces);
+                let start = self.buffer.line_start(l);
+                (new != old).then(|| (start..start + old.chars().count(), new))
+            })
+            .collect();
+        self.use_spaces = to_spaces;
+        self.apply_mapped(edits, None);
+    }
+
+    /// (indent with spaces?, width) from up to 1000 indented lines; None if
+    /// nothing is indented.
+    pub fn guess_indentation(&self) -> Option<(bool, usize)> {
+        let (mut tabs, mut spaces) = (0usize, 0usize);
+        let mut steps = [0usize; 9];
+        let mut prev: Option<usize> = Some(0);
+        for l in 0..self.buffer.len_lines().min(200_000) {
+            if tabs + spaces >= 1000 {
+                break;
+            }
+            let t = self.buffer.line_text(l);
+            if t.trim().is_empty() {
+                continue;
+            }
+            if t.starts_with('\t') {
+                tabs += 1;
+                prev = None;
+                continue;
+            }
+            let n = t.chars().take_while(|&c| c == ' ').count();
+            spaces += (n > 0) as usize;
+            if let Some(p) = prev
+                && matches!(n.saturating_sub(p), 2 | 3 | 4 | 8)
+            {
+                steps[n - p] += 1;
+            }
+            prev = Some(n);
+        }
+        if tabs + spaces == 0 {
+            return None;
+        }
+        if tabs > spaces {
+            return Some((false, self.tab_width));
+        }
+        // Most common step; ties go to the earlier (more usual) width.
+        let mut best = None;
+        for w in [4, 2, 8, 3] {
+            if steps[w] > 0 && best.is_none_or(|b: usize| steps[w] > steps[b]) {
+                best = Some(w);
+            }
+        }
+        Some((true, best.unwrap_or(self.tab_width)))
+    }
+
+    /// Indent each covered line like the previous non-blank line, one level
+    /// deeper after an opener (`{ ( [ :`), one shallower before a closer.
+    pub fn reindent(&mut self) {
+        let mut done: Vec<(usize, usize)> = Vec::new();
+        let mut edits = Vec::new();
+        for l in self.covered_lines() {
+            let text = self.buffer.line_text(l);
+            if text.trim().is_empty() {
+                continue;
+            }
+            let mut w = match (0..l).rev().find(|&p| !self.is_blank(p)) {
+                None => 0,
+                Some(p) => {
+                    let pt = self.buffer.line_text(p);
+                    let base = done.iter().rev().find(|(dl, _)| *dl == p).map_or_else(|| self.indent_width(&pt), |d| d.1);
+                    let opens = pt.trim_end().ends_with(['{', '(', '[', ':']);
+                    base + if opens { self.tab_width } else { 0 }
+                }
+            };
+            if text.trim_start().starts_with(['}', ')', ']']) {
+                w = w.saturating_sub(self.tab_width);
+            }
+            done.push((l, w));
+            let old = self.indent_of(l);
+            let new = self.indent_string(w, self.use_spaces);
+            if new != old {
+                let start = self.buffer.line_start(l);
+                edits.push((start..start + old.chars().count(), new));
+            }
+        }
+        self.apply_mapped(edits, None);
+    }
+
+    // ---- paragraphs ----------------------------------------------------------
+
+    fn is_blank(&self, line: usize) -> bool {
+        self.buffer.line_text(line).trim().is_empty()
+    }
+
+    /// The run of non-blank lines around `lines`; None if they are all blank.
+    fn paragraph_around(&self, lines: Range<usize>) -> Option<Range<usize>> {
+        if lines.clone().all(|l| self.is_blank(l)) {
+            return None;
+        }
+        let (mut a, mut b) = (lines.start, lines.end);
+        while a > 0 && !self.is_blank(a - 1) {
+            a -= 1;
+        }
+        while b < self.buffer.len_lines() && !self.is_blank(b) {
+            b += 1;
+        }
+        Some(a..b)
+    }
+
+    /// Reflow the paragraph(s) under each selection to `width` columns,
+    /// keeping the first line's indentation and a shared comment marker.
+    pub fn wrap_paragraph(&mut self, width: usize) {
+        let mut paras: Vec<Range<usize>> = Vec::new();
+        for s in &self.sels {
+            for l in self.sel_lines(s) {
+                if paras.last().is_some_and(|p| p.contains(&l)) {
+                    continue;
+                }
+                if let Some(p) = self.paragraph_around(l..l + 1) {
+                    paras.push(p);
+                }
+            }
+        }
+        let ending = self.buffer.line_ending().as_str();
+        let edits = paras
+            .into_iter()
+            .map(|p| {
+                let lines: Vec<String> = p.clone().map(|l| self.buffer.line_text(l)).collect();
+                let range = self.buffer.line_start(p.start)..self.buffer.line_end(p.end - 1);
+                (range, self.wrap_lines(&lines, width).join(ending))
+            })
+            .collect();
+        self.apply_mapped(edits, None);
+    }
+
+    fn wrap_lines(&self, lines: &[String], width: usize) -> Vec<String> {
+        let bodies: Vec<&str> = lines.iter().map(|l| l.trim_start_matches(is_indent)).collect();
+        let marker = common_comment_prefix(&bodies);
+        let indent = &lines[0][..lines[0].len() - bodies[0].len()];
+        // Keep the first line's spacing after the marker (usually one space).
+        let gap: String = bodies[0][marker.len()..].chars().take_while(|&c| is_indent(c)).collect();
+        let lead = if marker.is_empty() { indent.to_owned() } else { format!("{indent}{marker}{gap}") };
+        let lead_w = self.indent_width(indent) + marker.chars().count() + gap.chars().count();
+        let mut out = Vec::new();
+        let mut words: Vec<&str> = Vec::new();
+        let flush = |words: &mut Vec<&str>, out: &mut Vec<String>| {
+            let mut cur = String::new();
+            let mut cur_w = 0;
+            for w in words.drain(..) {
+                let n = w.chars().count();
+                if !cur.is_empty() && lead_w + cur_w + 1 + n > width {
+                    out.push(format!("{lead}{cur}"));
+                    cur.clear();
+                    cur_w = 0;
+                }
+                if !cur.is_empty() {
+                    cur.push(' ');
+                    cur_w += 1;
+                }
+                cur.push_str(w);
+                cur_w += n;
+            }
+            if !cur.is_empty() {
+                out.push(format!("{lead}{cur}"));
+            }
+        };
+        for b in &bodies {
+            let rest = &b[marker.len()..];
+            if rest.trim().is_empty() {
+                // A bare marker line (`//`) separates paragraphs in a comment.
+                flush(&mut words, &mut out);
+                out.push(format!("{indent}{marker}"));
+            } else {
+                words.extend(rest.split_whitespace());
+            }
+        }
+        flush(&mut words, &mut out);
+        out
+    }
+
+    // ---- selection commands ------------------------------------------------
+
+    /// Select the gaps between the selections (empty gaps dropped).
+    pub fn invert_selection(&mut self) {
+        let len = self.buffer.len_chars();
+        let mut gaps = Vec::new();
+        let mut from = 0;
+        let mut primary = 0;
+        for (i, s) in self.sels.iter().enumerate() {
+            if s.start() > from {
+                gaps.push(from..s.start());
+            }
+            if i == self.primary {
+                primary = gaps.len();
+            }
+            from = s.end();
+        }
+        if len > from {
+            gaps.push(from..len);
+        }
+        if gaps.is_empty() {
+            let h = self.primary().head;
+            self.click(h, false);
+        } else {
+            self.select_ranges(&gaps, primary);
+        }
+    }
+
+    /// Each bare cursor selects the word under it; selections stay.
+    pub fn expand_to_word(&mut self) {
+        self.map_selections(|e, s| {
+            if s.is_empty() {
+                let r = e.word_range_at(s.head);
+                span(r.start, r.end, true)
+            } else {
+                *s
+            }
+        });
+    }
+
+    /// Select the non-blank lines around each selection, trailing break included.
+    pub fn expand_to_paragraph(&mut self) {
+        self.map_selections(|e, s| match e.paragraph_around(e.sel_lines(s)) {
+            Some(p) => span(e.buffer.line_start(p.start), e.buffer.line_start(p.end), true),
+            None => *s,
+        });
+    }
+
+    /// Select the lines around each selection's first line indented at least
+    /// as deeply (blank lines inside are kept, at the edges dropped).
+    pub fn expand_to_indentation(&mut self) {
+        self.map_selections(|e, s| {
+            let line = e.buffer.line_of(s.start());
+            if e.is_blank(line) {
+                return *s;
+            }
+            let w = e.indent_width(&e.buffer.line_text(line));
+            let fits = |l: usize| e.is_blank(l) || e.indent_width(&e.buffer.line_text(l)) >= w;
+            let (mut a, mut b) = (line, line);
+            while a > 0 && fits(a - 1) {
+                a -= 1;
+            }
+            while b + 1 < e.buffer.len_lines() && fits(b + 1) {
+                b += 1;
+            }
+            while e.is_blank(a) {
+                a += 1;
+            }
+            while e.is_blank(b) {
+                b -= 1;
+            }
+            span(e.buffer.line_start(a), e.buffer.line_end(b), true)
+        });
+    }
+
+    /// Replace every selection with `f(selection)`, no text change.
+    fn map_selections(&mut self, f: impl Fn(&Self, &Selection) -> Selection) {
+        let sels: Vec<Selection> = self.sels.iter().map(|s| f(self, s)).collect();
+        let head = sels[self.primary].head;
+        self.set_selections(sels, head);
+        self.can_coalesce = false;
+    }
+
+    // ---- bookmarks ---------------------------------------------------------
+
+    pub fn bookmarks(&self) -> &[usize] {
+        &self.bookmarks
+    }
+
+    /// Per cursor line: drop its bookmarks, or bookmark the cursor if it has none.
+    pub fn toggle_bookmark(&mut self) {
+        let mut last_line = None;
+        let heads: Vec<usize> = self.sels.iter().map(|s| s.head).collect();
+        for h in heads {
+            let line = self.buffer.line_of(h);
+            if last_line == Some(line) {
+                continue;
+            }
+            last_line = Some(line);
+            let before = self.bookmarks.len();
+            let buffer = &self.buffer;
+            self.bookmarks.retain(|&b| buffer.line_of(b) != line);
+            if self.bookmarks.len() == before {
+                self.bookmarks.push(h);
+            }
+        }
+        self.bookmarks.sort_unstable();
+        self.bookmarks.dedup();
+    }
+
+    /// Jump to the next bookmark after the primary cursor, wrapping.
+    pub fn next_bookmark(&mut self) {
+        let h = self.primary().head;
+        if let Some(&b) = self.bookmarks.iter().find(|&&b| b > h).or(self.bookmarks.first()) {
+            self.click(b, false);
+        }
+    }
+
+    pub fn prev_bookmark(&mut self) {
+        let h = self.primary().head;
+        if let Some(&b) = self.bookmarks.iter().rev().find(|&&b| b < h).or(self.bookmarks.last()) {
+            self.click(b, false);
+        }
+    }
+
+    pub fn clear_bookmarks(&mut self) {
+        self.bookmarks.clear();
+    }
+
+    /// A cursor at every bookmark.
+    pub fn select_all_bookmarks(&mut self) {
+        let Some(&first) = self.bookmarks.first() else { return };
+        let sels = self.bookmarks.iter().map(|&b| Selection::cursor(b)).collect();
+        self.set_selections(sels, first);
+        self.can_coalesce = false;
+    }
+
+    // ---- word completion ---------------------------------------------------
+
+    /// Start and text of the identifier chars just left of the primary cursor.
+    pub fn word_prefix_at_cursor(&self) -> Option<(usize, String)> {
+        let h = self.primary().head;
+        let ls = self.buffer.line_start(self.buffer.line_of(h));
+        let mut a = h;
+        while a > ls && is_ident(self.buffer.char(a - 1)) {
+            a -= 1;
+        }
+        (a < h).then(|| (a, self.buffer.slice(a..h)))
+    }
+
+    /// Distinct identifiers near the cursor starting with its prefix (any
+    /// case): same-case matches first, then nearest first.
+    pub fn completions(&self, limit: usize) -> Vec<String> {
+        let Some((_, prefix)) = self.word_prefix_at_cursor() else { return Vec::new() };
+        let lower = prefix.to_lowercase();
+        let h = self.primary().head;
+        let lo = h.saturating_sub(COMPLETION_SCAN);
+        let hi = (h + COMPLETION_SCAN).min(self.buffer.len_chars());
+        let mut best: std::collections::HashMap<String, (bool, usize)> = std::collections::HashMap::new();
+        let mut word = String::new();
+        let mut start = 0;
+        for (i, c) in self.buffer.slice(lo..hi).chars().chain(std::iter::once(' ')).enumerate() {
+            if is_ident(c) {
+                if word.is_empty() {
+                    start = lo + i;
+                }
+                word.push(c);
+                continue;
+            }
+            if word.is_empty() {
+                continue;
+            }
+            let at_cursor = start <= h && h <= lo + i;
+            if !at_cursor
+                && word != prefix
+                && !word.starts_with(|c: char| c.is_ascii_digit())
+                && word.to_lowercase().starts_with(&lower)
+            {
+                let key = (!word.starts_with(&prefix), start.abs_diff(h));
+                match best.get_mut(&word) {
+                    Some(k) => *k = (*k).min(key),
+                    None => {
+                        best.insert(word.clone(), key);
+                    }
+                }
+            }
+            word.clear();
+        }
+        let mut found: Vec<(String, (bool, usize))> = best.into_iter().collect();
+        found.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        found.into_iter().take(limit).map(|(w, _)| w).collect()
+    }
+
+    /// Insert `word` at every cursor, replacing the cursor's prefix when it
+    /// matches the primary's (any case); selections are replaced.
+    pub fn complete(&mut self, word: &str) {
+        let prefix = self.word_prefix_at_cursor().map(|(_, p)| p.to_lowercase()).unwrap_or_default();
+        let n = prefix.chars().count();
+        let edits = self
+            .sels
+            .iter()
+            .map(|s| {
+                if !s.is_empty() {
+                    return (s.range(), word.to_owned());
+                }
+                let h = s.head;
+                let ls = self.buffer.line_start(self.buffer.line_of(h));
+                let own = n > 0 && h >= ls + n && self.buffer.slice(h - n..h).to_lowercase() == prefix;
+                (if own { h - n..h } else { h..h }, word.to_owned())
+            })
+            .collect();
+        self.apply(edits, None);
     }
 
     // ---- brackets --------------------------------------------------------
@@ -2270,5 +2963,264 @@ mod tests {
         e.insert_text("x");
         assert_eq!(e.take_changed_from(), Some(2));
         assert_eq!(e.take_changed_from(), None);
+    }
+
+    #[test]
+    fn paste_and_indent_shifts_to_target() {
+        let src = "fn f() {\n    x();\n}\n";
+        let mut e = ed(src);
+        e.click(13, false); // after "    " on the x() line
+        e.paste_and_indent("if a {\n  b();\n}");
+        assert_eq!(text(&e), "fn f() {\n    if a {\n      b();\n    }x();\n}\n");
+        assert_one_step(&mut e, src);
+        // Whole lines go above the cursor line, at its indentation.
+        let mut e = ed("\t\tz\r\n");
+        e.use_spaces = false;
+        e.click(2, false);
+        e.paste_and_indent("a\n    b\n");
+        assert_eq!(text(&e), "\t\ta\r\n\t\t\tb\r\n\t\tz\r\n");
+    }
+
+    #[test]
+    fn paste_and_indent_multi_cursor_inline() {
+        let mut e = ed("  a = \n    b = \n");
+        e.click(6, false);
+        e.add_cursor(15);
+        e.paste_and_indent("[\n    1,\n]");
+        assert_eq!(text(&e), "  a = [\n      1,\n  ]\n    b = [\n        1,\n    ]\n");
+        assert_one_step(&mut e, "  a = \n    b = \n");
+    }
+
+    #[test]
+    fn delete_to_line_end_then_break() {
+        let mut e = ed("abc\r\ndef\r\nxy");
+        e.click(1, false);
+        e.add_cursor(6);
+        e.delete_to_line_end();
+        assert_eq!(text(&e), "a\r\nd\r\nxy");
+        assert_one_step(&mut e, "abc\r\ndef\r\nxy");
+        e.click(1, false);
+        e.delete_to_line_end();
+        assert_eq!(text(&e), "ad\r\nxy", "at the end it joins the next line");
+    }
+
+    #[test]
+    fn transpose_chars_and_selections() {
+        let mut e = ed("abc\nxy\n");
+        e.click(1, false);
+        e.add_cursor(6); // end of "xy"
+        e.transpose();
+        assert_eq!(text(&e), "bac\nyx\n");
+        assert_eq!(ranges(&e), vec![2..2, 6..6]);
+        assert_one_step(&mut e, "abc\nxy\n");
+        let mut e = ed("one two three");
+        e.select_ranges(&[0..3, 4..7, 8..13], 0);
+        e.transpose();
+        assert_eq!(text(&e), "two three one");
+        assert_eq!(ranges(&e), vec![0..3, 4..9, 10..13]);
+        assert_one_step(&mut e, "one two three");
+    }
+
+    #[test]
+    fn title_and_swap_case() {
+        let mut e = ed("hello wORLD don't");
+        e.select_all();
+        e.title_case();
+        assert_eq!(text(&e), "Hello World Don't");
+        assert_one_step(&mut e, "hello wORLD don't");
+        let mut e = ed("aB cD");
+        e.click(0, false);
+        e.add_cursor(4);
+        e.swap_case();
+        assert_eq!(text(&e), "Ab Cd");
+        assert_one_step(&mut e, "aB cD");
+    }
+
+    #[test]
+    fn shuffle_lines_is_seeded_permutation() {
+        let src = "1\n2\n3\n4\n5\n6\n7\n8\n";
+        let run = |seed| {
+            let mut e = ed(src);
+            e.rng = Rng(seed);
+            e.shuffle_lines();
+            text(&e)
+        };
+        let a = run(42);
+        assert_eq!(a, run(42), "same seed, same order");
+        let mut lines: Vec<&str> = a.lines().collect();
+        lines.sort();
+        assert_eq!(lines.join("\n") + "\n", src);
+        assert_ne!(a, src);
+        let mut e = ed(src);
+        e.rng = Rng(42);
+        e.shuffle_lines();
+        assert_one_step(&mut e, src);
+    }
+
+    #[test]
+    fn permute_selection_texts() {
+        let src = "b, a, c, a";
+        let pick = |e: &mut Editor| e.select_ranges(&[0..1, 3..4, 6..7, 9..10], 0);
+        let mut e = ed(src);
+        pick(&mut e);
+        e.sort_selections();
+        assert_eq!(text(&e), "a, a, b, c");
+        assert_eq!(e.selections().len(), 4);
+        assert_one_step(&mut e, src);
+        let mut e = ed(src);
+        pick(&mut e);
+        e.reverse_selections();
+        assert_eq!(text(&e), "a, c, a, b");
+        let mut e = ed(src);
+        pick(&mut e);
+        e.unique_selections();
+        assert_eq!(text(&e), "b, a, c, ");
+        assert_eq!(ranges(&e), vec![0..1, 3..4, 6..7, 9..9]);
+        let mut e = ed(src);
+        pick(&mut e);
+        e.rng = Rng(7);
+        e.shuffle_selections();
+        let mut got: Vec<char> = text(&e).chars().filter(|c| c.is_alphabetic()).collect();
+        got.sort();
+        assert_eq!(got, vec!['a', 'a', 'b', 'c']);
+    }
+
+    #[test]
+    fn invert_selection_selects_gaps() {
+        let mut e = ed("abcdef");
+        e.select_ranges(&[0..1, 3..4], 1);
+        e.invert_selection();
+        assert_eq!(ranges(&e), vec![1..3, 4..6]);
+        assert_eq!(e.primary().range(), 4..6);
+        e.select_all();
+        e.invert_selection();
+        assert_eq!(ranges(&e), vec![6..6], "nothing left: a cursor");
+    }
+
+    #[test]
+    fn expand_to_word_paragraph_indentation() {
+        let mut e = ed("foo bar\nbaz\n\nqux\n");
+        e.click(5, false);
+        e.add_cursor(14);
+        e.expand_to_word();
+        assert_eq!(ranges(&e), vec![4..7, 13..16]);
+        e.click(9, false);
+        e.expand_to_paragraph();
+        assert_eq!(ranges(&e), vec![0..12]);
+        let src = "fn f() {\n    a;\n\n    if x {\n        b;\n    }\n}\n";
+        let mut e = ed(src);
+        e.click(24, false); // in "if x {"
+        e.expand_to_indentation();
+        assert_eq!(e.buffer.slice(e.primary().range()), "    a;\n\n    if x {\n        b;\n    }");
+    }
+
+    #[test]
+    fn wrap_paragraph_keeps_indent_and_comment_marker() {
+        let src = "  // one two three four\n  // five\n\nsix seven eight\n";
+        let mut e = ed(src);
+        e.click(5, false);
+        e.wrap_paragraph(14);
+        assert_eq!(text(&e), "  // one two\n  // three\n  // four five\n\nsix seven eight\n");
+        assert_one_step(&mut e, src);
+        let mut e = ed("a b c d\r\n\r\ne f g h");
+        e.click(0, false);
+        e.add_cursor(12);
+        e.wrap_paragraph(3);
+        assert_eq!(text(&e), "a b\r\nc d\r\n\r\ne f\r\ng h");
+    }
+
+    #[test]
+    fn convert_indentation_both_ways() {
+        let src = "\tx\n\t  y\n        z\n";
+        let mut e = ed(src);
+        e.convert_indentation(true);
+        assert_eq!(text(&e), "    x\n      y\n        z\n");
+        assert!(e.use_spaces);
+        assert_one_step(&mut e, src);
+        e.convert_indentation(false);
+        assert_eq!(text(&e), "\tx\n\t  y\n\t\tz\n");
+        let mut e = ed("\ta\n\tb\n");
+        sel(&mut e, 4, 5);
+        e.convert_indentation(true);
+        assert_eq!(text(&e), "\ta\n    b\n", "only the selected line");
+    }
+
+    #[test]
+    fn guess_indentation_from_text() {
+        assert_eq!(ed("a\nb\n").guess_indentation(), None);
+        assert_eq!(ed("a {\n\tb\n\t\tc\n").guess_indentation(), Some((false, 4)));
+        assert_eq!(ed("a\n  b\n    c\n  d\n").guess_indentation(), Some((true, 2)));
+        assert_eq!(ed("a\n    b\n     * c\n    d\n").guess_indentation(), Some((true, 4)));
+    }
+
+    #[test]
+    fn reindent_follows_previous_line() {
+        let src = "fn f() {\nx;\n      y;\n}\n";
+        let mut e = ed(src);
+        e.select_all();
+        e.reindent();
+        assert_eq!(text(&e), "fn f() {\n    x;\n    y;\n}\n");
+        assert_one_step(&mut e, src);
+        let mut e = ed("if a:\nb\nc\n");
+        e.click(6, false);
+        e.add_cursor(8);
+        e.reindent();
+        assert_eq!(text(&e), "if a:\n    b\n    c\n");
+    }
+
+    #[test]
+    fn bookmarks_toggle_jump_and_follow_edits() {
+        let mut e = ed("aa\nbb\ncc\ndd\n");
+        e.click(4, false);
+        e.add_cursor(10);
+        e.toggle_bookmark();
+        assert_eq!(e.bookmarks(), &[4, 10]);
+        e.click(0, false);
+        e.next_bookmark();
+        assert_eq!(e.primary().head, 4);
+        e.next_bookmark();
+        e.next_bookmark();
+        assert_eq!(e.primary().head, 4, "wraps");
+        e.prev_bookmark();
+        assert_eq!(e.primary().head, 10, "wraps back");
+        // Edits move them; deleting a span collapses to its start.
+        e.click(0, false);
+        e.insert_text("xx");
+        assert_eq!(e.bookmarks(), &[6, 12]);
+        e.undo();
+        assert_eq!(e.bookmarks(), &[4, 10]);
+        sel(&mut e, 3, 11);
+        e.backspace(false);
+        assert_eq!(e.bookmarks(), &[3]);
+        e.undo();
+        e.select_all_bookmarks();
+        assert_eq!(ranges(&e), vec![3..3]);
+        e.click(3, false);
+        e.toggle_bookmark();
+        assert!(e.bookmarks().is_empty(), "toggled off by line");
+        e.toggle_bookmark();
+        e.clear_bookmarks();
+        assert!(e.bookmarks().is_empty());
+    }
+
+    #[test]
+    fn word_completion() {
+        let mut e = ed("foobar Football fooBaz foo\nfo");
+        e.click(29, false);
+        assert_eq!(e.word_prefix_at_cursor(), Some((27, "fo".into())));
+        assert_eq!(e.completions(10), vec!["foo", "fooBaz", "foobar", "Football"]);
+        assert_eq!(e.completions(1), vec!["foo"]);
+        let mut e = ed("x fo\nFo");
+        e.click(1, false);
+        e.add_cursor(4);
+        e.add_cursor(7); // primary: prefix "Fo"
+        e.complete("foo");
+        assert_eq!(text(&e), "xfoo foo\nfoo", "matching prefixes replaced, else inserted");
+        assert_eq!(ranges(&e), vec![4..4, 8..8, 12..12]);
+        assert_one_step(&mut e, "x fo\nFo");
+        let mut e = ed("x  ");
+        e.click(2, false);
+        assert_eq!(e.word_prefix_at_cursor(), None);
+        assert!(e.completions(5).is_empty());
     }
 }
