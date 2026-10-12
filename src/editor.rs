@@ -888,13 +888,11 @@ impl Editor {
     }
 
     /// Edit ▸ Text ▸ Delete Word Forward.
-    #[allow(dead_code)] // wired by app.rs
     pub fn delete_word_forward(&mut self) {
         self.delete_forward(true);
     }
 
     /// Edit ▸ Text ▸ Delete Word Backward.
-    #[allow(dead_code)] // wired by app.rs
     pub fn delete_word_backward(&mut self) {
         self.backspace(true);
     }
@@ -1972,7 +1970,6 @@ impl Editor {
     }
 
     /// Sort the selections' texts ignoring case (ties keep their order).
-    #[allow(dead_code)] // wired by app.rs
     pub fn sort_selections_case_insensitive(&mut self) {
         self.permute_selections(|mut t| {
             t.sort_by_cached_key(|x| x.to_lowercase());
@@ -2358,19 +2355,16 @@ impl Editor {
 
     // ---- mark (Edit ▸ Mark) ------------------------------------------------
 
-    #[allow(dead_code)] // wired by app.rs
     pub fn has_mark(&self) -> bool {
         !self.marks.is_empty()
     }
 
     /// Set a mark at each cursor, replacing the old marks.
-    #[allow(dead_code)] // wired by app.rs
     pub fn set_mark(&mut self) {
         self.marks = self.sels.iter().map(|s| s.head).collect();
         self.mark_primary = self.primary;
     }
 
-    #[allow(dead_code)] // wired by app.rs
     pub fn clear_mark(&mut self) {
         self.marks.clear();
         self.mark_primary = 0;
@@ -2385,7 +2379,6 @@ impl Editor {
     }
 
     /// Each selection runs from its mark to its head.
-    #[allow(dead_code)] // wired by app.rs
     pub fn select_to_mark(&mut self) {
         if self.marks.is_empty() {
             return;
@@ -2400,7 +2393,6 @@ impl Editor {
 
     /// Delete from each cursor to its mark as one step; returns the deleted
     /// text (pieces joined by line breaks) for the yank buffer.
-    #[allow(dead_code)] // wired by app.rs
     pub fn delete_to_mark(&mut self) -> String {
         if self.marks.is_empty() {
             return String::new();
@@ -2434,7 +2426,6 @@ impl Editor {
     }
 
     /// Cursors jump to their marks; the marks move to where the cursors were.
-    #[allow(dead_code)] // wired by app.rs
     pub fn swap_with_mark(&mut self) {
         if self.marks.is_empty() {
             return;
@@ -2457,7 +2448,6 @@ impl Editor {
     }
 
     /// Step back one selection change if that came last, else undo an edit.
-    #[allow(dead_code)] // wired by app.rs
     pub fn soft_undo(&mut self) {
         let state = self.text_state();
         if self.sel_past.last().is_some_and(|s| s.state == state)
@@ -2476,7 +2466,6 @@ impl Editor {
     }
 
     /// Redo what `soft_undo` stepped back over, selection changes and edits in order.
-    #[allow(dead_code)] // wired by app.rs
     pub fn soft_redo(&mut self) {
         let state = self.text_state();
         if self.sel_future.last().is_some_and(|s| s.state == state)
@@ -2495,24 +2484,20 @@ impl Editor {
 
     // ---- case conversion ------------------------------------------------------
 
-    #[allow(dead_code)] // wired by app.rs
     pub fn lower_camel_case(&mut self) {
         self.convert_case(|w| {
             w.iter().enumerate().map(|(i, w)| if i == 0 { w.to_lowercase() } else { capitalize(w) }).collect()
         });
     }
 
-    #[allow(dead_code)] // wired by app.rs
     pub fn upper_camel_case(&mut self) {
         self.convert_case(|w| w.iter().map(|w| capitalize(w)).collect());
     }
 
-    #[allow(dead_code)] // wired by app.rs
     pub fn snake_case(&mut self) {
         self.convert_case(|w| w.iter().map(|w| w.to_lowercase()).collect::<Vec<_>>().join("_"));
     }
 
-    #[allow(dead_code)] // wired by app.rs
     pub fn kebab_case(&mut self) {
         self.convert_case(|w| w.iter().map(|w| w.to_lowercase()).collect::<Vec<_>>().join("-"));
     }
@@ -2658,7 +2643,6 @@ impl Editor {
     /// Grow each selection to the next larger unit: word, inside the nearest
     /// quotes/brackets, including them, whole lines, the indentation block
     /// (then with its header line), the whole buffer.
-    #[allow(dead_code)] // wired by app.rs
     pub fn expand_selection(&mut self) {
         self.map_selections(|e, s| {
             let r = s.range();
@@ -2684,7 +2668,6 @@ impl Editor {
     }
 
     /// Like `expand_to_line`, but repeating adds the line above.
-    #[allow(dead_code)] // wired by app.rs
     pub fn expand_to_line_upward(&mut self) {
         self.map_selections(|e, s| {
             let lines = e.sel_lines(s);
@@ -2699,7 +2682,6 @@ impl Editor {
 
     /// Select the contents of the innermost enclosing `{}` or indentation
     /// block; again to include the braces (or the block's header line).
-    #[allow(dead_code)] // wired by app.rs
     pub fn expand_to_block(&mut self) {
         self.map_selections(|e, s| {
             let r = s.range();

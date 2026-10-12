@@ -84,6 +84,8 @@ pub struct StrataApp {
     recent_projects: Vec<PathBuf>,
     project_path: Option<PathBuf>,
     licenses_open: bool,
+    /// Text removed by Delete to Mark, for Yank.
+    yank: String,
     /// Encoding chosen in the status bar: (reopen?, encoding), applied after drawing.
     pending_encoding: Option<(bool, crate::encoding::Encoding)>,
     /// Input synthesized by menu items (copy, paste, undo…) for the next frame.
@@ -149,6 +151,7 @@ impl StrataApp {
             recent_projects: Vec::new(),
             project_path: None,
             licenses_open: false,
+            yank: String::new(),
         };
         app.build = crate::build::Build::new(app.config.clone());
         if let Some(dir) = app.config.clone() {
@@ -1016,8 +1019,32 @@ impl StrataApp {
                 (_, Some((open, close))) => e.toggle_block_comment(open, close),
                 _ => self.status = format!("No block comment syntax for {}", d.highlighter.syntax_name()),
             },
-            "delete_word_forward" => e.delete_forward(true),
-            "delete_word_backward" => e.backspace(true),
+            "delete_word_forward" => e.delete_word_forward(),
+            "delete_word_backward" => e.delete_word_backward(),
+            "lower_camel" => e.lower_camel_case(),
+            "upper_camel" => e.upper_camel_case(),
+            "snake" => e.snake_case(),
+            "kebab" => e.kebab_case(),
+            "sel_sort_ci" => e.sort_selections_case_insensitive(),
+            "expand_selection" => e.expand_selection(),
+            "expand_line_up" => e.expand_to_line_upward(),
+            "expand_block" => e.expand_to_block(),
+            "set_mark" => e.set_mark(),
+            "select_to_mark" => e.select_to_mark(),
+            "delete_to_mark" => {
+                let cut = e.delete_to_mark();
+                if !cut.is_empty() {
+                    self.yank = cut;
+                }
+            }
+            "swap_mark" => e.swap_with_mark(),
+            "clear_mark" => e.clear_mark(),
+            "yank" => {
+                let text = self.yank.clone();
+                e.insert_text(&text);
+            }
+            "soft_undo" => e.soft_undo(),
+            "soft_redo" => e.soft_redo(),
             "paste_and_indent" => {
                 if let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
                     e.paste_and_indent(&text);
