@@ -3,7 +3,9 @@
 //! cursors only need UI to create them.
 
 use crate::buffer::Buffer;
+use crate::find::{self, Query};
 use std::ops::Range;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Selection {
@@ -66,7 +68,20 @@ pub struct Editor {
     saved_id: u64,
     can_coalesce: bool,
     changed_from: Option<usize>,
+    /// Bumped on every text change; keys caches like search results.
+    version: u64,
+    snapshot: Option<(u64, Arc<String>)>,
+    /// Cmd+D started from a bare cursor, so it matches whole words only.
+    next_whole_word: bool,
     pub tab_width: usize,
+}
+
+/// Where selections land after an edit.
+enum Land {
+    /// A cursor after each inserted text (one edit per selection).
+    EachEnd,
+    /// One cursor after the first edit.
+    FirstEnd,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -98,6 +113,9 @@ impl Editor {
             saved_id: 0,
             can_coalesce: false,
             changed_from: Some(0),
+            version: 0,
+            snapshot: None,
+            next_whole_word: false,
             tab_width: 4,
         }
     }
@@ -114,6 +132,22 @@ impl Editor {
 
     fn current_id(&self) -> u64 {
         self.undo.last().map_or(0, |t| t.id)
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Whole text as one string, cached until the next edit (for regex search).
+    pub fn text_snapshot(&mut self) -> Arc<String> {
+        if let Some((v, s)) = &self.snapshot {
+            if *v == self.version {
+                return s.clone();
+            }
+        }
+        let s = Arc::new(self.buffer.slice(0..self.buffer.len_chars()));
+        self.snapshot = Some((self.version, s.clone()));
+        s
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -178,6 +212,7 @@ impl Editor {
     // ---- selection bookkeeping -----------------------------------------
 
     fn set_selections(&mut self, sels: Vec<Selection>, primary_head: usize) {
+        self.next_whole_word = false;
         self.sels = sels;
         self.normalize(primary_head);
     }
@@ -216,6 +251,7 @@ impl Editor {
     }
 
     fn note_change(&mut self, pos: usize) {
+        self.version += 1;
         let line = self.buffer.line_of(pos);
         self.changed_from = Some(self.changed_from.map_or(line, |l| l.min(line)));
     }
@@ -226,6 +262,11 @@ impl Editor {
     /// Each selection collapses to the end of its inserted text.
     fn apply(&mut self, edits: Vec<(Range<usize>, String)>, kind: Option<EditKind>) {
         debug_assert_eq!(edits.len(), self.sels.len());
+        self.apply_landing(edits, kind, Land::EachEnd);
+    }
+
+    /// Apply sorted, non-overlapping replacements as one undo step.
+    fn apply_landing(&mut self, edits: Vec<(Range<usize>, String)>, kind: Option<EditKind>, land: Land) {
         let before = self.sels.clone();
         let primary_idx = self.primary;
         let mut delta: isize = 0;
@@ -247,13 +288,23 @@ impl Editor {
                 self.buffer.insert(at, &text);
                 changes.push(Change { at, removed, inserted: text });
             }
-            new_sels.push(Selection::cursor(at + n));
-            if i == primary_idx {
+            let keep = match land {
+                Land::EachEnd => true,
+                Land::FirstEnd => i == 0,
+            };
+            if keep {
+                new_sels.push(Selection::cursor(at + n));
+            }
+            if i == primary_idx || (i == 0 && matches!(land, Land::FirstEnd)) {
                 primary_head = at + n;
             }
             delta += n as isize - (end - start) as isize;
         }
 
+        if new_sels.is_empty() {
+            new_sels = self.sels.clone();
+            primary_head = self.primary().head;
+        }
         self.set_selections(new_sels, primary_head);
         if changes.is_empty() {
             return;
@@ -617,6 +668,77 @@ impl Editor {
         self.can_coalesce = false;
     }
 
+    // ---- find / Cmd+D -------------------------------------------------
+
+    /// Replace the selections with `ranges`; `primary` indexes into them.
+    pub fn select_ranges(&mut self, ranges: &[Range<usize>], primary: usize) {
+        if ranges.is_empty() {
+            return;
+        }
+        let sels = ranges.iter().map(|r| Selection { anchor: r.start, head: r.end, goal: None }).collect();
+        self.set_selections(sels, ranges[primary.min(ranges.len() - 1)].end);
+        self.can_coalesce = false;
+    }
+
+    /// Replace several ranges (sorted, non-overlapping) as one undo step.
+    pub fn replace_ranges(&mut self, edits: Vec<(Range<usize>, String)>) {
+        if !edits.is_empty() {
+            self.apply_landing(edits, None, Land::FirstEnd);
+        }
+    }
+
+    /// Cmd+D. A bare cursor expands to its word; otherwise the next
+    /// occurrence of the primary selection is added (wrapping at the end).
+    pub fn select_next_occurrence(&mut self) {
+        if self.sels.iter().all(Selection::is_empty) {
+            let ranges: Vec<_> = self.sels.iter().map(|s| self.word_range_at(s.head)).collect();
+            let primary = self.primary;
+            self.select_ranges(&ranges, primary);
+            self.next_whole_word = true;
+            return;
+        }
+        let whole_word = self.next_whole_word;
+        let p = self.primary();
+        let needle = self.buffer.slice(p.range());
+        let Ok(re) = Query::literal(&needle, whole_word).build() else { return };
+        let text = self.text_snapshot();
+        let from = self.buffer.char_to_byte(p.end());
+        let taken = |start: usize, sels: &[Selection]| sels.iter().any(|s| s.start() == start);
+        let found = re
+            .find_iter(&text[from..])
+            .map(|m| (m.start() + from, m.end() + from))
+            .chain(re.find_iter(&text[..from]).map(|m| (m.start(), m.end())))
+            .map(|(a, b)| (self.buffer.byte_to_char(a), self.buffer.byte_to_char(b)))
+            .find(|&(a, b)| b > a && !taken(a, &self.sels));
+        if let Some((a, b)) = found {
+            let mut sels = self.sels.clone();
+            sels.push(Selection { anchor: a, head: b, goal: None });
+            self.set_selections(sels, b);
+        }
+        self.next_whole_word = whole_word;
+        self.can_coalesce = false;
+    }
+
+    /// Ctrl+Cmd+G / Alt+F3: every occurrence of the primary selection.
+    pub fn select_all_occurrences(&mut self) {
+        let mut whole_word = self.next_whole_word;
+        if self.primary().is_empty() {
+            let r = self.word_range_at(self.primary().head);
+            self.select_ranges(&[r], 0);
+            whole_word = true;
+        }
+        let p = self.primary();
+        if p.is_empty() {
+            return;
+        }
+        let Ok(re) = Query::literal(&self.buffer.slice(p.range()), whole_word).build() else { return };
+        let text = self.text_snapshot();
+        let (ranges, _) = find::find_all(&re, &text, find::MATCH_LIMIT);
+        let primary = ranges.iter().position(|r| r.start == p.start()).unwrap_or(0);
+        self.select_ranges(&ranges, primary);
+        self.next_whole_word = whole_word;
+    }
+
     /// Escape: drop extra cursors, keeping the primary one.
     pub fn collapse_to_primary(&mut self) {
         let p = self.primary();
@@ -648,12 +770,27 @@ impl Editor {
     }
 
     pub fn select_word_at(&mut self, pos: usize) {
+        let r = self.word_range_at(pos);
+        self.set_selections(vec![Selection { anchor: r.start, head: r.end, goal: None }], r.end);
+    }
+
+    /// The run of same-class characters at `pos` (prefers the char after it).
+    fn word_range_at(&self, pos: usize) -> Range<usize> {
         let line = self.buffer.line_of(pos);
         let (start, end) = (self.buffer.line_start(line), self.buffer.line_end(line));
         let probe = if pos < end { pos } else if pos > start { pos - 1 } else { pos };
         if probe >= end {
-            return self.click(pos, false);
+            return pos..pos;
         }
+        // Next to a word, prefer it over adjacent punctuation/space.
+        let probe = if class(self.buffer.char(probe)) != CharClass::Word
+            && probe > start
+            && class(self.buffer.char(probe - 1)) == CharClass::Word
+        {
+            probe - 1
+        } else {
+            probe
+        };
         let c = class(self.buffer.char(probe));
         let mut a = probe;
         while a > start && class(self.buffer.char(a - 1)) == c {
@@ -663,7 +800,7 @@ impl Editor {
         while b < end && class(self.buffer.char(b)) == c {
             b += 1;
         }
-        self.set_selections(vec![Selection { anchor: a, head: b, goal: None }], b);
+        a..b
     }
 }
 
@@ -788,6 +925,58 @@ mod tests {
         e.click(5, false);
         assert_eq!(e.cut(), "two\n");
         assert_eq!(text(&e), "one\nthree");
+    }
+
+    #[test]
+    fn cmd_d_expands_then_adds_whole_word_occurrences() {
+        let mut e = ed("foo food foo\nfoo");
+        e.click(1, false);
+        e.select_next_occurrence();
+        assert_eq!(e.primary().range(), 0..3);
+        e.select_next_occurrence(); // skips "food"
+        assert_eq!(e.primary().range(), 9..12);
+        e.select_next_occurrence();
+        e.select_next_occurrence(); // wraps; nothing new left
+        assert_eq!(e.selections().len(), 3);
+        e.insert_text("bar");
+        assert_eq!(text(&e), "bar food bar\nbar");
+        e.undo();
+        assert_eq!(text(&e), "foo food foo\nfoo");
+    }
+
+    #[test]
+    fn cmd_d_on_manual_selection_matches_substrings() {
+        let mut e = ed("foo food");
+        e.click(0, false);
+        e.move_right(false, true);
+        e.move_right(false, true);
+        e.move_right(false, true);
+        e.select_next_occurrence();
+        assert_eq!(e.selections().len(), 2);
+        assert_eq!(e.primary().range(), 4..7);
+    }
+
+    #[test]
+    fn select_all_occurrences_and_replace_ranges() {
+        let mut e = ed("a x a x a");
+        e.click(0, false);
+        e.select_all_occurrences();
+        assert_eq!(e.selections().len(), 3);
+        e.replace_ranges(vec![(2..3, "yy".into()), (6..7, "yy".into())]);
+        assert_eq!(text(&e), "a yy a yy a");
+        assert_eq!(e.selections().len(), 1);
+        e.undo();
+        assert_eq!(text(&e), "a x a x a");
+    }
+
+    #[test]
+    fn snapshot_tracks_edits() {
+        let mut e = ed("abc");
+        let v = e.version();
+        assert_eq!(*e.text_snapshot(), "abc");
+        e.insert_text("z");
+        assert!(e.version() > v);
+        assert_eq!(*e.text_snapshot(), "zabc");
     }
 
     #[test]

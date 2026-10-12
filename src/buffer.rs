@@ -64,6 +64,14 @@ impl Buffer {
         self.rope.char(idx)
     }
 
+    pub fn char_to_byte(&self, idx: usize) -> usize {
+        self.rope.char_to_byte(idx)
+    }
+
+    pub fn byte_to_char(&self, idx: usize) -> usize {
+        self.rope.byte_to_char(idx)
+    }
+
     pub fn line_of(&self, idx: usize) -> usize {
         self.rope.char_to_line(idx.min(self.len_chars()))
     }

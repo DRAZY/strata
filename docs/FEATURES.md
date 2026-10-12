@@ -6,10 +6,10 @@ Reference point: Sublime Text 4 (build 4215), observed behavior only.
 - [x] Rope buffer, open/save, line-ending detection (UTF-16 still todo)
 - [x] GPU text rendering, smooth scrolling, line numbers
 - [x] Undo/redo (soft-undo of cursor moves still todo)
-- [ ] Find / replace with regex, incremental highlight
+- [x] Find / replace with regex, incremental highlight
 
 ## M1 — The signature features
-- [~] Multiple cursors: Cmd/Ctrl+click done; Cmd+D, column select todo
+- [x] Multiple cursors: Cmd/Ctrl+click, Cmd+D, select all occurrences (column select todo)
 - [ ] Goto Anything (fuzzy file open, `@` symbol, `:` line, `#` term)
 - [ ] Command palette (fuzzy over all commands)
 - [ ] Split panes / layouts, tabs, minimap

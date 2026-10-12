@@ -8,6 +8,7 @@ use egui::{
     Align2, Color32, CursorIcon, Event, EventFilter, FontId, Galley, Id, Key, Modifiers,
     PointerButton, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2,
 };
+use std::ops::Range;
 use std::sync::Arc;
 
 const SCROLLBAR_W: f32 = 10.0;
@@ -50,12 +51,23 @@ impl EditorView {
         }
     }
 
+    /// Scroll the primary cursor into view on the next frame.
+    pub fn reveal(&mut self) {
+        self.scroll_to_cursor = true;
+    }
+
+    /// Give the editor keyboard focus on the next frame.
+    pub fn focus(&mut self) {
+        self.wants_focus = true;
+    }
+
     /// Call after loading a different file.
     pub fn reset(&mut self) {
         *self = Self { font_size: self.font_size, ..Self::new() };
     }
 
-    pub fn show(&mut self, ui: &mut Ui, ed: &mut Editor, hl: &mut Highlighter) {
+    /// `matches`: sorted find results to outline (empty when find is closed).
+    pub fn show(&mut self, ui: &mut Ui, ed: &mut Editor, hl: &mut Highlighter, matches: &[Range<usize>]) {
         let id = Id::new("strata-editor");
         let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
         let resp = ui.interact(rect, id, Sense::click_and_drag());
@@ -94,7 +106,7 @@ impl EditorView {
         self.clamp_scroll(ed, &m);
         m.origin_x = m.text.left() + m.char_w - self.scroll.x;
 
-        self.paint(ui, ed, hl, &m, resp.has_focus());
+        self.paint(ui, ed, hl, &m, resp.has_focus(), matches);
     }
 
     fn metrics(&self, ui: &Ui, ed: &Editor, rect: Rect) -> Metrics {
@@ -167,6 +179,10 @@ impl EditorView {
             Key::Delete => ed.delete_forward(word),
             Key::Escape => ed.collapse_to_primary(),
             Key::A if mods.command => ed.select_all(),
+            Key::D if mods.command => ed.select_next_occurrence(),
+            // Find all occurrences: Ctrl+Cmd+G on macOS, Alt+F3 elsewhere.
+            Key::G if mac && mods.mac_cmd && mods.ctrl => ed.select_all_occurrences(),
+            Key::F3 if !mac && mods.alt => ed.select_all_occurrences(),
             Key::Z if mods.command && shift => ed.redo(),
             Key::Z if mods.command => ed.undo(),
             Key::Y if mods.command && !mac => ed.redo(),
@@ -272,7 +288,7 @@ impl EditorView {
 
     // ---- painting --------------------------------------------------------
 
-    fn paint(&mut self, ui: &Ui, ed: &Editor, hl: &mut Highlighter, m: &Metrics, focused: bool) {
+    fn paint(&mut self, ui: &Ui, ed: &Editor, hl: &mut Highlighter, m: &Metrics, focused: bool, matches: &[Range<usize>]) {
         let painter = ui.painter();
         let text_painter = ui.painter_at(m.text);
         painter.rect_filled(m.full, 0.0, hl.background());
@@ -287,6 +303,8 @@ impl EditorView {
         let fg = hl.foreground();
         let sel_color = hl.selection();
         let caret_color = hl.caret();
+        let first_char = ed.buffer.line_start(first);
+        let mut next_match = matches.partition_point(|r| r.end < first_char);
         let caret_lines: Vec<usize> = ed.selections().iter().map(|s| ed.buffer.line_of(s.head)).collect();
 
         for line in first..=last {
@@ -318,6 +336,23 @@ impl EditorView {
                 let extra = if s.end() > line_end { m.char_w * 0.6 } else { 0.0 };
                 let r = Rect::from_min_max(pos2(x_at(a), y), pos2(x_at(b) + extra, y + m.row_h));
                 text_painter.rect_filled(r, 2.0, sel_color);
+            }
+
+            // Outline find matches on this line (a match may span lines).
+            while let Some(r) = matches.get(next_match) {
+                if r.start > line_end {
+                    break;
+                }
+                let a = r.start.max(line_start);
+                let b = r.end.min(line_end);
+                if b > a {
+                    let rect = Rect::from_min_max(pos2(x_at(a), y), pos2(x_at(b), y + m.row_h));
+                    text_painter.rect_stroke(rect, 2.0, Stroke::new(1.0, fg.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                }
+                if r.end > line_end {
+                    break;
+                }
+                next_match += 1;
             }
 
             text_painter.galley(pos2(m.origin_x, y), galley.clone(), fg);
@@ -423,7 +458,7 @@ mod tests {
             };
             let (view, ed, hl) = (&mut self.view, &mut self.ed, &mut self.hl);
             let mut out = self.ctx.run_ui(raw, |ui| {
-                CentralPanel::default().show(ui, |ui| view.show(ui, ed, hl));
+                CentralPanel::default().show(ui, |ui| view.show(ui, ed, hl, &[]));
             });
             // No GPU here: discard font-atlas uploads instead of applying them.
             out.textures_delta.clear();
@@ -492,6 +527,16 @@ mod tests {
         assert_eq!(h.ed.selections().len(), 2);
         h.frame(vec![Event::Text("!".into())]);
         assert_eq!(h.text(), "first\nsecond!\nthird!");
+    }
+
+    #[test]
+    fn cmd_d_through_the_widget() {
+        let mut h = Harness::new("let a = a + a;");
+        h.frame(vec![key(Key::ArrowRight, Modifiers::NONE); 4]);
+        h.frame(vec![key(Key::D, Modifiers::COMMAND); 3]);
+        assert_eq!(h.ed.selections().len(), 3);
+        h.frame(vec![Event::Text("b".into())]);
+        assert_eq!(h.text(), "let b = b + b;");
     }
 
     #[test]

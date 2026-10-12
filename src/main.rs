@@ -4,6 +4,7 @@
 mod app;
 mod buffer;
 mod editor;
+mod find;
 mod devshot;
 mod highlight;
 mod view;
