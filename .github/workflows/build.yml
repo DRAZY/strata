@@ -1,0 +1,32 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14            # Apple silicon runner
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --target ${{ matrix.target }}
+      - run: cargo test --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strata-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/strata
+            target/${{ matrix.target }}/release/strata.exe
+          if-no-files-found: error

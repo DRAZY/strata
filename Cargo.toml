@@ -1,0 +1,10 @@
+[package]
+name = "strata"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11"] }
+egui = "0.36.2"
+rfd = "0.17.2"
+syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
