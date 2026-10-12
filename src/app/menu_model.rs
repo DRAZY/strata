@@ -137,7 +137,10 @@ impl StrataApp {
             c("Open Folder…", Cmd::OpenFolder),
             sub("Open Recent", recent),
             SEP(),
+            sub("Reopen with Encoding", crate::encoding::Encoding::all().iter().map(|e| Item::new(e.name(), Act::ReopenWithEncoding(*e)).checked(d.encoding == *e)).collect()),
+            SEP(),
             c("Save", Cmd::Save),
+            sub("Save with Encoding", crate::encoding::Encoding::all().iter().map(|e| Item::new(e.name(), Act::SaveWithEncoding(*e)).checked(d.encoding == *e)).collect()),
             c("Save As…", Cmd::SaveAs),
             c("Save All", Cmd::SaveAll),
             SEP(),
@@ -369,6 +372,8 @@ impl StrataApp {
             }
             Act::Tab(i) if i < self.docs.len() => self.activate(i),
             Act::Tab(_) => {}
+            Act::ReopenWithEncoding(e) => self.reopen_with_encoding(e),
+            Act::SaveWithEncoding(e) => self.save_with_encoding(e),
             Act::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Act::Named(n) => match n.as_str() {
                 "toggle_spaces" => {

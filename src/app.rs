@@ -66,6 +66,8 @@ pub struct StrataApp {
     about_open: bool,
     #[cfg(target_os = "macos")]
     native_menu: Option<crate::menus::native::NativeMenu>,
+    /// Encoding chosen in the status bar: (reopen?, encoding), applied after drawing.
+    pending_encoding: Option<(bool, crate::encoding::Encoding)>,
     /// Input synthesized by menu items (copy, paste, undo…) for the next frame.
     pending_events: Vec<egui::Event>,
     /// Dev aid: STRATA_DEV_PALETTE="p:query" (or "cmd:query") opens a panel on the first frame.
@@ -113,6 +115,7 @@ impl StrataApp {
             #[cfg(target_os = "macos")]
             native_menu: None,
             pending_events: Vec::new(),
+            pending_encoding: None,
         };
         if let Some(dir) = app.config.clone() {
             app.session_lock = SessionLock::acquire(&dir);
@@ -394,8 +397,22 @@ impl StrataApp {
         }
     }
 
-    /// Saving would clobber outside changes or bytes that aren't UTF-8: ask first.
-    fn confirm_overwrite(&self, i: usize, path: &std::path::Path) -> bool {
+    /// Saving would clobber outside changes, bytes that didn't decode, or
+    /// text the file's encoding can't hold: ask first.
+    fn confirm_overwrite(&mut self, i: usize, path: &std::path::Path) -> bool {
+        let d = &self.docs[i];
+        if let Err(msg) = d.editor.buffer.check_encodable(d.encoding) {
+            let ok = rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Warning)
+                .set_title("Can't save in this encoding")
+                .set_description(format!("{msg}.\n\nSave {} as UTF-8 instead?", d.name()))
+                .set_buttons(rfd::MessageButtons::OkCancelCustom("Save as UTF-8".into(), "Cancel".into()))
+                .show();
+            if !matches!(ok, rfd::MessageDialogResult::Ok | rfd::MessageDialogResult::Yes) && ok != rfd::MessageDialogResult::Custom("Save as UTF-8".into()) {
+                return false;
+            }
+            self.docs[i].encoding = crate::encoding::Encoding::UTF8;
+        }
         let d = &self.docs[i];
         let same_file = d.path.as_deref() == Some(path);
         let mut reasons = Vec::new();
@@ -403,7 +420,7 @@ impl StrataApp {
             reasons.push("It was changed by another program since you opened it; saving replaces those changes.");
         }
         if d.editor.buffer.lossy {
-            reasons.push("It isn't valid UTF-8; saving replaces the unreadable bytes with \u{FFFD}.");
+            reasons.push("Some bytes couldn't be decoded and show as \u{FFFD}; saving writes that character in their place.");
         }
         if reasons.is_empty() {
             return true;
@@ -497,6 +514,7 @@ impl StrataApp {
                     Ok(bytes) => {
                         let mut d = Document::from_buffer(path.clone(), Buffer::from_bytes(&bytes));
                         d.restored_dirty = true;
+                        d.encoding = tab.encoding.as_deref().and_then(crate::encoding::Encoding::from_id).unwrap_or_default();
                         d.disk_mtime = tab.disk_mtime;
                         // Edited while Strata was closed (a git pull, another editor)?
                         d.conflict = tab.conflict || path.as_deref().and_then(crate::document::mtime).is_some_and(|now| Some(now) != tab.disk_mtime);
@@ -588,6 +606,7 @@ impl StrataApp {
                 conflict: d.conflict,
                 group: d.group,
                 wrap: d.wrap,
+                encoding: Some(d.encoding.id().to_owned()),
                 stamp: d.stamp,
             });
         }
@@ -1400,15 +1419,14 @@ impl StrataApp {
             }
             if d.editor.buffer.lossy {
                 ui.separator();
-                ui.colored_label(Color32::from_rgb(0xe5, 0x9e, 0x40), "Not UTF-8").on_hover_text("Some bytes couldn't be read as UTF-8 and show as \u{FFFD}. Saving would replace them.");
+                ui.colored_label(Color32::from_rgb(0xe5, 0x9e, 0x40), "Decoding errors").on_hover_text(format!("Some bytes couldn't be read as {} and show as �. Try File ▸ Reopen with Encoding.", d.encoding.name()));
             }
             if d.conflict {
                 ui.separator();
                 ui.colored_label(Color32::from_rgb(0xe5, 0x9e, 0x40), "Changed on disk");
                 if ui.small_button("Reload").on_hover_text("Discard your edits and load the file from disk").clicked()
-                    && let Some(bytes) = d.path.as_ref().and_then(|p| std::fs::read(p).ok()) {
-                        d.reload(Buffer::from_bytes(&bytes));
-                        d.restored_dirty = false;
+                    && let Err(e) = d.reload_from_disk() {
+                        self.status = format!("Could not reload: {e}");
                     }
             }
             ui.separator();
@@ -1426,6 +1444,35 @@ impl StrataApp {
                     });
                 });
                 ui.separator();
+                let enc = d.encoding;
+                let mut picked = None;
+                ui.menu_button(enc.name(), |ui| {
+                    ui.menu_button("Reopen with Encoding", |ui| {
+                        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                            for e in crate::encoding::Encoding::all() {
+                                if ui.selectable_label(*e == enc, e.name()).clicked() {
+                                    picked = Some((true, *e));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
+                    ui.menu_button("Save with Encoding", |ui| {
+                        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                            for e in crate::encoding::Encoding::all() {
+                                if ui.selectable_label(*e == enc, e.name()).clicked() {
+                                    picked = Some((false, *e));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
+                });
+                if let Some((reopen, e)) = picked {
+                    self.pending_encoding = Some((reopen, e));
+                }
+                ui.separator();
+                let d = &mut self.docs[self.active];
                 let ending = d.editor.buffer.line_ending();
                 ui.menu_button(if ending == LineEnding::Lf { "LF" } else { "CRLF" }, |ui| {
                     ui.label(egui::RichText::new("Convert line endings").weak());
@@ -1565,6 +1612,11 @@ impl eframe::App for StrataApp {
         }
         if self.about_open {
             self.about_window(ctx);
+        }
+        match self.pending_encoding.take() {
+            Some((true, e)) => self.reopen_with_encoding(e),
+            Some((false, e)) => self.save_with_encoding(e),
+            None => {}
         }
 
         if self.find.open {

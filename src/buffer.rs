@@ -3,8 +3,9 @@
 //! All positions are char indices into the rope. A "line end" is the index
 //! just before the line break, so cursors never sit inside a `\r\n` pair.
 
+use crate::encoding::{self, Encoding};
 use ropey::Rope;
-use std::io::{BufWriter, Write};
+use std::io::BufWriter;
 use std::ops::Range;
 use std::path::Path;
 
@@ -26,7 +27,8 @@ impl LineEnding {
 pub struct Buffer {
     rope: Rope,
     line_ending: LineEnding,
-    /// The file wasn't valid UTF-8: saving would replace the bad bytes.
+    /// Decoding replaced malformed bytes with U+FFFD: saving would write
+    /// those instead of the original bytes.
     pub lossy: bool,
 }
 
@@ -37,23 +39,48 @@ impl Buffer {
         Self { rope, line_ending, lossy: false }
     }
 
-    /// Invalid UTF-8 is replaced rather than refused, so any file opens
-    /// (and `lossy` records that it happened).
+    /// UTF-8 bytes (hot-exit backups). Invalid UTF-8 is replaced rather
+    /// than refused, so any file opens (and `lossy` records that it happened).
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        let text = String::from_utf8_lossy(bytes);
-        let lossy = matches!(text, std::borrow::Cow::Owned(_));
+        Self::decode_as(bytes, Encoding::UTF8)
+    }
+
+    /// Bytes read from a file, in whatever encoding they look like
+    /// (see [`encoding::decode_detect`]). Any leading BOM is dropped.
+    pub fn decode(bytes: &[u8]) -> (Self, Encoding) {
+        let (text, enc, lossy) = encoding::decode_detect(bytes);
+        (Self { lossy, ..Self::from_str(&text) }, enc)
+    }
+
+    /// Bytes in a known encoding. A matching BOM is dropped; malformed
+    /// bytes become U+FFFD and set `lossy`.
+    pub fn decode_as(bytes: &[u8], enc: Encoding) -> Self {
+        let (text, lossy) = encoding::decode(bytes, enc);
         Self { lossy, ..Self::from_str(&text) }
     }
 
-    /// Save without ever leaving a half-written file: write a temp file next
-    /// to the target, flush it to disk, then rename it over the original.
-    /// Symlinks are followed, so the link stays a link.
-    pub fn write_to(&self, path: &Path) -> std::io::Result<()> {
+    /// Ok if every character can be saved in `enc`, else a message naming
+    /// the first one that can't and where it is.
+    pub fn check_encodable(&self, enc: Encoding) -> Result<(), String> {
+        let Some((byte, c)) = encoding::find_unencodable(self.rope.chunks(), enc) else { return Ok(()) };
+        let idx = self.rope.byte_to_char(byte);
+        let line = self.rope.char_to_line(idx);
+        let col = idx - self.rope.line_to_char(line);
+        Err(format!("'{c}' (U+{:04X}) on line {}, column {} can't be saved as {}", c as u32, line + 1, col + 1, enc.name()))
+    }
+
+    /// Save in `enc` without ever leaving a half-written file: write a temp
+    /// file next to the target, flush it to disk, then rename it over the
+    /// original. Symlinks are followed, so the link stays a link. Text the
+    /// encoding can't represent fails with `InvalidData` before anything is
+    /// written.
+    pub fn write_to(&self, path: &Path, enc: Encoding) -> std::io::Result<()> {
+        self.check_encodable(enc).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
         let dir = target.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let tmp = dir.join(format!(".{name}.strata-{}.tmp", std::process::id()));
-        match self.write_file(&tmp) {
+        match self.write_file(&tmp, enc) {
             Ok(()) => {
                 if let Ok(meta) = std::fs::metadata(&target) {
                     let _ = std::fs::set_permissions(&tmp, meta.permissions());
@@ -65,16 +92,14 @@ impl Buffer {
             // Can't create files in the folder (but maybe can write the file): write in place.
             Err(_) => {
                 let _ = std::fs::remove_file(&tmp);
-                self.write_file(&target)
+                self.write_file(&target, enc)
             }
         }
     }
 
-    fn write_file(&self, path: &Path) -> std::io::Result<()> {
+    fn write_file(&self, path: &Path, enc: Encoding) -> std::io::Result<()> {
         let mut out = BufWriter::new(std::fs::File::create(path)?);
-        for chunk in self.rope.chunks() {
-            out.write_all(chunk.as_bytes())?;
-        }
+        encoding::encode_to(self.rope.chunks(), enc, &mut out)?;
         out.into_inner().map_err(|e| e.into_error())?.sync_all()
     }
 
@@ -206,15 +231,111 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
             std::os::unix::fs::symlink(&real, dir.join("link.sh")).unwrap();
-            Buffer::from_str("new").write_to(&dir.join("link.sh")).unwrap();
+            Buffer::from_str("new").write_to(&dir.join("link.sh"), Encoding::UTF8).unwrap();
             assert!(std::fs::symlink_metadata(dir.join("link.sh")).unwrap().file_type().is_symlink());
             assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o755);
         }
         #[cfg(not(unix))]
-        Buffer::from_str("new").write_to(&real).unwrap();
+        Buffer::from_str("new").write_to(&real, Encoding::UTF8).unwrap();
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
         let leftovers = std::fs::read_dir(&dir).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".tmp")).count();
         assert_eq!(leftovers, 0);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    fn text(b: &Buffer) -> String {
+        b.slice(0..b.len_chars())
+    }
+
+    /// Save through `write_to` and return the bytes on disk.
+    fn saved(b: &Buffer, enc: Encoding) -> Vec<u8> {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("strata-enc-{}-{n}.txt", std::process::id()));
+        b.write_to(&path, enc).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(path).ok();
+        bytes
+    }
+
+    #[test]
+    fn boms_are_detected_stripped_and_written_back() {
+        let id = Encoding::from_id;
+        for (enc, bytes) in [
+            (Encoding::UTF8_BOM, b"\xEF\xBB\xBFh\xC3\xA9\n".to_vec()),
+            (Encoding::UTF16LE_BOM, b"\xFF\xFEh\x00\xE9\x00\n\x00".to_vec()),
+            (Encoding::UTF16BE_BOM, b"\xFE\xFF\x00h\x00\xE9\x00\n".to_vec()),
+        ] {
+            let (b, found) = Buffer::decode(&bytes);
+            assert_eq!(found, enc);
+            assert_eq!(text(&b), "hé\n", "{}", enc.name());
+            assert!(!b.lossy);
+            assert_eq!(saved(&b, enc), bytes, "{}", enc.name());
+            // Reopened explicitly, the BOM is still not part of the text.
+            assert_eq!(text(&Buffer::decode_as(&bytes, enc)), "hé\n");
+        }
+        assert_eq!(id("utf-8-bom"), Some(Encoding::UTF8_BOM));
+        assert_eq!(text(&Buffer::decode_as(b"\xEF\xBB\xBFx", Encoding::UTF8)), "x");
+    }
+
+    #[test]
+    fn bomless_utf16_is_detected() {
+        let le: Vec<u8> = "plain text\r\n".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let be: Vec<u8> = "plain text\r\n".encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let (b, enc) = Buffer::decode(&le);
+        assert_eq!((text(&b).as_str(), enc), ("plain text\r\n", Encoding::UTF16LE));
+        assert_eq!(saved(&b, enc), le, "no BOM added on save");
+        let (b, enc) = Buffer::decode(&be);
+        assert_eq!((text(&b).as_str(), enc), ("plain text\r\n", Encoding::UTF16BE));
+        assert_eq!(b.line_ending(), LineEnding::CrLf);
+    }
+
+    #[test]
+    fn invalid_utf8_falls_back_to_windows_1252_losslessly() {
+        let bytes = b"caf\xE9 \x80 \x81\n";
+        let (b, enc) = Buffer::decode(bytes);
+        assert_eq!(enc, Encoding::WINDOWS_1252);
+        assert_eq!(text(&b), "café € \u{81}\n");
+        assert!(!b.lossy);
+        assert_eq!(saved(&b, enc), bytes);
+        let (b, enc) = Buffer::decode("café".as_bytes());
+        assert_eq!((text(&b).as_str(), enc), ("café", Encoding::UTF8));
+    }
+
+    #[test]
+    fn cjk_encodings_round_trip() {
+        for (id, s) in [("shift_jis", "日本語のテキスト\n"), ("gbk", "中文文本\n"), ("big5", "繁體中文\n"), ("euc-kr", "한국어\n"), ("euc-jp", "日本語\n")] {
+            let enc = Encoding::from_id(id).unwrap();
+            let bytes = saved(&Buffer::from_str(s), enc);
+            assert_ne!(bytes, s.as_bytes(), "{id}");
+            let b = Buffer::decode_as(&bytes, enc);
+            assert_eq!(text(&b), s, "{id}");
+            assert!(!b.lossy);
+        }
+        // Shift_JIS for "日本" is 0x93FA 0x967B.
+        assert_eq!(saved(&Buffer::from_str("日本"), Encoding::from_id("shift_jis").unwrap()), b"\x93\xFA\x96\x7B");
+    }
+
+    #[test]
+    fn unencodable_text_is_reported_and_not_saved() {
+        let b = Buffer::from_str("ok\nsome 漢 here");
+        let err = b.check_encodable(Encoding::WINDOWS_1252).unwrap_err();
+        assert!(err.contains('漢') && err.contains("line 2, column 6"), "{err}");
+        assert!(b.check_encodable(Encoding::UTF16LE).is_ok());
+        assert!(b.check_encodable(Encoding::from_id("gbk").unwrap()).is_ok());
+
+        let path = std::env::temp_dir().join(format!("strata-enc-bad-{}.txt", std::process::id()));
+        std::fs::write(&path, "original").unwrap();
+        let e = b.write_to(&path, Encoding::WINDOWS_1252).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original", "file untouched");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn malformed_bytes_in_a_chosen_encoding_are_lossy() {
+        let b = Buffer::decode_as(b"\x82", Encoding::from_id("shift_jis").unwrap());
+        assert!(b.lossy);
+        assert!(!Buffer::decode_as(b"\x82\xA0", Encoding::from_id("shift_jis").unwrap()).lossy);
     }
 }

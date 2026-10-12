@@ -2,7 +2,6 @@
 //! history, go to definition, projects, distraction-free mode, About.
 
 use super::StrataApp;
-use crate::buffer::Buffer;
 use crate::panes::Layout;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -56,16 +55,30 @@ impl StrataApp {
                 return;
             }
         }
-        match std::fs::read(&path) {
-            Ok(bytes) => {
-                let d = self.doc();
-                d.reload(Buffer::from_bytes(&bytes));
-                d.restored_dirty = false;
-                d.deleted = false;
-                d.disk_mtime = crate::document::mtime(&path);
-                self.status = format!("Reverted {}", path.display());
-            }
-            Err(e) => self.status = format!("Could not read {}: {e}", path.display()),
+        self.status = match self.doc().reload_from_disk() {
+            Ok(()) => format!("Reverted {}", path.display()),
+            Err(e) => format!("Could not read {}: {e}", path.display()),
+        };
+    }
+
+    /// "Reopen with Encoding": re-read the file decoding it as `enc`.
+    pub(super) fn reopen_with_encoding(&mut self, enc: crate::encoding::Encoding) {
+        if self.docs[self.active].is_dirty() {
+            self.status = "Save or revert your changes before reopening with another encoding".into();
+            return;
+        }
+        self.status = match self.doc().reopen_with_encoding(enc) {
+            Ok(()) => format!("Reopened as {}", enc.name()),
+            Err(e) => format!("Could not reopen: {e}"),
+        };
+    }
+
+    /// "Save with Encoding": convert and save now.
+    pub(super) fn save_with_encoding(&mut self, enc: crate::encoding::Encoding) {
+        let previous = self.docs[self.active].encoding;
+        self.doc().set_encoding(enc);
+        if !self.save(self.active, false) {
+            self.doc().encoding = previous;
         }
     }
 
@@ -259,6 +272,7 @@ impl StrataApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buffer::Buffer;
     use crate::document::Document;
 
     #[test]

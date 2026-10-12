@@ -26,6 +26,8 @@ pub enum Act {
     TabWidth(usize),
     Tab(usize),
     Quit,
+    ReopenWithEncoding(crate::encoding::Encoding),
+    SaveWithEncoding(crate::encoding::Encoding),
     /// Anything the app defines with a string id (encodings, build variants…).
     Named(String),
 }
@@ -35,7 +37,7 @@ pub enum Item {
     Separator,
     Sub(String, Vec<Item>),
     /// macOS-only system items; skipped elsewhere.
-    System(System),
+    System(#[cfg_attr(not(target_os = "macos"), allow(dead_code))] System),
 }
 
 #[derive(Clone, Copy)]
@@ -96,6 +98,7 @@ impl Item {
 pub type Menus = Vec<(String, Vec<Item>)>;
 
 /// A cheap fingerprint of a menu description, to rebuild native menus only on change.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn fingerprint(menus: &Menus) -> u64 {
     use std::hash::{Hash, Hasher};
     fn walk(items: &[Item], h: &mut std::collections::hash_map::DefaultHasher) {

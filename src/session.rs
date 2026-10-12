@@ -100,6 +100,8 @@ pub struct TabState {
     pub conflict: bool,
     pub group: usize,
     pub wrap: Option<bool>,
+    /// Encoding id (see `Encoding::id`) to save an unsaved tab with.
+    pub encoding: Option<String>,
     /// Tabs shown in each pane: the highest stamp per group.
     pub stamp: u64,
 }
