@@ -6,6 +6,7 @@ use crate::devshot::DevShot;
 use crate::document::Document;
 use crate::find::{self, Query};
 use crate::palette::{self, Palette};
+use crate::panes::Layout;
 use crate::session::{Session, SessionLock, Settings, TabState};
 use crate::sidebar::{self, Sidebar};
 use egui::{Color32, FontId, Key, Rect, Sense, Stroke, pos2, vec2};
@@ -42,8 +43,13 @@ pub struct StrataApp {
     /// Theme the window chrome was last styled for.
     chrome_theme: String,
     fullscreen: bool,
-    /// Tab being dragged to a new position.
+    /// Tab being dragged to a new position (or another pane).
     dragging_tab: Option<usize>,
+    layout: Layout,
+    /// Pane with keyboard focus; new tabs open here. It may be empty.
+    focus_group: usize,
+    /// Source of `Document::stamp`.
+    next_stamp: u64,
     palette: Palette,
     /// Selections to put back if a palette preview (line, symbol) is cancelled.
     palette_restore: Option<(usize, Vec<std::ops::Range<usize>>, usize)>,
@@ -138,6 +144,9 @@ impl StrataApp {
             chrome_theme: String::new(),
             fullscreen: false,
             dragging_tab: None,
+            layout: Layout::default(),
+            focus_group: 0,
+            next_stamp: 1,
             palette: Palette::new(EDITOR_COMMANDS),
             palette_restore: None,
             dev_palette: std::env::var("STRATA_DEV_PALETTE").ok(),
@@ -193,24 +202,85 @@ impl StrataApp {
 
     // ---- tabs ----------------------------------------------------------
 
-    /// Style a new tab with the current settings and add it after the active one.
+    /// Style a new tab with the current settings and add it to the focused
+    /// pane, after that pane's current tab.
     fn push_doc(&mut self, mut doc: Document) {
         doc.highlighter.set_theme(&self.settings.theme);
         doc.editor.tab_width = self.settings.tab_size;
         doc.editor.use_spaces = self.settings.translate_tabs_to_spaces;
-        let at = if self.docs.is_empty() { 0 } else { self.active + 1 };
+        doc.group = self.focus_group;
+        let at = match self.group_active(self.focus_group) {
+            Some(i) => i + 1,
+            None => self.docs.len(),
+        };
         self.docs.insert(at, doc);
         self.activate(at);
     }
 
+    /// Focus tab `i` (and its pane).
     fn activate(&mut self, i: usize) {
-        self.active = i.min(self.docs.len().saturating_sub(1));
+        self.select(i);
+        for d in &mut self.docs {
+            d.view.cancel_focus();
+        }
         if let Some(d) = self.docs.get_mut(self.active) {
             d.view.focus();
+        }
+    }
+
+    /// Make `i` the current tab without asking for keyboard focus.
+    fn select(&mut self, i: usize) {
+        self.active = i.min(self.docs.len().saturating_sub(1));
+        self.next_stamp += 1;
+        let stamp = self.next_stamp;
+        if let Some(d) = self.docs.get_mut(self.active) {
+            d.stamp = stamp;
+            self.focus_group = d.group;
             if d.check_disk() {
                 self.status = format!("Reloaded {} (changed on disk)", d.name());
             }
         }
+    }
+
+    /// The tab a pane shows: its most recently activated one.
+    fn group_active(&self, g: usize) -> Option<usize> {
+        self.docs.iter().enumerate().filter(|(_, d)| d.group == g).max_by_key(|(_, d)| d.stamp).map(|(i, _)| i)
+    }
+
+    fn group_tabs(&self, g: usize) -> Vec<usize> {
+        (0..self.docs.len()).filter(|&i| self.docs[i].group == g).collect()
+    }
+
+    /// Switch layouts; tabs in panes that disappear move to the last remaining one.
+    fn set_layout(&mut self, layout: Layout) {
+        let last = layout.groups() - 1;
+        for d in &mut self.docs {
+            d.group = d.group.min(last);
+        }
+        self.layout = layout;
+        self.focus_group = self.focus_group.min(last);
+        self.activate(self.active);
+    }
+
+    fn focus_pane(&mut self, g: usize) {
+        if g >= self.layout.groups() {
+            return;
+        }
+        match self.group_active(g) {
+            Some(i) => self.activate(i),
+            None => self.focus_group = g,
+        }
+    }
+
+    /// Move the current tab to pane `g`, adding columns if needed.
+    fn move_to_pane(&mut self, g: usize) {
+        if g >= self.layout.groups() {
+            self.set_layout(Layout::grid(g + 1, 1));
+        }
+        if let Some(d) = self.docs.get_mut(self.active) {
+            d.group = g;
+        }
+        self.activate(self.active);
     }
 
     /// Open a file in a tab, reusing its tab if it's already open.
@@ -232,13 +302,16 @@ impl StrataApp {
         };
         doc.preview = preview;
         self.status = format!("Opened {}", path.display());
-        // Replace an earlier preview, or a blank untitled tab.
-        let reuse = if preview { self.docs.iter().position(|d| d.preview) } else { None }
-            .or_else(|| self.docs.get(self.active).is_some_and(Document::is_blank).then_some(self.active));
+        // Replace an earlier preview, or a blank untitled tab, in the focused pane.
+        let g = self.focus_group;
+        let shown = self.group_active(g);
+        let reuse = if preview { self.docs.iter().position(|d| d.preview && d.group == g) } else { None }
+            .or_else(|| shown.filter(|&i| self.docs[i].is_blank()));
         if let Some(i) = reuse {
             doc.highlighter.set_theme(&self.settings.theme);
             doc.editor.tab_width = self.settings.tab_size;
             doc.editor.use_spaces = self.settings.translate_tabs_to_spaces;
+            doc.group = g;
             self.docs[i] = doc;
             self.activate(i);
         } else {
@@ -285,17 +358,24 @@ impl StrataApp {
         }
         self.dragging_tab = None;
         let doc = self.docs.remove(i);
+        let group = doc.group;
         if let Some(p) = doc.path {
             self.closed.retain(|c| c != &p);
             self.closed.push(p);
         }
-        if self.docs.is_empty() {
-            self.docs.push(Document::untitled());
+        // Next: the pane's previous tab; an emptied pane hands focus to the most
+        // recent tab elsewhere (a lone pane gets a fresh untitled tab).
+        let next = self.group_active(group).or_else(|| {
+            if self.layout.groups() > 1 { (0..self.docs.len()).max_by_key(|&k| self.docs[k].stamp) } else { None }
+        });
+        match next {
+            Some(n) => self.activate(n),
+            None => {
+                self.focus_group = group;
+                self.active = 0;
+                self.push_doc(Document::untitled());
+            }
         }
-        if i < self.active || self.active >= self.docs.len() {
-            self.active = self.active.saturating_sub(1);
-        }
-        self.activate(self.active);
         true
     }
 
@@ -427,6 +507,9 @@ impl StrataApp {
             Ok(None) => return,
             Err(e) => return self.set_aside_backups(&dir, &e),
         };
+        if let Some(layout) = session.layout.clone() {
+            self.layout = layout.sanitized();
+        }
         let backups = Session::backups(&dir);
         let mut unreadable = Vec::new();
         for tab in &session.tabs {
@@ -456,9 +539,16 @@ impl StrataApp {
             let at = tab.cursor.min(doc.editor.buffer.len_chars());
             doc.editor.select_ranges(&[at..at], 0);
             doc.view.reveal_centered();
+            self.focus_group = tab.group.min(self.layout.groups() - 1);
+            let n = self.docs.len();
             self.push_doc(doc);
+            // Keep the saved order rather than "after the pane's current tab".
+            let d = self.docs.remove(self.active);
+            self.docs.push(d);
+            self.docs[n].stamp = tab.stamp;
         }
-        self.active = session.active.min(self.docs.len().saturating_sub(1));
+        self.next_stamp = self.docs.iter().map(|d| d.stamp).max().unwrap_or(0) + 1;
+        self.activate(session.active.min(self.docs.len().saturating_sub(1)));
         if !unreadable.is_empty() {
             self.set_aside_backups(&dir, &unreadable.join("; "));
         }
@@ -486,9 +576,9 @@ impl StrataApp {
     fn session_fingerprint(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (self.active, &self.sidebar.root, self.sidebar.visible).hash(&mut h);
+        (self.active, &self.sidebar.root, self.sidebar.visible, self.layout.cols.len(), self.layout.rows.len()).hash(&mut h);
         for d in &self.docs {
-            (&d.path, d.is_dirty(), d.editor.version(), d.editor.primary().head).hash(&mut h);
+            (&d.path, d.is_dirty(), d.editor.version(), d.editor.primary().head, d.group, d.stamp).hash(&mut h);
         }
         h.finish()
     }
@@ -513,6 +603,8 @@ impl StrataApp {
                 syntax: Some(d.highlighter.syntax_name().to_owned()),
                 disk_mtime: d.disk_mtime,
                 conflict: d.conflict,
+                group: d.group,
+                stamp: d.stamp,
             });
         }
         let session = Session {
@@ -520,6 +612,7 @@ impl StrataApp {
             sidebar_visible: self.sidebar.visible,
             active: self.active.min(tabs.len().saturating_sub(1)),
             tabs,
+            layout: Some(self.layout.clone()),
         };
         match session.save(&dir, &backups) {
             Ok(()) => {
@@ -571,8 +664,27 @@ impl StrataApp {
                 }
             }
             Cmd::ReopenClosed => self.reopen_closed(),
-            Cmd::NextTab => self.activate((self.active + 1) % self.docs.len()),
-            Cmd::PrevTab => self.activate((self.active + self.docs.len() - 1) % self.docs.len()),
+            Cmd::NextTab | Cmd::PrevTab => {
+                let tabs = self.group_tabs(self.docs[self.active].group);
+                let k = tabs.iter().position(|&i| i == self.active).unwrap_or(0);
+                let n = tabs.len();
+                self.activate(tabs[if cmd == Cmd::NextTab { (k + 1) % n } else { (k + n - 1) % n }]);
+            }
+            Cmd::LayoutSingle => self.set_layout(Layout::grid(1, 1)),
+            Cmd::LayoutColumns2 => self.set_layout(Layout::grid(2, 1)),
+            Cmd::LayoutColumns3 => self.set_layout(Layout::grid(3, 1)),
+            Cmd::LayoutColumns4 => self.set_layout(Layout::grid(4, 1)),
+            Cmd::LayoutRows2 => self.set_layout(Layout::grid(1, 2)),
+            Cmd::LayoutGrid => self.set_layout(Layout::grid(2, 2)),
+            Cmd::SplitRight => {
+                let g = self.docs[self.active].group;
+                if g + 1 >= self.layout.groups() {
+                    self.set_layout(Layout::grid(self.layout.cols.len() + 1, self.layout.rows.len()));
+                }
+                self.move_to_pane((g + 1).min(self.layout.groups() - 1));
+            }
+            Cmd::FocusGroup(g) => self.focus_pane(g as usize),
+            Cmd::MoveToGroup(g) => self.move_to_pane(g as usize),
             Cmd::ToggleSidebar => self.sidebar.visible = !self.sidebar.visible,
             Cmd::Find => self.open_find(false),
             Cmd::Replace => self.open_find(true),
@@ -614,7 +726,10 @@ impl StrataApp {
         let digits = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
         for (n, key) in digits.into_iter().enumerate() {
             if crate::keys::take(ctx, mods, key) {
-                self.activate(if n == 8 { self.docs.len() - 1 } else { n });
+                let tabs = self.group_tabs(self.focus_group);
+                if let Some(&i) = if n == 8 { tabs.last() } else { tabs.get(n) } {
+                    self.activate(i);
+                }
             }
         }
         if self.find.open && !self.palette.open && ctx.input(|i| i.key_pressed(Key::Escape)) {
@@ -965,8 +1080,8 @@ fn mix(from: Color32, to: Color32, t: f32) -> Color32 {
 enum TabAction {
     Activate(usize),
     Close(usize),
-    Move(usize, usize),
-    New,
+    /// Double-click on a pane's empty tab bar.
+    New(usize),
 }
 
 impl StrataApp {
@@ -1031,32 +1146,36 @@ impl StrataApp {
             .collect()
     }
 
-    fn tab_bar(&mut self, ui: &mut egui::Ui) -> Option<TabAction> {
+    /// One pane's tab bar. Records each tab's rect for drag and drop.
+    fn tab_bar(&mut self, ui: &mut egui::Ui, group: usize, names: &[String], tab_rects: &mut Vec<(usize, Rect)>) -> Option<TabAction> {
         let bg = self.docs[self.active].highlighter.background();
         let fg = ui.visuals().text_color();
         let bar = ui.max_rect();
         ui.painter().rect_filled(bar, 0.0, ui.visuals().panel_fill);
-        let names = self.display_names();
+        let shown = self.group_active(group);
+        let focused = group == self.focus_group;
         let font = FontId::proportional(13.0);
         let height = 32.0;
         let mut action = None;
-        let mut rects = Vec::with_capacity(self.docs.len());
-        egui::ScrollArea::horizontal().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+        egui::ScrollArea::horizontal().id_salt(("tabs", group)).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 1.0;
             ui.horizontal(|ui| {
-                for (i, name) in names.iter().enumerate() {
+                for i in self.group_tabs(group) {
+                    let name = &names[i];
                     let d = &self.docs[i];
                     let galley = ui.painter().layout_no_wrap(name.clone(), font.clone(), fg);
                     let w = (galley.size().x + 52.0).clamp(90.0, 260.0);
                     let (rect, resp) = ui.allocate_exact_size(vec2(w, height), Sense::click_and_drag());
-                    rects.push(rect);
-                    let active = i == self.active;
+                    tab_rects.push((i, rect));
+                    let active = Some(i) == shown;
+                    // Only the focused pane's tab gets the accent line.
+                    let accented = active && focused;
                     let close = Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y), vec2(16.0, 16.0));
                     let over_close = resp.hover_pos().is_some_and(|p| close.expand(2.0).contains(p));
 
                     let fill = if active { bg } else if resp.hovered() { mix(ui.visuals().panel_fill, bg, 0.5) } else { ui.visuals().panel_fill };
                     ui.painter().rect_filled(rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, fill);
-                    if active {
+                    if accented {
                         // Accent line on the active tab, in the theme's caret color.
                         let accent = self.docs[i].highlighter.caret();
                         ui.painter().line_segment([rect.left_top() + vec2(6.0, 0.5), rect.right_top() + vec2(-6.0, 0.5)], Stroke::new(2.0, accent));
@@ -1100,22 +1219,119 @@ impl StrataApp {
                 // Double-click the empty part of the bar for a new tab.
                 let rest = ui.allocate_exact_size(vec2(ui.available_width().max(40.0), height), Sense::click()).1;
                 if rest.double_clicked() {
-                    action = Some(TabAction::New);
+                    action = Some(TabAction::New(group));
+                } else if rest.clicked() {
+                    self.focus_pane(group);
                 }
             });
         });
-        if let Some(from) = self.dragging_tab {
-            let (down, pos) = ui.input(|i| (i.pointer.primary_down(), i.pointer.hover_pos()));
-            if !down {
-                self.dragging_tab = None;
-            } else if let Some(p) = pos
-                && let Some(to) = rects.iter().position(|r| p.x >= r.left() && p.x < r.right())
-                    && to != from {
-                        action = Some(TabAction::Move(from, to));
-                        self.dragging_tab = Some(to);
-                    }
-        }
         action
+    }
+
+    /// A dragged tab: over another tab it takes that place (in that pane);
+    /// released over a pane's editor it moves to the end of that pane.
+    fn drag_tab(&mut self, ctx: &egui::Context, tab_rects: &[(usize, Rect)], cells: &[Rect]) {
+        let Some(from) = self.dragging_tab.filter(|&f| f < self.docs.len()) else {
+            self.dragging_tab = None;
+            return;
+        };
+        let (down, pos) = ctx.input(|i| (i.pointer.primary_down(), i.pointer.hover_pos()));
+        if let Some(p) = pos {
+            if let Some(&(to, _)) = tab_rects.iter().find(|(_, r)| r.contains(p)) {
+                if to != from {
+                    let group = self.docs[to].group;
+                    let mut d = self.docs.remove(from);
+                    d.group = group;
+                    self.docs.insert(to, d);
+                    self.dragging_tab = Some(to);
+                    self.activate(to);
+                }
+            } else if !down
+                && let Some(g) = cells.iter().position(|c| c.contains(p))
+                && g != self.docs[from].group
+            {
+                let mut d = self.docs.remove(from);
+                d.group = g;
+                self.docs.push(d);
+                self.activate(self.docs.len() - 1);
+            }
+            if down && cells.iter().any(|c| c.contains(p)) {
+                ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+            }
+        }
+        if !down {
+            self.dragging_tab = None;
+        }
+    }
+
+    /// Every pane: its tab bar over its editor (or an empty-pane hint).
+    fn panes(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let area = ui.max_rect();
+        let cells = self.layout.cells(area);
+        let names = self.display_names();
+        let mut tab_rects = Vec::new();
+        let mut actions = Vec::new();
+        let find_open = self.find.open;
+        let bar_h = 32.0;
+        for (g, cell) in cells.iter().enumerate() {
+            let bar = Rect::from_min_size(cell.min, vec2(cell.width(), bar_h));
+            let body = Rect::from_min_max(pos2(cell.left(), cell.top() + bar_h), cell.max);
+            let action = ui.scope_builder(egui::UiBuilder::new().max_rect(bar).id_salt(("bar", g)), |ui| self.tab_bar(ui, g, &names, &mut tab_rects)).inner;
+            actions.extend(action);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(body).id_salt(("pane", g)), |ui| match self.group_active(g) {
+                Some(i) => {
+                    let is_active = i == self.active;
+                    let d = &mut self.docs[i];
+                    let matches = if find_open && is_active { std::mem::take(&mut d.finder.matches) } else { Vec::new() };
+                    d.view.show(ui, &mut d.editor, &mut d.highlighter, &matches);
+                    if find_open && is_active {
+                        d.finder.matches = matches;
+                    }
+                }
+                None => {
+                    let resp = ui.allocate_rect(body, Sense::click());
+                    let hl = &self.docs[self.active].highlighter;
+                    ui.painter().rect_filled(body, 0.0, hl.background());
+                    let hint = format!("Empty pane · drag a tab here, or {}", Cmd::MoveToGroup(g as u8).shortcut_label().unwrap_or_default());
+                    ui.painter().text(body.center(), egui::Align2::CENTER_CENTER, hint, FontId::proportional(13.0), hl.foreground().gamma_multiply(0.4));
+                    if resp.clicked() {
+                        self.focus_pane(g);
+                    }
+                }
+            });
+        }
+        // Clicking into a pane's editor makes its tab the current one.
+        for g in 0..cells.len() {
+            if let Some(i) = self.group_active(g)
+                && i != self.active
+                && self.docs[i].view.has_focus(&ctx)
+            {
+                self.select(i);
+            }
+        }
+        if self.layout.groups() > 1 {
+            let color = mix(ui.visuals().panel_fill, ui.visuals().text_color(), 0.12);
+            self.layout.dividers(ui, area, color);
+            // A thin accent marks the focused pane.
+            if let Some(cell) = cells.get(self.focus_group) {
+                let accent = self.docs[self.active].highlighter.caret().gamma_multiply(0.5);
+                ui.painter().hline(cell.x_range(), cell.top() + 0.5, Stroke::new(1.0, accent));
+            }
+        }
+        self.drag_tab(&ctx, &tab_rects, &cells);
+        for action in actions {
+            match action {
+                TabAction::Activate(i) => self.activate(i),
+                TabAction::Close(i) => {
+                    self.close_tab(i);
+                }
+                TabAction::New(g) => {
+                    self.focus_group = g;
+                    self.push_doc(Document::untitled());
+                }
+            }
+        }
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -1255,9 +1471,14 @@ impl eframe::App for StrataApp {
         }
         if now - self.last_disk_check > 1.0 {
             self.last_disk_check = now;
-            let d = self.doc();
-            if d.check_disk() {
-                self.status = format!("Reloaded {} (changed on disk)", d.name());
+            // Every visible tab: each pane shows one.
+            for g in 0..self.layout.groups() {
+                if let Some(i) = self.group_active(g) {
+                    let d = &mut self.docs[i];
+                    if d.check_disk() {
+                        self.status = format!("Reloaded {} (changed on disk)", d.name());
+                    }
+                }
             }
             ctx.request_repaint_after(std::time::Duration::from_secs(2));
         }
@@ -1320,42 +1541,18 @@ impl eframe::App for StrataApp {
             }
         }
 
-        let tab_action = egui::Panel::top("tabs")
-            .exact_size(32.0)
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| self.tab_bar(ui))
-            .inner;
-        match tab_action {
-            Some(TabAction::Activate(i)) => self.activate(i),
-            Some(TabAction::Close(i)) => {
-                self.close_tab(i);
-            }
-            Some(TabAction::Move(from, to)) if from < self.docs.len() && to < self.docs.len() => {
-                let d = self.docs.remove(from);
-                self.docs.insert(to, d);
-                self.active = to;
-            }
-            Some(TabAction::Move(..)) => self.dragging_tab = None,
-            Some(TabAction::New) => self.push_doc(Document::untitled()),
-            None => {}
-        }
-
-        let find_open = self.find.open;
-        let d = &mut self.docs[self.active];
-        let matches = if find_open { std::mem::take(&mut d.finder.matches) } else { Vec::new() };
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| d.view.show(ui, &mut d.editor, &mut d.highlighter, &matches));
-        if find_open {
-            d.finder.matches = matches;
-        }
-        if self.docs.len() == 1 && self.docs[0].is_blank() && !self.palette.open {
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.panes(ui));
+        if self.docs.len() == 1 && self.docs[0].is_blank() && self.layout.groups() == 1 && !self.palette.open {
             self.welcome(ctx);
         }
         if let Some(spec) = self.dev_palette.take() {
             let (mode, q) = spec.split_once(':').unwrap_or((&spec, ""));
-            let mode = if mode == "p" { palette::Mode::Files } else { palette::Mode::Commands };
-            self.open_palette(ctx, mode, q);
+            match mode {
+                // "split:2" puts the current tab in a second pane.
+                "split" => self.move_to_pane(q.parse::<usize>().unwrap_or(2).saturating_sub(1)),
+                "p" => self.open_palette(ctx, palette::Mode::Files, q),
+                _ => self.open_palette(ctx, palette::Mode::Commands, q),
+            }
         }
         let events = self.palette.show(ctx);
         self.palette_events(ctx, events);
@@ -1614,6 +1811,93 @@ mod tests {
         let kept = std::fs::read_dir(&config).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("backups.recovered")).unwrap();
         let backup = std::fs::read_dir(kept.path()).unwrap().next().unwrap().unwrap();
         assert_eq!(std::fs::read_to_string(backup.path()).unwrap(), "edit v1");
+        std::fs::remove_dir_all(config).ok();
+    }
+
+    fn render(app: &mut StrataApp, ctx: &Context, events: Vec<Event>) {
+        let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 600.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| {
+            let mut frame = eframe::Frame::_new_kittest();
+            eframe::App::ui(app, ui, &mut frame);
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn panes_hold_their_own_tabs() {
+        let dir = temp_dir("panes");
+        for f in ["a.rs", "b.rs", "c.rs"] {
+            std::fs::write(dir.join(f), f).unwrap();
+        }
+        let ctx = Context::default();
+        let mut app = StrataApp::new(None, None);
+        app.open_path(dir.join("a.rs"), false);
+        app.open_path(dir.join("b.rs"), false);
+        app.run(&ctx, Cmd::MoveToGroup(1));
+        assert_eq!(app.layout.groups(), 2, "moving to pane 2 splits the window");
+        assert_eq!((app.focus_group, app.doc().name()), (1, "b.rs".to_owned()));
+        assert_eq!(app.group_active(0).map(|i| app.docs[i].name()), Some("a.rs".into()));
+
+        // New files open in the focused pane; tab cycling stays inside it.
+        app.open_path(dir.join("c.rs"), false);
+        assert_eq!(app.docs[app.active].group, 1);
+        app.run(&ctx, Cmd::NextTab);
+        assert_eq!(app.doc().name(), "b.rs");
+        app.run(&ctx, Cmd::FocusGroup(0));
+        assert_eq!(app.doc().name(), "a.rs");
+
+        // Closing the last tab of a pane hands focus to another pane.
+        app.close_tab(app.active);
+        assert_eq!(app.group_active(0), None);
+        assert_eq!(app.focus_group, 1);
+        for _ in 0..2 {
+            render(&mut app, &ctx, vec![]);
+        }
+
+        // Back to one pane: everything gathers there.
+        app.run(&ctx, Cmd::LayoutSingle);
+        assert!(app.docs.iter().all(|d| d.group == 0));
+        assert_eq!(app.docs.len(), 2);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn clicking_a_pane_focuses_its_tab() {
+        let mut app = app_with("left\n");
+        app.push_doc(Document::from_buffer(None, Buffer::from_str("right\n")));
+        let ctx = Context::default();
+        app.run(&ctx, Cmd::MoveToGroup(1));
+        app.run(&ctx, Cmd::FocusGroup(0));
+        render(&mut app, &ctx, vec![]);
+        render(&mut app, &ctx, vec![]);
+        assert_eq!(app.focus_group, 0);
+        // The right pane starts at x=500 plus its gutter; click its first line.
+        let p = egui::pos2(800.0, 45.0);
+        let button = |pressed| Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        render(&mut app, &ctx, vec![Event::PointerMoved(p), button(true)]);
+        render(&mut app, &ctx, vec![button(false)]);
+        assert_eq!(app.focus_group, 1);
+        assert_eq!(text(&app), "right\n");
+    }
+
+    #[test]
+    fn layout_and_panes_survive_a_restart() {
+        let config = temp_dir("panes-session");
+        let (a, b) = (config.join("a.txt"), config.join("b.txt"));
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(Some(a.clone()), Some(config.clone()));
+        app.open_path(b.clone(), false);
+        app.run(&ctx, Cmd::MoveToGroup(1));
+        app.layout.cols = vec![0.3, 0.7];
+        assert!(app.save_session());
+        drop(app);
+        let back = StrataApp::new(None, Some(config.clone()));
+        assert_eq!(back.layout.cols, vec![0.3, 0.7]);
+        let pane = |p: &PathBuf| back.docs.iter().find(|d| d.path.as_ref() == Some(p)).unwrap().group;
+        assert_eq!((pane(&a), pane(&b)), (0, 1));
+        assert_eq!(back.docs[back.active].path.as_ref(), Some(&b));
         std::fs::remove_dir_all(config).ok();
     }
 

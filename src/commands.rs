@@ -34,6 +34,15 @@ pub enum Cmd {
     GotoSymbol,
     SelectTheme,
     SelectSyntax,
+    LayoutSingle,
+    LayoutColumns2,
+    LayoutColumns3,
+    LayoutColumns4,
+    LayoutRows2,
+    LayoutGrid,
+    SplitRight,
+    FocusGroup(u8),
+    MoveToGroup(u8),
 }
 
 impl Cmd {
@@ -67,6 +76,21 @@ impl Cmd {
         Cmd::GotoSymbol,
         Cmd::SelectTheme,
         Cmd::SelectSyntax,
+        Cmd::LayoutSingle,
+        Cmd::LayoutColumns2,
+        Cmd::LayoutColumns3,
+        Cmd::LayoutColumns4,
+        Cmd::LayoutRows2,
+        Cmd::LayoutGrid,
+        Cmd::SplitRight,
+        Cmd::FocusGroup(0),
+        Cmd::FocusGroup(1),
+        Cmd::FocusGroup(2),
+        Cmd::FocusGroup(3),
+        Cmd::MoveToGroup(0),
+        Cmd::MoveToGroup(1),
+        Cmd::MoveToGroup(2),
+        Cmd::MoveToGroup(3),
     ];
 
     pub fn name(self) -> &'static str {
@@ -100,6 +124,21 @@ impl Cmd {
             Cmd::GotoSymbol => "Goto: Symbol…",
             Cmd::SelectTheme => "Preferences: Color Scheme…",
             Cmd::SelectSyntax => "View: Syntax…",
+            Cmd::LayoutSingle => "Layout: Single",
+            Cmd::LayoutColumns2 => "Layout: Columns: 2",
+            Cmd::LayoutColumns3 => "Layout: Columns: 3",
+            Cmd::LayoutColumns4 => "Layout: Columns: 4",
+            Cmd::LayoutRows2 => "Layout: Rows: 2",
+            Cmd::LayoutGrid => "Layout: Grid: 4",
+            Cmd::SplitRight => "Layout: Split Right (move file to a new pane)",
+            Cmd::FocusGroup(0) => "Layout: Focus Pane 1",
+            Cmd::FocusGroup(1) => "Layout: Focus Pane 2",
+            Cmd::FocusGroup(2) => "Layout: Focus Pane 3",
+            Cmd::FocusGroup(_) => "Layout: Focus Pane 4",
+            Cmd::MoveToGroup(0) => "Layout: Move File to Pane 1",
+            Cmd::MoveToGroup(1) => "Layout: Move File to Pane 2",
+            Cmd::MoveToGroup(2) => "Layout: Move File to Pane 3",
+            Cmd::MoveToGroup(_) => "Layout: Move File to Pane 4",
         }
     }
 
@@ -142,7 +181,22 @@ impl Cmd {
             Cmd::GotoAnything => &[(CMD, Key::P), (CMD, Key::T)],
             Cmd::GotoLine => &[(CTRL, Key::G)],
             Cmd::GotoSymbol => &[(CMD, Key::R)],
-            Cmd::SelectTheme | Cmd::SelectSyntax => &[],
+            Cmd::SelectTheme | Cmd::SelectSyntax | Cmd::SplitRight => &[],
+            // Sublime's layout keys: Alt+Cmd+N on macOS, Alt+Shift+N elsewhere.
+            Cmd::LayoutSingle => if MAC { &[(CMD_ALT, Key::Num1)] } else { &[(ALT_SHIFT, Key::Num1)] },
+            Cmd::LayoutColumns2 => if MAC { &[(CMD_ALT, Key::Num2)] } else { &[(ALT_SHIFT, Key::Num2)] },
+            Cmd::LayoutColumns3 => if MAC { &[(CMD_ALT, Key::Num3)] } else { &[(ALT_SHIFT, Key::Num3)] },
+            Cmd::LayoutColumns4 => if MAC { &[(CMD_ALT, Key::Num4)] } else { &[(ALT_SHIFT, Key::Num4)] },
+            Cmd::LayoutGrid => if MAC { &[(CMD_ALT, Key::Num5)] } else { &[(ALT_SHIFT, Key::Num5)] },
+            Cmd::LayoutRows2 => if MAC { &[(CMD_ALT_SHIFT, Key::Num2)] } else { &[(ALT_SHIFT, Key::Num8)] },
+            Cmd::FocusGroup(0) => &[(CTRL, Key::Num1)],
+            Cmd::FocusGroup(1) => &[(CTRL, Key::Num2)],
+            Cmd::FocusGroup(2) => &[(CTRL, Key::Num3)],
+            Cmd::FocusGroup(_) => &[(CTRL, Key::Num4)],
+            Cmd::MoveToGroup(0) => &[(CTRL_SHIFT, Key::Num1)],
+            Cmd::MoveToGroup(1) => &[(CTRL_SHIFT, Key::Num2)],
+            Cmd::MoveToGroup(2) => &[(CTRL_SHIFT, Key::Num3)],
+            Cmd::MoveToGroup(_) => &[(CTRL_SHIFT, Key::Num4)],
         }
     }
 

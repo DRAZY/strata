@@ -73,6 +73,7 @@ pub struct Session {
     pub sidebar_visible: bool,
     pub active: usize,
     pub tabs: Vec<TabState>,
+    pub layout: Option<crate::panes::Layout>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
@@ -88,6 +89,9 @@ pub struct TabState {
     pub disk_mtime: Option<std::time::SystemTime>,
     /// The file changed on disk while the tab had unsaved edits.
     pub conflict: bool,
+    pub group: usize,
+    /// Tabs shown in each pane: the highest stamp per group.
+    pub stamp: u64,
 }
 
 impl Session {

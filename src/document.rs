@@ -25,6 +25,10 @@ pub struct Document {
     pub conflict: bool,
     /// The file was deleted or moved away outside Strata.
     pub deleted: bool,
+    /// Split pane (group) the tab lives in.
+    pub group: usize,
+    /// When the tab was last activated; each pane shows its most recent tab.
+    pub stamp: u64,
 }
 
 pub fn mtime(path: &Path) -> Option<SystemTime> {
@@ -53,6 +57,8 @@ impl Document {
             restored_dirty: false,
             conflict: false,
             deleted: false,
+            group: 0,
+            stamp: 0,
         }
     }
 

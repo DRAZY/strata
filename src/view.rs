@@ -107,6 +107,11 @@ impl EditorView {
         self.wants_focus = true;
     }
 
+    /// Withdraw a pending `focus()` (another pane took it).
+    pub fn cancel_focus(&mut self) {
+        self.wants_focus = false;
+    }
+
     /// `matches`: sorted find results to outline (empty when find is closed).
     pub fn show(&mut self, ui: &mut Ui, ed: &mut Editor, hl: &mut Highlighter, matches: &[Range<usize>]) {
         let id = self.id;

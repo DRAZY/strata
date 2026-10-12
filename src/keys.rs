@@ -11,6 +11,8 @@ pub const CMD_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 pub const CMD_ALT: Modifiers = Modifiers::COMMAND.plus(Modifiers::ALT);
 pub const CTRL: Modifiers = Modifiers::CTRL;
 pub const CTRL_SHIFT: Modifiers = Modifiers::CTRL.plus(Modifiers::SHIFT);
+pub const ALT_SHIFT: Modifiers = Modifiers::ALT.plus(Modifiers::SHIFT);
+pub const CMD_ALT_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::ALT).plus(Modifiers::SHIFT);
 pub const NONE: Modifiers = Modifiers::NONE;
 /// macOS only: Ctrl+Cmd.
 pub const CTRL_CMD: Modifiers = Modifiers::MAC_CMD.plus(Modifiers::CTRL);
@@ -35,8 +37,10 @@ pub fn exact(pressed: Modifiers, pattern: Modifiers) -> bool {
 /// Consume one press of `key` with exactly `mods` held.
 pub fn take(ctx: &Context, mods: Modifiers, key: Key) -> bool {
     ctx.input_mut(|i| {
+        // Also match the physical key: Shift+1 is logically "!" and Alt+1 is "¡" on a Mac.
         let found = i.events.iter().position(|e| {
-            matches!(e, Event::Key { key: k, pressed: true, modifiers, .. } if *k == key && exact(*modifiers, mods))
+            matches!(e, Event::Key { key: k, physical_key, pressed: true, modifiers, .. }
+                if (*k == key || *physical_key == Some(key)) && exact(*modifiers, mods))
         });
         if let Some(n) = found {
             i.events.remove(n);

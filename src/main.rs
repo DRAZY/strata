@@ -17,6 +17,7 @@ mod highlight;
 mod keys;
 mod lang;
 mod palette;
+mod panes;
 mod search;
 mod session;
 mod sidebar;
