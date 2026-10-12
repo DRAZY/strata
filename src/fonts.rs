@@ -53,3 +53,13 @@ pub fn ensure_cjk(ctx: &Context, text: &str) {
         ctx.add_font(FontInsert::new(&format!("cjk-{i}"), FontData::from_owned(bytes), families));
     }
 }
+
+/// macOS shortcut glyphs (⇧ ⌥ ⌃) aren't in egui's fonts; Apple Symbols has them.
+pub fn install_symbol_fallback(ctx: &Context) {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let Ok(bytes) = std::fs::read("/System/Library/Fonts/Apple Symbols.ttf") else { return };
+    let families = vec![InsertFontFamily { family: FontFamily::Proportional, priority: FontPriority::Lowest }];
+    ctx.add_font(FontInsert::new("apple-symbols", FontData::from_owned(bytes), families));
+}

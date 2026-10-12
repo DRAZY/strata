@@ -32,6 +32,8 @@ pub enum Cmd {
     GotoAnything,
     GotoLine,
     GotoSymbol,
+    SelectTheme,
+    SelectSyntax,
 }
 
 impl Cmd {
@@ -63,6 +65,8 @@ impl Cmd {
         Cmd::GotoAnything,
         Cmd::GotoLine,
         Cmd::GotoSymbol,
+        Cmd::SelectTheme,
+        Cmd::SelectSyntax,
     ];
 
     pub fn name(self) -> &'static str {
@@ -94,6 +98,8 @@ impl Cmd {
             Cmd::GotoAnything => "Goto: Anything (files)",
             Cmd::GotoLine => "Goto: Line…",
             Cmd::GotoSymbol => "Goto: Symbol…",
+            Cmd::SelectTheme => "Preferences: Color Scheme…",
+            Cmd::SelectSyntax => "View: Syntax…",
         }
     }
 
@@ -136,6 +142,7 @@ impl Cmd {
             Cmd::GotoAnything => &[(CMD, Key::P), (CMD, Key::T)],
             Cmd::GotoLine => &[(CTRL, Key::G)],
             Cmd::GotoSymbol => &[(CMD, Key::R)],
+            Cmd::SelectTheme | Cmd::SelectSyntax => &[],
         }
     }
 

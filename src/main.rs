@@ -6,19 +6,17 @@ mod buffer;
 mod commands;
 mod document;
 mod editor;
-#[allow(dead_code)] // wired into the UI later
 mod files;
 mod find;
 mod fonts;
-#[allow(dead_code)]
 mod fuzzy;
 mod devshot;
 mod highlight;
 mod keys;
+mod palette;
 mod search;
 mod session;
 mod sidebar;
-#[allow(dead_code)]
 mod symbols;
 mod view;
 
@@ -35,6 +33,9 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Strata",
         options,
-        Box::new(|_cc| Ok(Box::new(app::StrataApp::new(path, session::config_dir())))),
+        Box::new(|cc| {
+            fonts::install_symbol_fallback(&cc.egui_ctx);
+            Ok(Box::new(app::StrataApp::new(path, session::config_dir())))
+        }),
     )
 }

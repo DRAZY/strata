@@ -5,6 +5,7 @@ use crate::commands::{self, Cmd};
 use crate::devshot::DevShot;
 use crate::document::Document;
 use crate::find::{self, Query};
+use crate::palette::{self, Palette};
 use crate::session::{Session, Settings, TabState};
 use crate::sidebar::{self, Sidebar};
 use egui::{Color32, FontId, Key, Rect, Sense, Stroke, pos2, vec2};
@@ -43,7 +44,15 @@ pub struct StrataApp {
     fullscreen: bool,
     /// Tab being dragged to a new position.
     dragging_tab: Option<usize>,
+    palette: Palette,
+    /// Selections to put back if a palette preview (line, symbol) is cancelled.
+    palette_restore: Option<(usize, Vec<std::ops::Range<usize>>, usize)>,
+    /// Dev aid: STRATA_DEV_PALETTE="p:query" (or "cmd:query") opens a panel on the first frame.
+    dev_palette: Option<String>,
 }
+
+/// Editor commands offered in the command palette: (id, name, shortcut label).
+const EDITOR_COMMANDS: &[(&str, &str, &str)] = &[];
 
 impl StrataApp {
     pub fn new(path: Option<PathBuf>, config: Option<PathBuf>) -> Self {
@@ -64,6 +73,9 @@ impl StrataApp {
             chrome_theme: String::new(),
             fullscreen: false,
             dragging_tab: None,
+            palette: Palette::new(EDITOR_COMMANDS),
+            palette_restore: None,
+            dev_palette: std::env::var("STRATA_DEV_PALETTE").ok(),
         };
         if app.settings.hot_exit {
             app.restore_session();
@@ -440,7 +452,12 @@ impl StrataApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
             }
             Cmd::Settings => self.open_settings(),
-            Cmd::CommandPalette | Cmd::GotoAnything | Cmd::GotoLine | Cmd::GotoSymbol => {}
+            Cmd::CommandPalette => self.open_palette(ctx, palette::Mode::Commands, ""),
+            Cmd::GotoAnything => self.open_palette(ctx, palette::Mode::Files, ""),
+            Cmd::GotoLine => self.open_palette(ctx, palette::Mode::Files, ":"),
+            Cmd::GotoSymbol => self.open_palette(ctx, palette::Mode::Files, "@"),
+            Cmd::SelectTheme => self.open_palette(ctx, palette::Mode::Theme, ""),
+            Cmd::SelectSyntax => self.open_palette(ctx, palette::Mode::Syntax, ""),
         }
     }
 
@@ -456,11 +473,78 @@ impl StrataApp {
                 self.activate(if n == 8 { self.docs.len() - 1 } else { n });
             }
         }
-        if self.find.open && ctx.input(|i| i.key_pressed(Key::Escape)) {
+        if self.find.open && !self.palette.open && ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.find.open = false;
             self.doc().view.focus();
         }
     }
+
+    fn open_palette(&mut self, ctx: &egui::Context, mode: palette::Mode, prefix: &str) {
+        let d = &mut self.docs[self.active];
+        let sels = d.editor.selections().iter().map(|s| s.range()).collect();
+        let primary = d.editor.selections().iter().position(|s| *s == d.editor.primary()).unwrap_or(0);
+        self.palette_restore = Some((self.active, sels, primary));
+        let pctx = palette::Context {
+            text: d.editor.text_snapshot(),
+            syntax: d.highlighter.syntax_name().to_owned(),
+            lines: d.editor.buffer.len_lines(),
+            root: self.sidebar.root.clone(),
+            theme: self.settings.theme.clone(),
+            open: self.docs.iter().filter_map(|d| d.path.clone()).collect(),
+        };
+        self.palette.show_mode(mode, prefix, pctx, ctx);
+    }
+
+    fn goto_line(&mut self, line: usize) {
+        let d = self.doc();
+        let line = line.min(d.editor.buffer.len_lines() - 1);
+        let at = d.editor.buffer.line_start(line);
+        d.editor.select_ranges(&[at..at], 0);
+        d.view.reveal_centered();
+    }
+
+    fn palette_events(&mut self, ctx: &egui::Context, events: Vec<palette::Event>) {
+        use palette::Event;
+        for event in events {
+            match event {
+                Event::Run(c) => self.run(ctx, c),
+                Event::Editor(id) => self.run_editor(id),
+                Event::Open(p) => self.open_path(p, false),
+                Event::GotoLine { line, preview } => {
+                    self.goto_line(line);
+                    if preview {
+                        continue;
+                    }
+                }
+                Event::Theme { name, preview } => {
+                    for d in &mut self.docs {
+                        d.highlighter.set_theme(&name);
+                    }
+                    if preview {
+                        continue;
+                    }
+                    self.settings.theme = name;
+                    self.persist_settings();
+                }
+                Event::Syntax(s) => self.doc().highlighter.set_syntax(&s),
+                Event::Cancel => {
+                    self.apply_settings();
+                    if let Some((i, sels, primary)) = self.palette_restore.take() {
+                        if let Some(d) = self.docs.get_mut(i) {
+                            d.editor.select_ranges(&sels, primary);
+                            d.view.reveal_centered();
+                        }
+                    }
+                }
+            }
+            if !self.palette.open {
+                self.palette_restore = None;
+                self.doc().view.focus();
+            }
+        }
+    }
+
+    fn run_editor(&mut self, _id: &str) {}
 
     fn title(&self) -> String {
         let d = &self.docs[self.active];
@@ -1009,6 +1093,13 @@ impl eframe::App for StrataApp {
         if find_open {
             d.finder.matches = matches;
         }
+        if let Some(spec) = self.dev_palette.take() {
+            let (mode, q) = spec.split_once(':').unwrap_or((&spec, ""));
+            let mode = if mode == "p" { palette::Mode::Files } else { palette::Mode::Commands };
+            self.open_palette(ctx, mode, q);
+        }
+        let events = self.palette.show(ctx);
+        self.palette_events(ctx, events);
     }
 }
 
