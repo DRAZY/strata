@@ -113,7 +113,11 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
 Measured on an M-series Mac (release build): a 95 MB, 1.6M-line Python file
 opens and renders highlighted in ~0.6 s.
 
-Known gaps: no code folding, no replace-in-files, no plugin/package system, no
+Also: code folding (⌥⌘[ / ⌥⌘], ⌘K ⌘1…9), rulers and a fixed wrap column
+(View menu), soft undo, Emacs-style mark and yank, macros, paste from
+history, copy as HTML.
+
+Known gaps: no replace-in-files, no plugin/package system, no
 spell check, no macros, one window per app instance (no New Window), cloned
 views of one file in two panes aren't supported, and Finder "Open With" isn't
 wired up (drag the file onto the window or use ⌘O). Word wrap turns off for

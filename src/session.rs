@@ -31,6 +31,10 @@ pub struct Settings {
     pub show_status_bar: bool,
     /// Soft-wrap every file. Prose syntaxes (Markdown, plain text…) wrap regardless.
     pub word_wrap: bool,
+    /// Soft-wrap at this column instead of the window edge.
+    pub wrap_column: Option<usize>,
+    /// Vertical guides at these columns.
+    pub rulers: Vec<usize>,
     /// Column for Wrap Paragraph at Ruler.
     pub wrap_width: usize,
     /// Save every modified file before building.
@@ -55,6 +59,8 @@ impl Default for Settings {
             show_status_bar: true,
             word_wrap: false,
             wrap_width: 80,
+            wrap_column: None,
+            rulers: Vec::new(),
             detect_indentation: true,
             auto_complete: true,
             save_all_on_build: true,

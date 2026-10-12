@@ -264,6 +264,22 @@ impl StrataApp {
                     ],
                 ),
                 sub(
+                    "Code Folding",
+                    {
+                        let mut v = vec![
+                            Item::new("Fold", Act::Named("fold".into())).key(if MAC { CMD_ALT } else { CTRL_SHIFT }, Key::OpenBracket),
+                            Item::new("Unfold", Act::Named("unfold".into())).key(if MAC { CMD_ALT } else { CTRL_SHIFT }, Key::CloseBracket),
+                            Item::new("Unfold All", Act::Named("unfold_all".into())).hint(if MAC { "⌘K ⌘J" } else { "Ctrl+K Ctrl+J" }),
+                            SEP(),
+                            Item::new("Fold All", Act::Named("fold_all".into())).hint(if MAC { "⌘K ⌘1" } else { "Ctrl+K Ctrl+1" }),
+                        ];
+                        v.extend((2..=9).map(|n| {
+                            Item::new(format!("Fold Level {n}"), Act::Named(format!("fold_level:{n}"))).hint(&if MAC { format!("⌘K ⌘{n}") } else { format!("Ctrl+K Ctrl+{n}") })
+                        }));
+                        v
+                    },
+                ),
+                sub(
                     "Mark",
                     vec![
                         e("Set Mark", "set_mark"),
@@ -421,6 +437,16 @@ impl StrataApp {
                     ],
                 ),
                 c("Word Wrap", Cmd::ToggleWordWrap).checked(self.wraps(self.active)),
+                sub("Word Wrap Column", {
+                    let mut v = vec![Item::new("Automatic", Act::Named("wrapcol:auto".into())).checked(self.settings.wrap_column.is_none()), SEP()];
+                    v.extend(wraps.iter().map(|w| Item::new(w.to_string(), Act::Named(format!("wrapcol:{w}"))).checked(self.settings.wrap_column == Some(*w))));
+                    v
+                }),
+                sub("Ruler", {
+                    let mut v = vec![Item::new("None", Act::Named("ruler:none".into())).checked(self.settings.rulers.is_empty()), SEP()];
+                    v.extend(wraps.iter().map(|w| Item::new(w.to_string(), Act::Named(format!("ruler:{w}"))).checked(self.settings.rulers.contains(w))));
+                    v
+                }),
                 SEP(),
                 sub("Color Scheme", theme),
             ],
@@ -470,6 +496,14 @@ impl StrataApp {
                     ],
                 ),
                 SEP(),
+                sub(
+                    "Scroll",
+                    vec![
+                        Item::new("Scroll to Selection", Act::Named("scroll_sel".into())).keys(MAC.then_some((CTRL, Key::L))),
+                        Item::new("Line Up", Act::Named("scroll_up".into())).key(if MAC { CTRL_ALT } else { CTRL }, Key::ArrowUp),
+                        Item::new("Line Down", Act::Named("scroll_down".into())).key(if MAC { CTRL_ALT } else { CTRL }, Key::ArrowDown),
+                    ],
+                ),
                 sub("Bookmarks", bookmarks),
                 SEP(),
                 e("Jump to Matching Bracket", "jump_bracket"),
@@ -594,6 +628,31 @@ impl StrataApp {
                     e.use_spaces = !e.use_spaces;
                 }
                 "lf" => self.doc().set_line_ending(crate::buffer::LineEnding::Lf),
+                "fold" | "unfold" | "unfold_all" | "fold_all" | "scroll_sel" | "scroll_up" | "scroll_down" => {
+                    let d = self.doc();
+                    match n.as_str() {
+                        "fold" => d.view.fold(&mut d.editor),
+                        "unfold" => d.view.unfold(&mut d.editor),
+                        "unfold_all" => d.view.unfold_all(),
+                        "fold_all" => d.view.fold_all(&mut d.editor),
+                        "scroll_sel" => d.view.center_on_cursor(),
+                        "scroll_up" => d.view.scroll_lines(-1),
+                        _ => d.view.scroll_lines(1),
+                    }
+                }
+                n if n.starts_with("fold_level:") => {
+                    let level = n[11..].parse().unwrap_or(2);
+                    let d = self.doc();
+                    d.view.fold_level(&mut d.editor, level);
+                }
+                n if n.starts_with("wrapcol:") => {
+                    self.settings.wrap_column = n[8..].parse().ok();
+                    self.persist_settings();
+                }
+                n if n.starts_with("ruler:") => {
+                    self.settings.rulers = n[6..].parse().into_iter().collect();
+                    self.persist_settings();
+                }
                 "show_find_results" => {
                     self.sidebar.visible = true;
                     self.sidebar.tab = crate::sidebar::Tab::Search;

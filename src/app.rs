@@ -866,6 +866,10 @@ impl StrataApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        // After Cmd/Ctrl+K the next key finishes the editor's chord (⌘K ⌘1 folds all, …).
+        if self.docs[self.active].view.chord_pending() {
+            return;
+        }
         for cmd in commands::pressed(ctx) {
             self.run(ctx, cmd);
         }
@@ -1783,6 +1787,8 @@ impl eframe::App for StrataApp {
             let wrap = self.wraps(i);
             let d = &mut self.docs[i];
             d.view.wrap = wrap;
+            d.view.wrap_column = self.settings.wrap_column;
+            d.view.rulers.clone_from(&self.settings.rulers);
             if d.preview && d.editor.version() > 0 {
                 d.preview = false;
             }
@@ -1885,6 +1891,7 @@ impl eframe::App for StrataApp {
                 "split" => self.move_to_pane(q.parse::<usize>().unwrap_or(2).saturating_sub(1)),
                 "p" => self.open_palette(ctx, palette::Mode::Files, q),
                 "about" => self.about_open = true,
+                "fold" => self.run_act(ctx, crate::menus::Act::Named(format!("fold_level:{}", q.parse::<usize>().unwrap_or(2)))),
                 _ => self.open_palette(ctx, palette::Mode::Commands, q),
             }
         }
