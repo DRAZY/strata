@@ -28,7 +28,7 @@ Reference point: Sublime Text 4 (build 4215), observed behavior only.
 - [ ] JSON settings with per-syntax overrides; keymap files
 - [ ] Vim mode (equivalent of "Vintage")
 - [ ] LSP client
-- [ ] CLI launcher (`lucent file.txt`, `lucent -w` wait mode)
+- [ ] CLI launcher (`strata file.txt`, `strata -w` wait mode)
 
 ## Language coverage target (from the reference app's bundled set)
 ActionScript, AppleScript, ASP, Batch, C#, C/C++, Clojure, CSS, D, Diff, Erlang,

@@ -1,8 +1,8 @@
-# Lucent (working name)
+# Strata
 
 A fast, open-source, keyboard-first text editor in the spirit of Sublime Text.
 
-> Status: pre-alpha scaffold. Name is provisional — see `docs/NAMES.md`.
+> Status: pre-alpha scaffold. Icon: `assets/icon.svg`.
 
 ## Goals
 
