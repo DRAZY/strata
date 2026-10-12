@@ -52,6 +52,11 @@ impl Buffer {
         self.line_ending
     }
 
+    /// The ending used for new lines (Enter, paste). Existing text is unchanged.
+    pub fn set_line_ending(&mut self, ending: LineEnding) {
+        self.line_ending = ending;
+    }
+
     pub fn len_chars(&self) -> usize {
         self.rope.len_chars()
     }

@@ -811,6 +811,28 @@ impl StrataApp {
         ctx.set_visuals(v);
     }
 
+    /// Hints over an empty window.
+    fn welcome(&self, ctx: &egui::Context) {
+        let rect = ctx.content_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("welcome")));
+        let hl = &self.docs[0].highlighter;
+        let (fg, accent) = (hl.foreground(), hl.caret());
+        let center = rect.center() + vec2(if self.sidebar.visible && self.sidebar.root.is_some() { 130.0 } else { 0.0 }, -60.0);
+        painter.text(center, egui::Align2::CENTER_CENTER, "Strata", FontId::proportional(40.0), accent.gamma_multiply(0.85));
+        let rows = [
+            ("Goto Anything", Cmd::GotoAnything),
+            ("Command Palette", Cmd::CommandPalette),
+            ("Open Folder", Cmd::OpenFolder),
+            ("Open File", Cmd::Open),
+            ("New File", Cmd::NewTab),
+        ];
+        for (i, (name, cmd)) in rows.into_iter().enumerate() {
+            let y = center.y + 54.0 + i as f32 * 26.0;
+            painter.text(pos2(center.x - 8.0, y), egui::Align2::RIGHT_CENTER, name, FontId::proportional(14.0), fg.gamma_multiply(0.55));
+            painter.text(pos2(center.x + 8.0, y), egui::Align2::LEFT_CENTER, cmd.shortcut_label().unwrap_or_default(), FontId::proportional(14.0), fg.gamma_multiply(0.85));
+        }
+    }
+
     fn display_names(&self) -> Vec<String> {
         let names: Vec<String> = self.docs.iter().map(|d| d.name()).collect();
         // Same file name in two folders: add the folder to tell them apart.
@@ -957,9 +979,13 @@ impl StrataApp {
                 ui.separator();
                 let ending = d.editor.buffer.line_ending();
                 ui.menu_button(if ending == LineEnding::Lf { "LF" } else { "CRLF" }, |ui| {
-                    ui.label(egui::RichText::new("Line endings for new lines").weak());
-                    let _ = ui.selectable_label(ending == LineEnding::Lf, "LF (Unix, macOS)");
-                    let _ = ui.selectable_label(ending == LineEnding::CrLf, "CRLF (Windows)");
+                    ui.label(egui::RichText::new("Convert line endings").weak());
+                    for (e, label) in [(LineEnding::Lf, "LF (macOS, Linux)"), (LineEnding::CrLf, "CRLF (Windows)")] {
+                        if ui.selectable_label(ending == e, label).clicked() {
+                            d.set_line_ending(e);
+                            ui.close();
+                        }
+                    }
                 });
                 ui.separator();
                 let mut tab = self.settings.tab_size;
@@ -1047,10 +1073,18 @@ impl eframe::App for StrataApp {
 
         if self.sidebar.visible && self.sidebar.root.is_some() {
             let current = self.docs[self.active].path.clone();
+            let names = self.display_names();
+            let open: Vec<sidebar::OpenFile> = self
+                .docs
+                .iter()
+                .zip(names)
+                .enumerate()
+                .map(|(i, (d, name))| sidebar::OpenFile { name, dirty: d.is_dirty(), active: i == self.active })
+                .collect();
             let action = egui::Panel::left("sidebar")
                 .resizable(true)
                 .default_size(260.0)
-                .show(ui, |ui| self.sidebar.show(ui, current.as_deref()))
+                .show(ui, |ui| self.sidebar.show(ui, current.as_deref(), &open))
                 .inner;
             match action {
                 Some(sidebar::Action::Open(p, preview)) => {
@@ -1061,6 +1095,23 @@ impl eframe::App for StrataApp {
                     }
                 }
                 Some(sidebar::Action::OpenAt(p, line, cols)) => self.open_at(p, line, cols),
+                Some(sidebar::Action::Activate(i)) => self.activate(i),
+                Some(sidebar::Action::Close(i)) => {
+                    self.close_tab(i);
+                }
+                Some(sidebar::Action::Renamed(from, to)) => {
+                    // Open tabs inside a renamed folder (or the file itself) follow it.
+                    for d in &mut self.docs {
+                        if let Some(rest) = d.path.as_ref().and_then(|p| p.strip_prefix(&from).ok()) {
+                            let new = if rest.as_os_str().is_empty() { to.clone() } else { to.join(rest) };
+                            d.highlighter.detect(Some(&new), &d.editor.buffer.line_text(0));
+                            d.disk_mtime = crate::document::mtime(&new);
+                            d.path = Some(new);
+                        }
+                    }
+                    self.status = format!("Renamed to {}", to.display());
+                }
+                Some(sidebar::Action::Status(s)) => self.status = s,
                 None => {}
             }
         }
@@ -1092,6 +1143,9 @@ impl eframe::App for StrataApp {
             .show(ui, |ui| d.view.show(ui, &mut d.editor, &mut d.highlighter, &matches));
         if find_open {
             d.finder.matches = matches;
+        }
+        if self.docs.len() == 1 && self.docs[0].is_blank() && !self.palette.open {
+            self.welcome(ctx);
         }
         if let Some(spec) = self.dev_palette.take() {
             let (mode, q) = spec.split_once(':').unwrap_or((&spec, ""));
@@ -1226,7 +1280,7 @@ mod tests {
         let ctx = Context::default();
         let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(300.0, 400.0))), ..Default::default() };
         let mut out = ctx.run_ui(raw, |ui| {
-            app.sidebar.show(ui, Some(&p));
+            app.sidebar.show(ui, Some(&p), &[]);
         });
         out.textures_delta.clear();
         std::fs::remove_dir_all(dir).ok();

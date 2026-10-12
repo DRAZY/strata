@@ -1,6 +1,6 @@
 //! One open tab: a buffer with its own cursors, undo, scroll and highlighting.
 
-use crate::buffer::Buffer;
+use crate::buffer::{Buffer, LineEnding};
 use crate::editor::Editor;
 use crate::find::Finder;
 use crate::highlight::Highlighter;
@@ -120,6 +120,22 @@ impl Document {
         true
     }
 
+    /// Convert every line break (one undo step); the cursor keeps its line and column.
+    pub fn set_line_ending(&mut self, ending: LineEnding) {
+        let (line, col) = self.editor.cursor_line_col();
+        let text = self.editor.text_snapshot();
+        let lf = text.replace("\r\n", "\n");
+        let new = if ending == LineEnding::CrLf { lf.replace('\n', "\r\n") } else { lf };
+        if new != *text {
+            let len = self.editor.buffer.len_chars();
+            self.editor.replace_ranges(vec![(0..len, new)]);
+        }
+        self.editor.buffer.set_line_ending(ending);
+        let b = &self.editor.buffer;
+        let at = (b.line_start(line - 1) + col - 1).min(b.line_end(line - 1));
+        self.editor.select_ranges(&[at..at], 0);
+    }
+
     /// Swap in new text, keeping the cursor on (about) the same spot.
     pub fn reload(&mut self, buffer: Buffer) {
         let head = self.editor.primary().head.min(buffer.len_chars());
@@ -158,6 +174,18 @@ mod tests {
         assert!(!doc.check_disk(), "unsaved edits are kept");
         assert!(doc.conflict);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn converting_line_endings_is_one_undo_step() {
+        let mut doc = Document::from_buffer(None, Buffer::from_str("a\nbc\n"));
+        doc.editor.select_ranges(&[3..3], 0);
+        doc.set_line_ending(LineEnding::CrLf);
+        assert_eq!(doc.editor.buffer.slice(0..doc.editor.buffer.len_chars()), "a\r\nbc\r\n");
+        assert_eq!(doc.editor.cursor_line_col(), (2, 2));
+        assert!(doc.is_dirty());
+        doc.editor.undo();
+        assert_eq!(doc.editor.buffer.slice(0..doc.editor.buffer.len_chars()), "a\nbc\n");
     }
 
     #[test]

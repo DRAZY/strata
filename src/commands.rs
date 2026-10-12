@@ -95,7 +95,7 @@ impl Cmd {
             Cmd::Fullscreen => "View: Toggle Full Screen",
             Cmd::Settings => "Preferences: Settings",
             Cmd::CommandPalette => "Command Palette",
-            Cmd::GotoAnything => "Goto: Anything (files)",
+            Cmd::GotoAnything => "Goto: Anything (Files, :Line, @Symbol)",
             Cmd::GotoLine => "Goto: Line…",
             Cmd::GotoSymbol => "Goto: Symbol…",
             Cmd::SelectTheme => "Preferences: Color Scheme…",
