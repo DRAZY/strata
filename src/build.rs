@@ -1021,11 +1021,6 @@ impl Build {
         self.out.text()
     }
 
-    /// Parsed result locations (0-based line/col), oldest first.
-    #[cfg(test)]
-    pub fn results(&self) -> impl Iterator<Item = &BuildResult> {
-        self.out.results.iter()
-    }
 
     /// Drain output from the build thread. Call once per frame (show() does too).
     pub fn poll(&mut self, ctx: &egui::Context) {
