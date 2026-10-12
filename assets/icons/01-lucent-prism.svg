@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024"><defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1b2140"/><stop offset="1" stop-color="#0b0f1f"/></linearGradient><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#a78bfa"/></linearGradient><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="18" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><rect x="64" y="64" width="896" height="896" rx="200" fill="url(#bg)"/>
+<g filter="url(#glow)"><polygon points="512,210 760,450 512,814 264,450" fill="url(#g)"/>
+<polygon points="512,210 600,450 512,814 424,450" fill="#ffffff" opacity=".22"/>
+<polyline points="264,450 760,450" stroke="#fff" stroke-opacity=".35" stroke-width="6" fill="none"/></g></svg>
