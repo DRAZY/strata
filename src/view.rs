@@ -6,7 +6,7 @@ use crate::highlight::{Highlighter, Span};
 use egui::text::{CCursor, LayoutJob, TextFormat};
 use egui::{
     Align2, Color32, CursorIcon, Event, EventFilter, FontId, Galley, Id, Key, Modifiers,
-    PointerButton, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2,
+    ImeEvent, PointerButton, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2,
 };
 use std::ops::Range;
 use std::sync::Arc;
@@ -20,6 +20,10 @@ pub struct EditorView {
     max_width: f32,
     scroll_to_cursor: bool,
     wants_focus: bool,
+    /// IME composition in progress (shown at the primary caret, not yet in the buffer).
+    preedit: String,
+    /// Screen rect of the primary caret, for placing the IME candidate window.
+    caret_rect: Option<Rect>,
 }
 
 /// Per-frame geometry shared by input handling and painting.
@@ -48,6 +52,8 @@ impl EditorView {
             max_width: 0.0,
             scroll_to_cursor: false,
             wants_focus: true,
+            preedit: String::new(),
+            caret_rect: None,
         }
     }
 
@@ -107,6 +113,22 @@ impl EditorView {
         m.origin_x = m.text.left() + m.char_w - self.scroll.x;
 
         self.paint(ui, ed, hl, &m, resp.has_focus(), matches);
+
+        if resp.has_focus() {
+            // Enables the OS input method and positions its candidate window.
+            if let Some(cursor_rect) = self.caret_rect {
+                ui.output_mut(|o| {
+                    o.ime = Some(egui::output::IMEOutput {
+                        purpose: egui::IMEPurpose::Normal,
+                        rect: m.text,
+                        cursor_rect,
+                        should_interrupt_composition: false,
+                    })
+                });
+            }
+        } else {
+            self.preedit.clear();
+        }
     }
 
     fn metrics(&self, ui: &Ui, ed: &Editor, rect: Rect) -> Metrics {
@@ -132,7 +154,14 @@ impl EditorView {
         let events = ui.input(|i| i.events.clone());
         for event in events {
             match event {
-                Event::Text(t) if !t.is_empty() => ed.insert_text(&t),
+                Event::Text(t) if !t.is_empty() && t != "\n" && t != "\r" => ed.insert_text(&t),
+                Event::Ime(ime) => {
+                    if !self.handle_ime(ed, ime) {
+                        continue;
+                    }
+                }
+                // Keys mid-composition belong to the input method.
+                Event::Key { .. } if !self.preedit.is_empty() => continue,
                 Event::Paste(t) => ed.paste(&t),
                 Event::Copy => ui.ctx().copy_text(ed.copy()),
                 Event::Cut => ui.ctx().copy_text(ed.cut()),
@@ -144,6 +173,31 @@ impl EditorView {
                 _ => continue,
             }
             self.scroll_to_cursor = true;
+        }
+    }
+
+    /// Returns true if the buffer changed.
+    fn handle_ime(&mut self, ed: &mut Editor, ime: ImeEvent) -> bool {
+        match ime {
+            // Some platforms send empty events when no composition is active.
+            ImeEvent::Preedit { text, .. } | ImeEvent::Commit(text)
+                if text.is_empty() && self.preedit.is_empty() =>
+            {
+                false
+            }
+            ImeEvent::Preedit { text, .. } | ImeEvent::Commit(text) if text == "\n" || text == "\r" => false,
+            ImeEvent::Preedit { text, .. } => {
+                self.preedit = text;
+                false
+            }
+            ImeEvent::Commit(text) => {
+                self.preedit.clear();
+                if !text.is_empty() {
+                    ed.insert_text(&text);
+                }
+                true
+            }
+            _ => false,
         }
     }
 
@@ -202,6 +256,10 @@ impl EditorView {
         } else if resp.double_clicked() {
             ed.select_word_at(pos);
         } else if pressed && resp.is_pointer_button_down_on() {
+            if !self.preedit.is_empty() {
+                self.preedit.clear();
+                ui.memory_mut(|mem| mem.interrupt_ime());
+            }
             if mods.command {
                 ed.add_cursor(pos);
             } else {
@@ -306,13 +364,26 @@ impl EditorView {
         let first_char = ed.buffer.line_start(first);
         let mut next_match = matches.partition_point(|r| r.end < first_char);
         let caret_lines: Vec<usize> = ed.selections().iter().map(|s| ed.buffer.line_of(s.head)).collect();
+        let primary_head = ed.primary().head;
+        let primary_line = ed.buffer.line_of(primary_head);
+        let preedit_chars = self.preedit.chars().count();
+        self.caret_rect = None;
+        crate::fonts::ensure_cjk(ui.ctx(), &self.preedit);
 
         for line in first..=last {
             let y = m.line_top(line, self.scroll.y);
             let row = Rect::from_min_size(pos2(m.text.left(), y), vec2(m.text.width(), m.row_h));
             let text = ed.buffer.line_text(line);
+            crate::fonts::ensure_cjk(ui.ctx(), &text);
             let spans = hl.line(line);
-            let galley = layout_line(ui, &text, spans.as_deref().map(|v| v.as_slice()), &m.font, fg, ed.tab_width);
+            let line_start = ed.buffer.line_start(line);
+            // The IME composition is drawn inline at the primary caret.
+            let composing = line == primary_line && preedit_chars > 0;
+            let insert = composing.then(|| {
+                let byte = text.char_indices().nth(primary_head - line_start).map_or(text.len(), |(b, _)| b);
+                Insert { byte, text: &self.preedit }
+            });
+            let galley = layout_line_with(ui, &text, spans.as_deref().map(|v| v.as_slice()), &m.font, fg, ed.tab_width, insert);
             self.max_width = self.max_width.max(galley.size().x);
 
             let on_caret_line = caret_lines.contains(&line);
@@ -320,10 +391,10 @@ impl EditorView {
                 text_painter.rect_filled(row, 0.0, Color32::from_white_alpha(8));
             }
 
-            let line_start = ed.buffer.line_start(line);
             let line_end = ed.buffer.line_end(line);
             let x_at = |pos: usize| {
-                let dcol = ed.display_col(pos);
+                let shift = if composing && pos >= primary_head { preedit_chars } else { 0 };
+                let dcol = ed.display_col(pos) + shift;
                 m.origin_x + galley.pos_from_cursor(CCursor::new(dcol)).min.x
             };
             for s in ed.selections() {
@@ -363,6 +434,9 @@ impl EditorView {
                 }
                 let x = x_at(s.head);
                 let caret = Rect::from_min_size(pos2(x - 1.0, y), vec2(2.0, m.row_h));
+                if s.head == primary_head {
+                    self.caret_rect = Some(caret);
+                }
                 if focused {
                     text_painter.rect_filled(caret, 0.0, caret_color);
                 } else {
@@ -382,8 +456,57 @@ impl EditorView {
     }
 }
 
+/// Text spliced into a line for display only (IME composition).
+struct Insert<'a> {
+    byte: usize,
+    text: &'a str,
+}
+
 /// Lay out one line with tabs expanded, colored by `spans` when available.
 fn layout_line(ui: &Ui, text: &str, spans: Option<&[Span]>, font: &FontId, fg: Color32, tab: usize) -> Arc<Galley> {
+    layout_line_with(ui, text, spans, font, fg, tab, None)
+}
+
+fn layout_line_with(
+    ui: &Ui,
+    text: &str,
+    spans: Option<&[Span]>,
+    font: &FontId,
+    fg: Color32,
+    tab: usize,
+    insert: Option<Insert>,
+) -> Arc<Galley> {
+    // Flatten into (byte range, format) segments, then splice the insert in.
+    let valid = spans.filter(|s| !s.is_empty() && s.last().is_none_or(|l| l.range.end <= text.len()));
+    let mut segments: Vec<(std::ops::Range<usize>, TextFormat)> = match valid {
+        Some(spans) => spans
+            .iter()
+            .map(|span| {
+                let mut fmt = TextFormat::simple(font.clone(), span.color);
+                fmt.italics = span.italic;
+                if span.underline {
+                    fmt.underline = Stroke::new(1.0, span.color);
+                }
+                (span.range.clone(), fmt)
+            })
+            .collect(),
+        None => vec![(0..text.len(), TextFormat::simple(font.clone(), fg))],
+    };
+    let mut pieces: Vec<(&str, TextFormat)> = Vec::with_capacity(segments.len() + 2);
+    let mut insert = insert.filter(|i| i.byte <= text.len());
+    for (range, fmt) in segments.drain(..) {
+        if let Some(ins) = insert.as_ref().filter(|i| i.byte >= range.start && i.byte <= range.end) {
+            pieces.push((&text[range.start..ins.byte], fmt.clone()));
+            let mut ime = TextFormat::simple(font.clone(), fg);
+            ime.underline = Stroke::new(1.0, fg);
+            pieces.push((ins.text, ime));
+            pieces.push((&text[ins.byte..range.end], fmt));
+            insert = None;
+        } else {
+            pieces.push((&text[range], fmt));
+        }
+    }
+
     let mut job = LayoutJob::default();
     job.wrap.max_width = f32::INFINITY;
     let mut col = 0;
@@ -401,19 +524,10 @@ fn layout_line(ui: &Ui, text: &str, spans: Option<&[Span]>, font: &FontId, fg: C
         }
         job.append(&out, 0.0, fmt);
     };
-    let valid = spans.filter(|s| s.last().is_none_or(|l| l.range.end <= text.len()));
-    match valid {
-        Some(spans) if !spans.is_empty() => {
-            for span in spans {
-                let mut fmt = TextFormat::simple(font.clone(), span.color);
-                fmt.italics = span.italic;
-                if span.underline {
-                    fmt.underline = Stroke::new(1.0, span.color);
-                }
-                push(&mut job, &text[span.range.clone()], fmt);
-            }
+    for (piece, fmt) in pieces {
+        if !piece.is_empty() {
+            push(&mut job, piece, fmt);
         }
-        _ => push(&mut job, text, TextFormat::simple(font.clone(), fg)),
     }
     ui.fonts_mut(|f| f.layout_job(job))
 }
@@ -537,6 +651,39 @@ mod tests {
         assert_eq!(h.ed.selections().len(), 3);
         h.frame(vec![Event::Text("b".into())]);
         assert_eq!(h.text(), "let b = b + b;");
+    }
+
+    #[test]
+    fn ime_composition_then_commit() {
+        let mut h = Harness::new("ab");
+        h.frame(vec![key(Key::ArrowRight, Modifiers::NONE)]);
+        let preedit = |t: &str| Event::Ime(ImeEvent::Preedit { text: t.into(), active_range_chars: None });
+        h.frame(vec![preedit("n"), preedit("ni")]);
+        assert_eq!(h.text(), "ab", "composition is not in the buffer yet");
+        assert_eq!(h.view.preedit, "ni");
+        // Keys during composition go to the input method, not the editor.
+        h.frame(vec![key(Key::Backspace, Modifiers::NONE)]);
+        assert_eq!(h.text(), "ab");
+        h.frame(vec![Event::Ime(ImeEvent::Commit("你".into()))]);
+        assert_eq!(h.text(), "a你b");
+        assert!(h.view.preedit.is_empty());
+        assert_eq!(h.ed.primary().head, 2);
+    }
+
+    #[test]
+    fn focused_editor_requests_ime_at_caret() {
+        let mut h = Harness::new("hello");
+        let raw = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+            ..Default::default()
+        };
+        let (view, ed, hl) = (&mut h.view, &mut h.ed, &mut h.hl);
+        let mut out = h.ctx.run_ui(raw, |ui| {
+            CentralPanel::default().show(ui, |ui| view.show(ui, ed, hl, &[]));
+        });
+        out.textures_delta.clear();
+        let ime = out.platform_output.ime.expect("IME enabled while focused");
+        assert!(ime.rect.contains(ime.cursor_rect.center()));
     }
 
     #[test]
