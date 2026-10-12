@@ -43,6 +43,7 @@ pub enum Cmd {
     SplitRight,
     FocusGroup(u8),
     MoveToGroup(u8),
+    ToggleWordWrap,
 }
 
 impl Cmd {
@@ -91,6 +92,7 @@ impl Cmd {
         Cmd::MoveToGroup(1),
         Cmd::MoveToGroup(2),
         Cmd::MoveToGroup(3),
+        Cmd::ToggleWordWrap,
     ];
 
     pub fn name(self) -> &'static str {
@@ -139,6 +141,7 @@ impl Cmd {
             Cmd::MoveToGroup(1) => "Layout: Move File to Pane 2",
             Cmd::MoveToGroup(2) => "Layout: Move File to Pane 3",
             Cmd::MoveToGroup(_) => "Layout: Move File to Pane 4",
+            Cmd::ToggleWordWrap => "View: Toggle Word Wrap",
         }
     }
 
@@ -182,6 +185,7 @@ impl Cmd {
             Cmd::GotoLine => &[(CTRL, Key::G)],
             Cmd::GotoSymbol => &[(CMD, Key::R)],
             Cmd::SelectTheme | Cmd::SelectSyntax | Cmd::SplitRight => &[],
+            Cmd::ToggleWordWrap => if MAC { &[(CMD_ALT, Key::W)] } else { &[(ALT_SHIFT, Key::W)] },
             // Sublime's layout keys: Alt+Cmd+N on macOS, Alt+Shift+N elsewhere.
             Cmd::LayoutSingle => if MAC { &[(CMD_ALT, Key::Num1)] } else { &[(ALT_SHIFT, Key::Num1)] },
             Cmd::LayoutColumns2 => if MAC { &[(CMD_ALT, Key::Num2)] } else { &[(ALT_SHIFT, Key::Num2)] },

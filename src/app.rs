@@ -192,6 +192,13 @@ impl StrataApp {
         app
     }
 
+    /// Is word wrap on for tab `i`?
+    fn wraps(&self, i: usize) -> bool {
+        let d = &self.docs[i];
+        let prose = matches!(d.highlighter.syntax_name(), "Markdown" | "MultiMarkdown" | "Plain Text" | "reStructuredText" | "Textile" | "LaTeX");
+        d.wrap.unwrap_or(self.settings.word_wrap || prose)
+    }
+
     fn hot_exit(&self) -> bool {
         self.settings.hot_exit && self.session_lock.is_some()
     }
@@ -533,6 +540,7 @@ impl StrataApp {
                 _ => None,
             };
             let Some(mut doc) = doc else { continue };
+            doc.wrap = tab.wrap;
             if let Some(s) = &tab.syntax {
                 doc.highlighter.set_syntax(s);
             }
@@ -604,6 +612,7 @@ impl StrataApp {
                 disk_mtime: d.disk_mtime,
                 conflict: d.conflict,
                 group: d.group,
+                wrap: d.wrap,
                 stamp: d.stamp,
             });
         }
@@ -684,6 +693,10 @@ impl StrataApp {
                 self.move_to_pane((g + 1).min(self.layout.groups() - 1));
             }
             Cmd::FocusGroup(g) => self.focus_pane(g as usize),
+            Cmd::ToggleWordWrap => {
+                let on = self.wraps(self.active);
+                self.docs[self.active].wrap = Some(!on);
+            }
             Cmd::MoveToGroup(g) => self.move_to_pane(g as usize),
             Cmd::ToggleSidebar => self.sidebar.visible = !self.sidebar.visible,
             Cmd::Find => self.open_find(false),
@@ -1482,7 +1495,10 @@ impl eframe::App for StrataApp {
             }
             ctx.request_repaint_after(std::time::Duration::from_secs(2));
         }
-        for d in &mut self.docs {
+        for i in 0..self.docs.len() {
+            let wrap = self.wraps(i);
+            let d = &mut self.docs[i];
+            d.view.wrap = wrap;
             if d.preview && d.editor.version() > 0 {
                 d.preview = false;
             }

@@ -29,6 +29,8 @@ pub struct Document {
     pub group: usize,
     /// When the tab was last activated; each pane shows its most recent tab.
     pub stamp: u64,
+    /// Word wrap chosen for this tab; None follows the setting and syntax.
+    pub wrap: Option<bool>,
 }
 
 pub fn mtime(path: &Path) -> Option<SystemTime> {
@@ -59,6 +61,7 @@ impl Document {
             deleted: false,
             group: 0,
             stamp: 0,
+            wrap: None,
         }
     }
 

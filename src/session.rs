@@ -27,6 +27,8 @@ pub struct Settings {
     pub tab_size: usize,
     pub translate_tabs_to_spaces: bool,
     pub minimap: bool,
+    /// Soft-wrap every file. Prose syntaxes (Markdown, plain text…) wrap regardless.
+    pub word_wrap: bool,
     /// Restore open tabs, unsaved text included, instead of asking on quit.
     pub hot_exit: bool,
 }
@@ -39,6 +41,7 @@ impl Default for Settings {
             tab_size: 4,
             translate_tabs_to_spaces: true,
             minimap: true,
+            word_wrap: false,
             hot_exit: true,
         }
     }
@@ -90,6 +93,7 @@ pub struct TabState {
     /// The file changed on disk while the tab had unsaved edits.
     pub conflict: bool,
     pub group: usize,
+    pub wrap: Option<bool>,
     /// Tabs shown in each pane: the highest stamp per group.
     pub stamp: u64,
 }
