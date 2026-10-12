@@ -2,6 +2,7 @@
 //! keyboard/mouse input into `Editor` commands.
 
 use crate::editor::Editor;
+use crate::fold::{self, Folds};
 use crate::highlight::{Highlighter, Span};
 use crate::lang::{self, CommentTokens};
 use crate::wrap::{self, LineRows, WrapIndex};
@@ -53,6 +54,32 @@ pub struct EditorView {
     last_wrap: Option<usize>,
     /// First line shown last frame.
     top_line: usize,
+    /// Wrap at this column when it's narrower than the window.
+    pub wrap_column: Option<usize>,
+    /// Columns to draw vertical rulers at.
+    pub rulers: Vec<usize>,
+    folds: Folds,
+    fold_rows: FoldRows,
+    /// Fold generation the scroll position was last anchored to.
+    fold_gen: u64,
+    /// First line changed since the highlighter was last told.
+    changed_from: Option<usize>,
+    /// Rows to scroll by on the next frame (`scroll_lines`).
+    pending_scroll: isize,
+    /// Center the cursor line even if it's on screen.
+    center_always: bool,
+    /// "…" pills painted last frame, with their header lines.
+    pills: Vec<(Rect, usize)>,
+    gutter_hover: bool,
+}
+
+/// Visual rows hidden by folds, per fold (in `Folds::list` order).
+#[derive(Default)]
+struct FoldRows {
+    /// Visual row (folds applied) just after each fold's header.
+    pos: Vec<usize>,
+    /// `cum[i]`: rows hidden by folds before `i`; one extra entry = all.
+    cum: Vec<usize>,
 }
 
 /// Per-frame geometry shared by input handling and painting.
@@ -102,6 +129,16 @@ impl EditorView {
             wrap_index: WrapIndex::default(),
             last_wrap: None,
             top_line: 0,
+            wrap_column: None,
+            rulers: Vec::new(),
+            folds: Folds::default(),
+            fold_rows: FoldRows::default(),
+            fold_gen: 0,
+            changed_from: None,
+            pending_scroll: 0,
+            center_always: false,
+            pills: Vec::new(),
+            gutter_hover: false,
         }
     }
 
@@ -140,6 +177,170 @@ impl EditorView {
         self.wants_focus = false;
     }
 
+    /// Cmd/Ctrl+K was pressed and the view waits for the chord's second key;
+    /// app-level shortcuts on that key (Cmd+1…9, Cmd+0) should stand aside.
+    #[allow(dead_code)] // for the app's shortcut handling
+    pub fn chord_pending(&self) -> bool {
+        self.chord_k
+    }
+
+    /// Scroll the view by `n` lines (negative = up), leaving the cursor alone.
+    pub fn scroll_lines(&mut self, n: isize) {
+        self.pending_scroll += n;
+    }
+
+    /// Scroll so the primary cursor's line is mid-screen.
+    #[allow(dead_code)] // for the app's menus
+    pub fn center_on_cursor(&mut self) {
+        self.scroll_to_cursor = true;
+        self.center_always = true;
+    }
+
+    // ---- folding ---------------------------------------------------------
+
+    /// Fold the region at each cursor (its own region if the cursor line starts
+    /// one, else the one around it), or the lines of each multi-line selection.
+    pub fn fold(&mut self, ed: &mut Editor) {
+        self.sync_folds(ed);
+        let (buf, tab) = (&ed.buffer, ed.tab_width);
+        let ranges: Vec<(usize, usize)> = ed
+            .selections()
+            .iter()
+            .filter_map(|s| {
+                let a = buf.line_of(s.start());
+                let mut b = buf.line_of(s.end());
+                if b > a && s.end() == buf.line_start(b) {
+                    b -= 1;
+                }
+                if b > a {
+                    return Some((a, b));
+                }
+                if self.folds.at_header(a).is_none()
+                    && let Some(end) = fold::region_at(buf, a, tab)
+                {
+                    return Some((a, end));
+                }
+                fold::enclosing(buf, a, tab)
+            })
+            .collect();
+        self.folds.add(buf, ranges);
+        self.park_carets(ed);
+    }
+
+    /// Unfold folds on or around each selection's lines.
+    pub fn unfold(&mut self, ed: &mut Editor) {
+        self.sync_folds(ed);
+        let lines: Vec<(usize, usize)> =
+            ed.selections().iter().map(|s| (ed.buffer.line_of(s.start()), ed.buffer.line_of(s.end()))).collect();
+        self.folds.retain(|f| !lines.iter().any(|&(a, b)| f.header <= b && f.end >= a));
+    }
+
+    pub fn unfold_all(&mut self) {
+        self.folds.clear();
+    }
+
+    /// Fold every outermost region.
+    pub fn fold_all(&mut self, ed: &mut Editor) {
+        self.fold_level(ed, 1);
+    }
+
+    /// Unfold everything, then fold each region nested `level - 1` or more deep
+    /// (Fold Level N: level 1 folds everything, 2 keeps the top level open).
+    pub fn fold_level(&mut self, ed: &mut Editor, level: usize) {
+        self.sync_folds(ed);
+        let depth = level.saturating_sub(1);
+        let regions = fold::all_regions(&ed.buffer, ed.tab_width);
+        self.folds.clear();
+        self.folds.add_regions(&ed.buffer, regions.into_iter().filter(|r| r.depth >= depth));
+        self.park_carets(ed);
+    }
+
+    /// `line` is hidden inside a fold.
+    #[allow(dead_code)] // for the app's menus
+    pub fn is_folded_line(&self, line: usize) -> bool {
+        self.folds.hiding(line).is_some()
+    }
+
+    /// `line` is the visible header of a fold.
+    #[allow(dead_code)] // for the app's menus
+    pub fn is_fold_header(&self, line: usize) -> bool {
+        self.folds.at_header(line).is_some()
+    }
+
+    /// Fold or unfold the region starting at `line` (gutter arrow).
+    fn toggle_fold_at(&mut self, ed: &mut Editor, line: usize) {
+        self.sync_folds(ed);
+        if let Some(i) = self.folds.at_header(line) {
+            let header = self.folds.list()[i].header;
+            self.folds.retain(|f| f.header != header);
+        } else if let Some(end) = fold::region_at(&ed.buffer, line, ed.tab_width) {
+            self.folds.add(&ed.buffer, [(line, end)]);
+            self.park_carets(ed);
+        }
+    }
+
+    /// Bring the folds up to date with edits since they were last placed.
+    fn sync_folds(&mut self, ed: &mut Editor) {
+        let changed = ed.take_changed_from();
+        if let Some(line) = changed {
+            self.changed_from = Some(self.changed_from.map_or(line, |l| l.min(line)));
+        }
+        self.folds.sync(&ed.buffer, ed.version(), changed, ed.tab_width);
+    }
+
+    /// Move carets out of hidden lines to the end of their fold's header.
+    fn park_carets(&self, ed: &mut Editor) {
+        let folds = &self.folds;
+        if !ed.selections().iter().any(|s| folds.hiding(ed.buffer.line_of(s.head)).is_some()) {
+            return;
+        }
+        let park = |pos: usize| match folds.hiding(ed.buffer.line_of(pos)) {
+            Some(i) => ed.buffer.line_end(folds.list()[i].header),
+            None => pos,
+        };
+        // Reversed ranges keep each selection's direction.
+        let ranges: Vec<std::ops::Range<usize>> = ed.selections().iter().map(|s| park(s.anchor)..park(s.head)).collect();
+        let primary = ed.selections().iter().position(|s| *s == ed.primary()).unwrap_or(0);
+        ed.select_ranges(&ranges, primary);
+    }
+
+    /// Unfold whatever hides a caret (it moved there by search, undo, ...).
+    fn unfold_carets(&mut self, ed: &Editor) {
+        if self.folds.is_empty() {
+            return;
+        }
+        let heads: Vec<usize> = ed.selections().iter().map(|s| ed.buffer.line_of(s.head)).collect();
+        if heads.iter().any(|&l| self.folds.hiding(l).is_some()) {
+            self.folds.retain(|f| !heads.iter().any(|&l| f.header < l && l <= f.end));
+        }
+    }
+
+    /// Keep the top line in place when wrapping or folds change the rows above it.
+    fn keep_top_line(&mut self, ed: &Editor, m: &Metrics) {
+        if m.wrap != self.last_wrap || self.folds.generation != self.fold_gen {
+            self.last_wrap = m.wrap;
+            self.fold_gen = self.folds.generation;
+            self.scroll.y = self.line_row(ed, m, self.top_line) as f32 * m.row_h;
+        }
+    }
+
+    /// Fold edits, wrap index and fold rows, before rows are used.
+    fn sync(&mut self, ed: &mut Editor, m: &Metrics) {
+        self.sync_folds(ed);
+        if let Some(cols) = m.wrap {
+            self.wrap_index.update(&ed.buffer, ed.version(), cols, ed.tab_width);
+        }
+        self.unfold_carets(ed);
+        let (mut pos, mut cum) = (Vec::with_capacity(self.folds.list().len()), vec![0]);
+        for f in self.folds.list() {
+            let after = self.base_row(ed, m, f.header + 1);
+            let hidden = self.base_row(ed, m, f.end + 1) - after;
+            pos.push(after - cum[cum.len() - 1]);
+            cum.push(cum[cum.len() - 1] + hidden);
+        }
+        self.fold_rows = FoldRows { pos, cum };
+    }
+
     /// `matches`: sorted find results to outline (empty when find is closed).
     pub fn show(&mut self, ui: &mut Ui, ed: &mut Editor, hl: &mut Highlighter, matches: &[Range<usize>]) {
         let id = self.id;
@@ -160,24 +361,27 @@ impl EditorView {
         }
 
         let mut m = self.metrics(ui, ed, rect);
+        self.sync(ed, &m);
         if resp.has_focus() {
             self.handle_keys(ui, ed, &m, lang::comment_tokens(hl.syntax_name()));
         }
-        if let Some(line) = ed.take_changed_from() {
+        self.sync(ed, &m);
+        if let Some(line) = self.changed_from.take() {
             hl.invalidate_from(line);
         }
-        if let Some(cols) = m.wrap {
-            self.wrap_index.update(&ed.buffer, ed.version(), cols, ed.tab_width);
-        }
-        if m.wrap != self.last_wrap {
-            self.last_wrap = m.wrap;
-            self.scroll.y = self.line_row(&m, self.top_line) as f32 * m.row_h;
-        }
+        self.keep_top_line(ed, &m);
         self.handle_mouse(ui, ed, &resp, &m);
+        self.sync(ed, &m);
+        self.keep_top_line(ed, &m);
         if resp.hovered() {
             self.scroll -= ui.input(|i| i.smooth_scroll_delta);
         }
-        if resp.hovered() && ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| m.text.contains(p)) {
+        self.scroll.y += std::mem::take(&mut self.pending_scroll) as f32 * m.row_h;
+        let hover = ui.input(|i| i.pointer.hover_pos()).filter(|_| resp.hovered());
+        self.gutter_hover = hover.is_some_and(|p| m.gutter.contains(p));
+        if hover.is_some_and(|p| self.pills.iter().any(|(r, _)| r.contains(p))) {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        } else if hover.is_some_and(|p| m.text.contains(p)) {
             ui.ctx().set_cursor_icon(CursorIcon::Text);
         }
         self.scrollbar(ui, ed, &m, id);
@@ -224,38 +428,95 @@ impl EditorView {
         );
         let minimap = (mm_w > 0.0).then(|| Rect::from_min_max(pos2(text.right(), rect.top()), pos2(text.right() + mm_w, rect.bottom())));
         // Text starts one column in; keep one more free at the right edge.
-        let wrap = self.wrap_active(ed).then(|| ((text.width() / char_w).floor() as usize).saturating_sub(2).max(20));
+        let wrap = self.wrap_active(ed).then(|| {
+            let fit = ((text.width() / char_w).floor() as usize).saturating_sub(2).max(20);
+            self.wrap_column.map_or(fit, |n| fit.min(n.max(1)))
+        });
         let scroll_x = if wrap.is_some() { 0.0 } else { self.scroll.x };
         Metrics { full: rect, font, row_h, char_w, gutter, text, origin_x: text.left() + char_w - scroll_x, minimap, wrap }
     }
 
-    // ---- visual rows (one per line without wrap) --------------------------
+    // ---- visual rows (one per line without wrap, none for folded lines) ----
 
-    fn total_rows(&self, ed: &Editor, m: &Metrics) -> usize {
+    /// First row of `line` ignoring folds; past the end, the row count.
+    fn base_row(&self, ed: &Editor, m: &Metrics, line: usize) -> usize {
+        match m.wrap {
+            _ if line >= ed.buffer.len_lines() => self.base_rows(ed, m),
+            Some(_) => self.wrap_index.first_row(line),
+            None => line,
+        }
+    }
+
+    fn base_rows(&self, ed: &Editor, m: &Metrics) -> usize {
         if m.wrap.is_some() { self.wrap_index.rows() } else { ed.buffer.len_lines() }
     }
 
-    /// First visual row of `line`.
-    fn line_row(&self, m: &Metrics, line: usize) -> usize {
-        if m.wrap.is_some() { self.wrap_index.first_row(line) } else { line }
+    fn hidden_rows(&self, folds_before: usize) -> usize {
+        self.fold_rows.cum.get(folds_before).copied().unwrap_or(0)
+    }
+
+    fn total_rows(&self, ed: &Editor, m: &Metrics) -> usize {
+        let all = self.fold_rows.cum.last().copied().unwrap_or(0);
+        self.base_rows(ed, m).saturating_sub(all).max(1)
+    }
+
+    /// First visual row of `line` (of its fold's header if it's hidden).
+    fn line_row(&self, ed: &Editor, m: &Metrics, line: usize) -> usize {
+        let line = self.folds.hiding(line).map_or(line, |i| self.folds.list()[i].header);
+        let before = self.folds.list().partition_point(|f| f.end < line);
+        self.base_row(ed, m, line) - self.hidden_rows(before)
     }
 
     /// (line, row within the line) of visual row `row`.
     fn row_line(&self, ed: &Editor, m: &Metrics, row: usize) -> (usize, usize) {
+        let base = row + self.hidden_rows(self.fold_rows.pos.partition_point(|&p| p <= row));
+        let last = ed.buffer.len_lines() - 1;
         if m.wrap.is_some() {
-            self.wrap_index.line_of_row(row)
+            let (line, sub) = self.wrap_index.line_of_row(base);
+            (line.min(last), sub)
         } else {
-            (row.min(ed.buffer.len_lines() - 1), 0)
+            (base.min(last), 0)
         }
     }
 
     /// Visual row of the caret at `pos`.
     fn pos_row(&self, ed: &Editor, m: &Metrics, pos: usize) -> usize {
         let line = ed.buffer.line_of(pos);
-        if m.wrap.is_none() {
-            return line;
+        let row = self.line_row(ed, m, line);
+        if m.wrap.is_none() || self.folds.hiding(line).is_some() {
+            return row;
         }
-        self.line_row(m, line) + m.line_rows(ed, line).row_of(pos - ed.buffer.line_start(line))
+        row + m.line_rows(ed, line).row_of(pos - ed.buffer.line_start(line))
+    }
+
+    /// The line painted after `line`: folds are skipped.
+    fn next_line(&self, line: usize) -> usize {
+        self.folds.at_header(line).map_or(line + 1, |i| self.folds.list()[i].end + 1)
+    }
+
+    /// Move each caret by `n` visual rows, keeping its column within the row
+    /// (by buffer lines when not wrapping); folded lines take no rows.
+    fn move_rows(&self, ed: &mut Editor, m: &Metrics, n: isize, extend: bool) {
+        if m.wrap.is_none() && self.folds.is_empty() {
+            return ed.move_vertical(n, extend);
+        }
+        let total = self.total_rows(ed, m) as isize;
+        ed.move_heads(extend, |e, s| {
+            let line = e.buffer.line_of(s.head);
+            let lr = m.line_rows(e, line);
+            let off = s.head - e.buffer.line_start(line);
+            let goal = s.goal().unwrap_or_else(|| lr.col_in_row(off));
+            let row = self.pos_row(e, m, s.head) as isize + n;
+            if row < 0 {
+                return (0, None);
+            }
+            if row >= total {
+                return (e.buffer.len_chars(), None);
+            }
+            let (line, sub) = self.row_line(e, m, row as usize);
+            let lr = m.line_rows(e, line);
+            (e.buffer.line_start(line) + lr.off_at_col(sub.min(lr.rows() - 1), goal), Some(goal))
+        });
     }
 
     fn page_lines(m: &Metrics) -> isize {
@@ -328,33 +589,57 @@ impl EditorView {
         let add_cursor = if mac { mods.ctrl && shift && !mods.mac_cmd } else { mods.ctrl && mods.alt };
         // Sort lines: F5 on macOS, F9 elsewhere; with Ctrl, case-sensitive.
         let sort_key = if mac { Key::F5 } else { Key::F9 };
+        // Fold/unfold: Alt+Cmd+[ ] on macOS, Ctrl+Shift+[ ] elsewhere.
+        let fold_mods = if mac { mods.command && mods.alt && !shift } else { mods.ctrl && shift && !mods.alt };
+        // Scroll a line: Ctrl+Alt+Up/Down on macOS, Ctrl+Up/Down elsewhere.
+        let scroll_line = if mac { mods.ctrl && mods.alt && !mods.command && !shift } else { mods.ctrl && !shift && !mods.alt };
+        if matches!(key, Key::ArrowUp | Key::ArrowDown | Key::PageUp | Key::PageDown) {
+            self.sync(ed, m);
+        }
         if std::mem::take(&mut self.chord_k) && mods.command {
             match key {
                 Key::U => ed.swap_case_upper(),
                 Key::L => ed.swap_case_lower(),
+                Key::Num1 => self.fold_all(ed),
+                Key::J | Key::Num0 => self.unfold_all(),
+                Key::Num2 => self.fold_level(ed, 2),
+                Key::Num3 => self.fold_level(ed, 3),
+                Key::Num4 => self.fold_level(ed, 4),
+                Key::Num5 => self.fold_level(ed, 5),
+                Key::Num6 => self.fold_level(ed, 6),
+                Key::Num7 => self.fold_level(ed, 7),
+                Key::Num8 => self.fold_level(ed, 8),
+                Key::Num9 => self.fold_level(ed, 9),
                 _ => return false,
             }
             return true;
         }
         match key {
+            Key::OpenBracket | Key::OpenCurlyBracket if fold_mods => self.fold(ed),
+            Key::CloseBracket | Key::CloseCurlyBracket if fold_mods => self.unfold(ed),
             Key::ArrowUp | Key::ArrowDown if move_lines => ed.move_lines(key == Key::ArrowUp),
             Key::ArrowUp if add_cursor => ed.add_cursor_vertical(-1),
             Key::ArrowDown if add_cursor => ed.add_cursor_vertical(1),
+            Key::ArrowUp | Key::ArrowDown if scroll_line => {
+                // Moves the view only, so don't reveal the cursor.
+                self.scroll_lines(if key == Key::ArrowUp { -1 } else { 1 });
+                return false;
+            }
             Key::ArrowLeft if cmd => ed.move_home(shift),
             Key::ArrowRight if cmd => ed.move_end(shift),
             Key::ArrowUp if cmd => ed.move_doc_start(shift),
             Key::ArrowDown if cmd => ed.move_doc_end(shift),
             Key::ArrowLeft => ed.move_left(word, shift),
             Key::ArrowRight => ed.move_right(word, shift),
-            Key::ArrowUp => move_rows(ed, m, -1, shift),
-            Key::ArrowDown => move_rows(ed, m, 1, shift),
+            Key::ArrowUp => self.move_rows(ed, m, -1, shift),
+            Key::ArrowDown => self.move_rows(ed, m, 1, shift),
             Key::Home if mods.command => ed.move_doc_start(shift),
             Key::End if mods.command => ed.move_doc_end(shift),
             Key::Home => ed.move_home(shift),
             Key::End => ed.move_end(shift),
             Key::PageUp | Key::PageDown => {
                 let n = Self::page_lines(m) * if key == Key::PageUp { -1 } else { 1 };
-                move_rows(ed, m, n, shift);
+                self.move_rows(ed, m, n, shift);
                 self.scroll.y += n as f32 * m.row_h;
             }
             Key::Enter if mods.command && shift => ed.insert_line_before(),
@@ -410,6 +695,21 @@ impl EditorView {
             let p = &i.pointer;
             (p.button_pressed(PointerButton::Primary), p.button_pressed(PointerButton::Middle), i.modifiers)
         });
+        if pressed && let Some(&(_, line)) = self.pills.iter().find(|(r, _)| r.contains(pointer)) {
+            self.toggle_fold_at(ed, line);
+            return;
+        }
+        // The fold arrow sits between the line numbers and the text.
+        if pressed && pointer.x >= m.gutter.right() - m.char_w * 1.5 && pointer.x < m.text.left() {
+            let row = self.row_at(m, pointer.y);
+            if row >= 0.0 && (row as usize) < self.total_rows(ed, m) {
+                let line = self.row_line(ed, m, row as usize).0;
+                if self.folds.at_header(line).is_some() || fold::has_region(&ed.buffer, line, ed.tab_width) {
+                    self.toggle_fold_at(ed, line);
+                    return;
+                }
+            }
+        }
         // Box selection: Alt+drag or middle-button drag.
         if ((pressed && mods.alt) || middle) && resp.is_pointer_button_down_on() {
             let (line, col) = self.pos_to_line_col(ui, ed, m, pointer);
@@ -431,7 +731,8 @@ impl EditorView {
         if resp.triple_clicked() {
             let line = ed.buffer.line_of(pos);
             ed.click(ed.buffer.line_start(line), false);
-            ed.move_vertical(1, true);
+            // Through to the next visible line, so a folded block is taken whole.
+            ed.click(ed.buffer.line_start(self.next_line(line)).min(ed.buffer.len_chars()), true);
         } else if resp.double_clicked() {
             ed.select_word_at(pos);
         } else if pressed && resp.is_pointer_button_down_on() {
@@ -522,7 +823,8 @@ impl EditorView {
         let line = ed.buffer.line_of(head);
         let top = self.pos_row(ed, m, head) as f32 * m.row_h;
         let off_screen = top < self.scroll.y || top + m.row_h > self.scroll.y + m.text.height();
-        if std::mem::take(&mut self.center_cursor) && off_screen {
+        let center = std::mem::take(&mut self.center_cursor) && off_screen;
+        if std::mem::take(&mut self.center_always) || center {
             self.scroll.y = top - (m.text.height() - m.row_h) / 2.0;
         } else if top < self.scroll.y {
             self.scroll.y = top;
@@ -599,6 +901,12 @@ impl EditorView {
         // Indent of the last non-blank line, so guides run through blank lines.
         let mut indent_above = 0;
         let all_empty = ed.selections().iter().all(|s| s.is_empty());
+        self.pills.clear();
+
+        for &col in &self.rulers {
+            let x = (m.origin_x + col as f32 * m.char_w).round() + 0.5;
+            text_painter.line_segment([pos2(x, m.text.top()), pos2(x, m.text.bottom())], Stroke::new(1.0, guide));
+        }
 
         let (mut row, mut line, mut sub0) = (first_row, first, first_sub);
         while row <= last_row && line < ed.buffer.len_lines() {
@@ -726,6 +1034,15 @@ impl EditorView {
 
                 text_painter.galley(pos2(m.origin_x, y), galley.clone(), fg);
 
+                // A folded header ends in a "…" pill; clicking it unfolds.
+                if last_sub && self.folds.at_header(line).is_some() {
+                    let x = m.origin_x + galley.size().x + m.char_w * 0.6;
+                    let pill = Rect::from_min_size(pos2(x, y + m.row_h * 0.15), vec2(m.char_w * 2.4, m.row_h * 0.7));
+                    text_painter.rect_filled(pill, m.row_h * 0.3, fg.gamma_multiply(0.18));
+                    text_painter.text(pill.center(), Align2::CENTER_CENTER, "…", m.font.clone(), fg.gamma_multiply(0.8));
+                    self.pills.push((pill, line));
+                }
+
                 for (s, &caret_line) in ed.selections().iter().zip(&caret_lines) {
                     if caret_line != line || !in_row(s.head) {
                         continue;
@@ -752,6 +1069,19 @@ impl EditorView {
                         let c = pos2(m.gutter.left() + m.char_w * 0.9, y + m.row_h / 2.0);
                         painter.circle_filled(c, (m.row_h * 0.2).max(3.0), caret_color);
                     }
+                    // Fold arrows: always on folds, on other regions while the gutter is hovered.
+                    let folded = self.folds.at_header(line).is_some();
+                    if folded || (self.gutter_hover && fold::has_region(&ed.buffer, line, ed.tab_width)) {
+                        let c = pos2(m.gutter.right() - m.char_w * 0.75, y + m.row_h / 2.0);
+                        let r = (m.row_h * 0.18).max(3.0);
+                        let points = if folded {
+                            vec![pos2(c.x - r * 0.6, c.y - r), pos2(c.x + r * 0.7, c.y), pos2(c.x - r * 0.6, c.y + r)]
+                        } else {
+                            vec![pos2(c.x - r, c.y - r * 0.6), pos2(c.x + r, c.y - r * 0.6), pos2(c.x, c.y + r * 0.7)]
+                        };
+                        let color = if folded { fg.gamma_multiply(0.8) } else { gutter_fg };
+                        painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+                    }
                     let num_color = if on_caret_line { fg } else { gutter_fg };
                     painter.text(
                         pos2(m.gutter.right() - m.char_w * 1.5, y),
@@ -763,7 +1093,7 @@ impl EditorView {
                 }
             }
             sub0 = 0;
-            line += 1;
+            line = self.next_line(line);
         }
     }
 }
@@ -873,7 +1203,7 @@ impl EditorView {
                 flush(&mut run, col.min(max_cols));
             }
             sub0 = 0;
-            line += 1;
+            line = self.next_line(line);
         }
     }
 }
@@ -891,38 +1221,6 @@ fn byte_offsets(text: &str, offs: &[usize]) -> Vec<usize> {
             b.unwrap_or(text.len())
         })
         .collect()
-}
-
-/// Move each caret by `n` visual rows, keeping its column within the row
-/// (by buffer lines when not wrapping).
-fn move_rows(ed: &mut Editor, m: &Metrics, n: isize, extend: bool) {
-    if m.wrap.is_none() {
-        return ed.move_vertical(n, extend);
-    }
-    ed.move_heads(extend, |e, s| {
-        let mut line = e.buffer.line_of(s.head);
-        let mut lr = m.line_rows(e, line);
-        let off = s.head - e.buffer.line_start(line);
-        let goal = s.goal().unwrap_or_else(|| lr.col_in_row(off));
-        let mut sub = lr.row_of(off) as isize + n;
-        while sub < 0 {
-            if line == 0 {
-                return (0, None);
-            }
-            line -= 1;
-            lr = m.line_rows(e, line);
-            sub += lr.rows() as isize;
-        }
-        while sub >= lr.rows() as isize {
-            if line + 1 >= e.buffer.len_lines() {
-                return (e.buffer.len_chars(), None);
-            }
-            sub -= lr.rows() as isize;
-            line += 1;
-            lr = m.line_rows(e, line);
-        }
-        (e.buffer.line_start(line) + lr.off_at_col(sub as usize, goal), Some(goal))
-    });
 }
 
 /// The primary selection's text, if it's a short single-line string worth
@@ -1368,5 +1666,208 @@ mod tests {
         h.frame(vec![key(Key::Home, Modifiers::NONE), key(Key::End, Modifiers::NONE)]);
         assert!(h.view.scroll.x > 0.0, "long line scrolls sideways again");
         assert!(h.view.last_wrap.is_none());
+    }
+
+    const RUST: &str = "fn main() {\n    let x = 1;\n\n    if x > 0 {\n        go();\n    }\n}\n\nfn other() {}\n";
+    const PY: &str = "class A:\n    def f(self):\n        return 1\n\n    def g(self):\n        pass\n\nx = 1\n";
+
+    fn fold_mods() -> Modifiers {
+        if cfg!(target_os = "macos") { Modifiers::COMMAND | Modifiers::ALT } else { Modifiers::CTRL | Modifiers::SHIFT }
+    }
+
+    fn hidden(h: &Harness) -> Vec<usize> {
+        (0..h.ed.buffer.len_lines()).filter(|&l| h.view.is_folded_line(l)).collect()
+    }
+
+    fn head_line(h: &Harness) -> usize {
+        h.ed.buffer.line_of(h.ed.primary().head)
+    }
+
+    #[test]
+    fn fold_and_unfold_rust_block_at_cursor() {
+        let mut h = Harness::new(RUST);
+        h.frame(vec![key(Key::OpenBracket, fold_mods())]);
+        assert_eq!(hidden(&h), [1, 2, 3, 4, 5], "the closing brace stays visible");
+        assert!(h.view.is_fold_header(0));
+        h.frame(vec![key(Key::ArrowDown, Modifiers::NONE)]);
+        assert_eq!(head_line(&h), 6, "down from the header skips the fold");
+        h.frame(vec![key(Key::ArrowUp, Modifiers::NONE)]);
+        assert_eq!(head_line(&h), 0);
+        h.frame(vec![key(Key::CloseBracket, fold_mods())]);
+        assert!(hidden(&h).is_empty());
+    }
+
+    #[test]
+    fn fold_python_method_then_its_class() {
+        let mut h = Harness::new(PY);
+        h.ed.click(h.ed.buffer.line_start(2) + 9, false);
+        h.frame(vec![key(Key::OpenBracket, fold_mods())]);
+        assert_eq!(hidden(&h), [2]);
+        assert_eq!(h.ed.primary().head, h.ed.buffer.line_end(1), "the caret parks on the header");
+        // Folding again on a folded header folds the region around it.
+        h.frame(vec![key(Key::OpenBracket, fold_mods())]);
+        assert_eq!(hidden(&h), [1, 2, 3, 4, 5]);
+        assert_eq!(head_line(&h), 0);
+        h.frame(vec![key(Key::ArrowDown, Modifiers::NONE)]);
+        assert_eq!(head_line(&h), 6);
+    }
+
+    #[test]
+    fn fold_all_unfold_all_and_fold_level_chords() {
+        let mut h = Harness::new(PY);
+        h.frame(vec![key(Key::K, Modifiers::COMMAND), key(Key::Num1, Modifiers::COMMAND)]);
+        assert_eq!(hidden(&h), [1, 2, 3, 4, 5]);
+        h.frame(vec![key(Key::K, Modifiers::COMMAND), key(Key::J, Modifiers::COMMAND)]);
+        assert!(hidden(&h).is_empty());
+        h.frame(vec![key(Key::K, Modifiers::COMMAND), key(Key::Num2, Modifiers::COMMAND)]);
+        assert_eq!(hidden(&h), [2, 5], "level 2 keeps the class open");
+        h.view.unfold_all();
+        h.view.fold_all(&mut h.ed);
+        assert_eq!(hidden(&h), [1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn multiline_selection_folds_its_lines() {
+        let mut h = Harness::new("a\nb\nc\nd\ne\n");
+        h.ed.select_ranges(&[0..h.ed.buffer.line_start(3)], 0);
+        h.frame(vec![key(Key::OpenBracket, fold_mods())]);
+        assert_eq!(hidden(&h), [1, 2], "a selection ending at column 0 leaves that line out");
+    }
+
+    #[test]
+    fn click_below_a_fold_hits_the_right_line() {
+        let mut h = Harness::new(RUST);
+        h.view.fold(&mut h.ed);
+        h.frame(vec![]);
+        let row = h.row_h();
+        // Rows: 0 header, 1 "}", 2 blank, 3 "fn other() {}".
+        click(&mut h, pos2(600.0, row * 3.5), Modifiers::NONE);
+        assert_eq!(h.ed.primary().head, h.ed.buffer.line_end(8));
+        assert_eq!(hidden(&h), [1, 2, 3, 4, 5], "the fold stays");
+    }
+
+    #[test]
+    fn pill_and_gutter_arrow_unfold() {
+        let mut h = Harness::new(RUST);
+        h.view.fold(&mut h.ed);
+        h.frame(vec![]);
+        let pill = h.view.pills.first().expect("pill painted").0;
+        click(&mut h, pill.center(), Modifiers::NONE);
+        assert!(hidden(&h).is_empty());
+        assert_eq!(h.ed.primary().head, 0, "the click didn't move the caret");
+        // The gutter arrow folds it again.
+        let row = h.row_h();
+        let caret = h.view.caret_rect.expect("caret painted");
+        let char_w = h.ctx.fonts_mut(|f| f.glyph_width(&FontId::monospace(14.0), 'M'));
+        click(&mut h, pos2(caret.left() - char_w * 1.4, row * 0.5), Modifiers::NONE);
+        assert_eq!(hidden(&h), [1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn caret_moving_into_a_fold_unfolds_it() {
+        let mut h = Harness::new(RUST);
+        h.view.fold(&mut h.ed);
+        h.frame(vec![]);
+        h.ed.click(h.ed.buffer.line_start(4), false);
+        h.frame(vec![]);
+        assert!(hidden(&h).is_empty());
+    }
+
+    #[test]
+    fn typing_above_a_fold_keeps_it() {
+        let mut h = Harness::new(RUST);
+        h.ed.click(h.ed.buffer.line_start(3) + 4, false);
+        h.view.fold(&mut h.ed);
+        assert_eq!(hidden(&h), [4]);
+        h.ed.click(0, false);
+        h.frame(vec![Event::Text("// hi".into()), key(Key::Enter, Modifiers::NONE)]);
+        h.frame(vec![]);
+        assert!(h.view.is_fold_header(4));
+        assert_eq!(hidden(&h), [5]);
+        // Deleting everything never panics and drops the fold.
+        h.frame(vec![key(Key::A, Modifiers::COMMAND), key(Key::Backspace, Modifiers::NONE)]);
+        assert!(hidden(&h).is_empty());
+    }
+
+    #[test]
+    fn folds_with_wrap() {
+        let text = format!("fn a() {{\n    {}\n    {}\n}}\ntail", long_line(60), long_line(60));
+        let (mut h, cols) = wrapped(&text);
+        assert!(rows_of(&h, 1, cols).rows() > 2);
+        h.view.fold(&mut h.ed);
+        h.frame(vec![]);
+        assert_eq!(hidden(&h), [1, 2]);
+        let row = h.row_h();
+        // Rows: 0 header, 1 "}", 2 "tail".
+        click(&mut h, pos2(600.0, row * 2.5), Modifiers::NONE);
+        assert_eq!(head_line(&h), 4);
+        h.ed.click(0, false);
+        h.frame(vec![key(Key::ArrowDown, Modifiers::NONE)]);
+        assert_eq!(head_line(&h), 3);
+        h.view.unfold_all();
+        h.frame(vec![key(Key::ArrowUp, Modifiers::NONE)]);
+        assert_eq!(head_line(&h), 2, "unfolded, up lands on the last row of the long line");
+    }
+
+    #[test]
+    fn rulers_and_wrap_column() {
+        let (mut h, cols) = wrapped(&long_line(60));
+        h.view.rulers = vec![0, 80, 120, 10_000];
+        h.view.wrap_column = Some(30);
+        h.frame(vec![]);
+        assert!(cols > 30);
+        assert_eq!(h.view.last_wrap, Some(30));
+        h.view.wrap_column = Some(500);
+        h.frame(vec![]);
+        assert_eq!(h.view.last_wrap, Some(cols), "the window is narrower");
+    }
+
+    #[test]
+    fn scroll_lines_moves_view_not_cursor() {
+        let text: String = (0..2_000).map(|i| format!("line {i}\n")).collect();
+        let mut h = Harness::new(&text);
+        let row = h.row_h();
+        h.view.scroll_lines(5);
+        h.frame(vec![]);
+        assert_eq!(h.view.scroll.y, 5.0 * row);
+        let mods = if cfg!(target_os = "macos") { Modifiers::CTRL | Modifiers::ALT } else { Modifiers::CTRL };
+        h.frame(vec![key(Key::ArrowDown, mods), key(Key::ArrowDown, mods)]);
+        assert_eq!(h.view.scroll.y, 7.0 * row);
+        h.frame(vec![key(Key::ArrowUp, mods)]);
+        assert_eq!(h.view.scroll.y, 6.0 * row);
+        assert_eq!(h.ed.primary().head, 0);
+    }
+
+    #[test]
+    fn center_on_cursor_centers_even_when_visible() {
+        let text: String = (0..2_000).map(|i| format!("line {i}\n")).collect();
+        let mut h = Harness::new(&text);
+        h.ed.click(h.ed.buffer.line_start(1_000), false);
+        h.view.reveal();
+        h.frame(vec![]);
+        let before = h.view.caret_rect.expect("caret").center().y;
+        h.view.center_on_cursor();
+        h.frame(vec![]);
+        let after = h.view.caret_rect.expect("caret").center().y;
+        assert!(before > 500.0, "reveal leaves it at the bottom: {before}");
+        assert!((after - 300.0).abs() < 2.0 * h.row_h(), "{after}");
+    }
+
+    #[test]
+    fn fold_all_on_a_large_file_is_fast() {
+        let block = "fn f() {\n    let x = 1;\n    if x {\n        y();\n    }\n}\n\n";
+        let text = block.repeat(200_000 / 7);
+        let mut h = Harness::new(&text);
+        let start = std::time::Instant::now();
+        h.view.fold_all(&mut h.ed);
+        let took = start.elapsed();
+        assert!(took.as_secs_f64() < 1.0, "fold_all took {took:?}");
+        assert!(h.view.is_folded_line(4) && !h.view.is_folded_line(5) && h.view.is_fold_header(7));
+        h.frame(vec![key(Key::End, Modifiers::COMMAND)]);
+        h.frame(vec![]);
+        assert_eq!(head_line(&h), h.ed.buffer.len_lines() - 1);
+        assert!(h.view.caret_rect.is_some());
+        h.view.unfold_all();
+        h.frame(vec![]);
     }
 }

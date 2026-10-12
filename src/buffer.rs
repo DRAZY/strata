@@ -168,6 +168,16 @@ impl Buffer {
         self.rope.lines().map(|l| l.chunks())
     }
 
+    /// Lines from `line` on, each as string chunks (break included).
+    pub fn lines_from(&self, line: usize) -> impl Iterator<Item = impl Iterator<Item = &str>> {
+        self.rope.lines_at(line.min(self.len_lines())).map(|l| l.chunks())
+    }
+
+    /// Lines before `line`, nearest first, each as string chunks (break included).
+    pub fn lines_before(&self, line: usize) -> impl Iterator<Item = impl Iterator<Item = &str>> {
+        self.rope.lines_at(line.min(self.len_lines())).reversed().map(|l| l.chunks())
+    }
+
     pub fn slice(&self, range: Range<usize>) -> String {
         self.rope.slice(range).to_string()
     }
