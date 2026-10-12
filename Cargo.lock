@@ -2952,6 +2952,8 @@ dependencies = [
  "regex",
  "rfd",
  "ropey",
+ "serde",
+ "serde_json",
  "syntect",
 ]
 

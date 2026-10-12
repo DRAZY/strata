@@ -1,0 +1,162 @@
+//! Where Strata keeps state between runs: user settings, plus the hot-exit
+//! session (open tabs, and the text of unsaved ones) so quitting never asks.
+
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// Per-user config folder. `STRATA_CONFIG_DIR` overrides it (tests, portable installs).
+pub fn config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("STRATA_CONFIG_DIR") {
+        return Some(dir.into());
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if cfg!(target_os = "macos") {
+        home.map(|h| h.join("Library/Application Support/Strata"))
+    } else if cfg!(windows) {
+        std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("Strata"))
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or(home.map(|h| h.join(".config"))).map(|c| c.join("strata"))
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Settings {
+    pub font_size: f32,
+    pub theme: String,
+    pub tab_size: usize,
+    pub translate_tabs_to_spaces: bool,
+    pub minimap: bool,
+    /// Restore open tabs, unsaved text included, instead of asking on quit.
+    pub hot_exit: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            font_size: 14.0,
+            theme: crate::highlight::DEFAULT_THEME.into(),
+            tab_size: 4,
+            translate_tabs_to_spaces: true,
+            minimap: true,
+            hot_exit: true,
+        }
+    }
+}
+
+impl Settings {
+    pub fn path(dir: &Path) -> PathBuf {
+        dir.join("settings.json")
+    }
+
+    /// Missing or broken files fall back to defaults; the error is returned for the status bar.
+    pub fn load(dir: &Path) -> (Self, Option<String>) {
+        match std::fs::read_to_string(Self::path(dir)) {
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(s) => (s, None),
+                Err(e) => (Self::default(), Some(format!("settings.json: {e}"))),
+            },
+            Err(_) => (Self::default(), None),
+        }
+    }
+
+    pub fn save(&self, dir: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(Self::path(dir), serde_json::to_string_pretty(self)? + "\n")
+    }
+}
+
+#[derive(Serialize, Deserialize, Default, Debug)]
+#[serde(default)]
+pub struct Session {
+    pub folder: Option<PathBuf>,
+    pub sidebar_visible: bool,
+    pub active: usize,
+    pub tabs: Vec<TabState>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug)]
+#[serde(default)]
+pub struct TabState {
+    pub path: Option<PathBuf>,
+    /// File in `backups/` holding unsaved text, if the tab was dirty.
+    pub backup: Option<String>,
+    pub cursor: usize,
+    pub syntax: Option<String>,
+}
+
+impl Session {
+    fn path(dir: &Path) -> PathBuf {
+        dir.join("session.json")
+    }
+
+    pub fn backups(dir: &Path) -> PathBuf {
+        dir.join("backups")
+    }
+
+    pub fn load(dir: &Path) -> Option<Self> {
+        serde_json::from_str(&std::fs::read_to_string(Self::path(dir)).ok()?).ok()
+    }
+
+    /// Writes session.json last, so a crash mid-save keeps the old session intact.
+    pub fn save(&self, dir: &Path, backups: &[(String, String)]) -> std::io::Result<()> {
+        let bdir = Self::backups(dir);
+        std::fs::create_dir_all(&bdir)?;
+        for (name, text) in backups {
+            std::fs::write(bdir.join(name), text)?;
+        }
+        let tmp = dir.join("session.json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(self)?)?;
+        std::fs::rename(&tmp, Self::path(dir))?;
+        // Drop backups no tab refers to any more.
+        let keep: Vec<&str> = self.tabs.iter().filter_map(|t| t.backup.as_deref()).collect();
+        for entry in std::fs::read_dir(&bdir)?.flatten() {
+            if !keep.contains(&entry.file_name().to_string_lossy().as_ref()) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_round_trip_prunes_stale_backups() {
+        let dir = std::env::temp_dir().join(format!("strata-session-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Session {
+            active: 1,
+            tabs: vec![
+                TabState { path: Some("/x/a.rs".into()), cursor: 5, ..Default::default() },
+                TabState { backup: Some("1.txt".into()), ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        std::fs::create_dir_all(Session::backups(&dir)).unwrap();
+        std::fs::write(Session::backups(&dir).join("old.txt"), "stale").unwrap();
+        s.save(&dir, &[("1.txt".into(), "unsaved".into())]).unwrap();
+        let back = Session::load(&dir).unwrap();
+        assert_eq!(back.active, 1);
+        assert_eq!(back.tabs[0].cursor, 5);
+        assert_eq!(std::fs::read_to_string(Session::backups(&dir).join("1.txt")).unwrap(), "unsaved");
+        assert!(!Session::backups(&dir).join("old.txt").exists());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn settings_tolerate_partial_and_broken_files() {
+        let dir = std::env::temp_dir().join(format!("strata-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(Settings::path(&dir), r#"{ "font_size": 18 }"#).unwrap();
+        let (s, err) = Settings::load(&dir);
+        assert_eq!((s.font_size, s.tab_size, err), (18.0, 4, None));
+        std::fs::write(Settings::path(&dir), "{ nope").unwrap();
+        let (s, err) = Settings::load(&dir);
+        assert_eq!(s, Settings::default());
+        assert!(err.is_some());
+        std::fs::remove_dir_all(dir).ok();
+    }
+}

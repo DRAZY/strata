@@ -3,12 +3,16 @@
 
 mod app;
 mod buffer;
+mod commands;
+mod document;
 mod editor;
 mod find;
 mod fonts;
 mod devshot;
 mod highlight;
+mod keys;
 mod search;
+mod session;
 mod sidebar;
 mod view;
 
@@ -25,6 +29,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Strata",
         options,
-        Box::new(|_cc| Ok(Box::new(app::StrataApp::new(path)))),
+        Box::new(|_cc| Ok(Box::new(app::StrataApp::new(path, session::config_dir())))),
     )
 }

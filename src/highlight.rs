@@ -10,7 +10,7 @@ use egui::Color32;
 use std::collections::HashMap;
 use std::ops::{Range, RangeInclusive};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use syntect::highlighting::{
     FontStyle, HighlightIterator, HighlightState, Highlighter as ThemeHighlighter, Theme, ThemeSet,
 };
@@ -33,9 +33,26 @@ pub struct Span {
 
 pub type LineSpans = Arc<Vec<Span>>;
 
+/// Loaded once and shared by every tab.
+static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+static THEMES: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
+pub const DEFAULT_THEME: &str = "base16-ocean.dark";
+
+/// Every bundled theme name, sorted.
+pub fn theme_names() -> Vec<&'static str> {
+    THEMES.themes.keys().map(String::as_str).collect()
+}
+
+/// Every bundled syntax name, sorted.
+pub fn syntax_names() -> Vec<&'static str> {
+    let mut names: Vec<_> = SYNTAXES.syntaxes().iter().filter(|s| !s.hidden).map(|s| s.name.as_str()).collect();
+    names.sort_unstable_by_key(|n| n.to_lowercase());
+    names
+}
+
 pub struct Highlighter {
-    syntaxes: SyntaxSet,
-    theme: Theme,
+    theme: &'static Theme,
+    theme_name: String,
     syntax_name: String,
     /// `checkpoints[k]` = state at the start of line `k * CHUNK`.
     checkpoints: Vec<(ParseState, HighlightState)>,
@@ -44,14 +61,9 @@ pub struct Highlighter {
 
 impl Highlighter {
     pub fn new() -> Self {
-        let mut themes = ThemeSet::load_defaults();
-        let theme = themes
-            .themes
-            .remove("base16-ocean.dark")
-            .expect("bundled theme");
         Self {
-            syntaxes: SyntaxSet::load_defaults_newlines(),
-            theme,
+            theme: &THEMES.themes[DEFAULT_THEME],
+            theme_name: DEFAULT_THEME.into(),
             syntax_name: "Plain Text".into(),
             checkpoints: Vec::new(),
             lines: HashMap::new(),
@@ -90,6 +102,33 @@ impl Highlighter {
             .unwrap_or(Color32::WHITE)
     }
 
+    pub fn theme_name(&self) -> &str {
+        &self.theme_name
+    }
+
+    /// Switch color scheme; unknown names are ignored.
+    pub fn set_theme(&mut self, name: &str) {
+        if let Some(theme) = THEMES.themes.get(name) {
+            self.theme = theme;
+            self.theme_name = name.into();
+            self.invalidate_from(0);
+        }
+    }
+
+    /// Force a syntax by name (from the syntax picker); unknown names are ignored.
+    pub fn set_syntax(&mut self, name: &str) {
+        if SYNTAXES.find_syntax_by_name(name).is_some() {
+            self.syntax_name = name.into();
+            self.invalidate_from(0);
+        }
+    }
+
+    /// True for themes with a light background (the UI chrome follows).
+    pub fn is_light(&self) -> bool {
+        let bg = self.background();
+        (bg.r() as u32 + bg.g() as u32 + bg.b() as u32) > 3 * 140
+    }
+
     pub fn syntax_name(&self) -> &str {
         &self.syntax_name
     }
@@ -99,18 +138,18 @@ impl Highlighter {
         let by_ext = path
             .and_then(|p| p.extension())
             .and_then(|e| e.to_str())
-            .and_then(|e| self.syntaxes.find_syntax_by_extension(e));
+            .and_then(|e| SYNTAXES.find_syntax_by_extension(e));
         let syntax = by_ext
-            .or_else(|| self.syntaxes.find_syntax_by_first_line(first_line))
-            .unwrap_or_else(|| self.syntaxes.find_syntax_plain_text());
+            .or_else(|| SYNTAXES.find_syntax_by_first_line(first_line))
+            .unwrap_or_else(|| SYNTAXES.find_syntax_plain_text());
         self.syntax_name = syntax.name.clone();
         self.invalidate_from(0);
     }
 
-    fn syntax(&self) -> &SyntaxReference {
-        self.syntaxes
+    fn syntax(&self) -> &'static SyntaxReference {
+        SYNTAXES
             .find_syntax_by_name(&self.syntax_name)
-            .unwrap_or_else(|| self.syntaxes.find_syntax_plain_text())
+            .unwrap_or_else(|| SYNTAXES.find_syntax_plain_text())
     }
 
     pub fn invalidate_from(&mut self, line: usize) {
@@ -138,7 +177,7 @@ impl Highlighter {
         if self.lines.len() > 8_192 {
             self.lines.retain(|&l, _| l + 2_000 >= first && l <= last + 2_000);
         }
-        let hl = ThemeHighlighter::new(&self.theme);
+        let hl = ThemeHighlighter::new(self.theme);
         if self.checkpoints.is_empty() {
             let parse = ParseState::new(self.syntax());
             let high = HighlightState::new(&hl, ScopeStack::new());
@@ -181,7 +220,7 @@ impl Highlighter {
         }
         // The "newlines" syntax set expects each line to end with '\n'.
         let with_nl = format!("{text}\n");
-        let Ok(ops) = parse.parse_line(&with_nl, &self.syntaxes) else {
+        let Ok(ops) = parse.parse_line(&with_nl, &SYNTAXES) else {
             return Arc::new(vec![plain(0..text.len(), fg)]);
         };
         let mut spans = Vec::new();

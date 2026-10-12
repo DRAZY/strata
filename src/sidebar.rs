@@ -18,7 +18,8 @@ pub enum Tab {
 }
 
 pub enum Action {
-    Open(PathBuf),
+    /// Open a file; `true` = preview (single click), replaced by the next preview.
+    Open(PathBuf, bool),
     /// Open and select `cols` (chars) on 0-based `line`.
     OpenAt(PathBuf, usize, Range<usize>),
 }
@@ -142,8 +143,13 @@ impl Sidebar {
                     .id_salt(&path)
                     .default_open(false)
                     .show(ui, |ui| self.tree(ui, &path, current, action));
-            } else if ui.selectable_label(current == Some(path.as_path()), &name).clicked() {
-                *action = Some(Action::Open(path));
+            } else {
+                let r = ui.selectable_label(current == Some(path.as_path()), &name);
+                if r.double_clicked() {
+                    *action = Some(Action::Open(path, false));
+                } else if r.clicked() {
+                    *action = Some(Action::Open(path, true));
+                }
             }
         }
     }
