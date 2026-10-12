@@ -2,9 +2,11 @@
 
 use crate::buffer::{Buffer, LineEnding};
 use crate::editor::Editor;
+use crate::encoding::Encoding;
 use crate::find::Finder;
 use crate::highlight::Highlighter;
 use crate::view::EditorView;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -29,6 +31,9 @@ pub struct Document {
     pub group: usize,
     /// When the tab was last activated; each pane shows its most recent tab.
     pub stamp: u64,
+    /// How the file's bytes are read and written: detected on open, changed
+    /// by "Reopen with Encoding" / "Save with Encoding".
+    pub encoding: Encoding,
 }
 
 pub fn mtime(path: &Path) -> Option<SystemTime> {
@@ -59,13 +64,67 @@ impl Document {
             deleted: false,
             group: 0,
             stamp: 0,
+            encoding: Encoding::UTF8,
         }
     }
 
-    /// A path that doesn't exist yet opens as a new, empty file.
+    /// A path that doesn't exist yet opens as a new, empty UTF-8 file.
+    /// Otherwise the encoding is detected (see `Buffer::decode`).
     pub fn open(path: PathBuf) -> std::io::Result<Self> {
-        let buffer = if path.exists() { Buffer::from_bytes(&std::fs::read(&path)?) } else { Buffer::from_str("") };
-        Ok(Self::from_buffer(Some(path), buffer))
+        let (buffer, encoding) = if path.exists() { Buffer::decode(&std::fs::read(&path)?) } else { (Buffer::from_str(""), Encoding::UTF8) };
+        let mut doc = Self::from_buffer(Some(path), buffer);
+        doc.encoding = encoding;
+        Ok(doc)
+    }
+
+    /// Re-read the file decoding it as `enc` ("Reopen with Encoding").
+    /// Refuses (`ErrorKind::Other`) if the tab has unsaved changes — confirm
+    /// and discard them first — or has no file. The cursor keeps its line
+    /// and column where possible.
+    #[allow(dead_code)] // "Reopen with Encoding" menu (app.rs)
+    pub fn reopen_with_encoding(&mut self, enc: Encoding) -> io::Result<()> {
+        if self.is_dirty() {
+            return Err(io::Error::other("the tab has unsaved changes"));
+        }
+        self.reload_as(enc)
+    }
+
+    /// Discard the tab's text and load the file from disk in the current
+    /// encoding (the "Reload" action for a conflicted tab).
+    #[allow(dead_code)] // status-bar Reload (app.rs)
+    pub fn reload_from_disk(&mut self) -> io::Result<()> {
+        self.reload_as(self.encoding)
+    }
+
+    #[allow(dead_code)]
+    fn reload_as(&mut self, enc: Encoding) -> io::Result<()> {
+        let Some(path) = &self.path else { return Err(io::Error::other("the tab has no file")) };
+        let bytes = std::fs::read(path)?;
+        let now = mtime(path);
+        let (line, col) = self.editor.cursor_line_col();
+        self.reload(Buffer::decode_as(&bytes, enc));
+        let b = &self.editor.buffer;
+        let line = (line - 1).min(b.len_lines() - 1);
+        let at = (b.line_start(line) + col - 1).min(b.line_end(line));
+        self.editor.select_ranges(&[at..at], 0);
+        self.encoding = enc;
+        self.disk_mtime = now;
+        self.restored_dirty = false;
+        self.deleted = false;
+        Ok(())
+    }
+
+    /// "Save with Encoding": the next save writes `enc`. A file-backed tab
+    /// becomes unsaved so the change isn't lost silently; nothing is checked
+    /// here — call `editor.buffer.check_encodable(enc)` to warn first.
+    #[allow(dead_code)] // "Save with Encoding" menu (app.rs)
+    pub fn set_encoding(&mut self, enc: Encoding) {
+        if enc != self.encoding {
+            self.encoding = enc;
+            if self.path.is_some() {
+                self.restored_dirty = true;
+            }
+        }
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -100,7 +159,7 @@ impl Document {
     }
 
     pub fn write_to(&mut self, path: PathBuf) -> std::io::Result<()> {
-        self.editor.buffer.write_to(&path)?;
+        self.editor.buffer.write_to(&path, self.encoding)?;
         self.editor.mark_saved();
         self.restored_dirty = false;
         self.conflict = false;
@@ -137,7 +196,7 @@ impl Document {
             return false;
         }
         let Ok(bytes) = std::fs::read(path) else { return false };
-        self.reload(Buffer::from_bytes(&bytes));
+        self.reload(Buffer::decode_as(&bytes, self.encoding));
         self.disk_mtime = now;
         true
     }
@@ -208,6 +267,51 @@ mod tests {
         doc.disk_mtime = Some(SystemTime::UNIX_EPOCH);
         doc.check_disk();
         assert!(doc.deleted && doc.is_dirty(), "a deleted file's text is kept as unsaved");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn encodings_are_detected_kept_and_switchable() {
+        let dir = std::env::temp_dir().join(format!("strata-doc-enc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("latin.txt");
+        // Windows-1252: "café\nnaïve\n"; as Mac Roman 0xE9 is 'È' and 0xEF is 'Ô'.
+        std::fs::write(&path, b"caf\xE9\nna\xEFve\n").unwrap();
+        let mut doc = Document::open(path.clone()).unwrap();
+        assert_eq!(doc.encoding, Encoding::WINDOWS_1252);
+        assert_eq!(doc.editor.buffer.line_text(1), "naïve");
+
+        // Outside change: reloaded in the document's encoding, not as UTF-8.
+        std::fs::write(&path, b"caf\xE9!\nna\xEFve\n").unwrap();
+        doc.disk_mtime = Some(SystemTime::UNIX_EPOCH);
+        assert!(doc.check_disk());
+        assert_eq!(doc.editor.buffer.line_text(0), "café!");
+
+        // Reopen with Encoding keeps the cursor's line and column.
+        doc.editor.select_ranges(&[doc.editor.buffer.line_start(1) + 3..doc.editor.buffer.line_start(1) + 3], 0);
+        let mac = Encoding::from_id("macintosh").unwrap();
+        doc.reopen_with_encoding(mac).unwrap();
+        assert_eq!(doc.encoding, mac);
+        assert_eq!(doc.editor.buffer.line_text(0), "cafÈ!");
+        assert_eq!(doc.editor.cursor_line_col(), (2, 4));
+        assert!(!doc.is_dirty());
+
+        // Dirty tabs are refused.
+        doc.editor.insert_text("x");
+        assert!(doc.reopen_with_encoding(Encoding::UTF8).is_err());
+        assert_eq!(doc.encoding, mac);
+        doc.reload_from_disk().unwrap();
+        assert!(!doc.is_dirty());
+        assert_eq!(doc.editor.buffer.line_text(0), "cafÈ!");
+
+        // Save with Encoding: marks the tab unsaved, then writes the new bytes.
+        doc.set_encoding(Encoding::UTF16LE_BOM);
+        assert!(doc.is_dirty());
+        doc.write_to(path.clone()).unwrap();
+        assert!(!doc.is_dirty());
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.starts_with(b"\xFF\xFEc\x00a\x00f\x00\xC8\x00"));
+        assert_eq!(Document::open(path.clone()).unwrap().encoding, Encoding::UTF16LE_BOM);
         std::fs::remove_dir_all(dir).ok();
     }
 

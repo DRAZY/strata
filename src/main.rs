@@ -8,6 +8,7 @@ mod buffer;
 mod commands;
 mod document;
 mod editor;
+mod encoding;
 mod files;
 mod find;
 mod fonts;
