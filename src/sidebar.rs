@@ -69,6 +69,8 @@ pub struct Sidebar {
     pub search: Search,
     focus_query: bool,
     prompt: Option<Prompt>,
+    /// The Open Files list above the folder tree.
+    pub show_open_files: bool,
 }
 
 impl Sidebar {
@@ -82,6 +84,7 @@ impl Sidebar {
             search: Search::default(),
             focus_query: false,
             prompt: None,
+            show_open_files: true,
         }
     }
 
@@ -131,7 +134,7 @@ impl Sidebar {
             Tab::Files => {
                 let mut action = None;
                 egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-                    if open.len() > 1 {
+                    if self.show_open_files && open.len() > 1 {
                         egui::CollapsingHeader::new(RichText::new("OPEN FILES").small().weak()).id_salt("open-files").default_open(true).show(ui, |ui| {
                             for (i, f) in open.iter().enumerate() {
                                 ui.horizontal(|ui| {

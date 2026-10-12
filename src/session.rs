@@ -33,6 +33,8 @@ pub struct Settings {
     pub word_wrap: bool,
     /// Column for Wrap Paragraph at Ruler.
     pub wrap_width: usize,
+    /// Save every modified file before building.
+    pub save_all_on_build: bool,
     /// Offer word completions while typing (Ctrl+Space always works).
     pub auto_complete: bool,
     /// Detect tabs vs spaces (and the width) from each file when it opens.
@@ -55,6 +57,7 @@ impl Default for Settings {
             wrap_width: 80,
             detect_indentation: true,
             auto_complete: true,
+            save_all_on_build: true,
             hot_exit: true,
         }
     }
@@ -92,6 +95,7 @@ pub struct Session {
     pub layout: Option<crate::panes::Layout>,
     pub recent_files: Vec<PathBuf>,
     pub recent_folders: Vec<PathBuf>,
+    pub recent_projects: Vec<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq)]

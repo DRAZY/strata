@@ -53,6 +53,19 @@ pub fn theme_names() -> Vec<&'static str> {
     THEMES.themes.keys().map(String::as_str).collect()
 }
 
+/// Syntax-highlighted HTML (inline styles) for `text`, for Copy as HTML.
+pub fn to_html(text: &str, syntax: &str, theme: &str) -> String {
+    let syntax = SYNTAXES.find_syntax_by_name(syntax).unwrap_or_else(|| SYNTAXES.find_syntax_plain_text());
+    let theme = THEMES.themes.get(theme).unwrap_or(&THEMES.themes[DEFAULT_THEME]);
+    syntect::html::highlighted_html_for_string(text, &SYNTAXES, syntax, theme).unwrap_or_else(|_| format!("<pre>{text}</pre>"))
+}
+
+/// Syntax name for a file by extension, if it isn't plain text.
+pub fn syntax_for_path(path: &Path) -> Option<String> {
+    let ext = path.extension()?.to_str()?;
+    SYNTAXES.find_syntax_by_extension(ext).map(|s| s.name.clone()).filter(|n| n != "Plain Text")
+}
+
 /// Every bundled syntax name, sorted.
 pub fn syntax_names() -> Vec<&'static str> {
     let mut names: Vec<_> = SYNTAXES.syntaxes().iter().filter(|s| !s.hidden).map(|s| s.name.as_str()).collect();

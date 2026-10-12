@@ -52,6 +52,9 @@ pub const EDITOR_COMMANDS: &[EdCmd] = &[
     ed("expand_brackets", "Selection: Expand Selection to Brackets", &[(CTRL_SHIFT, Key::M)]),
     ed("jump_bracket", "Goto: Jump to Matching Bracket", &[(CTRL, Key::M)]),
     ed("single_selection", "Selection: Single Selection", &[]),
+    ed("toggle_block_comment", "Edit: Comment: Toggle Block Comment", if MAC { &[(CMD_ALT, Key::Slash)] } else { &[(CTRL_SHIFT, Key::Slash)] }),
+    ed("delete_word_forward", "Edit: Text: Delete Word Forward", &[]),
+    ed("delete_word_backward", "Edit: Text: Delete Word Backward", &[]),
     ed("paste_and_indent", "Edit: Paste and Indent", &[(CMD_SHIFT, Key::V)]),
     ed("delete_to_end", "Edit: Text: Delete to End", if MAC { &[(CTRL, Key::K)] } else { &[] }),
     ed("delete_to_start", "Edit: Text: Delete to Beginning", if MAC { &[(CMD, Key::Backspace)] } else { &[] }),
@@ -117,6 +120,17 @@ fn sub(label: &str, items: Vec<Item>) -> Item {
 
 const SEP: fn() -> Item = || Item::Separator;
 
+/// The Preferences menu on Windows/Linux (macOS has these under the app menu).
+fn settings_owned() -> Vec<Item> {
+    vec![
+        c("Settings", Cmd::Settings),
+        SEP(),
+        c("Select Color Scheme…", Cmd::SelectTheme),
+        SEP(),
+        sub("Font", vec![c("Larger", Cmd::ZoomIn), c("Smaller", Cmd::ZoomOut), SEP(), c("Reset Size", Cmd::ZoomReset)]),
+    ]
+}
+
 impl StrataApp {
     /// The whole menu bar for the current state (checks, recent files, tabs).
     pub(super) fn menus(&self) -> Menus {
@@ -125,16 +139,15 @@ impl StrataApp {
         let (cols, rows) = (self.layout.cols.len(), self.layout.rows.len());
         let mut m: Menus = Vec::new();
 
+        let font = sub("Font", vec![c("Larger", Cmd::ZoomIn), c("Smaller", Cmd::ZoomOut), SEP(), c("Reset Size", Cmd::ZoomReset)]);
+        let settings = vec![c("Settings", Cmd::Settings), SEP(), c("Select Color Scheme…", Cmd::SelectTheme), SEP(), font];
         if MAC {
             m.push((
                 "Strata".into(),
                 vec![
                     Item::new("About Strata", Act::Cmd(Cmd::About)),
                     SEP(),
-                    sub(
-                        "Settings",
-                        vec![c("Settings", Cmd::Settings), c("Color Scheme…", Cmd::SelectTheme)],
-                    ),
+                    sub("Settings", settings),
                     SEP(),
                     Item::System(System::Services),
                     SEP(),
@@ -143,44 +156,53 @@ impl StrataApp {
                     Item::System(System::ShowAll),
                     SEP(),
                     Item::new("Quit Strata", Act::Quit).key(CMD, Key::Q),
+                    // Hot exit always keeps windows (tabs and unsaved text) for next time.
+                    Item::new("Quit and Keep Windows", Act::Quit).key(CMD_ALT, Key::Q),
                 ],
             ));
         }
 
-        let mut recent: Vec<Item> = self.recent_files.iter().map(|p| Item::new(p.display().to_string(), Act::OpenRecent(p.clone()))).collect();
-        if !recent.is_empty() {
+        // ---- File
+        let mut recent: Vec<Item> = vec![c("Reopen Closed File", Cmd::ReopenClosed).enabled(!self.closed.is_empty()), SEP()];
+        recent.extend(self.recent_files.iter().map(|p| Item::new(p.display().to_string(), Act::OpenRecent(p.clone()))));
+        if !self.recent_folders.is_empty() {
             recent.push(SEP());
+            recent.extend(self.recent_folders.iter().map(|p| Item::new(format!("{}/", p.display()), Act::OpenRecentFolder(p.clone()))));
         }
-        recent.extend(self.recent_folders.iter().map(|p| Item::new(format!("{}/", p.display()), Act::OpenRecentFolder(p.clone()))));
-        recent.push(SEP());
-        recent.push(c("Reopen Closed File", Cmd::ReopenClosed).enabled(!self.closed.is_empty()));
-        recent.push(c("Clear Items", Cmd::ClearRecent));
+        recent.extend([SEP(), c("Clear Items", Cmd::ClearRecent)]);
+        let encodings = |reopen: bool| -> Item {
+            let items = crate::encoding::Encoding::all()
+                .iter()
+                .map(|e| Item::new(e.name(), if reopen { Act::ReopenWithEncoding(*e) } else { Act::SaveWithEncoding(*e) }).checked(d.encoding == *e))
+                .collect();
+            sub(if reopen { "Reopen with Encoding" } else { "Save with Encoding" }, items)
+        };
         let mut file = vec![
             c("New File", Cmd::NewTab),
-            SEP(),
             c("Open…", Cmd::Open),
             c("Open Folder…", Cmd::OpenFolder),
             sub("Open Recent", recent),
-            SEP(),
-            sub("Reopen with Encoding", crate::encoding::Encoding::all().iter().map(|e| Item::new(e.name(), Act::ReopenWithEncoding(*e)).checked(d.encoding == *e)).collect()),
-            SEP(),
+            encodings(true),
             c("Save", Cmd::Save),
-            sub("Save with Encoding", crate::encoding::Encoding::all().iter().map(|e| Item::new(e.name(), Act::SaveWithEncoding(*e)).checked(d.encoding == *e)).collect()),
+            encodings(false),
             c("Save As…", Cmd::SaveAs),
             c("Save All", Cmd::SaveAll),
             SEP(),
-            c("Revert File", Cmd::RevertFile).enabled(d.path.is_some()),
+            c("Close Window", Cmd::CloseWindow),
             SEP(),
             c("Close File", Cmd::CloseTab),
+            c("Revert File", Cmd::RevertFile).enabled(d.path.is_some()),
             c("Close All Files", Cmd::CloseAll),
-            c("Close Window", Cmd::CloseWindow),
         ];
         if !MAC {
-            file.push(SEP());
-            file.push(Item::new("Exit", Act::Quit));
+            file.extend([SEP(), Item::new("Exit", Act::Quit)]);
         }
         m.push(("File".into(), file));
 
+        // ---- Edit
+        let wraps = [70, 72, 78, 80, 100, 120];
+        let mut wrap = vec![e("Wrap Paragraph at Ruler", "wrap_paragraph")];
+        wrap.extend(wraps.iter().map(|w| Item::new(format!("Wrap paragraph at {w} characters"), Act::Named(format!("wrap:{w}")))));
         m.push((
             "Edit".into(),
             vec![
@@ -189,30 +211,34 @@ impl StrataApp {
                 SEP(),
                 Item::new("Cut", Act::Cut).key(CMD, Key::X),
                 Item::new("Copy", Act::Copy).key(CMD, Key::C),
+                c("Copy as HTML", Cmd::CopyAsHtml),
                 Item::new("Paste", Act::Paste).key(CMD, Key::V),
                 e("Paste and Indent", "paste_and_indent"),
+                c("Paste from History", Cmd::PasteFromHistory),
                 SEP(),
                 sub(
                     "Line",
                     vec![
                         e("Indent", "indent"),
                         e("Unindent", "outdent"),
-                        SEP(),
+                        e("Reindent", "reindent"),
                         e("Swap Line Up", "move_up"),
                         e("Swap Line Down", "move_down"),
                         e("Duplicate Line", "duplicate"),
                         e("Delete Line", "delete_line"),
                         e("Join Lines", "join"),
-                        e("Reindent", "reindent"),
                     ],
                 ),
-                sub("Comment", vec![e("Toggle Comment", "toggle_comment")]),
+                sub("Comment", vec![e("Toggle Comment", "toggle_comment"), e("Toggle Block Comment", "toggle_block_comment")]),
                 sub(
                     "Text",
                     vec![
                         e("Insert Line Before", "line_before"),
                         e("Insert Line After", "line_after"),
                         SEP(),
+                        e("Delete Word Forward", "delete_word_forward"),
+                        e("Delete Word Backward", "delete_word_backward"),
+                        e("Delete Line", "delete_line"),
                         e("Delete to End", "delete_to_end"),
                         e("Delete to Beginning", "delete_to_start"),
                         SEP(),
@@ -220,19 +246,8 @@ impl StrataApp {
                         e("Trim Trailing Whitespace", "trim"),
                     ],
                 ),
-                sub(
-                    "Bookmarks",
-                    vec![
-                        e("Toggle Bookmark", "bookmark_toggle"),
-                        e("Next Bookmark", "bookmark_next"),
-                        e("Previous Bookmark", "bookmark_prev"),
-                        e("Clear Bookmarks", "bookmark_clear"),
-                        e("Select All Bookmarks", "bookmark_select"),
-                    ],
-                ),
                 sub("Convert Case", vec![e("Title Case", "title_case"), e("Upper Case", "upper"), e("Lower Case", "lower"), e("Swap Case", "swap_case")]),
-                SEP(),
-                e("Wrap Paragraph at Ruler", "wrap_paragraph"),
+                sub("Wrap", wrap),
                 c("Show Completions", Cmd::ShowCompletions),
                 SEP(),
                 e("Sort Lines", "sort"),
@@ -240,17 +255,16 @@ impl StrataApp {
                 sub("Permute Lines", vec![e("Reverse", "reverse"), e("Unique", "unique"), e("Shuffle", "shuffle")]),
                 sub(
                     "Permute Selections",
-                    vec![e("Sort", "sel_sort"), e("Reverse", "sel_reverse"), e("Unique", "sel_unique"), e("Shuffle", "sel_shuffle")],
+                    vec![e("Sort (Case Sensitive)", "sel_sort"), e("Reverse", "sel_reverse"), e("Unique", "sel_unique"), e("Shuffle", "sel_shuffle")],
                 ),
             ],
         ));
 
+        // ---- Selection
         m.push((
             "Selection".into(),
             vec![
                 e("Split into Lines", "split_lines"),
-                e("Add Previous Line", "cursor_above"),
-                e("Add Next Line", "cursor_below"),
                 e("Single Selection", "single_selection"),
                 e("Invert Selection", "invert_selection"),
                 SEP(),
@@ -260,9 +274,13 @@ impl StrataApp {
                 e("Expand Selection to Paragraph", "expand_paragraph"),
                 e("Expand Selection to Brackets", "expand_brackets"),
                 e("Expand Selection to Indentation", "expand_indentation"),
+                SEP(),
+                e("Add Previous Line", "cursor_above"),
+                e("Add Next Line", "cursor_below"),
             ],
         ));
 
+        // ---- Find
         m.push((
             "Find".into(),
             vec![
@@ -272,6 +290,7 @@ impl StrataApp {
                 c("Incremental Find", Cmd::IncrementalFind),
                 SEP(),
                 c("Replace…", Cmd::Replace),
+                c("Replace Next", Cmd::ReplaceNext),
                 SEP(),
                 c("Quick Find", Cmd::QuickFind),
                 e("Quick Find All", "all_occurrences"),
@@ -281,10 +300,19 @@ impl StrataApp {
                 c("Use Selection for Replace", Cmd::UseSelectionForReplace),
                 SEP(),
                 c("Find in Files…", Cmd::FindInFiles),
+                sub(
+                    "Find Results",
+                    vec![
+                        Item::new("Show Panel", Act::Named("show_find_results".into())),
+                        c("Next Result", Cmd::NextFindResult),
+                        c("Previous Result", Cmd::PrevFindResult),
+                    ],
+                ),
+                c("Cancel Find in Files", Cmd::CancelFindInFiles).enabled(self.sidebar.search.running),
             ],
         ));
 
-        let layout = |label: &str, cmd: Cmd, on: bool| c(label, cmd).checked(on);
+        // ---- View
         let syntax: Vec<Item> = crate::highlight::syntax_names()
             .into_iter()
             .map(|s| Item::new(s, Act::Syntax(s.to_owned())).checked(d.highlighter.syntax_name() == s))
@@ -293,23 +321,35 @@ impl StrataApp {
             .into_iter()
             .map(|t| Item::new(t, Act::Theme(t.to_owned())).checked(self.settings.theme == t))
             .collect();
-        let mut indentation = vec![Item::new("Indent Using Spaces", Act::Named("toggle_spaces".into())).checked(self.settings.translate_tabs_to_spaces), SEP()];
-        indentation.extend((1..=8).map(|n| Item::new(format!("Tab Width: {n}"), Act::TabWidth(n)).checked(self.settings.tab_size == n)));
+        let mut indentation = vec![Item::new("Indent Using Spaces", Act::Named("toggle_spaces".into())).checked(d.editor.use_spaces), SEP()];
+        indentation.extend((1..=8).map(|n| Item::new(format!("Tab Width: {n}"), Act::TabWidth(n)).checked(d.editor.tab_width == n)));
         indentation.extend([SEP(), e("Guess Settings From Buffer", "guess_indent"), SEP(), e("Convert Indentation to Spaces", "to_spaces"), e("Convert Indentation to Tabs", "to_tabs")]);
         let ending = d.editor.buffer.line_ending();
+        let layout = |label: &str, cmd: Cmd, on: bool| c(label, cmd).checked(on);
+        let group_items = |cmd: fn(u8) -> Cmd, next: Cmd, prev: Cmd| {
+            let mut v = vec![c("Next", next), c("Previous", prev), SEP()];
+            v.extend((0..4u8).map(|g| c(&format!("Group {}", g + 1), cmd(g))));
+            v
+        };
         m.push((
             "View".into(),
             vec![
+                sub("Side Bar", vec![c("Toggle Side Bar", Cmd::ToggleSidebar).checked(self.sidebar.visible), SEP(), c("Toggle Show Open Files", Cmd::ToggleOpenFiles).checked(self.sidebar.show_open_files)]),
+                c("Toggle Minimap", Cmd::ToggleMinimap).checked(self.settings.minimap),
+                c("Toggle Tabs", Cmd::ToggleTabs).checked(self.settings.show_tabs),
+                c("Toggle Status Bar", Cmd::ToggleStatusBar).checked(self.settings.show_status_bar),
                 sub(
-                    "Side Bar",
-                    vec![c(if self.sidebar.visible { "Hide Side Bar" } else { "Show Side Bar" }, Cmd::ToggleSidebar)],
+                    "Show Panel",
+                    vec![
+                        c("Find", Cmd::Find),
+                        c("Replace", Cmd::Replace),
+                        c("Find in Files", Cmd::FindInFiles),
+                        c("Build Results", Cmd::ToggleBuildResults).checked(self.build.visible),
+                    ],
                 ),
-                c(if self.settings.minimap { "Hide Minimap" } else { "Show Minimap" }, Cmd::ToggleMinimap),
-                c(if self.settings.show_tabs { "Hide Tabs" } else { "Show Tabs" }, Cmd::ToggleTabs),
-                c(if self.settings.show_status_bar { "Hide Status Bar" } else { "Show Status Bar" }, Cmd::ToggleStatusBar),
                 SEP(),
-                c(if self.fullscreen { "Exit Full Screen" } else { "Enter Full Screen" }, Cmd::Fullscreen),
-                c(if self.distraction.is_some() { "Exit Distraction Free Mode" } else { "Enter Distraction Free Mode" }, Cmd::DistractionFree),
+                c("Toggle Full Screen", Cmd::Fullscreen).checked(self.fullscreen),
+                c("Toggle Distraction Free", Cmd::DistractionFree).checked(self.distraction.is_some()),
                 SEP(),
                 sub(
                     "Layout",
@@ -319,96 +359,138 @@ impl StrataApp {
                         layout("Columns: 3", Cmd::LayoutColumns3, (cols, rows) == (3, 1)),
                         layout("Columns: 4", Cmd::LayoutColumns4, (cols, rows) == (4, 1)),
                         layout("Rows: 2", Cmd::LayoutRows2, (cols, rows) == (1, 2)),
+                        layout("Rows: 3", Cmd::LayoutRows3, (cols, rows) == (1, 3)),
                         layout("Grid: 4", Cmd::LayoutGrid, (cols, rows) == (2, 2)),
                     ],
                 ),
-                sub("Focus Group", (0..4u8).map(|g| c(&format!("Group {}", g + 1), Cmd::FocusGroup(g)).enabled((g as usize) < groups)).collect()),
-                sub("Move File to Group", (0..4u8).map(|g| c(&format!("Group {}", g + 1), Cmd::MoveToGroup(g))).collect()),
+                sub("Groups", vec![c("Move File to New Group", Cmd::MoveToNewGroup), c("New Group", Cmd::NewGroup), c("Close Group", Cmd::CloseGroup).enabled(groups > 1)]),
+                sub("Focus Group", group_items(Cmd::FocusGroup, Cmd::FocusNextGroup, Cmd::FocusPrevGroup)),
+                sub("Move File to Group", group_items(Cmd::MoveToGroup, Cmd::MoveToNextGroup, Cmd::MoveToPrevGroup)),
                 SEP(),
                 sub("Syntax", syntax),
                 sub("Indentation", indentation),
                 sub(
                     "Line Endings",
                     vec![
-                        Item::new("Unix (LF)", Act::Named("lf".into())).checked(ending == crate::buffer::LineEnding::Lf),
-                        Item::new("Windows (CRLF)", Act::Named("crlf".into())).checked(ending == crate::buffer::LineEnding::CrLf),
+                        Item::new("Windows", Act::Named("crlf".into())).checked(ending == crate::buffer::LineEnding::CrLf),
+                        Item::new("Unix", Act::Named("lf".into())).checked(ending == crate::buffer::LineEnding::Lf),
                     ],
                 ),
-                SEP(),
                 c("Word Wrap", Cmd::ToggleWordWrap).checked(self.wraps(self.active)),
                 SEP(),
                 sub("Color Scheme", theme),
-                c("Zoom In", Cmd::ZoomIn),
-                c("Zoom Out", Cmd::ZoomOut),
-                c("Reset Zoom", Cmd::ZoomReset),
             ],
         ));
 
+        // ---- Goto
+        let mut bookmarks = vec![
+            e("Toggle Bookmark", "bookmark_toggle"),
+            e("Next Bookmark", "bookmark_next"),
+            e("Prev Bookmark", "bookmark_prev"),
+            e("Clear Bookmarks", "bookmark_clear"),
+            e("Select All Bookmarks", "bookmark_select"),
+            SEP(),
+        ];
+        if d.editor.bookmarks().is_empty() {
+            bookmarks.push(Item::new("(No Bookmarks)", Act::Named(String::new())).enabled(false));
+        }
+        for &pos in d.editor.bookmarks().iter().take(30) {
+            let line = d.editor.buffer.line_of(pos);
+            let text: String = d.editor.buffer.line_text(line).trim().chars().take(50).collect();
+            bookmarks.push(Item::new(format!("{}: {text}", line + 1), Act::Named(format!("bm:{pos}"))));
+        }
         m.push((
             "Goto".into(),
             vec![
                 c("Goto Anything…", Cmd::GotoAnything),
                 SEP(),
                 c("Goto Symbol…", Cmd::GotoSymbol),
+                c("Goto Symbol in Project…", Cmd::GotoSymbolInProject),
                 c("Goto Definition…", Cmd::GotoDefinition),
+                c("Goto Reference…", Cmd::GotoReference),
                 c("Goto Line…", Cmd::GotoLine),
                 SEP(),
                 c("Jump Back", Cmd::JumpBack).enabled(!self.jumps_back.is_empty()),
                 c("Jump Forward", Cmd::JumpForward).enabled(!self.jumps_forward.is_empty()),
                 SEP(),
-                sub("Switch File", vec![c("Next File", Cmd::NextTab), c("Previous File", Cmd::PrevTab)]),
-                e("Jump to Matching Bracket", "jump_bracket"),
-                SEP(),
                 sub(
-                    "Bookmarks",
+                    "Switch File",
                     vec![
-                        e("Toggle Bookmark", "bookmark_toggle"),
-                        e("Next Bookmark", "bookmark_next"),
-                        e("Previous Bookmark", "bookmark_prev"),
-                        e("Clear Bookmarks", "bookmark_clear"),
-                        e("Select All Bookmarks", "bookmark_select"),
+                        c("Next File", Cmd::NextTab),
+                        c("Previous File", Cmd::PrevTab),
+                        SEP(),
+                        c("Next File in Stack", Cmd::NextInStack),
+                        c("Previous File in Stack", Cmd::PrevInStack),
+                        SEP(),
+                        c("Switch Header/Implementation", Cmd::SwitchHeader),
                     ],
                 ),
+                SEP(),
+                sub("Bookmarks", bookmarks),
+                SEP(),
+                e("Jump to Matching Bracket", "jump_bracket"),
             ],
         ));
 
+        // ---- Tools
         let running = self.build.is_running();
+        let mut systems = vec![Item::new("Automatic", Act::Named("bs:".into())).checked(self.build_system.is_none()), SEP()];
+        let mut names: Vec<&str> = self.build.systems.systems.iter().map(|s| s.name.as_str()).collect();
+        names.sort_unstable_by_key(|n| n.to_lowercase());
+        names.dedup();
+        systems.extend(names.into_iter().map(|n| Item::new(n, Act::Named(format!("bs:{n}"))).checked(self.build_system.as_deref() == Some(n))));
+        systems.extend([SEP(), c("New Build System…", Cmd::NewBuildSystem).enabled(self.config.is_some())]);
         m.push((
             "Tools".into(),
             vec![
                 c("Command Palette…", Cmd::CommandPalette),
                 SEP(),
+                sub("Build System", systems),
                 c("Build", Cmd::Build),
                 c("Build With…", Cmd::BuildWith),
                 c("Cancel Build", Cmd::CancelBuild).enabled(running),
                 sub(
                     "Build Results",
                     vec![
-                        c(if self.build.visible { "Hide Build Results" } else { "Show Build Results" }, Cmd::ToggleBuildResults),
+                        c("Show Build Results", Cmd::ToggleBuildResults).checked(self.build.visible),
                         c("Next Result", Cmd::NextResult),
                         c("Previous Result", Cmd::PrevResult),
                     ],
                 ),
+                c("Save All on Build", Cmd::ToggleSaveAllOnBuild).checked(self.settings.save_all_on_build),
+                SEP(),
+                c(if self.macro_recording.is_some() { "Stop Recording Macro" } else { "Record Macro" }, Cmd::RecordMacro),
+                c("Playback Macro", Cmd::PlaybackMacro).enabled(!self.macro_last.is_empty()),
             ],
         ));
 
-        let mut folders: Vec<Item> = self.recent_folders.iter().map(|p| Item::new(p.display().to_string(), Act::OpenRecentFolder(p.clone()))).collect();
-        if folders.is_empty() {
-            folders.push(Item::new("(none yet)", Act::Named(String::new())).enabled(false));
-        }
+        // ---- Project
+        let mut recent_projects: Vec<Item> = self.recent_projects.iter().map(|p| Item::new(p.display().to_string(), Act::Named(format!("project:{}", p.display())))).collect();
+        recent_projects.extend(self.recent_folders.iter().map(|p| Item::new(format!("{}/", p.display()), Act::OpenRecentFolder(p.clone()))));
+        recent_projects.extend([SEP(), c("Clear Items", Cmd::ClearRecent)]);
+        let folder = self.sidebar.root.is_some();
         m.push((
             "Project".into(),
             vec![
                 c("Open Project…", Cmd::OpenProject),
-                sub("Open Recent", folders),
+                c("Switch Project…", Cmd::SwitchProject),
+                sub("Open Recent", recent_projects),
+                SEP(),
                 c("Save Project As…", Cmd::SaveProjectAs),
+                c("Close Project", Cmd::CloseProject).enabled(folder || self.project_path.is_some()),
+                c("Edit Project", Cmd::EditProject).enabled(self.project_path.is_some()),
                 SEP(),
                 c("Add Folder to Project…", Cmd::OpenFolder),
-                c("Close Folder", Cmd::CloseFolder).enabled(self.sidebar.root.is_some()),
-                c("Refresh Folders", Cmd::RefreshFolders).enabled(self.sidebar.root.is_some()),
+                c("Remove all Folders from Project", Cmd::CloseFolder).enabled(folder),
+                c("Refresh Folders", Cmd::RefreshFolders).enabled(folder),
             ],
         ));
 
+        if !MAC {
+            m.push(("Preferences".into(), settings_owned()));
+        }
+
+        // ---- Window (macOS adds its own window-management items)
         let names = self.display_names();
         let mut window = Vec::new();
         if MAC {
@@ -420,7 +502,7 @@ impl StrataApp {
         }
         m.push(("Window".into(), window));
 
-        let mut help = vec![c("Documentation", Cmd::Documentation), c("Command Palette…", Cmd::CommandPalette)];
+        let mut help = vec![c("Documentation", Cmd::Documentation), SEP(), c("Licenses and Attribution…", Cmd::Licenses)];
         if !MAC {
             help.extend([SEP(), Item::new("About Strata", Act::Cmd(Cmd::About))]);
         }
@@ -455,11 +537,8 @@ impl StrataApp {
                 self.apply_settings();
                 self.persist_settings();
             }
-            Act::TabWidth(n) => {
-                self.settings.tab_size = n;
-                self.apply_settings();
-                self.persist_settings();
-            }
+            // Like Sublime, these apply to the current file.
+            Act::TabWidth(n) => self.doc().editor.tab_width = n,
             Act::Tab(i) if i < self.docs.len() => self.activate(i),
             Act::Tab(_) => {}
             Act::ReopenWithEncoding(e) => self.reopen_with_encoding(e),
@@ -467,11 +546,27 @@ impl StrataApp {
             Act::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Act::Named(n) => match n.as_str() {
                 "toggle_spaces" => {
-                    self.settings.translate_tabs_to_spaces = !self.settings.translate_tabs_to_spaces;
-                    self.apply_settings();
-                    self.persist_settings();
+                    let e = &mut self.doc().editor;
+                    e.use_spaces = !e.use_spaces;
                 }
                 "lf" => self.doc().set_line_ending(crate::buffer::LineEnding::Lf),
+                "show_find_results" => {
+                    self.sidebar.visible = true;
+                    self.sidebar.tab = crate::sidebar::Tab::Search;
+                }
+                n if n.starts_with("wrap:") => {
+                    let width = n[5..].parse().unwrap_or(80);
+                    self.doc().editor.wrap_paragraph(width);
+                }
+                n if n.starts_with("bm:") => {
+                    let pos: usize = n[3..].parse().unwrap_or(0);
+                    let d = self.doc();
+                    let pos = pos.min(d.editor.buffer.len_chars());
+                    d.editor.select_ranges(&[pos..pos], 0);
+                    d.view.reveal_centered();
+                }
+                n if n.starts_with("bs:") => self.build_system = Some(n[3..].to_owned()).filter(|s| !s.is_empty()),
+                n if n.starts_with("project:") => self.open_project_path(std::path::PathBuf::from(&n[8..])),
                 "crlf" => self.doc().set_line_ending(crate::buffer::LineEnding::CrLf),
                 _ => {}
             },

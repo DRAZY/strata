@@ -70,6 +70,20 @@ pub struct StrataApp {
     /// Build With… choices offered in the palette.
     build_choices: Vec<crate::build::BuildChoice>,
     completion: completion::Completion,
+    choosing: more::Choosing,
+    /// Text copied from Strata, newest first (Paste from History).
+    clip_history: Vec<String>,
+    /// Position in find-in-folder results for Next/Previous Result.
+    find_result: Option<usize>,
+    /// Ctrl+Tab walk: tab ids by recency, position, time of the last press.
+    stack_walk: Option<(Vec<egui::Id>, usize, f64)>,
+    /// Build system picked in Tools ▸ Build System (None = automatic).
+    build_system: Option<String>,
+    macro_recording: Option<Vec<egui::Event>>,
+    macro_last: Vec<egui::Event>,
+    recent_projects: Vec<PathBuf>,
+    project_path: Option<PathBuf>,
+    licenses_open: bool,
     /// Encoding chosen in the status bar: (reopen?, encoding), applied after drawing.
     pending_encoding: Option<(bool, crate::encoding::Encoding)>,
     /// Input synthesized by menu items (copy, paste, undo…) for the next frame.
@@ -81,6 +95,7 @@ pub struct StrataApp {
 mod completion;
 mod features;
 mod menu_model;
+mod more;
 
 #[cfg(test)]
 use menu_model::EDITOR_COMMANDS;
@@ -124,6 +139,16 @@ impl StrataApp {
             build: crate::build::Build::new(None),
             build_choices: Vec::new(),
             completion: completion::Completion::default(),
+            choosing: more::Choosing::Nothing,
+            clip_history: Vec::new(),
+            find_result: None,
+            stack_walk: None,
+            build_system: None,
+            macro_recording: None,
+            macro_last: Vec::new(),
+            recent_projects: Vec::new(),
+            project_path: None,
+            licenses_open: false,
         };
         app.build = crate::build::Build::new(app.config.clone());
         if let Some(dir) = app.config.clone() {
@@ -567,6 +592,7 @@ impl StrataApp {
             self.set_aside_backups(&dir, &unreadable.join("; "));
         }
         self.recent_files = session.recent_files.clone();
+        self.recent_projects = session.recent_projects.clone();
         self.recent_folders = session.recent_folders.clone();
         if let Some(folder) = session.folder.filter(|f| f.is_dir()) {
             self.sidebar.open_folder(folder);
@@ -634,6 +660,7 @@ impl StrataApp {
             layout: Some(self.layout.clone()),
             recent_files: self.recent_files.clone(),
             recent_folders: self.recent_folders.clone(),
+            recent_projects: self.recent_projects.clone(),
         };
         match session.save(&dir, &backups) {
             Ok(()) => {
@@ -705,22 +732,48 @@ impl StrataApp {
                 self.move_to_pane((g + 1).min(self.layout.groups() - 1));
             }
             Cmd::FocusGroup(g) => self.focus_pane(g as usize),
-            Cmd::Build => {
-                self.save_all();
-                self.reload_build_systems();
-                let bctx = self.build_context();
-                if let Err(e) = self.build.build(&bctx) {
-                    self.status = e;
-                }
-            }
+            Cmd::Build => self.run_build(),
             Cmd::BuildWith => {
                 self.reload_build_systems();
                 let bctx = self.build_context();
                 self.build_choices = self.build.choices(&bctx);
                 let labels = self.build_choices.iter().map(|c| c.label.clone()).collect();
-                let pctx = self.palette_context();
-                self.palette.show_choices("Build with…", labels, pctx, ctx);
+                self.choose(ctx, more::Choosing::Build, "Build with…", labels);
             }
+            Cmd::ReplaceNext => self.replace_one(),
+            Cmd::NextFindResult => self.step_find_result(true),
+            Cmd::PrevFindResult => self.step_find_result(false),
+            Cmd::CancelFindInFiles => self.sidebar.search.stop(),
+            Cmd::ToggleOpenFiles => self.sidebar.show_open_files = !self.sidebar.show_open_files,
+            Cmd::LayoutRows3 => self.set_layout(Layout::grid(1, 3)),
+            Cmd::NewGroup => self.new_group(),
+            Cmd::CloseGroup => self.close_group(),
+            Cmd::MoveToNewGroup => {
+                self.new_group();
+                self.move_to_pane(self.layout.groups() - 1);
+            }
+            Cmd::FocusNextGroup => self.cycle_group(true, false),
+            Cmd::FocusPrevGroup => self.cycle_group(false, false),
+            Cmd::MoveToNextGroup => self.cycle_group(true, true),
+            Cmd::MoveToPrevGroup => self.cycle_group(false, true),
+            Cmd::NextInStack => self.stack_step(ctx.input(|i| i.time), true),
+            Cmd::PrevInStack => self.stack_step(ctx.input(|i| i.time), false),
+            Cmd::SwitchHeader => self.switch_header(),
+            Cmd::GotoReference => self.goto_reference(),
+            Cmd::GotoSymbolInProject => self.goto_symbol_in_project(ctx),
+            Cmd::CopyAsHtml => self.copy_as_html(),
+            Cmd::PasteFromHistory => self.paste_from_history(ctx),
+            Cmd::NewBuildSystem => self.new_build_system(),
+            Cmd::ToggleSaveAllOnBuild => {
+                self.settings.save_all_on_build = !self.settings.save_all_on_build;
+                self.persist_settings();
+            }
+            Cmd::RecordMacro => self.toggle_macro_recording(),
+            Cmd::PlaybackMacro => self.playback_macro(),
+            Cmd::SwitchProject => self.switch_project(ctx),
+            Cmd::CloseProject => self.close_project(),
+            Cmd::EditProject => self.edit_project(),
+            Cmd::Licenses => self.licenses_open = true,
             Cmd::CancelBuild => self.build.cancel(),
             Cmd::NextResult | Cmd::PrevResult => {
                 let r = if cmd == Cmd::NextResult { self.build.next_result() } else { self.build.prev_result() };
@@ -907,15 +960,7 @@ impl StrataApp {
                     self.persist_settings();
                 }
                 Event::Syntax(s) => self.doc().highlighter.set_syntax(&s),
-                Event::Chose(i) => {
-                    if let Some(choice) = self.build_choices.get(i).cloned() {
-                        self.save_all();
-                        let bctx = self.build_context();
-                        if let Err(e) = self.build.build_with(&choice, &bctx) {
-                            self.status = e;
-                        }
-                    }
-                }
+                Event::Chose(i) => self.chose(i),
                 Event::Cancel => {
                     self.apply_settings();
                     if let Some((i, sels, primary)) = self.palette_restore.take()
@@ -967,6 +1012,12 @@ impl StrataApp {
             "jump_bracket" => e.jump_to_bracket(),
             "select_all" => e.select_all(),
             "single_selection" => e.collapse_to_primary(),
+            "toggle_block_comment" => match crate::lang::comment_tokens(d.highlighter.syntax_name()) {
+                (_, Some((open, close))) => e.toggle_block_comment(open, close),
+                _ => self.status = format!("No block comment syntax for {}", d.highlighter.syntax_name()),
+            },
+            "delete_word_forward" => e.delete_forward(true),
+            "delete_word_backward" => e.backspace(true),
             "paste_and_indent" => {
                 if let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
                     e.paste_and_indent(&text);
@@ -1642,6 +1693,7 @@ impl eframe::App for StrataApp {
             ctx.input_mut(|i| i.events.extend(events));
         }
         self.handle_shortcuts(ctx);
+        self.record_macro_input(ctx);
         self.build.poll(ctx);
         let typed_word = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t.chars().all(|c| c.is_alphanumeric() || c == '_'))));
         if self.completion.is_open() {
@@ -1722,6 +1774,9 @@ impl eframe::App for StrataApp {
         }
         if self.about_open {
             self.about_window(ctx);
+        }
+        if self.licenses_open {
+            self.licenses_window(ctx);
         }
         if self.build.visible && self.distraction.is_none() {
             let action = egui::Panel::bottom("build").resizable(true).default_size(180.0).show(ui, |ui| self.build.show(ui)).inner;
@@ -1805,6 +1860,7 @@ impl eframe::App for StrataApp {
         }
         let events = self.palette.show(ctx);
         self.palette_events(ctx, events);
+        self.track_copies(ctx);
     }
 }
 

@@ -118,7 +118,7 @@ impl StrataApp {
     // ---- go to definition ------------------------------------------------------------
 
     /// The identifier at (or touching) the primary cursor.
-    fn word_at_cursor(&self) -> Option<String> {
+    pub(super) fn word_at_cursor(&self) -> Option<String> {
         let ed = &self.docs[self.active].editor;
         let p = ed.primary();
         if !p.is_empty() {
@@ -179,7 +179,12 @@ impl StrataApp {
     // ---- projects ----------------------------------------------------------------
 
     pub(super) fn open_project(&mut self) {
-        let Some(path) = rfd::FileDialog::new().add_filter("Strata Project", &["strata-project"]).pick_file() else { return };
+        if let Some(path) = rfd::FileDialog::new().add_filter("Strata Project", &["strata-project"]).pick_file() {
+            self.open_project_path(path);
+        }
+    }
+
+    pub(super) fn open_project_path(&mut self, path: PathBuf) {
         let project: Project = match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())) {
             Ok(p) => p,
             Err(e) => {
@@ -201,6 +206,7 @@ impl StrataApp {
             }
         }
         self.status = format!("Opened project {}", path.display());
+        self.remember_project(&path);
     }
 
     pub(super) fn save_project_as(&mut self) {
@@ -220,7 +226,10 @@ impl StrataApp {
         };
         let text = serde_json::to_string_pretty(&project).unwrap_or_default();
         self.status = match std::fs::write(&path, text + "\n") {
-            Ok(()) => format!("Saved project {}", path.display()),
+            Ok(()) => {
+                self.remember_project(&path);
+                format!("Saved project {}", path.display())
+            }
             Err(e) => format!("Could not save project: {e}"),
         };
     }
