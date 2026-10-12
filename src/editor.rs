@@ -74,7 +74,12 @@ pub struct Editor {
     /// Cmd+D started from a bare cursor, so it matches whole words only.
     next_whole_word: bool,
     pub tab_width: usize,
+    /// Indent with `tab_width` spaces rather than a tab character.
+    pub use_spaces: bool,
 }
+
+/// A replacement: char range in the text before the edit, and its new text.
+type Edit = (Range<usize>, String);
 
 /// Where selections land after an edit.
 enum Land {
@@ -101,6 +106,81 @@ fn class(c: char) -> CharClass {
     }
 }
 
+/// How far bracket matching scans before giving up.
+const BRACKET_SCAN: usize = 1_000_000;
+const BRACKETS: [(char, char); 3] = [('(', ')'), ('[', ']'), ('{', '}')];
+
+/// (pair index, is opener) for a bracket char.
+fn bracket_kind(c: char) -> Option<(usize, bool)> {
+    BRACKETS.iter().enumerate().find_map(|(k, &(o, cl))| {
+        if c == o {
+            Some((k, true))
+        } else if c == cl {
+            Some((k, false))
+        } else {
+            None
+        }
+    })
+}
+
+/// The closer auto-inserted after `c`, if it opens a pair.
+fn auto_closer(c: char) -> Option<char> {
+    match c {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '"' | '\'' | '`' => Some(c),
+        _ => None,
+    }
+}
+
+fn is_closer(c: char) -> bool {
+    matches!(c, ')' | ']' | '}' | '"' | '\'' | '`')
+}
+
+fn is_indent(c: char) -> bool {
+    c == ' ' || c == '\t'
+}
+
+/// Map `pos` through sorted edits (old coordinates). At an insertion point,
+/// `after` puts it past the inserted text; inside a replaced range it lands
+/// at the range's start (or end of the new text with `after`).
+fn map_pos(edits: &[Edit], pos: usize, after: bool) -> usize {
+    let mut delta: isize = 0;
+    for (r, text) in edits {
+        if pos < r.start {
+            break;
+        }
+        let n = text.chars().count() as isize;
+        let at_insert = r.is_empty() && pos == r.start;
+        if pos >= r.end && !(at_insert && !after) {
+            delta += n - r.len() as isize;
+        } else {
+            let start = r.start as isize + delta;
+            return (start + if after { n } else { 0 }) as usize;
+        }
+    }
+    (pos as isize + delta) as usize
+}
+
+/// A selection mapped through edits: cursors stick after insertions,
+/// selections grow to include text inserted at either edge.
+fn map_sel(edits: &[Edit], s: &Selection) -> Selection {
+    if s.is_empty() {
+        return Selection::cursor(map_pos(edits, s.head, true));
+    }
+    let (a, b) = (map_pos(edits, s.start(), false), map_pos(edits, s.end(), true));
+    span(a, b, s.head >= s.anchor)
+}
+
+fn span(start: usize, end: usize, forward: bool) -> Selection {
+    if forward {
+        Selection { anchor: start, head: end, goal: None }
+    } else {
+        Selection { anchor: end, head: start, goal: None }
+    }
+}
+
 impl Editor {
     pub fn new(buffer: Buffer) -> Self {
         Self {
@@ -117,6 +197,7 @@ impl Editor {
             snapshot: None,
             next_whole_word: false,
             tab_width: 4,
+            use_spaces: true,
         }
     }
 
@@ -140,10 +221,10 @@ impl Editor {
 
     /// Whole text as one string, cached until the next edit (for regex search).
     pub fn text_snapshot(&mut self) -> Arc<String> {
-        if let Some((v, s)) = &self.snapshot {
-            if *v == self.version {
-                return s.clone();
-            }
+        if let Some((v, s)) = &self.snapshot
+            && *v == self.version
+        {
+            return s.clone();
         }
         let s = Arc::new(self.buffer.slice(0..self.buffer.len_chars()));
         self.snapshot = Some((self.version, s.clone()));
@@ -260,13 +341,13 @@ impl Editor {
 
     /// Apply one replacement per selection (same order as `self.sels`).
     /// Each selection collapses to the end of its inserted text.
-    fn apply(&mut self, edits: Vec<(Range<usize>, String)>, kind: Option<EditKind>) {
+    fn apply(&mut self, edits: Vec<Edit>, kind: Option<EditKind>) {
         debug_assert_eq!(edits.len(), self.sels.len());
         self.apply_landing(edits, kind, Land::EachEnd);
     }
 
     /// Apply sorted, non-overlapping replacements as one undo step.
-    fn apply_landing(&mut self, edits: Vec<(Range<usize>, String)>, kind: Option<EditKind>, land: Land) {
+    fn apply_landing(&mut self, edits: Vec<Edit>, kind: Option<EditKind>, land: Land) {
         let before = self.sels.clone();
         let primary_idx = self.primary;
         let mut delta: isize = 0;
@@ -306,18 +387,65 @@ impl Editor {
             primary_head = self.primary().head;
         }
         self.set_selections(new_sels, primary_head);
+        self.record(changes, before, kind);
+    }
+
+    /// Apply edits (sorted by start; overlaps are clipped) as one undo step,
+    /// then select `sels`, given in post-edit coordinates.
+    fn apply_then(
+        &mut self,
+        mut edits: Vec<Edit>,
+        kind: Option<EditKind>,
+        sels: Vec<Selection>,
+        primary_head: usize,
+    ) {
+        edits.sort_by_key(|(r, _)| r.start);
+        let before = self.sels.clone();
+        let mut delta: isize = 0;
+        let mut prev_end = 0;
+        let mut changes = Vec::new();
+        for (range, text) in edits {
+            let start = range.start.max(prev_end);
+            let end = range.end.max(start);
+            prev_end = end;
+            let at = (start as isize + delta) as usize;
+            let removed = self.buffer.slice(at..at + (end - start));
+            if removed == text {
+                continue;
+            }
+            self.note_change(at);
+            self.buffer.remove(at..at + (end - start));
+            self.buffer.insert(at, &text);
+            delta += text.chars().count() as isize - (end - start) as isize;
+            changes.push(Change { at, removed, inserted: text });
+        }
+        self.set_selections(sels, primary_head);
+        self.record(changes, before, kind);
+    }
+
+    /// Apply edits as one undo step, keeping each selection on the same text.
+    fn apply_mapped(&mut self, mut edits: Vec<Edit>, kind: Option<EditKind>) {
+        edits.sort_by_key(|(r, _)| r.start);
+        let sels: Vec<Selection> = self.sels.iter().map(|s| map_sel(&edits, s)).collect();
+        let head = sels[self.primary].head;
+        self.apply_then(edits, kind, sels, head);
+    }
+
+    /// Push applied changes as one undo step, or fold them into the last one.
+    fn record(&mut self, changes: Vec<Change>, before: Vec<Selection>, kind: Option<EditKind>) {
         if changes.is_empty() {
             return;
         }
         self.redo.clear();
 
         let saved_id = self.saved_id;
-        if let (Some(k), true, Some(last)) = (kind, self.can_coalesce, self.undo.last_mut()) {
-            if last.kind == Some(k) && last.id != saved_id {
-                last.changes.extend(changes);
-                last.after = self.sels.clone();
-                return;
-            }
+        if let (Some(k), true, Some(last)) = (kind, self.can_coalesce, self.undo.last_mut())
+            && last.kind == Some(k)
+            && last.id != saved_id
+        {
+            last.changes.extend(changes);
+            last.after = self.sels.clone();
+            return;
         }
         self.undo.push(Transaction {
             id: self.next_id,
@@ -363,6 +491,77 @@ impl Editor {
         self.apply(edits, Some(EditKind::Typing));
     }
 
+    /// Typed text: auto-pairs brackets and quotes, wraps selections in them,
+    /// and types over a closer that is already next.
+    pub fn type_char(&mut self, text: &str) {
+        let mut chars = text.chars();
+        let (Some(c), None) = (chars.next(), chars.next()) else {
+            return self.insert_text(text);
+        };
+        #[derive(Clone, Copy)]
+        enum Act {
+            Plain,
+            Skip,
+            Pair(char),
+            Wrap(char),
+        }
+        let acts: Vec<Act> = self
+            .sels
+            .iter()
+            .map(|s| {
+                let at_line_end = s.head >= self.buffer.line_end(self.buffer.line_of(s.head));
+                let next = (!at_line_end).then(|| self.buffer.char(s.head));
+                if s.is_empty() && is_closer(c) && next == Some(c) {
+                    return Act::Skip;
+                }
+                let Some(close) = auto_closer(c) else { return Act::Plain };
+                if !s.is_empty() {
+                    return Act::Wrap(close);
+                }
+                let next_ok = next.is_none_or(|n| n.is_whitespace() || ")]},;".contains(n));
+                let line_start = self.buffer.line_start(self.buffer.line_of(s.head));
+                let prev = (s.head > line_start).then(|| self.buffer.char(s.head - 1));
+                let quote_ok = close != c || prev.is_none_or(|p| class(p) != CharClass::Word && p != c);
+                if next_ok && quote_ok { Act::Pair(close) } else { Act::Plain }
+            })
+            .collect();
+        if acts.iter().all(|a| matches!(a, Act::Plain)) {
+            return self.insert_text(text);
+        }
+        let mut edits = Vec::new();
+        for (s, act) in self.sels.iter().zip(&acts) {
+            match *act {
+                Act::Plain => edits.push((s.range(), c.to_string())),
+                Act::Skip => {}
+                Act::Pair(close) => edits.push((s.head..s.head, format!("{c}{close}"))),
+                Act::Wrap(close) => {
+                    edits.push((s.start()..s.start(), c.to_string()));
+                    edits.push((s.end()..s.end(), close.to_string()));
+                }
+            }
+        }
+        let sels: Vec<Selection> = self
+            .sels
+            .iter()
+            .zip(&acts)
+            .map(|(s, act)| match act {
+                Act::Plain => Selection::cursor(map_pos(&edits, s.start(), true)),
+                Act::Skip | Act::Pair(_) => Selection::cursor(map_pos(&edits, s.head, false) + 1),
+                Act::Wrap(_) => span(map_pos(&edits, s.start(), true), map_pos(&edits, s.end(), false), s.head >= s.anchor),
+            })
+            .collect();
+        let head = sels[self.primary].head;
+        let wraps = acts.iter().any(|a| matches!(a, Act::Wrap(_)));
+        self.apply_then(edits, (!wraps).then_some(EditKind::Typing), sels, head);
+    }
+
+    /// Cursor sits between an auto-paired opener and its closer.
+    fn inside_pair(&self, pos: usize) -> bool {
+        pos > 0
+            && pos < self.buffer.len_chars()
+            && auto_closer(self.buffer.char(pos - 1)) == Some(self.buffer.char(pos))
+    }
+
     /// Newline that keeps the current line's indentation.
     pub fn newline(&mut self) {
         let ending = self.buffer.line_ending().as_str();
@@ -380,12 +579,15 @@ impl Editor {
         self.apply(edits, None);
     }
 
-    /// Soft tab: spaces up to the next tab stop.
+    /// Soft tab (spaces up to the next tab stop), or '\t' without `use_spaces`.
     pub fn tab(&mut self) {
         let edits = self
             .sels
             .iter()
             .map(|s| {
+                if !self.use_spaces {
+                    return (s.range(), "\t".to_owned());
+                }
                 let col = self.display_col(s.start());
                 let n = self.tab_width - col % self.tab_width;
                 (s.range(), " ".repeat(n))
@@ -403,6 +605,8 @@ impl Editor {
                     s.range()
                 } else if word {
                     self.word_left(s.head)..s.head
+                } else if self.inside_pair(s.head) {
+                    s.head - 1..s.head + 1
                 } else {
                     self.left(s.head)..s.head
                 };
@@ -441,6 +645,551 @@ impl Editor {
             })
             .collect();
         self.apply(edits, None);
+    }
+
+    // ---- line helpers ----------------------------------------------------
+
+    /// Lines a selection covers; a selection ending at column 0 leaves that line out.
+    fn sel_lines(&self, s: &Selection) -> Range<usize> {
+        let first = self.buffer.line_of(s.start());
+        let mut last = self.buffer.line_of(s.end());
+        if last > first && s.end() == self.buffer.line_start(last) {
+            last -= 1;
+        }
+        first..last + 1
+    }
+
+    /// Every covered line once, ascending.
+    fn covered_lines(&self) -> Vec<usize> {
+        let mut lines: Vec<usize> = self.sels.iter().flat_map(|s| self.sel_lines(s)).collect();
+        lines.dedup();
+        lines
+    }
+
+    /// Covered lines merged into contiguous blocks.
+    fn line_blocks(&self) -> Vec<Range<usize>> {
+        let mut blocks: Vec<Range<usize>> = Vec::new();
+        for s in &self.sels {
+            let r = self.sel_lines(s);
+            match blocks.last_mut() {
+                Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+                _ => blocks.push(r),
+            }
+        }
+        blocks
+    }
+
+    /// Lines the sort/unique/trim transforms act on: the selected blocks, or
+    /// the whole buffer (minus a trailing empty line) for a lone cursor.
+    fn transform_blocks(&self) -> (Vec<Range<usize>>, bool) {
+        if self.sels.len() == 1 && self.sels[0].is_empty() {
+            let mut n = self.buffer.len_lines();
+            if n > 1 && self.buffer.line_start(n - 1) == self.buffer.len_chars() {
+                n -= 1;
+            }
+            (std::iter::once(0..n).collect(), true)
+        } else {
+            (self.line_blocks(), false)
+        }
+    }
+
+    fn indent_of(&self, line: usize) -> String {
+        self.buffer.line_text(line).chars().take_while(|&c| is_indent(c)).collect()
+    }
+
+    fn indent_unit(&self) -> String {
+        if self.use_spaces { " ".repeat(self.tab_width) } else { "\t".to_owned() }
+    }
+
+    /// Char index within `line`'s indentation where display column `col` starts.
+    fn pos_in_indent(&self, line: usize, col: usize) -> usize {
+        let mut pos = self.buffer.line_start(line);
+        let mut cur = 0;
+        for c in self.buffer.line_text(line).chars() {
+            if cur >= col || !is_indent(c) {
+                break;
+            }
+            cur = self.advance_col(cur, c);
+            pos += 1;
+        }
+        pos
+    }
+
+    // ---- line commands ---------------------------------------------------
+
+    /// Indent every covered line by one unit (skipping empty lines unless only one).
+    pub fn indent(&mut self) {
+        let unit = self.indent_unit();
+        let lines = self.covered_lines();
+        let keep_empty = lines.len() == 1;
+        let edits = lines
+            .into_iter()
+            .filter(|&l| keep_empty || self.buffer.line_end(l) > self.buffer.line_start(l))
+            .map(|l| {
+                let p = self.buffer.line_start(l);
+                (p..p, unit.clone())
+            })
+            .collect();
+        self.apply_mapped(edits, None);
+    }
+
+    /// Remove up to one indent unit from every covered line.
+    pub fn outdent(&mut self) {
+        let edits = self
+            .covered_lines()
+            .into_iter()
+            .filter_map(|l| {
+                let text = self.buffer.line_text(l);
+                let n = if text.starts_with('\t') {
+                    1
+                } else {
+                    text.chars().take(self.tab_width).take_while(|&c| c == ' ').count()
+                };
+                let start = self.buffer.line_start(l);
+                (n > 0).then(|| (start..start + n, String::new()))
+            })
+            .collect();
+        self.apply_mapped(edits, None);
+    }
+
+    /// Line comments: uncomment if every non-blank covered line is commented,
+    /// else comment them all at their shared minimum indent.
+    pub fn toggle_comment(&mut self, token: &str) {
+        let tok_len = token.chars().count();
+        let lines: Vec<(usize, String)> =
+            self.covered_lines().into_iter().map(|l| (l, self.buffer.line_text(l))).collect();
+        let filled: Vec<&(usize, String)> = lines.iter().filter(|(_, t)| !t.trim().is_empty()).collect();
+        let insert = format!("{token} ");
+        let edits = if filled.is_empty() {
+            lines
+                .iter()
+                .map(|(l, _)| {
+                    let p = self.buffer.line_end(*l);
+                    (p..p, insert.clone())
+                })
+                .collect()
+        } else if filled.iter().all(|(_, t)| t.trim_start().starts_with(token)) {
+            filled
+                .iter()
+                .map(|(l, t)| {
+                    let ws = t.chars().take_while(|c| c.is_whitespace()).count();
+                    let start = self.buffer.line_start(*l) + ws;
+                    let space = t.chars().nth(ws + tok_len) == Some(' ');
+                    (start..start + tok_len + space as usize, String::new())
+                })
+                .collect()
+        } else {
+            let col = filled
+                .iter()
+                .map(|(l, t)| {
+                    let ws = t.chars().take_while(|&c| is_indent(c)).count();
+                    self.display_col(self.buffer.line_start(*l) + ws)
+                })
+                .min()
+                .unwrap_or(0);
+            filled
+                .iter()
+                .map(|(l, _)| {
+                    let p = self.pos_in_indent(*l, col);
+                    (p..p, insert.clone())
+                })
+                .collect()
+        };
+        self.apply_mapped(edits, None);
+    }
+
+    /// Block comments: wrap each selection (or its line's text when empty),
+    /// or unwrap it if it is already wrapped.
+    pub fn toggle_block_comment(&mut self, open: &str, close: &str) {
+        let (o, c) = (open.chars().count(), close.chars().count());
+        let mut edits = Vec::new();
+        let mut last_line = None;
+        for s in &self.sels {
+            let (range, pad) = if s.is_empty() {
+                let line = self.buffer.line_of(s.head);
+                if last_line == Some(line) {
+                    continue;
+                }
+                last_line = Some(line);
+                let text = self.buffer.line_text(line);
+                let start = self.buffer.line_start(line);
+                let lead = text.chars().take_while(|c| c.is_whitespace()).count();
+                let end = start + text.trim_end().chars().count();
+                if end <= start + lead {
+                    continue;
+                }
+                (start + lead..end, " ")
+            } else {
+                (s.range(), "")
+            };
+            let text = self.buffer.slice(range.clone());
+            if text.chars().count() >= o + c && text.starts_with(open) && text.ends_with(close) {
+                let mut a = range.start + o;
+                let mut b = range.end - c;
+                if a < b && self.buffer.char(a) == ' ' {
+                    a += 1;
+                }
+                if a < b && self.buffer.char(b - 1) == ' ' {
+                    b -= 1;
+                }
+                edits.push((range.start..a, String::new()));
+                edits.push((b..range.end, String::new()));
+            } else {
+                edits.push((range.start..range.start, format!("{open}{pad}")));
+                edits.push((range.end..range.end, format!("{pad}{close}")));
+            }
+        }
+        self.apply_mapped(edits, None);
+    }
+
+    /// A cursor duplicates its line below and moves onto the copy; a
+    /// selection duplicates its text right after itself and selects the copy.
+    pub fn duplicate_lines(&mut self) {
+        let ending = self.buffer.line_ending().as_str();
+        let mut edits = Vec::new();
+        let mut last_line = None;
+        for s in &self.sels {
+            if s.is_empty() {
+                let line = self.buffer.line_of(s.head);
+                if last_line != Some(line) {
+                    last_line = Some(line);
+                    let p = self.buffer.line_end(line);
+                    edits.push((p..p, format!("{ending}{}", self.buffer.line_text(line))));
+                }
+            } else {
+                edits.push((s.end()..s.end(), self.buffer.slice(s.range())));
+            }
+        }
+        let sels: Vec<Selection> = self
+            .sels
+            .iter()
+            .map(|s| {
+                if s.is_empty() {
+                    let line = self.buffer.line_of(s.head);
+                    let n = ending.chars().count() + self.buffer.line_end(line) - self.buffer.line_start(line);
+                    Selection::cursor(map_pos(&edits, s.head, false) + n)
+                } else {
+                    let a = map_pos(&edits, s.end(), false);
+                    span(a, a + s.end() - s.start(), s.head >= s.anchor)
+                }
+            })
+            .collect();
+        let head = sels[self.primary].head;
+        self.apply_then(edits, None, sels, head);
+    }
+
+    /// Delete every covered line, line break included.
+    pub fn delete_lines(&mut self) {
+        let (lines, len) = (self.buffer.len_lines(), self.buffer.len_chars());
+        let edits: Vec<Edit> = self
+            .line_blocks()
+            .into_iter()
+            .map(|b| {
+                let range = if b.end < lines {
+                    self.buffer.line_start(b.start)..self.buffer.line_start(b.end)
+                } else if b.start > 0 {
+                    self.buffer.line_end(b.start - 1)..len
+                } else {
+                    0..len
+                };
+                (range, String::new())
+            })
+            .collect();
+        let sels = edits.iter().map(|(r, _)| Selection::cursor(map_pos(&edits, r.start, false))).collect();
+        let head = map_pos(&edits, self.primary().head, false);
+        self.apply_then(edits, None, sels, head);
+    }
+
+    /// Swap each covered line block with the line above (or below).
+    pub fn move_lines(&mut self, up: bool) {
+        let blocks = self.line_blocks();
+        let lines = self.buffer.len_lines();
+        let at_edge = match (blocks.first(), blocks.last()) {
+            (Some(first), Some(last)) => {
+                if up { first.start == 0 } else { last.end >= lines }
+            }
+            _ => true,
+        };
+        if at_edge {
+            return;
+        }
+        let ending = self.buffer.line_ending().as_str();
+        let b = &self.buffer;
+        // (moved char span in old coordinates, its shift, the edit)
+        let moves: Vec<(Range<usize>, isize, Edit)> = blocks
+            .iter()
+            .map(|bl| {
+                let moved = b.line_start(bl.start)..b.line_start(bl.end);
+                let block = b.slice(b.line_start(bl.start)..b.line_end(bl.end - 1));
+                if up {
+                    let other = bl.start - 1;
+                    let range = b.line_start(other)..b.line_end(bl.end - 1);
+                    let shift = b.line_start(other) as isize - b.line_start(bl.start) as isize;
+                    (moved, shift, (range, format!("{block}{ending}{}", b.line_text(other))))
+                } else {
+                    let other = b.line_text(bl.end);
+                    let range = b.line_start(bl.start)..b.line_end(bl.end);
+                    let shift = (other.chars().count() + ending.chars().count()) as isize;
+                    (moved, shift, (range, format!("{other}{ending}{block}")))
+                }
+            })
+            .collect();
+        let shift_pos = |p: usize| {
+            let mut delta: isize = 0;
+            for (moved, shift, (range, text)) in &moves {
+                if moved.start <= p && p <= moved.end {
+                    return (p as isize + delta + shift) as usize;
+                }
+                delta += text.chars().count() as isize - range.len() as isize;
+            }
+            (p as isize + delta) as usize
+        };
+        let sels: Vec<Selection> = self
+            .sels
+            .iter()
+            .map(|s| Selection { anchor: shift_pos(s.anchor), head: shift_pos(s.head), goal: s.goal })
+            .collect();
+        let head = sels[self.primary].head;
+        let edits = moves.into_iter().map(|(_, _, e)| e).collect();
+        self.apply_then(edits, None, sels, head);
+    }
+
+    /// Join each covered line with the next (a cursor's line with the one
+    /// below), replacing the break and leading indent with one space.
+    pub fn join_lines(&mut self) {
+        let lines = self.buffer.len_lines();
+        let mut joins: Vec<usize> = Vec::new();
+        for s in &self.sels {
+            let first = self.buffer.line_of(s.start());
+            let last = self.buffer.line_of(s.end()).max(first + 1);
+            joins.extend(first..last);
+        }
+        joins.sort_unstable();
+        joins.dedup();
+        joins.retain(|&l| l + 1 < lines);
+        let edits: Vec<Edit> = joins
+            .iter()
+            .map(|&l| {
+                let next = self.buffer.line_text(l + 1);
+                let ws = next.chars().take_while(|&c| is_indent(c)).count();
+                let first = next.chars().nth(ws);
+                let bare = self.buffer.line_end(l) == self.buffer.line_start(l);
+                let space = if bare || first.is_none_or(|c| ")]}".contains(c)) { "" } else { " " };
+                (self.buffer.line_end(l)..self.buffer.line_start(l + 1) + ws, space.to_owned())
+            })
+            .collect();
+        let sels: Vec<Selection> = self
+            .sels
+            .iter()
+            .map(|s| {
+                if s.is_empty() {
+                    let end = self.buffer.line_end(self.buffer.line_of(s.head));
+                    Selection::cursor(map_pos(&edits, end, false))
+                } else {
+                    map_sel(&edits, s)
+                }
+            })
+            .collect();
+        let head = sels[self.primary].head;
+        self.apply_then(edits, None, sels, head);
+    }
+
+    /// Select whole lines, line break included; repeating adds the next line.
+    pub fn expand_to_line(&mut self) {
+        let sels: Vec<Selection> = self
+            .sels
+            .iter()
+            .map(|s| {
+                let lines = self.sel_lines(s);
+                let start = self.buffer.line_start(lines.start);
+                let mut end = self.buffer.line_start(lines.end);
+                if !s.is_empty() && s.start() == start && s.end() == end {
+                    end = self.buffer.line_start(lines.end + 1);
+                }
+                Selection { anchor: start, head: end, goal: None }
+            })
+            .collect();
+        let head = sels[self.primary].head;
+        self.set_selections(sels, head);
+        self.can_coalesce = false;
+    }
+
+    /// Split each multi-line selection into one selection per line.
+    pub fn split_into_lines(&mut self) {
+        let mut sels = Vec::new();
+        for s in &self.sels {
+            let (first, last) = (self.buffer.line_of(s.start()), self.buffer.line_of(s.end()));
+            if first == last {
+                sels.push(*s);
+                continue;
+            }
+            for line in first..=last {
+                if line == last && s.end() == self.buffer.line_start(line) {
+                    break;
+                }
+                let a = s.start().max(self.buffer.line_start(line));
+                let b = s.end().min(self.buffer.line_end(line));
+                sels.push(Selection { anchor: a, head: b, goal: None });
+            }
+        }
+        let head = self.primary().head;
+        self.set_selections(sels, head);
+        self.can_coalesce = false;
+    }
+
+    pub fn insert_line_after(&mut self) {
+        self.insert_line(false);
+    }
+
+    pub fn insert_line_before(&mut self) {
+        self.insert_line(true);
+    }
+
+    /// Open an indented line below (or above) each cursor's line.
+    fn insert_line(&mut self, before: bool) {
+        let ending = self.buffer.line_ending().as_str();
+        let line_of = |s: &Selection| self.buffer.line_of(if before { s.start() } else { s.end() });
+        let mut lines: Vec<usize> = self.sels.iter().map(line_of).collect();
+        lines.dedup();
+        let indents: Vec<String> = lines.iter().map(|&l| self.indent_of(l)).collect();
+        let edits: Vec<Edit> = lines
+            .iter()
+            .zip(&indents)
+            .map(|(&l, indent)| {
+                if before {
+                    let p = self.buffer.line_start(l);
+                    (p..p, format!("{indent}{ending}"))
+                } else {
+                    let p = self.buffer.line_end(l);
+                    (p..p, format!("{ending}{indent}"))
+                }
+            })
+            .collect();
+        let sels: Vec<Selection> = edits
+            .iter()
+            .zip(&indents)
+            .map(|((r, _), indent)| {
+                Selection::cursor(if before {
+                    map_pos(&edits, r.start, false) + indent.chars().count()
+                } else {
+                    map_pos(&edits, r.start, true)
+                })
+            })
+            .collect();
+        let primary_line = line_of(&self.primary());
+        let head = sels[lines.iter().position(|&l| l == primary_line).unwrap_or(0)].head;
+        self.apply_then(edits, None, sels, head);
+    }
+
+    /// Sort the selected lines (or the whole buffer for a lone cursor).
+    pub fn sort_lines(&mut self, case_sensitive: bool) {
+        self.transform_lines(|mut lines| {
+            if case_sensitive {
+                lines.sort();
+            } else {
+                lines.sort_by_cached_key(|l| l.to_lowercase());
+            }
+            lines
+        });
+    }
+
+    #[allow(dead_code)] // No default key binding; for a future command palette.
+    pub fn reverse_lines(&mut self) {
+        self.transform_lines(|mut lines| {
+            lines.reverse();
+            lines
+        });
+    }
+
+    /// Drop repeated lines, keeping the first of each.
+    #[allow(dead_code)] // No default key binding; for a future command palette.
+    pub fn unique_lines(&mut self) {
+        self.transform_lines(|lines| {
+            let mut seen = std::collections::HashSet::new();
+            lines.into_iter().filter(|l| seen.insert(l.clone())).collect()
+        });
+    }
+
+    fn transform_lines(&mut self, f: impl Fn(Vec<String>) -> Vec<String>) {
+        let ending = self.buffer.line_ending().as_str();
+        let (blocks, whole) = self.transform_blocks();
+        let edits: Vec<Edit> = blocks
+            .iter()
+            .map(|b| {
+                let lines = b.clone().map(|l| self.buffer.line_text(l)).collect();
+                let range = self.buffer.line_start(b.start)..self.buffer.line_end(b.end - 1);
+                (range, f(lines).join(ending))
+            })
+            .collect();
+        let (sels, head) = if whole {
+            let p = self.primary();
+            (vec![p], p.head)
+        } else {
+            let sels: Vec<Selection> = edits
+                .iter()
+                .map(|(r, t)| {
+                    let a = map_pos(&edits, r.start, false);
+                    span(a, a + t.chars().count(), true)
+                })
+                .collect();
+            let head = sels.last().map_or(0, |s| s.head);
+            (sels, head)
+        };
+        self.apply_then(edits, None, sels, head);
+    }
+
+    /// Strip trailing whitespace from the covered lines (whole buffer for a lone cursor).
+    #[allow(dead_code)] // No default key binding; for a future command palette.
+    pub fn trim_trailing_whitespace(&mut self) {
+        let (blocks, _) = self.transform_blocks();
+        let edits = blocks
+            .into_iter()
+            .flatten()
+            .filter_map(|l| {
+                let text = self.buffer.line_text(l);
+                let end = self.buffer.line_end(l);
+                let start = self.buffer.line_start(l) + text.trim_end().chars().count();
+                (start < end).then(|| (start..end, String::new()))
+            })
+            .collect();
+        self.apply_mapped(edits, None);
+    }
+
+    pub fn swap_case_upper(&mut self) {
+        self.transform_selected(|s| s.to_uppercase());
+    }
+
+    pub fn swap_case_lower(&mut self) {
+        self.transform_selected(|s| s.to_lowercase());
+    }
+
+    /// Rewrite each selection's text (a cursor's word when empty).
+    fn transform_selected(&mut self, f: impl Fn(&str) -> String) {
+        let mut ranges: Vec<Range<usize>> = Vec::new();
+        for s in &self.sels {
+            let r = if s.is_empty() { self.word_range_at(s.head) } else { s.range() };
+            if !r.is_empty() && ranges.last().is_none_or(|last| r.start >= last.end) {
+                ranges.push(r);
+            }
+        }
+        let edits: Vec<Edit> =
+            ranges.into_iter().map(|r| (r.clone(), f(&self.buffer.slice(r)))).collect();
+        let sels: Vec<Selection> = self
+            .sels
+            .iter()
+            .map(|s| {
+                if !s.is_empty() {
+                    return map_sel(&edits, s);
+                }
+                let Some((r, t)) = edits.iter().find(|(r, _)| r.start <= s.head && s.head <= r.end) else {
+                    return Selection::cursor(map_pos(&edits, s.head, false));
+                };
+                let offset = (s.head - r.start).min(t.chars().count());
+                Selection::cursor(map_pos(&edits, r.start, false) + offset)
+            })
+            .collect();
+        let head = sels[self.primary].head;
+        self.apply_then(edits, None, sels, head);
     }
 
     // ---- clipboard -------------------------------------------------------
@@ -681,7 +1430,7 @@ impl Editor {
     }
 
     /// Replace several ranges (sorted, non-overlapping) as one undo step.
-    pub fn replace_ranges(&mut self, edits: Vec<(Range<usize>, String)>) {
+    pub fn replace_ranges(&mut self, edits: Vec<Edit>) {
         if !edits.is_empty() {
             self.apply_landing(edits, None, Land::FirstEnd);
         }
@@ -772,6 +1521,145 @@ impl Editor {
     pub fn select_word_at(&mut self, pos: usize) {
         let r = self.word_range_at(pos);
         self.set_selections(vec![Selection { anchor: r.start, head: r.end, goal: None }], r.end);
+    }
+
+    /// Box selection in display columns: one selection per line, skipping
+    /// lines shorter than the left column (keeping at least one cursor).
+    pub fn select_box(&mut self, from_line: usize, from_col: usize, to_line: usize, to_col: usize) {
+        let last = self.buffer.len_lines() - 1;
+        let (from_line, to_line) = (from_line.min(last), to_line.min(last));
+        let left = from_col.min(to_col);
+        let mut sels = Vec::new();
+        let mut primary_head = None;
+        for line in from_line.min(to_line)..=from_line.max(to_line) {
+            if self.display_col(self.buffer.line_end(line)) < left {
+                continue;
+            }
+            let anchor = self.pos_at_display_col(line, from_col);
+            let head = self.pos_at_display_col(line, to_col);
+            if line == to_line {
+                primary_head = Some(head);
+            }
+            sels.push(Selection { anchor, head, goal: None });
+        }
+        if sels.is_empty() {
+            sels.push(Selection::cursor(self.pos_at_display_col(to_line, to_col)));
+        }
+        let head = primary_head.unwrap_or(sels[sels.len() - 1].head);
+        self.set_selections(sels, head);
+        self.can_coalesce = false;
+    }
+
+    /// Add a cursor on the line above the topmost (or below the bottommost)
+    /// cursor, at the primary's goal column. The new cursor becomes primary.
+    pub fn add_cursor_vertical(&mut self, dir: isize) {
+        let p = self.primary();
+        let goal = p.goal.unwrap_or_else(|| self.display_col(p.head));
+        let edge = if dir < 0 { self.sels[0] } else { self.sels[self.sels.len() - 1] };
+        let line = self.buffer.line_of(edge.head) as isize + dir.signum();
+        if line < 0 || line >= self.buffer.len_lines() as isize {
+            return;
+        }
+        let pos = self.pos_at_display_col(line as usize, goal);
+        let mut sels = self.sels.clone();
+        sels.push(Selection { anchor: pos, head: pos, goal: Some(goal) });
+        self.set_selections(sels, pos);
+        self.can_coalesce = false;
+    }
+
+    // ---- brackets --------------------------------------------------------
+
+    /// Position of the bracket matching the one at `at`, same kind, nesting-aware.
+    fn find_match(&self, at: usize) -> Option<usize> {
+        let (k, open) = bracket_kind(self.buffer.char(at))?;
+        let (o, c) = BRACKETS[k];
+        let mut depth = 0usize;
+        let mut step = |ch: char, inner: char, outer: char| {
+            if ch == inner {
+                depth += 1;
+            } else if ch == outer {
+                if depth == 0 {
+                    return true;
+                }
+                depth -= 1;
+            }
+            false
+        };
+        if open {
+            let end = (at + 1 + BRACKET_SCAN).min(self.buffer.len_chars());
+            let text = self.buffer.slice(at + 1..end);
+            text.chars().position(|ch| step(ch, o, c)).map(|i| at + 1 + i)
+        } else {
+            let text = self.buffer.slice(at.saturating_sub(BRACKET_SCAN)..at);
+            text.chars().rev().position(|ch| step(ch, c, o)).map(|i| at - 1 - i)
+        }
+    }
+
+    /// A bracket right after (else right before) `pos`, and its match.
+    pub fn matching_bracket(&self, pos: usize) -> Option<(usize, usize)> {
+        let after = (pos < self.buffer.len_chars()).then_some(pos);
+        [after, pos.checked_sub(1)]
+            .into_iter()
+            .flatten()
+            .find_map(|b| self.find_match(b).map(|m| (b, m)))
+    }
+
+    /// Innermost bracket pair with its opener before `pos` and closer at or after it.
+    fn enclosing_brackets(&self, pos: usize) -> Option<(usize, usize)> {
+        let mut depth = [0usize; 3];
+        let text = self.buffer.slice(pos.saturating_sub(BRACKET_SCAN)..pos);
+        for (i, ch) in text.chars().rev().enumerate() {
+            match bracket_kind(ch) {
+                Some((k, false)) => depth[k] += 1,
+                Some((k, true)) if depth[k] > 0 => depth[k] -= 1,
+                Some((_, true)) => {
+                    let o = pos - 1 - i;
+                    return self.find_match(o).map(|c| (o, c));
+                }
+                None => {}
+            }
+        }
+        None
+    }
+
+    /// Ctrl+M: move to the matching bracket, keeping the caret on the same
+    /// side (inside/outside) of the pair; else to the enclosing closer.
+    pub fn jump_to_bracket(&mut self) {
+        self.move_each(false, |e, s| {
+            if let Some((b, m)) = e.matching_bracket(s.head) {
+                let opener = m > b;
+                let outside = (b == s.head) == opener;
+                // The match is a closer when the bracket is an opener.
+                let land = if outside == opener { m + 1 } else { m };
+                return (land, None);
+            }
+            (e.enclosing_brackets(s.head).map_or(s.head, |(_, c)| c), None)
+        });
+    }
+
+    /// Select the enclosing brackets' contents; again to include the brackets.
+    pub fn expand_to_brackets(&mut self) {
+        let sels: Vec<Selection> = self
+            .sels
+            .iter()
+            .map(|s| {
+                let mut from = s.start();
+                for _ in 0..64 {
+                    let Some((o, c)) = self.enclosing_brackets(from) else { break };
+                    if o + 1 == s.start() && c == s.end() {
+                        return Selection { anchor: o, head: c + 1, goal: None };
+                    }
+                    if o < s.start() && c >= s.end() {
+                        return Selection { anchor: o + 1, head: c, goal: None };
+                    }
+                    from = o;
+                }
+                *s
+            })
+            .collect();
+        let head = sels[self.primary].head;
+        self.set_selections(sels, head);
+        self.can_coalesce = false;
     }
 
     /// The run of same-class characters at `pos` (prefers the char after it).
@@ -977,6 +1865,404 @@ mod tests {
         e.insert_text("z");
         assert!(e.version() > v);
         assert_eq!(*e.text_snapshot(), "zabc");
+    }
+
+    fn sel(e: &mut Editor, a: usize, b: usize) {
+        let r = a..b;
+        e.select_ranges(&[r], 0);
+    }
+
+    fn ranges(e: &Editor) -> Vec<Range<usize>> {
+        e.selections().iter().map(|s| s.range()).collect()
+    }
+
+    /// One undo restores `before` exactly; redo reapplies; dirty tracks it.
+    fn assert_one_step(e: &mut Editor, before: &str) {
+        let after = text(e);
+        e.undo();
+        assert_eq!(text(e), before);
+        assert!(!e.is_dirty());
+        e.redo();
+        assert_eq!(text(e), after);
+        assert!(e.is_dirty());
+    }
+
+    #[test]
+    fn auto_pairs_brackets_and_quotes() {
+        let mut e = ed("x\n");
+        e.type_char("(");
+        assert_eq!(text(&e), "(x\n", "no pair before a word char");
+        let mut e = ed("\n");
+        e.type_char("(");
+        e.type_char("a");
+        assert_eq!(text(&e), "(a)\n");
+        assert_eq!(e.primary().head, 2);
+        e.type_char(")");
+        assert_eq!(text(&e), "(a)\n", "typed over the closer");
+        assert_eq!(e.primary().head, 3);
+        e.undo();
+        assert_eq!(text(&e), "\n", "pair and typing are one step");
+
+        let mut e = ed("it\n");
+        e.click(2, false);
+        e.type_char("'");
+        assert_eq!(text(&e), "it'\n", "no quote pair after a word char");
+        let mut e = ed("a = ;\n");
+        e.click(4, false);
+        e.type_char("\"");
+        assert_eq!(text(&e), "a = \"\";\n");
+    }
+
+    #[test]
+    fn auto_pair_with_multiple_cursors() {
+        let mut e = ed("a\nb\n");
+        e.click(1, false);
+        e.add_cursor(3);
+        e.type_char("[");
+        assert_eq!(text(&e), "a[]\nb[]\n");
+        assert_eq!(ranges(&e), vec![2..2, 6..6]);
+        e.backspace(false);
+        assert_eq!(text(&e), "a\nb\n", "backspace removes both halves");
+    }
+
+    #[test]
+    fn opener_wraps_selection() {
+        let mut e = ed("foo bar\n");
+        sel(&mut e, 4, 7);
+        e.type_char("(");
+        assert_eq!(text(&e), "foo (bar)\n");
+        assert_eq!(e.primary().range(), 5..8);
+        e.type_char("\"");
+        assert_eq!(text(&e), "foo (\"bar\")\n");
+        e.undo();
+        assert_eq!(text(&e), "foo (bar)\n", "each wrap is its own step");
+    }
+
+    #[test]
+    fn indent_and_outdent_keep_selection() {
+        let mut e = ed("a\n\n  b\nc\n");
+        sel(&mut e, 0, 5);
+        e.indent();
+        assert_eq!(text(&e), "    a\n\n      b\nc\n", "empty line left alone");
+        assert_eq!(e.primary().range(), 0..13);
+        assert_one_step(&mut e, "a\n\n  b\nc\n");
+        e.outdent();
+        e.outdent();
+        assert_eq!(text(&e), "a\n\nb\nc\n");
+        let mut e = ed("\tx\n");
+        e.use_spaces = false;
+        e.click(2, false);
+        e.indent();
+        assert_eq!(text(&e), "\t\tx\n");
+        assert_eq!(e.primary().head, 3);
+        e.outdent();
+        assert_eq!(text(&e), "\tx\n");
+    }
+
+    #[test]
+    fn indent_dedupes_cursors_on_one_line() {
+        let mut e = ed("ab\n");
+        e.click(0, false);
+        e.add_cursor(2);
+        e.indent();
+        assert_eq!(text(&e), "    ab\n");
+        assert_eq!(ranges(&e), vec![4..4, 6..6]);
+    }
+
+    #[test]
+    fn toggle_line_comment() {
+        let src = "fn f() {\n    a();\n\n  b();\n}\n";
+        let mut e = ed(src);
+        sel(&mut e, 9, 24);
+        e.toggle_comment("//");
+        assert_eq!(text(&e), "fn f() {\n  //   a();\n\n  // b();\n}\n", "at the minimum indent");
+        assert_one_step(&mut e, src);
+        e.toggle_comment("//");
+        assert_eq!(text(&e), src);
+        // Mixed: one commented, one not → comment both.
+        let mut e = ed("# a\nb\n");
+        sel(&mut e, 0, 5);
+        e.toggle_comment("#");
+        assert_eq!(text(&e), "# # a\n# b\n");
+    }
+
+    #[test]
+    fn toggle_comment_multi_cursor_same_line_once() {
+        let mut e = ed("let x;\n");
+        e.click(1, false);
+        e.add_cursor(4);
+        e.toggle_comment("//");
+        assert_eq!(text(&e), "// let x;\n");
+        assert_eq!(ranges(&e), vec![4..4, 7..7]);
+        e.toggle_comment("//");
+        assert_eq!(text(&e), "let x;\n");
+    }
+
+    #[test]
+    fn toggle_block_comment_wraps_and_unwraps() {
+        let mut e = ed("  a { b }\n");
+        e.click(4, false);
+        e.toggle_block_comment("/*", "*/");
+        assert_eq!(text(&e), "  /* a { b } */\n");
+        e.toggle_block_comment("/*", "*/");
+        assert_eq!(text(&e), "  a { b }\n");
+        sel(&mut e, 6, 7);
+        e.toggle_block_comment("<!--", "-->");
+        assert_eq!(text(&e), "  a { <!--b--> }\n");
+        assert_eq!(e.primary().range(), 6..14);
+        e.toggle_block_comment("<!--", "-->");
+        assert_eq!(text(&e), "  a { b }\n");
+    }
+
+    #[test]
+    fn duplicate_line_and_selection() {
+        let mut e = ed("ab\r\ncd");
+        e.click(1, false);
+        e.duplicate_lines();
+        assert_eq!(text(&e), "ab\r\nab\r\ncd");
+        assert_eq!(e.primary().head, 5);
+        assert_one_step(&mut e, "ab\r\ncd");
+        sel(&mut e, 8, 10);
+        e.duplicate_lines();
+        assert_eq!(text(&e), "ab\r\nab\r\ncdcd");
+        assert_eq!(e.primary().range(), 10..12);
+    }
+
+    #[test]
+    fn duplicate_two_cursors_on_one_line_once() {
+        let mut e = ed("ab\nz");
+        e.click(0, false);
+        e.add_cursor(2);
+        e.duplicate_lines();
+        assert_eq!(text(&e), "ab\nab\nz");
+        assert_eq!(ranges(&e), vec![3..3, 5..5]);
+    }
+
+    #[test]
+    fn delete_lines_under_selections() {
+        let mut e = ed("a\nb\nc\nd");
+        e.click(0, false);
+        e.add_cursor(1);
+        e.add_cursor(6);
+        e.delete_lines();
+        assert_eq!(text(&e), "b\nc");
+        assert_eq!(e.selections().len(), 2);
+        assert_one_step(&mut e, "a\nb\nc\nd");
+        e.select_all();
+        e.delete_lines();
+        assert_eq!(text(&e), "");
+    }
+
+    #[test]
+    fn move_lines_up_and_down() {
+        let mut e = ed("a\r\nbb\r\nc");
+        e.click(4, false); // "bb", column 1
+        e.move_lines(true);
+        assert_eq!(text(&e), "bb\r\na\r\nc");
+        assert_eq!(e.primary().head, 1);
+        e.move_lines(true);
+        assert_eq!(text(&e), "bb\r\na\r\nc", "no-op at the top");
+        e.move_lines(false);
+        e.move_lines(false);
+        assert_eq!(text(&e), "a\r\nc\r\nbb");
+        assert_eq!(e.primary().head, 7);
+        e.undo();
+        assert_eq!(text(&e), "a\r\nbb\r\nc", "each move is one step");
+    }
+
+    #[test]
+    fn move_selected_block_keeps_selection() {
+        let mut e = ed("1\n2\n3\n4\n");
+        sel(&mut e, 2, 6); // lines "2" and "3" incl. break
+        e.move_lines(false);
+        assert_eq!(text(&e), "1\n4\n2\n3\n");
+        assert_eq!(e.buffer.slice(e.primary().range()), "2\n3\n");
+        e.move_lines(true);
+        assert_eq!(text(&e), "1\n2\n3\n4\n");
+    }
+
+    #[test]
+    fn join_lines_trims_indent() {
+        let mut e = ed("fn f() {\r\n    x\r\n}");
+        e.click(0, false);
+        e.join_lines();
+        assert_eq!(text(&e), "fn f() { x\r\n}");
+        assert_eq!(e.primary().head, 8);
+        assert_one_step(&mut e, "fn f() {\r\n    x\r\n}");
+        e.select_all();
+        e.join_lines();
+        assert_eq!(text(&e), "fn f() { x}", "no space before a closer");
+    }
+
+    #[test]
+    fn join_with_cursors_on_adjacent_lines() {
+        let mut e = ed("a\nb\nc\n\nd");
+        e.click(0, false);
+        e.add_cursor(2);
+        e.add_cursor(6);
+        e.join_lines();
+        assert_eq!(text(&e), "a b c\nd");
+    }
+
+    #[test]
+    fn expand_to_line_repeats() {
+        let mut e = ed("ab\ncd\nef");
+        e.click(1, false);
+        e.expand_to_line();
+        assert_eq!(e.primary().range(), 0..3);
+        e.expand_to_line();
+        assert_eq!(e.primary().range(), 0..6);
+        e.expand_to_line();
+        assert_eq!(e.primary().range(), 0..8);
+    }
+
+    #[test]
+    fn split_selection_into_lines() {
+        let mut e = ed("ab\ncd\nef\n");
+        sel(&mut e, 1, 9);
+        e.split_into_lines();
+        assert_eq!(ranges(&e), vec![1..2, 3..5, 6..8]);
+    }
+
+    #[test]
+    fn insert_line_after_and_before() {
+        let mut e = ed("  ab\r\n");
+        e.click(1, false);
+        e.insert_line_after();
+        assert_eq!(text(&e), "  ab\r\n  \r\n");
+        assert_eq!(e.primary().head, 8);
+        e.undo();
+        e.click(3, false);
+        e.insert_line_before();
+        assert_eq!(text(&e), "  \r\n  ab\r\n");
+        assert_eq!(e.primary().head, 2);
+    }
+
+    #[test]
+    fn insert_line_after_with_two_cursors() {
+        let mut e = ed("a\nb");
+        e.click(0, false);
+        e.add_cursor(2);
+        e.insert_line_after();
+        assert_eq!(text(&e), "a\n\nb\n");
+        assert_eq!(ranges(&e), vec![2..2, 5..5]);
+        assert_one_step(&mut e, "a\nb");
+    }
+
+    #[test]
+    fn add_cursor_above_and_below_at_goal_column() {
+        let mut e = ed("abcd\nx\nabcd\nabcd");
+        e.click(8, false); // line 2, col 1
+        e.add_cursor_vertical(-1);
+        e.add_cursor_vertical(-1);
+        assert_eq!(ranges(&e), vec![1..1, 6..6, 8..8]);
+        e.add_cursor_vertical(1);
+        assert_eq!(e.selections().len(), 4);
+        assert_eq!(e.primary().head, 13);
+        e.add_cursor_vertical(1);
+        assert_eq!(e.selections().len(), 4, "no line below");
+    }
+
+    #[test]
+    fn bracket_matching_and_jump() {
+        let mut e = ed("f(a[1], {b})");
+        assert_eq!(e.matching_bracket(1), Some((1, 11)));
+        assert_eq!(e.matching_bracket(12), Some((11, 1)));
+        assert_eq!(e.matching_bracket(4), Some((3, 5)));
+        assert_eq!(e.matching_bracket(0), None);
+        e.click(1, false);
+        e.jump_to_bracket();
+        assert_eq!(e.primary().head, 12);
+        e.jump_to_bracket();
+        assert_eq!(e.primary().head, 1);
+        e.click(9, false); // just inside '{' → just inside '}'
+        e.jump_to_bracket();
+        assert_eq!(e.primary().head, 10);
+        e.jump_to_bracket();
+        assert_eq!(e.primary().head, 9);
+        e.click(2, false); // just inside '(' → before ')'
+        e.jump_to_bracket();
+        assert_eq!(e.primary().head, 11);
+    }
+
+    #[test]
+    fn expand_to_brackets_grows_outward() {
+        let mut e = ed("f(a, [b, c])");
+        e.click(7, false);
+        e.expand_to_brackets();
+        assert_eq!(e.primary().range(), 6..10);
+        e.expand_to_brackets();
+        assert_eq!(e.primary().range(), 5..11);
+        e.expand_to_brackets();
+        assert_eq!(e.primary().range(), 2..11);
+        e.expand_to_brackets();
+        assert_eq!(e.primary().range(), 1..12);
+        e.expand_to_brackets();
+        assert_eq!(e.primary().range(), 1..12, "nothing further out");
+    }
+
+    #[test]
+    fn case_transforms() {
+        let mut e = ed("foo bar");
+        e.click(1, false);
+        e.add_cursor(5);
+        e.swap_case_upper();
+        assert_eq!(text(&e), "FOO BAR");
+        assert_eq!(ranges(&e), vec![1..1, 5..5]);
+        assert_one_step(&mut e, "foo bar");
+        sel(&mut e, 0, 3);
+        e.swap_case_lower();
+        assert_eq!(text(&e), "foo BAR");
+        assert_eq!(e.primary().range(), 0..3);
+    }
+
+    #[test]
+    fn sort_reverse_unique_whole_buffer() {
+        let mut e = ed("b\nA\nc\nb\n");
+        e.sort_lines(false);
+        assert_eq!(text(&e), "A\nb\nb\nc\n");
+        assert_one_step(&mut e, "b\nA\nc\nb\n");
+        e.sort_lines(true);
+        assert_eq!(text(&e), "A\nb\nb\nc\n");
+        e.unique_lines();
+        assert_eq!(text(&e), "A\nb\nc\n");
+        e.reverse_lines();
+        assert_eq!(text(&e), "c\nb\nA\n");
+    }
+
+    #[test]
+    fn sort_only_selected_lines() {
+        let mut e = ed("z\nc\nb\na\n");
+        sel(&mut e, 2, 7); // "c", "b", and into "a"
+        e.sort_lines(true);
+        assert_eq!(text(&e), "z\na\nb\nc\n");
+        assert_eq!(e.primary().range(), 2..7);
+        let mut e = ed("b\na\n");
+        e.sort_lines(true);
+        e.sort_lines(true);
+        e.undo();
+        assert_eq!(text(&e), "b\na\n", "an already-sorted sort is no step");
+    }
+
+    #[test]
+    fn trim_trailing_whitespace_lines() {
+        let mut e = ed("a  \r\nb\t\r\n  \r\n");
+        e.click(0, false);
+        e.trim_trailing_whitespace();
+        assert_eq!(text(&e), "a\r\nb\r\n\r\n");
+        assert_one_step(&mut e, "a  \r\nb\t\r\n  \r\n");
+    }
+
+    #[test]
+    fn box_selection_skips_short_lines() {
+        let mut e = ed("abcdef\na\nabcdef\n\tx");
+        e.select_box(0, 2, 2, 4);
+        assert_eq!(ranges(&e), vec![2..4, 11..13]);
+        assert_eq!(e.primary().range(), 11..13);
+        e.select_box(1, 5, 1, 6);
+        assert_eq!(ranges(&e), vec![8..8], "keeps one cursor");
+        e.select_box(2, 4, 3, 4);
+        assert_eq!(ranges(&e), vec![13..13, 17..17], "tab expands to column 4");
     }
 
     #[test]

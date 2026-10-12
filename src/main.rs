@@ -8,6 +8,7 @@ mod find;
 mod fonts;
 mod devshot;
 mod highlight;
+mod lang;
 mod search;
 mod sidebar;
 mod view;
