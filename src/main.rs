@@ -4,12 +4,18 @@
 mod app;
 mod buffer;
 mod editor;
+#[allow(dead_code)] // wired into the UI later
+mod files;
 mod find;
 mod fonts;
+#[allow(dead_code)]
+mod fuzzy;
 mod devshot;
 mod highlight;
 mod search;
 mod sidebar;
+#[allow(dead_code)]
+mod symbols;
 mod view;
 
 use std::path::PathBuf;
