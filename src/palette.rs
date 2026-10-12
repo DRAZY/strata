@@ -81,11 +81,11 @@ pub struct Palette {
     /// Row whose preview was last sent, so moving the selection previews once.
     previewed: Option<usize>,
     /// Editor commands as (id, palette name, shortcut label).
-    editor_cmds: &'static [(&'static str, &'static str, &'static str)],
+    editor_cmds: Vec<(&'static str, &'static str, String)>,
 }
 
 impl Palette {
-    pub fn new(editor_cmds: &'static [(&'static str, &'static str, &'static str)]) -> Self {
+    pub fn new(editor_cmds: Vec<(&'static str, &'static str, String)>) -> Self {
         Self {
             open: false,
             mode: Mode::Commands,
@@ -173,7 +173,7 @@ impl Palette {
             .filter(|c| **c != Cmd::CommandPalette)
             .map(|&c| (c.name().to_owned(), c.shortcut_label().unwrap_or_default(), Pick::Cmd(c)))
             .collect();
-        items.extend(self.editor_cmds.iter().map(|&(id, name, keys)| (name.to_owned(), crate::keys::spaced(keys), Pick::Editor(id))));
+        items.extend(self.editor_cmds.iter().map(|(id, name, keys)| (name.to_string(), keys.clone(), Pick::Editor(id))));
         items.extend(crate::highlight::syntax_names().into_iter().map(|s| (format!("Set Syntax: {s}"), String::new(), Pick::Syntax(s.to_owned()))));
         rank_rows(&self.text, &items, |i| &i.0, |i| i.2.clone(), |i| i.1.clone())
     }
@@ -435,7 +435,7 @@ mod tests {
     }
 
     fn palette(mode: Mode, prefix: &str, c: Context) -> Palette {
-        let mut p = Palette::new(&[("duplicate_lines", "Edit: Duplicate Line", "⇧⌘D")]);
+        let mut p = Palette::new(vec![("duplicate_lines", "Edit: Duplicate Line", "⇧⌘D".into())]);
         p.show_mode(mode, prefix, c, &egui::Context::default());
         p.rebuild();
         p

@@ -56,74 +56,27 @@ pub struct StrataApp {
     /// Held while this window owns the session; None means hot exit is off
     /// for this window (another Strata has the session, or tests).
     session_lock: Option<SessionLock>,
+    recent_files: Vec<PathBuf>,
+    recent_folders: Vec<PathBuf>,
+    /// Cursor history for Jump Back / Jump Forward: (view id, position).
+    jumps_back: Vec<(egui::Id, usize)>,
+    jumps_forward: Vec<(egui::Id, usize)>,
+    /// What distraction-free mode hid, to restore on exit.
+    distraction: Option<(bool, bool)>,
+    about_open: bool,
+    #[cfg(target_os = "macos")]
+    native_menu: Option<crate::menus::native::NativeMenu>,
+    /// Input synthesized by menu items (copy, paste, undo…) for the next frame.
+    pending_events: Vec<egui::Event>,
     /// Dev aid: STRATA_DEV_PALETTE="p:query" (or "cmd:query") opens a panel on the first frame.
     dev_palette: Option<String>,
 }
 
-/// Editor commands offered in the command palette: (id, name, shortcut label).
-/// The editor widget owns the keys; the labels here only document them.
-#[cfg(target_os = "macos")]
-const EDITOR_COMMANDS: &[(&str, &str, &str)] = &[
-    ("toggle_comment", "Edit: Toggle Comment", "⌘/"),
-    ("indent", "Edit: Indent", "⌘]"),
-    ("outdent", "Edit: Unindent", "⌘["),
-    ("duplicate", "Edit: Duplicate Line", "⇧⌘D"),
-    ("delete_line", "Edit: Delete Line", "⌃⇧K"),
-    ("move_up", "Edit: Move Line Up", "⌃⌘↑"),
-    ("move_down", "Edit: Move Line Down", "⌃⌘↓"),
-    ("join", "Edit: Join Lines", "⌘J"),
-    ("line_after", "Edit: Insert Line After", "⌘↩"),
-    ("line_before", "Edit: Insert Line Before", "⇧⌘↩"),
-    ("upper", "Edit: Convert to Upper Case", "⌘K ⌘U"),
-    ("lower", "Edit: Convert to Lower Case", "⌘K ⌘L"),
-    ("sort", "Edit: Sort Lines", "F5"),
-    ("sort_case", "Edit: Sort Lines (Case Sensitive)", "⌃F5"),
-    ("reverse", "Edit: Reverse Lines", ""),
-    ("unique", "Edit: Remove Duplicate Lines", ""),
-    ("trim", "Edit: Trim Trailing Whitespace", ""),
-    ("expand_line", "Selection: Expand to Line", "⌘L"),
-    ("split_lines", "Selection: Split into Lines", "⇧⌘L"),
-    ("cursor_above", "Selection: Add Cursor Above", "⌃⇧↑"),
-    ("cursor_below", "Selection: Add Cursor Below", "⌃⇧↓"),
-    ("next_occurrence", "Selection: Add Next Occurrence", "⌘D"),
-    ("all_occurrences", "Selection: Select All Occurrences", "⌃⌘G"),
-    ("expand_brackets", "Selection: Expand to Brackets", "⌃⇧M"),
-    ("jump_bracket", "Goto: Matching Bracket", "⌃M"),
-    ("select_all", "Selection: Select All", "⌘A"),
-    ("undo", "Edit: Undo", "⌘Z"),
-    ("redo", "Edit: Redo", "⇧⌘Z"),
-];
-#[cfg(not(target_os = "macos"))]
-const EDITOR_COMMANDS: &[(&str, &str, &str)] = &[
-    ("toggle_comment", "Edit: Toggle Comment", "Ctrl+/"),
-    ("indent", "Edit: Indent", "Ctrl+]"),
-    ("outdent", "Edit: Unindent", "Ctrl+["),
-    ("duplicate", "Edit: Duplicate Line", "Ctrl+Shift+D"),
-    ("delete_line", "Edit: Delete Line", "Ctrl+Shift+K"),
-    ("move_up", "Edit: Move Line Up", "Ctrl+Shift+↑"),
-    ("move_down", "Edit: Move Line Down", "Ctrl+Shift+↓"),
-    ("join", "Edit: Join Lines", "Ctrl+J"),
-    ("line_after", "Edit: Insert Line After", "Ctrl+Enter"),
-    ("line_before", "Edit: Insert Line Before", "Ctrl+Shift+Enter"),
-    ("upper", "Edit: Convert to Upper Case", "Ctrl+K Ctrl+U"),
-    ("lower", "Edit: Convert to Lower Case", "Ctrl+K Ctrl+L"),
-    ("sort", "Edit: Sort Lines", "F9"),
-    ("sort_case", "Edit: Sort Lines (Case Sensitive)", "Ctrl+F9"),
-    ("reverse", "Edit: Reverse Lines", ""),
-    ("unique", "Edit: Remove Duplicate Lines", ""),
-    ("trim", "Edit: Trim Trailing Whitespace", ""),
-    ("expand_line", "Selection: Expand to Line", "Ctrl+L"),
-    ("split_lines", "Selection: Split into Lines", "Ctrl+Shift+L"),
-    ("cursor_above", "Selection: Add Cursor Above", "Ctrl+Alt+↑"),
-    ("cursor_below", "Selection: Add Cursor Below", "Ctrl+Alt+↓"),
-    ("next_occurrence", "Selection: Add Next Occurrence", "Ctrl+D"),
-    ("all_occurrences", "Selection: Select All Occurrences", "Alt+F3"),
-    ("expand_brackets", "Selection: Expand to Brackets", "Ctrl+Shift+M"),
-    ("jump_bracket", "Goto: Matching Bracket", "Ctrl+M"),
-    ("select_all", "Selection: Select All", "Ctrl+A"),
-    ("undo", "Edit: Undo", "Ctrl+Z"),
-    ("redo", "Edit: Redo", "Ctrl+Y"),
-];
+mod features;
+mod menu_model;
+
+#[cfg(test)]
+use menu_model::EDITOR_COMMANDS;
 
 impl StrataApp {
     pub fn new(path: Option<PathBuf>, config: Option<PathBuf>) -> Self {
@@ -147,10 +100,19 @@ impl StrataApp {
             layout: Layout::default(),
             focus_group: 0,
             next_stamp: 1,
-            palette: Palette::new(EDITOR_COMMANDS),
+            palette: Palette::new(menu_model::palette_editor_commands()),
             palette_restore: None,
             dev_palette: std::env::var("STRATA_DEV_PALETTE").ok(),
             session_lock: None,
+            recent_files: Vec::new(),
+            recent_folders: Vec::new(),
+            jumps_back: Vec::new(),
+            jumps_forward: Vec::new(),
+            distraction: None,
+            about_open: false,
+            #[cfg(target_os = "macos")]
+            native_menu: None,
+            pending_events: Vec::new(),
         };
         if let Some(dir) = app.config.clone() {
             app.session_lock = SessionLock::acquire(&dir);
@@ -162,7 +124,7 @@ impl StrataApp {
             app.restore_session();
         }
         match path {
-            Some(p) if p.is_dir() => app.sidebar.open_folder(p),
+            Some(p) if p.is_dir() => app.open_folder(p),
             Some(p) => app.open_path(p, false),
             None => {}
         }
@@ -197,6 +159,12 @@ impl StrataApp {
         let d = &self.docs[i];
         let prose = matches!(d.highlighter.syntax_name(), "Markdown" | "MultiMarkdown" | "Plain Text" | "reStructuredText" | "Textile" | "LaTeX");
         d.wrap.unwrap_or(self.settings.word_wrap || prose)
+    }
+
+    /// Use the macOS menu bar. Must run on the main thread (not in tests).
+    #[cfg(target_os = "macos")]
+    pub fn install_native_menu(&mut self, ctx: &egui::Context) {
+        self.native_menu = Some(crate::menus::native::NativeMenu::new(ctx));
     }
 
     fn hot_exit(&self) -> bool {
@@ -309,6 +277,9 @@ impl StrataApp {
         };
         doc.preview = preview;
         self.status = format!("Opened {}", path.display());
+        if !preview {
+            self.remember_file(&path);
+        }
         // Replace an earlier preview, or a blank untitled tab, in the focused pane.
         let g = self.focus_group;
         let shown = self.group_active(g);
@@ -328,6 +299,7 @@ impl StrataApp {
 
     /// Open (if needed) and select a find-in-files hit.
     fn open_at(&mut self, path: PathBuf, line: usize, cols: std::ops::Range<usize>) {
+        self.push_jump();
         self.open_path(path.clone(), false);
         let d = self.doc();
         if d.path.as_ref() != Some(&path) {
@@ -560,6 +532,8 @@ impl StrataApp {
         if !unreadable.is_empty() {
             self.set_aside_backups(&dir, &unreadable.join("; "));
         }
+        self.recent_files = session.recent_files.clone();
+        self.recent_folders = session.recent_folders.clone();
         if let Some(folder) = session.folder.filter(|f| f.is_dir()) {
             self.sidebar.open_folder(folder);
             self.sidebar.visible = session.sidebar_visible;
@@ -585,6 +559,7 @@ impl StrataApp {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (self.active, &self.sidebar.root, self.sidebar.visible, self.layout.cols.len(), self.layout.rows.len()).hash(&mut h);
+        (&self.recent_files, &self.recent_folders).hash(&mut h);
         for d in &self.docs {
             (&d.path, d.is_dirty(), d.editor.version(), d.editor.primary().head, d.group, d.stamp).hash(&mut h);
         }
@@ -622,6 +597,8 @@ impl StrataApp {
             active: self.active.min(tabs.len().saturating_sub(1)),
             tabs,
             layout: Some(self.layout.clone()),
+            recent_files: self.recent_files.clone(),
+            recent_folders: self.recent_folders.clone(),
         };
         match session.save(&dir, &backups) {
             Ok(()) => {
@@ -652,7 +629,7 @@ impl StrataApp {
             }
             Cmd::OpenFolder => {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    self.sidebar.open_folder(dir);
+                    self.open_folder(dir);
                 }
             }
             Cmd::Save => {
@@ -693,6 +670,48 @@ impl StrataApp {
                 self.move_to_pane((g + 1).min(self.layout.groups() - 1));
             }
             Cmd::FocusGroup(g) => self.focus_pane(g as usize),
+            Cmd::CloseWindow => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Cmd::RevertFile => self.revert(),
+            Cmd::ClearRecent => self.clear_recent(),
+            Cmd::ToggleStatusBar => {
+                self.settings.show_status_bar = !self.settings.show_status_bar;
+                self.persist_settings();
+            }
+            Cmd::ToggleTabs => {
+                self.settings.show_tabs = !self.settings.show_tabs;
+                self.persist_settings();
+            }
+            Cmd::DistractionFree => self.toggle_distraction_free(ctx),
+            Cmd::IncrementalFind => self.open_find(false),
+            Cmd::UseSelectionForFind | Cmd::UseSelectionForReplace => {
+                let d = &self.docs[self.active];
+                let text = d.editor.buffer.slice(d.editor.primary().range());
+                if cmd == Cmd::UseSelectionForFind {
+                    self.find.query.text = if self.find.query.regex { regex::escape(&text) } else { text };
+                } else {
+                    self.find.replacement = text;
+                }
+            }
+            Cmd::QuickFind => {
+                // The next occurrence of the selection becomes the (single) selection.
+                let d = &self.docs[self.active];
+                let text = d.editor.buffer.slice(d.editor.primary().range());
+                if !text.is_empty() {
+                    self.find.query = Query::literal(&text, false);
+                    self.find_step(true);
+                }
+            }
+            Cmd::JumpBack => self.jump(true),
+            Cmd::JumpForward => self.jump(false),
+            Cmd::GotoDefinition => self.goto_definition(),
+            Cmd::OpenProject => self.open_project(),
+            Cmd::SaveProjectAs => self.save_project_as(),
+            Cmd::CloseFolder => {
+                self.sidebar = Sidebar::new();
+            }
+            Cmd::RefreshFolders => self.sidebar.refresh(),
+            Cmd::About => self.about_open = true,
+            Cmd::Documentation => self.open_documentation(),
             Cmd::ToggleWordWrap => {
                 let on = self.wraps(self.active);
                 self.docs[self.active].wrap = Some(!on);
@@ -781,8 +800,19 @@ impl StrataApp {
             match event {
                 Event::Run(c) => self.run(ctx, c),
                 Event::Editor(id) => self.run_editor(id),
-                Event::Open(p) => self.open_path(p, false),
+                Event::Open(p) => {
+                    self.push_jump();
+                    self.open_path(p, false);
+                }
                 Event::GotoLine { line, preview } => {
+                    if !preview {
+                        // Jump history records where you were before the panel opened.
+                        if let Some((i, sels, _)) = &self.palette_restore {
+                            let here = (self.docs[*i].view.id, sels.first().map_or(0, |r| r.start));
+                            self.jumps_back.push(here);
+                            self.jumps_forward.clear();
+                        }
+                    }
                     self.goto_line(line);
                     if preview {
                         continue;
@@ -849,6 +879,7 @@ impl StrataApp {
             "expand_brackets" => e.expand_to_brackets(),
             "jump_bracket" => e.jump_to_bracket(),
             "select_all" => e.select_all(),
+            "single_selection" => e.collapse_to_primary(),
             "undo" => e.undo(),
             "redo" => e.redo(),
             _ => return,
@@ -1286,12 +1317,14 @@ impl StrataApp {
         let mut tab_rects = Vec::new();
         let mut actions = Vec::new();
         let find_open = self.find.open;
-        let bar_h = 32.0;
+        let bar_h = if self.settings.show_tabs && self.distraction.is_none() { 32.0 } else { 0.0 };
         for (g, cell) in cells.iter().enumerate() {
             let bar = Rect::from_min_size(cell.min, vec2(cell.width(), bar_h));
             let body = Rect::from_min_max(pos2(cell.left(), cell.top() + bar_h), cell.max);
-            let action = ui.scope_builder(egui::UiBuilder::new().max_rect(bar).id_salt(("bar", g)), |ui| self.tab_bar(ui, g, &names, &mut tab_rects)).inner;
-            actions.extend(action);
+            if bar_h > 0.0 {
+                let action = ui.scope_builder(egui::UiBuilder::new().max_rect(bar).id_salt(("bar", g)), |ui| self.tab_bar(ui, g, &names, &mut tab_rects)).inner;
+                actions.extend(action);
+            }
             ui.scope_builder(egui::UiBuilder::new().max_rect(body).id_salt(("pane", g)), |ui| match self.group_active(g) {
                 Some(i) => {
                     let is_active = i == self.active;
@@ -1443,6 +1476,20 @@ impl eframe::App for StrataApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
         let now = ctx.input(|i| i.time);
+        // Menu choices: native ones arrive between frames, synthesized input joins this frame.
+        #[cfg(target_os = "macos")]
+        if self.native_menu.is_some() {
+            let menus = self.menus();
+            let native = self.native_menu.as_mut().expect("checked");
+            native.update(&menus);
+            for act in native.poll() {
+                self.run_act(ctx, act);
+            }
+        }
+        if !self.pending_events.is_empty() {
+            let events = std::mem::take(&mut self.pending_events);
+            ctx.input_mut(|i| i.events.extend(events));
+        }
         self.handle_shortcuts(ctx);
         self.devshot.tick(ctx);
         self.style_chrome(ctx);
@@ -1469,7 +1516,7 @@ impl eframe::App for StrataApp {
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_owned()).filter(|p| !p.as_os_str().is_empty()).collect());
         for p in dropped {
             if p.is_dir() {
-                self.sidebar.open_folder(p);
+                self.open_folder(p);
             } else {
                 self.open_path(p, false);
             }
@@ -1507,7 +1554,18 @@ impl eframe::App for StrataApp {
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
 
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        if !cfg!(target_os = "macos") && self.distraction.is_none() {
+            let menus = self.menus();
+            if let Some(act) = egui::Panel::top("menubar").show(ui, |ui| crate::menus::menu_bar(ui, &menus)).inner {
+                self.run_act(ctx, act);
+            }
+        }
+        if self.settings.show_status_bar && self.distraction.is_none() {
+            egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        }
+        if self.about_open {
+            self.about_window(ctx);
+        }
 
         if self.find.open {
             egui::Panel::bottom("find").show(ui, |ui| self.find_bar(ui));
@@ -1776,8 +1834,8 @@ mod tests {
     fn every_palette_editor_command_runs() {
         let mut app = app_with("b\na\nb\n");
         app.doc().highlighter.set_syntax("Python");
-        for (id, _, _) in EDITOR_COMMANDS {
-            app.run_editor(id);
+        for c in EDITOR_COMMANDS {
+            app.run_editor(c.id);
         }
         app.doc().editor.select_ranges(&[0..0], 0);
         app.run_editor("toggle_comment");

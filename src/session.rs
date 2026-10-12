@@ -27,6 +27,8 @@ pub struct Settings {
     pub tab_size: usize,
     pub translate_tabs_to_spaces: bool,
     pub minimap: bool,
+    pub show_tabs: bool,
+    pub show_status_bar: bool,
     /// Soft-wrap every file. Prose syntaxes (Markdown, plain text…) wrap regardless.
     pub word_wrap: bool,
     /// Restore open tabs, unsaved text included, instead of asking on quit.
@@ -41,6 +43,8 @@ impl Default for Settings {
             tab_size: 4,
             translate_tabs_to_spaces: true,
             minimap: true,
+            show_tabs: true,
+            show_status_bar: true,
             word_wrap: false,
             hot_exit: true,
         }
@@ -77,6 +81,8 @@ pub struct Session {
     pub active: usize,
     pub tabs: Vec<TabState>,
     pub layout: Option<crate::panes::Layout>,
+    pub recent_files: Vec<PathBuf>,
+    pub recent_folders: Vec<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq)]

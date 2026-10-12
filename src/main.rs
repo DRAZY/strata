@@ -15,6 +15,7 @@ mod fuzzy;
 mod devshot;
 mod highlight;
 mod keys;
+mod menus;
 mod lang;
 mod palette;
 mod panes;
@@ -32,7 +33,9 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 720.0])
-            .with_title("Strata"),
+            .with_title("Strata")
+            // Otherwise eframe shows its own logo in the Dock and taskbar.
+            .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-1024.png")).expect("bundled icon")),
         ..Default::default()
     };
     eframe::run_native(
@@ -40,7 +43,11 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             fonts::install_symbol_fallback(&cc.egui_ctx);
-            Ok(Box::new(app::StrataApp::new(path, session::config_dir())))
+            #[allow(unused_mut)]
+            let mut app = app::StrataApp::new(path, session::config_dir());
+            #[cfg(target_os = "macos")]
+            app.install_native_menu(&cc.egui_ctx);
+            Ok(Box::new(app))
         }),
     )
 }

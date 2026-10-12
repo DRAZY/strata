@@ -11,11 +11,13 @@ pub const CMD_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 pub const CMD_ALT: Modifiers = Modifiers::COMMAND.plus(Modifiers::ALT);
 pub const CTRL: Modifiers = Modifiers::CTRL;
 pub const CTRL_SHIFT: Modifiers = Modifiers::CTRL.plus(Modifiers::SHIFT);
+pub const CTRL_ALT: Modifiers = Modifiers::CTRL.plus(Modifiers::ALT);
 pub const ALT_SHIFT: Modifiers = Modifiers::ALT.plus(Modifiers::SHIFT);
 pub const CMD_ALT_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::ALT).plus(Modifiers::SHIFT);
 pub const NONE: Modifiers = Modifiers::NONE;
 /// macOS only: Ctrl+Cmd.
 pub const CTRL_CMD: Modifiers = Modifiers::MAC_CMD.plus(Modifiers::CTRL);
+pub const CTRL_CMD_SHIFT: Modifiers = Modifiers::MAC_CMD.plus(Modifiers::CTRL).plus(Modifiers::SHIFT);
 pub const SHIFT: Modifiers = Modifiers::SHIFT;
 pub const ALT: Modifiers = Modifiers::ALT;
 
