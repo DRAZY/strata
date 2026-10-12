@@ -3,17 +3,17 @@
 Reference point: Sublime Text 4 (build 4215), observed behavior only.
 
 ## M0 — It edits text
-- [ ] Rope buffer, open/save, UTF-8/UTF-16 + line-ending detection
-- [ ] GPU text rendering, smooth scrolling, line numbers
-- [ ] Undo/redo with soft-undo (cursor movement history)
+- [x] Rope buffer, open/save, line-ending detection (UTF-16 still todo)
+- [x] GPU text rendering, smooth scrolling, line numbers
+- [x] Undo/redo (soft-undo of cursor moves still todo)
 - [ ] Find / replace with regex, incremental highlight
 
 ## M1 — The signature features
-- [ ] Multiple cursors (Cmd+D add next match, Cmd+click, column select)
+- [~] Multiple cursors: Cmd/Ctrl+click done; Cmd+D, column select todo
 - [ ] Goto Anything (fuzzy file open, `@` symbol, `:` line, `#` term)
 - [ ] Command palette (fuzzy over all commands)
 - [ ] Split panes / layouts, tabs, minimap
-- [ ] Syntax highlighting via `.sublime-syntax` (syntect)
+- [x] Syntax highlighting via `.sublime-syntax` (syntect, incremental)
 - [ ] Color schemes via `.tmTheme`; light/dark auto-switch
 
 ## M2 — Project scale

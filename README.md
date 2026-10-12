@@ -58,13 +58,23 @@ normally. On another Mac, the first launch is blocked by Gatekeeper: right-click
 Strata.app → Open, or run `xattr -dr com.apple.quarantine /Applications/Strata.app`.
 Opening files by double-clicking in Finder isn't wired up yet; use Cmd+O.
 
-## Current state (M0, first build)
+## Current state (M0)
 
-Working: window, open/save, syntax highlighting for ~50 languages, line
-numbers, cursor position, dirty marker in the title.
+Working: rope buffer (`ropey`) with a custom editor widget that paints only
+visible lines; incremental syntax highlighting (checkpointed parser state,
+per-frame budget); multiple cursors (Cmd/Ctrl+click, Esc to collapse) with
+every command applied to all of them; undo/redo with typing coalesced into one
+step; Sublime-style copy/cut of the whole line when nothing is selected; smart
+Home; word jumps (Option on macOS, Ctrl on Windows); CRLF files stay CRLF;
+draggable scrollbar; open/save.
 
-Known gaps: the buffer is a plain `String` inside egui's `TextEdit` (the
-`ropey` buffer comes with the custom editor widget); no multiple cursors yet;
-cursor position is recomputed each frame, so very large files will lag. The
-bundled grammars come from syntect's defaults; their licensing must be
-verified before a public release.
+Measured on an M-series Mac (release build): a 95 MB, 1.6M-line Python file
+opens and renders highlighted in ~0.6 s.
+
+Known gaps: no IME (CJK/emoji-picker input), no find/replace, no word wrap,
+Tab with a selection replaces it instead of indenting, no Shift+Tab unindent,
+no caret blink. The bundled grammars come from syntect's defaults; their
+licensing must be verified before a public release.
+
+Tests: `cargo test` runs editor-core unit tests plus headless egui tests that
+drive the real widget with simulated keys and clicks.

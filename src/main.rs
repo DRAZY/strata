@@ -2,8 +2,11 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod buffer;
+mod editor;
 mod devshot;
 mod highlight;
+mod view;
 
 use std::path::PathBuf;
 
