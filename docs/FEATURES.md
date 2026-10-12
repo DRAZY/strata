@@ -9,6 +9,7 @@ Reference point: Sublime Text 4 (build 4215), observed behavior only.
 - [x] Find / replace with regex, incremental highlight
 
 ## M1 — The signature features
+- [x] IME / CJK input with inline composition
 - [x] Multiple cursors: Cmd/Ctrl+click, Cmd+D, select all occurrences (column select todo)
 - [ ] Goto Anything (fuzzy file open, `@` symbol, `:` line, `#` term)
 - [ ] Command palette (fuzzy over all commands)
@@ -17,8 +18,8 @@ Reference point: Sublime Text 4 (build 4215), observed behavior only.
 - [ ] Color schemes via `.tmTheme`; light/dark auto-switch
 
 ## M2 — Project scale
-- [ ] Sidebar folder tree, projects & workspaces
-- [ ] Find in files (ripgrep-class speed)
+- [x] Sidebar folder tree (projects & workspaces todo)
+- [x] Find in files (ripgrep's `ignore` walker, parallel)
 - [ ] Hot exit: restore unsaved buffers across restarts
 - [ ] Git status gutter + sidebar badges
 - [ ] Indexing: Goto Definition / symbol index

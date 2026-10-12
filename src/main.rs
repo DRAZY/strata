@@ -8,6 +8,8 @@ mod find;
 mod fonts;
 mod devshot;
 mod highlight;
+mod search;
+mod sidebar;
 mod view;
 
 use std::path::PathBuf;

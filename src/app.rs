@@ -5,6 +5,7 @@ use crate::devshot::DevShot;
 use crate::editor::Editor;
 use crate::find::{self, Finder, Query};
 use crate::highlight::Highlighter;
+use crate::sidebar::{self, Sidebar};
 use crate::view::EditorView;
 use egui::{Key, KeyboardShortcut, Modifiers};
 use std::path::PathBuf;
@@ -17,6 +18,9 @@ const NEW: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
 const ZOOM_IN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Equals);
 const ZOOM_IN_PLUS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Plus);
 const ZOOM_OUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Minus);
+const OPEN_FOLDER: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::O);
+const FIND_IN_FILES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::F);
+const TOGGLE_SIDEBAR: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Backslash);
 const FIND: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::F);
 const REPLACE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), Key::F);
 const REPLACE_WIN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::H);
@@ -46,6 +50,7 @@ pub struct StrataApp {
     devshot: DevShot,
     find: FindBar,
     finder: Finder,
+    sidebar: Sidebar,
 }
 
 impl StrataApp {
@@ -59,12 +64,27 @@ impl StrataApp {
             devshot: DevShot::default(),
             find: FindBar::default(),
             finder: Finder::default(),
+            sidebar: Sidebar::new(),
         };
         app.highlighter.detect(None, "");
-        if let Some(p) = path {
-            app.open(p);
+        match path {
+            Some(p) if p.is_dir() => app.sidebar.open_folder(p),
+            Some(p) => app.open(p),
+            None => {}
         }
-        // Dev aid (pairs with STRATA_SCREENSHOT): open find/replace with a query.
+        // Dev aids (pair with STRATA_SCREENSHOT): run find-in-files on the open folder,
+        // or open find/replace with a query.
+        if let (Ok(q), Some(root)) = (std::env::var("STRATA_DEV_FIND_IN_FILES"), app.sidebar.root.clone()) {
+            app.sidebar.start_find_in_files(Some(q));
+            app.sidebar.search.start(&root, &app.sidebar.query, None);
+            while app.sidebar.search.running {
+                app.sidebar.search.poll();
+            }
+            if let Some(f) = app.sidebar.search.results.first() {
+                let (p, h) = (f.path.clone(), f.hits[0].clone());
+                app.open_at(p, h.line, h.cols);
+            }
+        }
         if let Ok(q) = std::env::var("STRATA_DEV_FIND") {
             app.open_find(true);
             app.find.query.text = q;
@@ -93,6 +113,52 @@ impl StrataApp {
         self.path = Some(path);
     }
 
+    fn new_file(&mut self) {
+        self.path = None;
+        self.editor = Editor::new(Buffer::from_str(""));
+        self.highlighter.detect(None, "");
+        self.view.reset();
+        self.status.clear();
+    }
+
+    /// Before replacing the buffer: true if it's OK to discard it.
+    fn confirm_discard(&mut self) -> bool {
+        if !self.editor.is_dirty() {
+            return true;
+        }
+        let name = self.title().trim_end_matches(" — Strata").trim_end_matches(" •").to_owned();
+        let answer = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title("Unsaved changes")
+            .set_description(format!("Save changes to {name} before continuing?"))
+            .set_buttons(rfd::MessageButtons::YesNoCancel)
+            .show();
+        match answer {
+            rfd::MessageDialogResult::Yes => {
+                self.save(false);
+                !self.editor.is_dirty()
+            }
+            rfd::MessageDialogResult::No => true,
+            _ => false,
+        }
+    }
+
+    /// Open (if needed) and select a find-in-files hit.
+    fn open_at(&mut self, path: PathBuf, line: usize, cols: std::ops::Range<usize>) {
+        if self.path.as_ref() != Some(&path) {
+            if !self.confirm_discard() {
+                return;
+            }
+            self.open(path);
+        }
+        let start = self.editor.buffer.line_start(line);
+        let end = self.editor.buffer.line_end(line);
+        let range = (start + cols.start).min(end)..(start + cols.end).min(end);
+        self.editor.select_ranges(&[range], 0);
+        self.view.reveal_centered();
+        self.view.focus();
+    }
+
     fn save(&mut self, choose: bool) {
         let target = match (&self.path, choose) {
             (Some(p), false) => Some(p.clone()),
@@ -107,6 +173,7 @@ impl StrataApp {
                     self.highlighter.detect(Some(&path), &self.editor.buffer.line_text(0));
                 }
                 self.path = Some(path);
+                self.sidebar.refresh();
             }
             Err(e) => self.status = format!("Save failed: {e}"),
         }
@@ -131,15 +198,27 @@ impl StrataApp {
         if pressed(&SAVE) {
             self.save(false);
         }
-        if pressed(&OPEN) {
+        if pressed(&OPEN_FOLDER) {
+            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                self.sidebar.open_folder(dir);
+            }
+        }
+        if pressed(&OPEN) && self.confirm_discard() {
             if let Some(p) = rfd::FileDialog::new().pick_file() {
                 self.open(p);
             }
         }
-        if pressed(&NEW) {
-            let size = self.view.font_size;
-            *self = Self::new(None);
-            self.view.font_size = size;
+        if pressed(&NEW) && self.confirm_discard() {
+            self.new_file();
+        }
+        if pressed(&TOGGLE_SIDEBAR) {
+            self.sidebar.visible = !self.sidebar.visible;
+        }
+        if pressed(&FIND_IN_FILES) {
+            let p = self.editor.primary();
+            let selected = self.editor.buffer.slice(p.range());
+            let prefill = (!selected.is_empty() && !selected.contains('\n')).then_some(selected);
+            self.sidebar.start_find_in_files(prefill);
         }
         if pressed(&ZOOM_IN) || pressed(&ZOOM_IN_PLUS) {
             self.view.font_size = (self.view.font_size + 1.0).min(48.0);
@@ -184,7 +263,7 @@ impl StrataApp {
     fn select_match(&mut self, i: usize) {
         let r = self.finder.matches[i].clone();
         self.editor.select_ranges(&[r], 0);
-        self.view.reveal();
+        self.view.reveal_centered();
     }
 
     /// Cmd+G / Shift+Cmd+G (F3 / Shift+F3): next or previous match.
@@ -369,6 +448,9 @@ impl eframe::App for StrataApp {
         let ctx = &ui.ctx().clone();
         self.handle_shortcuts(ctx);
         self.devshot.tick(ctx);
+        if ctx.input(|i| i.viewport().close_requested()) && !self.confirm_discard() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
 
         egui::Panel::bottom("status").show(ui, |ui| {
@@ -395,6 +477,25 @@ impl eframe::App for StrataApp {
 
         if self.find.open {
             egui::Panel::bottom("find").show(ui, |ui| self.find_bar(ui));
+        }
+
+        if self.sidebar.visible && self.sidebar.root.is_some() {
+            let current = self.path.clone();
+            let action = egui::Panel::left("sidebar")
+                .resizable(true)
+                .default_size(260.0)
+                .show(ui, |ui| self.sidebar.show(ui, current.as_deref()))
+                .inner;
+            match action {
+                Some(sidebar::Action::Open(p)) if current.as_ref() != Some(&p) => {
+                    if self.confirm_discard() {
+                        self.open(p);
+                        self.view.focus();
+                    }
+                }
+                Some(sidebar::Action::OpenAt(p, line, cols)) => self.open_at(p, line, cols),
+                _ => {}
+            }
         }
 
         let matches = if self.find.open { std::mem::take(&mut self.finder.matches) } else { Vec::new() };
@@ -492,6 +593,35 @@ mod tests {
         out.textures_delta.clear();
         assert_eq!(app.editor.primary().range(), 8..11, "first match after the cursor");
         assert_eq!(app.match_label().text(), "2 of 2");
+    }
+
+    #[test]
+    fn find_in_files_hit_opens_and_selects() {
+        let dir = std::env::temp_dir().join(format!("strata-app-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("x.py"), "a = 1\n    target = 2\n").unwrap();
+        let mut app = StrataApp::new(Some(dir.clone()));
+        assert_eq!(app.sidebar.root.as_deref(), Some(dir.as_path()));
+        app.sidebar.search.start(&dir, &Query::literal("target", false), None);
+        while app.sidebar.search.running {
+            app.sidebar.search.poll();
+        }
+        let f = &app.sidebar.search.results[0];
+        let (p, h) = (f.path.clone(), f.hits[0].clone());
+        app.open_at(p.clone(), h.line, h.cols);
+        assert_eq!(app.path.as_deref(), Some(p.as_path()));
+        let r = app.editor.primary().range();
+        assert_eq!(app.editor.buffer.slice(r), "target");
+        assert_eq!(app.highlighter.syntax_name(), "Python");
+
+        // The sidebar renders the tree headlessly without panicking.
+        let ctx = Context::default();
+        let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(300.0, 400.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| {
+            app.sidebar.show(ui, Some(&p));
+        });
+        out.textures_delta.clear();
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

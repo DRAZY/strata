@@ -38,8 +38,10 @@ Requires Rust (install from https://rustup.rs).
 cargo run --release -- path/to/file.rs
 ```
 
-Shortcuts (Cmd on macOS, Ctrl on Windows): **O** open, **S** save,
-**Shift+S** save as, **N** new, **+ / −** font size.
+Shortcuts (Cmd on macOS, Ctrl on Windows): **O** open, **Shift+O** open
+folder, **S** save, **Shift+S** save as, **N** new, **\\** toggle sidebar,
+**+ / −** font size. `strata path/to/folder` opens a folder in the sidebar.
+Unsaved changes prompt before open, new, sidebar clicks and quitting.
 
 Multi-cursor & search:
 
@@ -51,6 +53,7 @@ Multi-cursor & search:
 | Back to one cursor | Esc | Esc |
 | Find / Replace | Cmd+F / Cmd+Opt+F | Ctrl+F / Ctrl+H |
 | Next / previous match | Cmd+G / Shift+Cmd+G | F3 / Shift+F3 |
+| Find in folder | Cmd+Shift+F | Ctrl+Shift+F |
 | In the find bar | Enter next, Shift+Enter previous, Alt+Enter Find All (a cursor per match) | same |
 | In the replace field | Enter replace, Cmd+Enter replace all | Ctrl+Enter replace all |
 
@@ -91,7 +94,14 @@ very large files (~100 MB) will feel it.
 Measured on an M-series Mac (release build): a 95 MB, 1.6M-line Python file
 opens and renders highlighted in ~0.6 s.
 
-Known gaps: no IME (CJK/emoji-picker input), no find-in-files, no word wrap,
+Also: IME input for Chinese/Japanese/Korean (composition shown inline at the
+caret, candidate window follows it; system CJK fonts load the first time CJK
+text appears); sidebar file tree; find in folder (parallel, respects
+.gitignore, skips binaries and files over 20 MB, stops at 10,000 hits).
+
+Known gaps: no tabs (one file at a time), no replace-in-files, no word wrap,
+no file watching (use the sidebar's refresh button), vertical cursor moves
+treat CJK characters as one column wide,
 Tab with a selection replaces it instead of indenting, no Shift+Tab unindent,
 no caret blink. The bundled grammars come from syntect's defaults; their
 licensing must be verified before a public release.

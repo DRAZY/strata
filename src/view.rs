@@ -19,6 +19,8 @@ pub struct EditorView {
     /// Widest line seen so far; bounds horizontal scrolling.
     max_width: f32,
     scroll_to_cursor: bool,
+    /// Center the cursor line if it's off screen (for jumps, not arrow keys).
+    center_cursor: bool,
     wants_focus: bool,
     /// IME composition in progress (shown at the primary caret, not yet in the buffer).
     preedit: String,
@@ -51,6 +53,7 @@ impl EditorView {
             font_size: 14.0,
             max_width: 0.0,
             scroll_to_cursor: false,
+            center_cursor: false,
             wants_focus: true,
             preedit: String::new(),
             caret_rect: None,
@@ -60,6 +63,12 @@ impl EditorView {
     /// Scroll the primary cursor into view on the next frame.
     pub fn reveal(&mut self) {
         self.scroll_to_cursor = true;
+    }
+
+    /// Like `reveal`, but an off-screen cursor lands mid-screen (search jumps).
+    pub fn reveal_centered(&mut self) {
+        self.scroll_to_cursor = true;
+        self.center_cursor = true;
     }
 
     /// Give the editor keyboard focus on the next frame.
@@ -308,7 +317,10 @@ impl EditorView {
         let head = ed.primary().head;
         let line = ed.buffer.line_of(head);
         let top = line as f32 * m.row_h;
-        if top < self.scroll.y {
+        let off_screen = top < self.scroll.y || top + m.row_h > self.scroll.y + m.text.height();
+        if std::mem::take(&mut self.center_cursor) && off_screen {
+            self.scroll.y = top - (m.text.height() - m.row_h) / 2.0;
+        } else if top < self.scroll.y {
             self.scroll.y = top;
         } else if top + m.row_h > self.scroll.y + m.text.height() {
             self.scroll.y = top + m.row_h - m.text.height();
