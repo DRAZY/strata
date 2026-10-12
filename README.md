@@ -75,39 +75,50 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
 
 ## What works
 
-- **Tabs** with preview tabs (single-click in the sidebar previews; edit or
-  double-click to keep), drag to reorder, middle-click to close, Open Files list.
-- **Hot exit**: quitting never asks. Open tabs, cursors and unsaved text
-  (including untitled tabs) come back next launch. The session is also saved
-  every few seconds, so a crash loses little.
-- **Outside changes**: a file changed on disk reloads if the tab is clean; a tab
-  with unsaved edits is flagged instead, with a Reload button in the status bar.
-- **Command palette and Goto Anything** with fuzzy matching, live preview of
-  lines, symbols and color schemes (Esc puts things back).
-- **Editing**: multiple cursors everywhere, auto-closing brackets and quotes
-  (typing a closer steps over it), comment toggling for ~40 languages, line
-  moves, duplicate, join, sort, case changes, bracket matching.
-- **View**: minimap, indent guides, matching-bracket underline, outlines on
-  other occurrences of the selection, blinking caret, CJK/IME input.
-- **Strata Dark / Strata Light** color schemes plus syntect's bundled ones.
-  The window chrome follows the scheme.
-- **Sidebar**: folder tree with New File / New Folder / Rename / Copy Path /
-  Reveal in Finder; find in folder (parallel, respects .gitignore).
-- **Settings** in `settings.json` (⌘, opens it; saving applies it): font size,
-  theme, tab size, spaces vs tabs, minimap, hot exit. Stored in
-  `~/Library/Application Support/Strata` (macOS) or `%APPDATA%\Strata` (Windows).
-- Status bar: syntax picker, tab size, line ending conversion, color scheme.
-- Drag files or folders onto the window to open them.
+- **Menus like Sublime's**: a native macOS menu bar (Strata, File, Edit,
+  Selection, Find, View, Goto, Tools, Project, Window, Help) and an in-window
+  menu bar on Windows. Every item runs a real command and shows its shortcut.
+- **Files and formats**: open, save, save as, save all, revert, open recent,
+  reopen closed tab. 40 encodings (UTF-8 with or without BOM, UTF-16 LE/BE,
+  Windows/ISO Western, Cyrillic, Greek, Japanese, Chinese, Korean…) detected
+  on open, with File ▸ Reopen with Encoding and Save with Encoding. LF/CRLF
+  conversion. Saves are atomic (temp file + rename), keep symlinks and file
+  permissions, and refuse text the chosen encoding can't hold.
+- **Tabs and split panes**: preview tabs, drag to reorder or into another pane;
+  1–4 columns, 2 rows or a 2×2 grid (Alt+Cmd+1…5), draggable dividers.
+- **Hot exit**: quitting never asks. Tabs, panes, cursors and unsaved text come
+  back next launch; the session is also saved every few seconds.
+- **Navigation**: command palette, Goto Anything (`file:line`, `@symbol`), go to
+  line, go to symbol, go to definition (F12), jump back/forward, bookmarks.
+- **Editing**: multiple cursors and column selection, auto-closing brackets,
+  word completions while typing (Ctrl+Space to ask), comments, indent/reindent,
+  line moves, duplicate, join, transpose, case conversion, sort/shuffle/unique
+  lines and selections, wrap paragraph at ruler, paste and indent.
+- **View**: word wrap (Alt+Cmd+W; on by default for Markdown and plain text),
+  minimap, indent guides, bracket matching, distraction-free mode, hide tabs or
+  status bar, CJK/IME input, Strata Dark/Light color schemes.
+- **Find**: find/replace with regex, quick find, use selection for find, and
+  find in folder (parallel, respects .gitignore).
+- **Build systems** (Tools ▸ Build, ⌘B): Cargo, Rust, Python, Node, Go, C/C++,
+  Make, npm, Ruby, shell, chosen automatically; output panel with clickable
+  errors, F4 for the next result. Add your own as JSON in the config folder's
+  `build_systems/`.
+- **Projects**: open a folder (sidebar with New File/Folder, Rename, Reveal),
+  save and reopen `.strata-project` files.
+- **Settings** in `settings.json` (⌘, opens it): font size, theme, tab size,
+  spaces vs tabs, indentation detection, word wrap, wrap width, minimap,
+  auto-complete, hot exit. Stored in `~/Library/Application Support/Strata`
+  (macOS) or `%APPDATA%\Strata` (Windows).
 
 Measured on an M-series Mac (release build): a 95 MB, 1.6M-line Python file
 opens and renders highlighted in ~0.6 s.
 
-Known gaps: no split panes, no word wrap, no replace-in-files, no native macOS
-menu bar (use the command palette), Finder "Open With" isn't wired up (drag the
-file onto the window, or use ⌘O), vertical cursor moves treat CJK characters as
-one column wide. The find bar re-scans the whole file after each edit, which is
-noticeable on ~100 MB files. The bundled grammars come from syntect's defaults;
-their licensing must be verified before a public release.
+Known gaps: no code folding, no replace-in-files, no plugin/package system, no
+spell check, no macros, one window per app instance (no New Window), cloned
+views of one file in two panes aren't supported, and Finder "Open With" isn't
+wired up (drag the file onto the window or use ⌘O). Word wrap turns off for
+files over 8 MB. The bundled grammars come from syntect's defaults; their
+licensing must be verified before a public release.
 
 ## Development
 
