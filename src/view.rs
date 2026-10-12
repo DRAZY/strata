@@ -3,6 +3,7 @@
 
 use crate::editor::Editor;
 use crate::highlight::{Highlighter, Span};
+use crate::lang::{self, CommentTokens};
 use egui::text::{CCursor, LayoutJob, TextFormat};
 use egui::{
     Align2, Color32, CursorIcon, Event, EventFilter, FontId, Galley, Id, Key, Modifiers,
@@ -26,6 +27,10 @@ pub struct EditorView {
     preedit: String,
     /// Screen rect of the primary caret, for placing the IME candidate window.
     caret_rect: Option<Rect>,
+    /// Box-selection drag origin as (line, display column).
+    box_from: Option<(usize, usize)>,
+    /// Cmd/Ctrl+K pressed; the next key completes a chord.
+    chord_k: bool,
 }
 
 /// Per-frame geometry shared by input handling and painting.
@@ -57,6 +62,8 @@ impl EditorView {
             wants_focus: true,
             preedit: String::new(),
             caret_rect: None,
+            box_from: None,
+            chord_k: false,
         }
     }
 
@@ -102,7 +109,7 @@ impl EditorView {
 
         let mut m = self.metrics(ui, ed, rect);
         if resp.has_focus() {
-            self.handle_keys(ui, ed, &m);
+            self.handle_keys(ui, ed, &m, lang::comment_tokens(hl.syntax_name()));
         }
         if let Some(line) = ed.take_changed_from() {
             hl.invalidate_from(line);
@@ -159,11 +166,11 @@ impl EditorView {
 
     // ---- input -----------------------------------------------------------
 
-    fn handle_keys(&mut self, ui: &Ui, ed: &mut Editor, m: &Metrics) {
+    fn handle_keys(&mut self, ui: &Ui, ed: &mut Editor, m: &Metrics, comments: CommentTokens) {
         let events = ui.input(|i| i.events.clone());
         for event in events {
             match event {
-                Event::Text(t) if !t.is_empty() && t != "\n" && t != "\r" => ed.insert_text(&t),
+                Event::Text(t) if !t.is_empty() && t != "\n" && t != "\r" => ed.type_char(&t),
                 Event::Ime(ime) => {
                     if !self.handle_ime(ed, ime) {
                         continue;
@@ -175,7 +182,7 @@ impl EditorView {
                 Event::Copy => ui.ctx().copy_text(ed.copy()),
                 Event::Cut => ui.ctx().copy_text(ed.cut()),
                 Event::Key { key, pressed: true, modifiers, .. } => {
-                    if !self.handle_key(ed, key, modifiers, m) {
+                    if !self.handle_key(ed, key, modifiers, m, comments) {
                         continue;
                     }
                 }
@@ -211,13 +218,30 @@ impl EditorView {
     }
 
     /// Returns true if the key did something.
-    fn handle_key(&mut self, ed: &mut Editor, key: Key, mods: Modifiers, m: &Metrics) -> bool {
+    fn handle_key(&mut self, ed: &mut Editor, key: Key, mods: Modifiers, m: &Metrics, comments: CommentTokens) -> bool {
         let mac = cfg!(target_os = "macos");
         // Word jumps: Option on macOS, Ctrl on Windows. Line jumps: Cmd on macOS.
         let word = if mac { mods.alt } else { mods.ctrl };
         let cmd = mac && mods.mac_cmd;
         let shift = mods.shift;
+        // Move lines: Ctrl+Cmd on macOS, Ctrl+Shift elsewhere.
+        let move_lines = if mac { mods.mac_cmd && mods.ctrl } else { mods.ctrl && shift };
+        // Add cursor above/below: Ctrl+Shift on macOS, Ctrl+Alt elsewhere.
+        let add_cursor = if mac { mods.ctrl && shift && !mods.mac_cmd } else { mods.ctrl && mods.alt };
+        // Sort lines: F5 on macOS, F9 elsewhere; with Ctrl, case-sensitive.
+        let sort_key = if mac { Key::F5 } else { Key::F9 };
+        if std::mem::take(&mut self.chord_k) && mods.command {
+            match key {
+                Key::U => ed.swap_case_upper(),
+                Key::L => ed.swap_case_lower(),
+                _ => return false,
+            }
+            return true;
+        }
         match key {
+            Key::ArrowUp | Key::ArrowDown if move_lines => ed.move_lines(key == Key::ArrowUp),
+            Key::ArrowUp if add_cursor => ed.add_cursor_vertical(-1),
+            Key::ArrowDown if add_cursor => ed.add_cursor_vertical(1),
             Key::ArrowLeft if cmd => ed.move_home(shift),
             Key::ArrowRight if cmd => ed.move_end(shift),
             Key::ArrowUp if cmd => ed.move_doc_start(shift),
@@ -235,8 +259,33 @@ impl EditorView {
                 ed.move_vertical(n, shift);
                 self.scroll.y += n as f32 * m.row_h;
             }
+            Key::Enter if mods.command && shift => ed.insert_line_before(),
+            Key::Enter if mods.command => ed.insert_line_after(),
             Key::Enter => ed.newline(),
-            Key::Tab if !shift => ed.tab(),
+            Key::Tab if shift => ed.outdent(),
+            Key::Tab if ed.selections().iter().any(|s| ed.buffer.line_of(s.start()) != ed.buffer.line_of(s.end())) => {
+                ed.indent()
+            }
+            Key::Tab => ed.tab(),
+            Key::CloseBracket if mods.command && !shift => ed.indent(),
+            Key::OpenBracket if mods.command && !shift => ed.outdent(),
+            Key::Slash if mods.command => match comments {
+                (Some(token), _) => ed.toggle_comment(token),
+                (None, Some((open, close))) => ed.toggle_block_comment(open, close),
+                (None, None) => return false,
+            },
+            Key::D if mods.command && shift => ed.duplicate_lines(),
+            Key::K if mods.ctrl && shift => ed.delete_lines(),
+            Key::K if mods.command => {
+                self.chord_k = true;
+                return false;
+            }
+            k if k == sort_key => ed.sort_lines(mods.ctrl),
+            Key::J if mods.command => ed.join_lines(),
+            Key::L if mods.command && shift => ed.split_into_lines(),
+            Key::L if mods.command => ed.expand_to_line(),
+            Key::M if mods.ctrl && shift => ed.expand_to_brackets(),
+            Key::M if mods.ctrl => ed.jump_to_bracket(),
             Key::Backspace if cmd => ed.delete_to_line_start(),
             Key::Backspace => ed.backspace(word),
             Key::Delete => ed.delete_forward(word),
@@ -255,8 +304,31 @@ impl EditorView {
     }
 
     fn handle_mouse(&mut self, ui: &Ui, ed: &mut Editor, resp: &egui::Response, m: &Metrics) {
-        let Some(pointer) = resp.interact_pointer_pos() else { return };
-        let (pressed, mods) = ui.input(|i| (i.pointer.button_pressed(PointerButton::Primary), i.modifiers));
+        let Some(pointer) = resp.interact_pointer_pos() else {
+            self.box_from = None;
+            return;
+        };
+        let (pressed, middle, mods) = ui.input(|i| {
+            let p = &i.pointer;
+            (p.button_pressed(PointerButton::Primary), p.button_pressed(PointerButton::Middle), i.modifiers)
+        });
+        // Box selection: Alt+drag or middle-button drag.
+        if ((pressed && mods.alt) || middle) && resp.is_pointer_button_down_on() {
+            let (line, col) = self.pos_to_line_col(ui, ed, m, pointer);
+            self.box_from = Some((line, col));
+            ed.select_box(line, col, line, col);
+            return;
+        }
+        if let Some((line, col)) = self.box_from {
+            if resp.dragged() {
+                let (to_line, to_col) = self.pos_to_line_col(ui, ed, m, pointer);
+                ed.select_box(line, col, to_line, to_col);
+                self.autoscroll(ui, m, pointer);
+            } else if !resp.is_pointer_button_down_on() {
+                self.box_from = None;
+            }
+            return;
+        }
         let pos = self.pos_to_char(ui, ed, m, pointer);
         if resp.triple_clicked() {
             let line = ed.buffer.line_of(pos);
@@ -276,14 +348,34 @@ impl EditorView {
             }
         } else if resp.dragged() {
             ed.drag_to(pos);
-            // Auto-scroll while dragging past the edges.
-            if pointer.y < m.text.top() {
-                self.scroll.y -= m.row_h;
-            } else if pointer.y > m.text.bottom() {
-                self.scroll.y += m.row_h;
-            }
-            ui.ctx().request_repaint();
+            self.autoscroll(ui, m, pointer);
         }
+    }
+
+    /// Scroll while dragging past the top or bottom edge.
+    fn autoscroll(&mut self, ui: &Ui, m: &Metrics, pointer: Pos2) {
+        if pointer.y < m.text.top() {
+            self.scroll.y -= m.row_h;
+        } else if pointer.y > m.text.bottom() {
+            self.scroll.y += m.row_h;
+        }
+        ui.ctx().request_repaint();
+    }
+
+    /// Line and display column under `p`, extending past line ends.
+    fn pos_to_line_col(&self, ui: &Ui, ed: &Editor, m: &Metrics, p: Pos2) -> (usize, usize) {
+        let raw = ((p.y - m.text.top() + self.scroll.y) / m.row_h).floor().max(0.0);
+        let line = (raw as usize).min(ed.buffer.len_lines() - 1);
+        let text = ed.buffer.line_text(line);
+        let galley = layout_line(ui, &text, None, &m.font, Color32::WHITE, ed.tab_width);
+        let x = p.x - m.origin_x;
+        let col = if x <= galley.size().x {
+            galley.cursor_from_pos(vec2(x, m.row_h * 0.5)).index.0
+        } else {
+            let end = ed.display_col(ed.buffer.line_end(line));
+            end + ((x - galley.size().x) / m.char_w).round() as usize
+        };
+        (line, col)
     }
 
     fn pos_to_char(&self, ui: &Ui, ed: &Editor, m: &Metrics, p: Pos2) -> usize {
@@ -663,6 +755,56 @@ mod tests {
         assert_eq!(h.ed.selections().len(), 3);
         h.frame(vec![Event::Text("b".into())]);
         assert_eq!(h.text(), "let b = b + b;");
+    }
+
+    #[test]
+    fn command_slash_comments_rust_line() {
+        let mut h = Harness::new("    let x = 1;\n");
+        h.hl.detect(Some(std::path::Path::new("main.rs")), "");
+        h.frame(vec![key(Key::Slash, Modifiers::COMMAND)]);
+        assert_eq!(h.text(), "    // let x = 1;\n");
+        h.frame(vec![key(Key::Slash, Modifiers::COMMAND)]);
+        assert_eq!(h.text(), "    let x = 1;\n");
+    }
+
+    #[test]
+    fn command_slash_without_comment_syntax_does_nothing() {
+        let mut h = Harness::new("plain\n");
+        h.frame(vec![key(Key::Slash, Modifiers::COMMAND)]);
+        assert_eq!(h.text(), "plain\n");
+    }
+
+    #[test]
+    fn tab_indents_multiline_selection_and_shift_tab_outdents() {
+        let mut h = Harness::new("a\n        b\n");
+        h.frame(vec![key(Key::ArrowDown, Modifiers::SHIFT)]);
+        h.frame(vec![key(Key::Tab, Modifiers::NONE)]);
+        assert_eq!(h.text(), "    a\n        b\n", "selection ends at column 0 of line 2");
+        // Collapse to the selection end (start of line 2), then outdent it.
+        h.frame(vec![key(Key::ArrowRight, Modifiers::NONE), key(Key::Tab, Modifiers::SHIFT)]);
+        assert_eq!(h.text(), "    a\n    b\n");
+    }
+
+    #[test]
+    fn typing_auto_pairs_and_types_over_closer() {
+        let mut h = Harness::new("");
+        h.frame(vec![Event::Text("f(".into()), Event::Text("x".into()), Event::Text(")".into())]);
+        assert_eq!(h.text(), "f(x)");
+        assert_eq!(h.ed.primary().head, 4);
+    }
+
+    #[test]
+    fn move_line_and_case_chord_keys() {
+        let mut h = Harness::new("one\ntwo");
+        let move_mods = if cfg!(target_os = "macos") {
+            Modifiers { ctrl: true, mac_cmd: true, command: true, ..Modifiers::NONE }
+        } else {
+            Modifiers::CTRL | Modifiers::SHIFT
+        };
+        h.frame(vec![key(Key::ArrowDown, move_mods)]);
+        assert_eq!(h.text(), "two\none");
+        h.frame(vec![key(Key::K, Modifiers::COMMAND), key(Key::U, Modifiers::COMMAND)]);
+        assert_eq!(h.text(), "two\nONE");
     }
 
     #[test]

@@ -13,6 +13,7 @@ mod fuzzy;
 mod devshot;
 mod highlight;
 mod keys;
+mod lang;
 mod palette;
 mod search;
 mod session;
