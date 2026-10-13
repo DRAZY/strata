@@ -424,6 +424,7 @@ impl StrataApp {
                 c("Toggle Minimap", Cmd::ToggleMinimap).checked(self.settings.minimap),
                 c("Toggle Tabs", Cmd::ToggleTabs).checked(self.settings.show_tabs),
                 c("Toggle Status Bar", Cmd::ToggleStatusBar).checked(self.settings.show_status_bar),
+                c("Terminal", Cmd::ToggleTerminal).checked(self.terminal.visible),
                 sub(
                     "Show Panel",
                     vec![
@@ -604,6 +605,8 @@ impl StrataApp {
                     ],
                 ),
                 c("Save All on Build", Cmd::ToggleSaveAllOnBuild).checked(self.settings.save_all_on_build),
+                SEP(),
+                c("New Terminal", Cmd::NewTerminal),
                 SEP(),
                 c(if self.macro_recording.is_some() { "Stop Recording Macro" } else { "Record Macro" }, Cmd::RecordMacro),
                 c("Playback Macro", Cmd::PlaybackMacro).enabled(!self.macro_last.is_empty()),

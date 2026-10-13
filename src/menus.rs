@@ -104,7 +104,7 @@ pub fn fingerprint(menus: &Menus) -> u64 {
     fn walk(items: &[Item], h: &mut std::collections::hash_map::DefaultHasher) {
         for it in items {
             match it {
-                Item::Action { label, check, enabled, hint, .. } => (label, check, enabled, hint).hash(h),
+                Item::Action { label, check, enabled, hint, keys, .. } => (label, check, enabled, hint, keys).hash(h),
                 Item::Separator => 0u8.hash(h),
                 Item::Sub(l, kids) => {
                     l.hash(h);

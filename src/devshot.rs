@@ -1,5 +1,6 @@
 //! Dev aid: `STRATA_SCREENSHOT=out.ppm strata file` renders a few frames,
-//! saves the window as a PPM image, and quits. Works the same on macOS and Windows.
+//! saves the window as a PPM image, and quits. `STRATA_SCREENSHOT_DELAY=1.5`
+//! waits that many seconds first (for output that arrives later, like a shell's). Works the same on macOS and Windows.
 
 use std::io::Write;
 
@@ -14,7 +15,8 @@ impl DevShot {
         let Some(path) = std::env::var_os("STRATA_SCREENSHOT") else { return };
         self.frames += 1;
         ctx.request_repaint();
-        if self.frames == 10 && !self.requested {
+        let delay: f64 = std::env::var("STRATA_SCREENSHOT_DELAY").ok().and_then(|d| d.parse().ok()).unwrap_or(0.0);
+        if self.frames >= 10 && ctx.input(|i| i.time) >= delay && !self.requested {
             self.requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }

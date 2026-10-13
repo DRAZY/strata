@@ -69,6 +69,7 @@ command palette, which shows its shortcut.
 | Find / replace | ⌘F / ⌥⌘F | Ctrl+F / Ctrl+H |
 | Next / previous match | ⌘G / ⇧⌘G | F3 / Shift+F3 |
 | Find in folder | ⇧⌘F | Ctrl+Shift+F |
+| Toggle terminal / new terminal | ⌃\` / ⌃⇧\` | Ctrl+\` / Ctrl+Shift+\` |
 
 In the find bar: Enter next, Shift+Enter previous, Alt+Enter Find All (a cursor
 per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
@@ -103,6 +104,11 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
   Make, npm, Ruby, shell, chosen automatically; output panel with clickable
   errors, F4 for the next result. Add your own as JSON in the config folder's
   `build_systems/`.
+- **Terminal** (View ▸ Terminal, Ctrl+\`): your login shell in a bottom panel,
+  started in the project folder, with tabs, 256-color/truecolor output in the
+  theme's palette, selection and scrollback. While it has the keyboard it keeps
+  Ctrl and Alt keys (Alt/Option is Meta); ⌘C/⌘V/⌘K copy, paste and clear on
+  macOS, Ctrl+Shift+C/V (or Ctrl+C with a selection) elsewhere.
 - **Projects**: open a folder (sidebar with New File/Folder, Rename, Reveal),
   save and reopen `.strata-project` files.
 - **Settings** in `settings.json` (⌘, opens it): font size, theme, tab size,

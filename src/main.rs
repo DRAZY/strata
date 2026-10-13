@@ -28,6 +28,7 @@ mod panes;
 mod search;
 mod session;
 mod sidebar;
+mod terminal;
 mod symbols;
 mod view;
 mod wrap;

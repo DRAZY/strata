@@ -73,6 +73,9 @@ pub struct Settings {
     pub detect_indentation: bool,
     /// Restore open tabs, unsaved text included, instead of asking on quit.
     pub hot_exit: bool,
+    /// The terminal panel was open (a shell starts on launch only then).
+    pub terminal_visible: bool,
+    pub terminal_height: f32,
 }
 
 impl Default for Settings {
@@ -110,6 +113,8 @@ impl Default for Settings {
             ensure_newline_at_eof_on_save: false,
             save_on_focus_lost: false,
             hot_exit: true,
+            terminal_visible: false,
+            terminal_height: 240.0,
         }
     }
 }

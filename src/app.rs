@@ -100,12 +100,16 @@ pub struct StrataApp {
     pending_events: Vec<egui::Event>,
     /// Dev aid: STRATA_DEV_PALETTE="p:query" (or "cmd:query") opens a panel on the first frame.
     dev_palette: Option<String>,
+    terminal: crate::terminal::Panel,
+    /// The terminal panel's launch-time setup ran.
+    terminal_started: bool,
 }
 
 mod completion;
 mod features;
 mod menu_model;
 mod more;
+mod terminal_ui;
 mod textutil;
 
 #[cfg(test)]
@@ -166,6 +170,8 @@ impl StrataApp {
             git: crate::git::GitWatcher::new(None),
             last_git_request: 0.0,
             git_ctx_missing: true,
+            terminal: crate::terminal::Panel::new(),
+            terminal_started: false,
         };
         app.build = crate::build::Build::new(app.config.clone());
         if let Some(dir) = app.config.clone() {
@@ -848,6 +854,8 @@ impl StrataApp {
                 }
             }
             Cmd::ToggleBuildResults => self.build.visible = !self.build.visible,
+            Cmd::ToggleTerminal => self.toggle_terminal(ctx),
+            Cmd::NewTerminal => self.new_terminal(ctx),
             Cmd::ShowCompletions => self.completion.open(&mut self.docs[self.active], true),
             Cmd::CloseWindow => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::RevertFile => self.revert(),
@@ -933,8 +941,13 @@ impl StrataApp {
         if self.docs[self.active].view.chord_pending() {
             return;
         }
-        for cmd in commands::pressed(ctx) {
+        // A focused terminal keeps plain, Ctrl and Alt keys for the shell.
+        let in_terminal = self.terminal_has_keys(ctx);
+        for cmd in if in_terminal { crate::terminal::pressed(ctx) } else { commands::pressed(ctx) } {
             self.run(ctx, cmd);
+        }
+        if in_terminal {
+            return;
         }
         // Cmd+1…9 picks a tab (Alt on Windows/Linux, like Sublime); 9 is always the last.
         let mods = if crate::keys::MAC { crate::keys::CMD } else { crate::keys::ALT };
@@ -1813,7 +1826,10 @@ impl eframe::App for StrataApp {
         // Menu choices: native ones arrive between frames, synthesized input joins this frame.
         #[cfg(target_os = "macos")]
         if self.native_menu.is_some() {
-            let menus = self.menus();
+            let mut menus = self.menus();
+            if self.terminal_has_keys(ctx) {
+                menus.iter_mut().for_each(|(_, items)| crate::terminal::strip_menu_keys(items));
+            }
             let native = self.native_menu.as_mut().expect("checked");
             native.update(&menus);
             for act in native.poll() {
@@ -1952,6 +1968,7 @@ impl eframe::App for StrataApp {
         if self.settings.show_status_bar && self.distraction.is_none() {
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         }
+        self.terminal_panel(ui);
         if self.about_open {
             self.about_window(ctx);
         }

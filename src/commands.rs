@@ -104,6 +104,8 @@ pub enum Cmd {
     UiSmaller,
     NextModification,
     PrevModification,
+    ToggleTerminal,
+    NewTerminal,
 }
 
 impl Cmd {
@@ -213,6 +215,8 @@ impl Cmd {
         Cmd::UiSmaller,
         Cmd::NextModification,
         Cmd::PrevModification,
+        Cmd::ToggleTerminal,
+        Cmd::NewTerminal,
     ];
 
     pub fn name(self) -> &'static str {
@@ -322,6 +326,8 @@ impl Cmd {
             Cmd::UiSmaller => "Preferences: Interface Text Smaller",
             Cmd::NextModification => "Goto: Next Modification",
             Cmd::PrevModification => "Goto: Previous Modification",
+            Cmd::ToggleTerminal => "View: Toggle Terminal",
+            Cmd::NewTerminal => "Terminal: New Terminal",
 
 
 
@@ -431,6 +437,9 @@ impl Cmd {
             Cmd::NextModification => if MAC { &[(CTRL, Key::Period)] } else { &[] },
             // Off macOS, Ctrl+, is Settings.
             Cmd::PrevModification => if MAC { &[(CTRL, Key::Comma)] } else { &[] },
+            // Ctrl+` everywhere, like VS Code (Cmd+` is the system's window cycling on macOS).
+            Cmd::ToggleTerminal => &[(CTRL, Key::Backtick)],
+            Cmd::NewTerminal => &[(CTRL_SHIFT, Key::Backtick)],
             Cmd::ToggleWordWrap => if MAC { &[(CMD_ALT, Key::W)] } else { &[(ALT_SHIFT, Key::W)] },
             // Sublime's layout keys: Alt+Cmd+N on macOS, Alt+Shift+N elsewhere.
             Cmd::LayoutSingle => if MAC { &[(CMD_ALT, Key::Num1)] } else { &[(ALT_SHIFT, Key::Num1)] },
