@@ -190,6 +190,7 @@ impl StrataApp {
                     Item::new("About Strata", Act::Cmd(Cmd::About)),
                     SEP(),
                     sub("Settings", settings),
+                    Item::new("Install Shell Command…", Act::Cmd(Cmd::InstallShellCommand)),
                     SEP(),
                     Item::System(System::Services),
                     SEP(),

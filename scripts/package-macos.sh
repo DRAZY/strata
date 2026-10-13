@@ -50,6 +50,31 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+  <!-- Open With ▸ Strata for text, code and any other file, plus folders.
+       Alternate: offered, but never taken over as the default app. -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key><string>Document</string>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.text</string>
+        <string>public.plain-text</string>
+        <string>public.source-code</string>
+        <string>public.script</string>
+        <string>public.data</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>Folder</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array><string>public.folder</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST

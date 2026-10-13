@@ -111,6 +111,7 @@ pub enum Cmd {
     NewTerminal,
     Snippets,
     NewSnippet,
+    InstallShellCommand,
 }
 
 impl Cmd {
@@ -227,6 +228,7 @@ impl Cmd {
         Cmd::NewTerminal,
         Cmd::Snippets,
         Cmd::NewSnippet,
+        Cmd::InstallShellCommand,
     ];
 
     pub fn name(self) -> &'static str {
@@ -295,6 +297,7 @@ impl Cmd {
             Cmd::CloseFolder => "Project: Close Folder",
             Cmd::RefreshFolders => "Project: Refresh Folders",
             Cmd::About => "Help: About Strata",
+            Cmd::InstallShellCommand => "Strata: Install Shell Command",
             Cmd::Documentation => "Help: Documentation",
             Cmd::Build => "Tools: Build",
             Cmd::BuildWith => "Tools: Build With…",
@@ -410,6 +413,7 @@ impl Cmd {
             Cmd::CloseFolder => &[],
             Cmd::RefreshFolders => &[],
             Cmd::About => &[],
+            Cmd::InstallShellCommand => &[],
             Cmd::Documentation => &[],
             Cmd::Build => &[(CMD, Key::B)],
             Cmd::BuildWith => &[(CMD_SHIFT, Key::B)],
