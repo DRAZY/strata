@@ -37,6 +37,8 @@ pub struct StrataApp {
     /// Settings and session folder; None in tests (nothing is persisted).
     config: Option<PathBuf>,
     last_disk_check: f64,
+    /// settings.json's modification time when last read or written.
+    settings_mtime: Option<std::time::SystemTime>,
     last_session_save: f64,
     /// What the session looked like when last written, to skip no-op saves.
     session_key: u64,
@@ -120,6 +122,7 @@ use menu_model::EDITOR_COMMANDS;
 impl StrataApp {
     pub fn new(path: Option<PathBuf>, config: Option<PathBuf>) -> Self {
         let (settings, settings_error) = config.as_deref().map(Settings::load).unwrap_or_default();
+        let settings_mtime = config.as_deref().and_then(|d| std::fs::metadata(Settings::path(d)).and_then(|m| m.modified()).ok());
         let mut app = Self {
             docs: Vec::new(),
             active: 0,
@@ -131,6 +134,7 @@ impl StrataApp {
             settings,
             config,
             last_disk_check: 0.0,
+            settings_mtime,
             last_session_save: 0.0,
             session_key: 0,
             chrome_theme: String::new(),
@@ -564,27 +568,56 @@ impl StrataApp {
         self.open_path(path, false);
     }
 
+    /// Re-read settings.json. A file with errors keeps the current settings.
     fn reload_settings(&mut self) {
         let Some(dir) = self.config.clone() else { return };
-        let (settings, error) = Settings::load(&dir);
-        self.settings = settings;
-        self.status = error.unwrap_or_else(|| "Settings reloaded".into());
-        self.apply_settings();
+        self.settings_mtime = std::fs::metadata(Settings::path(&dir)).and_then(|m| m.modified()).ok();
+        let text = std::fs::read_to_string(Settings::path(&dir)).unwrap_or_default();
+        match Settings::parse(if text.trim().is_empty() { "{}" } else { &text }) {
+            Ok(settings) => {
+                let indent_changed = (settings.tab_size, settings.translate_tabs_to_spaces) != (self.settings.tab_size, self.settings.translate_tabs_to_spaces);
+                self.settings = settings;
+                self.status = "Settings reloaded".into();
+                self.apply_settings();
+                if indent_changed {
+                    self.apply_indentation();
+                }
+            }
+            Err(e) => self.status = format!("{e} (keeping current settings)"),
+        }
     }
 
+    /// Theme changes; each file keeps its own indentation.
     fn apply_settings(&mut self) {
         for d in &mut self.docs {
             d.highlighter.set_theme(&self.settings.theme);
+        }
+    }
+
+    /// The default indentation, pushed to every open file (status bar, settings file).
+    fn apply_indentation(&mut self) {
+        for d in &mut self.docs {
             d.editor.tab_width = self.settings.tab_size;
             d.editor.use_spaces = self.settings.translate_tabs_to_spaces;
         }
     }
 
+    /// settings.json edited outside Strata: pick it up.
+    fn watch_settings(&mut self) {
+        let Some(dir) = &self.config else { return };
+        let mtime = std::fs::metadata(Settings::path(dir)).and_then(|m| m.modified()).ok();
+        if mtime.is_some() && mtime != self.settings_mtime {
+            self.reload_settings();
+        }
+    }
+
     fn persist_settings(&mut self) {
-        if let Some(dir) = &self.config
-            && let Err(e) = self.settings.save(dir) {
-                self.status = format!("Could not write settings: {e}");
+        if let Some(dir) = &self.config {
+            match self.settings.save(dir) {
+                Ok(()) => self.settings_mtime = std::fs::metadata(Settings::path(dir)).and_then(|m| m.modified()).ok(),
+                Err(e) => self.status = format!("Could not write settings: {e}"),
             }
+        }
     }
 
     fn zoom(&mut self, delta: f32) {
@@ -1819,7 +1852,7 @@ impl StrataApp {
                 if (tab, spaces) != (self.settings.tab_size, self.settings.translate_tabs_to_spaces) {
                     self.settings.tab_size = tab;
                     self.settings.translate_tabs_to_spaces = spaces;
-                    self.apply_settings();
+                    self.apply_indentation();
                     self.persist_settings();
                 }
                 ui.separator();
@@ -1928,6 +1961,7 @@ impl eframe::App for StrataApp {
         self.window_focused = focused;
         if now - self.last_disk_check > 1.0 {
             self.last_disk_check = now;
+            self.watch_settings();
             // Every visible tab: each pane shows one.
             for g in 0..self.layout.groups() {
                 if let Some(i) = self.group_active(g) {
@@ -2363,6 +2397,18 @@ mod tests {
             eframe::App::ui(app, ui, &mut frame);
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn theme_changes_keep_each_files_indentation() {
+        let mut app = StrataApp::new(None, None);
+        app.doc().editor.tab_width = 2;
+        app.doc().editor.use_spaces = false;
+        app.settings.theme = "Strata Light".into();
+        app.apply_settings();
+        assert_eq!((app.doc().editor.tab_width, app.doc().editor.use_spaces), (2, false));
+        app.apply_indentation();
+        assert_eq!((app.doc().editor.tab_width, app.doc().editor.use_spaces), (app.settings.tab_size, app.settings.translate_tabs_to_spaces));
     }
 
     #[test]

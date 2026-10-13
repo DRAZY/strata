@@ -122,25 +122,104 @@ impl Default for Settings {
     }
 }
 
+/// JSON with `//` and `/* */` comments and trailing commas, as Sublime's settings
+/// files allow, turned into strict JSON. Strings are left alone.
+pub fn strip_jsonc(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    let mut start = 0;
+    while i < b.len() {
+        match b[i] {
+            b'"' => {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                out.push_str(&s[start..i]);
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                start = i;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                out.push_str(&s[start..i]);
+                i = s[i + 2..].find("*/").map_or(b.len(), |e| i + 2 + e + 2);
+                out.push(' ');
+                start = i;
+            }
+            b',' => {
+                let rest = s[i + 1..].trim_start();
+                // A comma before a closing bracket (allowing comments in between) is dropped.
+                let next = strip_jsonc_peek(rest);
+                if matches!(next, Some(b'}') | Some(b']')) {
+                    out.push_str(&s[start..i]);
+                    start = i + 1;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    out.push_str(&s[start.min(s.len())..]);
+    out
+}
+
+/// First significant byte, skipping whitespace and comments.
+fn strip_jsonc_peek(mut s: &str) -> Option<u8> {
+    loop {
+        s = s.trim_start();
+        if let Some(rest) = s.strip_prefix("//") {
+            s = rest.find('\n').map_or("", |n| &rest[n..]);
+        } else if let Some(rest) = s.strip_prefix("/*") {
+            s = rest.find("*/").map_or("", |n| &rest[n + 2..]);
+        } else {
+            return s.bytes().next();
+        }
+    }
+}
+
 impl Settings {
     pub fn path(dir: &Path) -> PathBuf {
         dir.join("settings.json")
     }
 
     /// Missing or broken files fall back to defaults; the error is returned for the status bar.
+    /// Like Sublime, comments and trailing commas are allowed.
     pub fn load(dir: &Path) -> (Self, Option<String>) {
         match std::fs::read_to_string(Self::path(dir)) {
-            Ok(text) => match serde_json::from_str(&text) {
+            Ok(text) => match Self::parse(&text) {
                 Ok(s) => (s, None),
-                Err(e) => (Self::default(), Some(format!("settings.json: {e}"))),
+                Err(e) => (Self::default(), Some(e)),
             },
             Err(_) => (Self::default(), None),
         }
     }
 
+    pub fn parse(text: &str) -> Result<Self, String> {
+        serde_json::from_str(&strip_jsonc(text)).map_err(|e| format!("settings.json: {e}"))
+    }
+
+    /// Writes the settings, keeping keys Strata doesn't know. Refuses to replace a
+    /// file that doesn't parse, so a typo never costs the user their settings.
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
-        std::fs::write(Self::path(dir), serde_json::to_string_pretty(self)? + "\n")
+        let path = Self::path(dir);
+        let mut map = match std::fs::read_to_string(&path) {
+            Ok(text) if !text.trim().is_empty() => match serde_json::from_str::<serde_json::Value>(&strip_jsonc(&text)) {
+                Ok(serde_json::Value::Object(m)) => m,
+                _ => return Err(std::io::Error::other("settings.json has errors; fix them first so your settings aren't overwritten")),
+            },
+            _ => serde_json::Map::new(),
+        };
+        if let serde_json::Value::Object(ours) = serde_json::to_value(self)? {
+            map.extend(ours);
+        }
+        let text = serde_json::to_string_pretty(&map)? + "\n";
+        crate::buffer::Buffer::from_str(&text).write_to(&path, crate::encoding::Encoding::UTF8)
     }
 }
 
@@ -329,6 +408,24 @@ mod tests {
         let (s, err) = Settings::load(&dir);
         assert_eq!(s, Settings::default());
         assert!(err.is_some());
+        // A broken file is never overwritten.
+        assert!(s.save(&dir).is_err());
+        assert_eq!(std::fs::read_to_string(Settings::path(&dir)).unwrap(), "{ nope");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn settings_allow_comments_trailing_commas_and_keep_unknown_keys() {
+        let text = "{\n  // size\n  \"font_size\": 16, /* \"tab_size\": 9, */\n  \"theme\": \"a // not a comment\",\n  \"rulers\": [80, 100,],\n  \"mine\": true,\n}\n";
+        let s = Settings::parse(text).unwrap();
+        assert_eq!((s.font_size, s.tab_size, s.theme.as_str(), s.rulers.clone()), (16.0, 4, "a // not a comment", vec![80, 100]));
+        let dir = std::env::temp_dir().join(format!("strata-settings-keep-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(Settings::path(&dir), text).unwrap();
+        s.save(&dir).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(Settings::path(&dir)).unwrap()).unwrap();
+        assert_eq!(saved["mine"], serde_json::Value::Bool(true));
+        assert_eq!(saved["font_size"], serde_json::json!(16.0));
         std::fs::remove_dir_all(dir).ok();
     }
 }
