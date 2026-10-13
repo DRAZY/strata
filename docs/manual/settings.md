@@ -167,3 +167,4 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `save_all_on_build` | true/false | `true` | Save every modified file before running a build. See [Build Systems](build.md). |
 | `terminal_visible` | true/false | `false` | Whether the terminal panel is open. Strata updates this itself; when it's `true`, a shell starts when Strata launches. See [Terminal](terminal.md). |
 | `terminal_height` | number | `240` | Height of the terminal panel in points. Strata remembers it when you resize the panel. |
+| `terminal_allow_clipboard_read` | true/false | `false` | Let programs in the terminal read the clipboard with the OSC 52 escape sequence. Off by default because any program (or a file you `cat`) could then read what you copied. Writing to the clipboard is always allowed. See [Terminal](terminal.md#copy-paste-and-clear). |

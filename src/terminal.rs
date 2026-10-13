@@ -13,7 +13,7 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
-use alacritty_terminal::term::{Config, Term, TermMode};
+use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
 use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor, Rgb};
 use egui::{Color32, Event, FontId, Key, Modifiers, Rect, Sense, Stroke, pos2, vec2};
@@ -387,7 +387,10 @@ impl Terminal {
         let pid = pty.child().id();
         let queue = Arc::new(Mutex::new(Vec::new()));
         let listener = Listener { ctx, queue: queue.clone() };
-        let term = Arc::new(FairMutex::new(Term::new(Config::default(), &size, listener.clone())));
+        // Clipboard reads reach `poll`, which refuses them unless the setting
+        // allows (and says so); the emulator's own default drops them silently.
+        let config = Config { osc52: Osc52::CopyPaste, ..Config::default() };
+        let term = Arc::new(FairMutex::new(Term::new(config, &size, listener.clone())));
         let event_loop = EventLoop::new(term.clone(), listener, pty, true, false)?;
         let sender = event_loop.channel();
         let thread = Some(event_loop.spawn());
@@ -434,19 +437,25 @@ impl Terminal {
         let _ = self.sender.send(Msg::Resize(window));
     }
 
-    /// Handle what the emulator reported since the last frame.
-    fn poll(&mut self, ctx: &egui::Context, theme: &Theme) {
+    /// Handle what the emulator reported since the last frame. True if a
+    /// program asked to read the clipboard and `allow_read` refused it.
+    fn poll(&mut self, ctx: &egui::Context, theme: &Theme, allow_read: bool) -> bool {
+        let mut blocked = false;
         let events = std::mem::take(&mut *self.queue.lock().unwrap_or_else(|e| e.into_inner()));
         for e in events {
             match e {
                 TermEvent::Title(t) => self.title = Some(t),
                 TermEvent::ResetTitle => self.title = None,
+                // Writing the clipboard (OSC 52) is fine; reading it hands
+                // whatever you copied (a password, say) to any program that
+                // prints the right escape sequence, so it's off unless allowed.
                 TermEvent::ClipboardStore(_, text) => ctx.copy_text(text),
-                TermEvent::ClipboardLoad(_, format) => {
+                TermEvent::ClipboardLoad(_, format) if allow_read => {
                     if let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
                         self.write(format(&text));
                     }
                 }
+                TermEvent::ClipboardLoad(..) => blocked = true,
                 TermEvent::ColorRequest(i, format) => self.write(format(theme.rgb_at(i))),
                 TermEvent::TextAreaSizeRequest(format) => {
                     let (w, h) = self.cell;
@@ -461,6 +470,7 @@ impl Terminal {
                 TermEvent::Wakeup | TermEvent::MouseCursorDirty | TermEvent::CursorBlinkingChange => {}
             }
         }
+        blocked
     }
 
     /// The visible screen as text, one line per row.
@@ -582,6 +592,10 @@ pub struct Panel {
     /// This frame's text area and tab labels (tab index, response), for context menus.
     pub body: Option<egui::Response>,
     pub tab_labels: Vec<(usize, egui::Response)>,
+    /// Let programs read the clipboard with OSC 52 (`terminal_allow_clipboard_read`).
+    pub allow_clipboard_read: bool,
+    /// A program asked to read the clipboard and was refused (cleared by the app).
+    pub clipboard_blocked: bool,
 }
 
 impl Default for Panel {
@@ -612,6 +626,8 @@ impl Panel {
             theme: None,
             body: None,
             tab_labels: Vec::new(),
+            allow_clipboard_read: false,
+            clipboard_blocked: false,
         }
     }
 
@@ -696,7 +712,7 @@ impl Panel {
         }
         let theme = self.theme.clone().unwrap_or_else(|| Theme::new(Color32::BLACK, Color32::LIGHT_GRAY, Color32::WHITE, Color32::DARK_GRAY));
         for t in &mut self.tabs {
-            t.poll(ctx, &theme);
+            self.clipboard_blocked |= t.poll(ctx, &theme, self.allow_clipboard_read);
         }
         let mut i = self.tabs.len();
         while i > 0 {
@@ -1206,6 +1222,24 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(!alive(pid), "shell {pid} survived its terminal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn programs_cannot_read_the_clipboard_unless_allowed() {
+        // OSC 52 with "?" asks the terminal to send back the clipboard.
+        let shell = ("/bin/sh".to_owned(), vec!["-c".to_owned(), "printf '\\033]52;c;?\\007'; sleep 5".to_owned()]);
+        let ctx = egui::Context::default();
+        let mut panel = Panel::new();
+        assert!(!panel.allow_clipboard_read, "denied by default");
+        panel.tabs.push(Terminal::spawn(None, &std::env::temp_dir(), Some(shell), 20, 3).unwrap());
+        panel.visible = true;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !panel.clipboard_blocked && std::time::Instant::now() < deadline {
+            panel.poll(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(panel.clipboard_blocked, "the read was refused and reported");
     }
 
     #[cfg(unix)]

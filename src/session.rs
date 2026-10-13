@@ -98,6 +98,8 @@ pub struct Settings {
     /// The terminal panel was open (a shell starts on launch only then).
     pub terminal_visible: bool,
     pub terminal_height: f32,
+    /// Let programs in the terminal read the clipboard (OSC 52). Writing is always allowed.
+    pub terminal_allow_clipboard_read: bool,
 }
 
 impl Default for Settings {
@@ -149,6 +151,7 @@ impl Default for Settings {
             hot_exit: true,
             terminal_visible: false,
             terminal_height: 240.0,
+            terminal_allow_clipboard_read: false,
         }
     }
 }

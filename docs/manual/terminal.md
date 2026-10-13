@@ -98,7 +98,9 @@ Pasted text that spans several lines is sent with the line breaks a terminal exp
 
 Clear removes the scrollback and asks the shell to redraw its prompt at the top. It does nothing while a full-screen program is running.
 
-Programs can also put text on the clipboard, and read it, with the standard terminal escape sequence for that (OSC 52).
+Programs can also put text on the clipboard with the standard terminal escape sequence for that (OSC 52), which is handy for copying from a remote shell or tmux.
+
+Reading the clipboard the same way is blocked by default, because any program, or a file you print with `cat`, could otherwise read what you copied, such as a password. When a program tries, the status bar says Strata blocked it. To allow it, set `"terminal_allow_clipboard_read": true` in your settings.
 
 ## Right-Click Menu
 

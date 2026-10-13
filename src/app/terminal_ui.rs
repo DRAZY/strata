@@ -59,7 +59,12 @@ impl StrataApp {
                 }
             }
         }
-        if self.terminal.poll(&ctx) {
+        self.terminal.allow_clipboard_read = self.settings.terminal_allow_clipboard_read;
+        let all_exited = self.terminal.poll(&ctx);
+        if std::mem::take(&mut self.terminal.clipboard_blocked) {
+            self.status = "A program in the terminal tried to read the clipboard; Strata blocked it (setting: terminal_allow_clipboard_read)".into();
+        }
+        if all_exited {
             // The last shell exited.
             self.set_terminal_visible(false);
             self.doc().view.focus();
