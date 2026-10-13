@@ -26,6 +26,7 @@ mod lang;
 mod markdown;
 mod palette;
 mod panes;
+mod replace;
 mod search;
 mod session;
 mod sidebar;

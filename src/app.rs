@@ -114,6 +114,7 @@ mod menu_model;
 mod more;
 mod terminal_ui;
 mod preview;
+mod replace_files;
 mod textutil;
 
 #[cfg(test)]
@@ -202,16 +203,8 @@ impl StrataApp {
 
         // Dev aids (pair with STRATA_SCREENSHOT): run find-in-files on the open folder,
         // or open find/replace with a query.
-        if let (Ok(q), Some(root)) = (std::env::var("STRATA_DEV_FIND_IN_FILES"), app.sidebar.root.clone()) {
-            app.sidebar.start_find_in_files(Some(q));
-            app.sidebar.search.start(&root, &app.sidebar.query, None);
-            while app.sidebar.search.running {
-                app.sidebar.search.poll();
-            }
-            if let Some(f) = app.sidebar.search.results.first() {
-                let (p, h) = (f.path.clone(), f.hits[0].clone());
-                app.open_at(p, h.line, h.cols);
-            }
+        if let (Ok(q), true) = (std::env::var("STRATA_DEV_FIND_IN_FILES"), app.sidebar.root.is_some()) {
+            app.dev_find_in_files(q);
         }
         if let Ok(q) = std::env::var("STRATA_DEV_FIND") {
             app.open_find(true);
@@ -834,6 +827,10 @@ impl StrataApp {
             Cmd::NextFindResult => self.step_find_result(true),
             Cmd::PrevFindResult => self.step_find_result(false),
             Cmd::CancelFindInFiles => self.sidebar.search.stop(),
+            Cmd::ReplaceInFiles => {
+                let prefill = self.selection_for_find_in_files();
+                self.sidebar.start_replace_in_files(prefill);
+            }
             Cmd::ToggleOpenFiles => self.sidebar.show_open_files = !self.sidebar.show_open_files,
             Cmd::LayoutRows3 => self.set_layout(Layout::grid(1, 3)),
             Cmd::NewGroup => self.new_group(),
@@ -951,9 +948,7 @@ impl StrataApp {
             Cmd::FindNext => self.find_step(true),
             Cmd::FindPrev => self.find_step(false),
             Cmd::FindInFiles => {
-                let d = &self.docs[self.active];
-                let selected = d.editor.buffer.slice(d.editor.primary().range());
-                let prefill = (!selected.is_empty() && !selected.contains('\n')).then_some(selected);
+                let prefill = self.selection_for_find_in_files();
                 self.sidebar.start_find_in_files(prefill);
             }
             Cmd::ZoomIn => self.zoom(1.0),
@@ -2062,14 +2057,7 @@ impl eframe::App for StrataApp {
 
         if self.sidebar.visible && self.sidebar.root.is_some() {
             let current = self.docs[self.active].path.clone();
-            let names = self.display_names();
-            let open: Vec<sidebar::OpenFile> = self
-                .docs
-                .iter()
-                .zip(names)
-                .enumerate()
-                .map(|(i, (d, name))| sidebar::OpenFile { name, dirty: d.is_dirty(), active: i == self.active })
-                .collect();
+            let open = self.open_files_for_sidebar();
             let action = egui::Panel::left("sidebar")
                 .resizable(true)
                 .default_size(260.0)
@@ -2100,6 +2088,7 @@ impl eframe::App for StrataApp {
                     self.status = format!("Renamed to {}", to.display());
                 }
                 Some(sidebar::Action::Status(s)) => self.status = s,
+                Some(sidebar::Action::ReplaceInFiles) => self.replace_in_files(Some(ui.ctx().clone())),
                 None => {}
             }
         }
