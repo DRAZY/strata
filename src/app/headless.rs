@@ -59,7 +59,7 @@ impl Shooter {
             let mut raw = RawInput { screen_rect: Some(screen), events: std::mem::take(&mut events), time, ..Default::default() };
             raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(self.ppp);
             ctx.set_pixels_per_point(self.ppp);
-            let out = ctx.run_ui(raw, |ui| {
+            let mut out = ctx.run_ui(raw, |ui| {
                 let mut frame = eframe::Frame::_new_kittest();
                 eframe::App::ui(app, ui, &mut frame);
             });
@@ -71,6 +71,8 @@ impl Shooter {
             for id in &out.textures_delta.free {
                 self.renderer.free_texture(id);
             }
+            // Applied above (epaint asserts unhandled deltas in debug builds).
+            out.textures_delta.clear();
             last = Some(out);
         }
         self.clock += frames as f64 * 0.25;
@@ -168,5 +170,17 @@ mod tests {
         app.step_difference(true);
         app.step_difference(true);
         shooter.shoot(&ctx, &mut app, 6, vec![], &dir.join("compare.ppm"));
+
+        // Spell check: prose and comments are checked, code isn't.
+        let tmp = std::env::temp_dir().join("strata-shot-spell.md");
+        std::fs::write(&tmp, "# Notes\n\nThis paragraph has a mispelled word and anothr one.\n\n```rust\n// a coment in code\nlet varible = 1;\n```\n").unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(Some(tmp), None);
+        app.settings.spell_check = true;
+        for _ in 0..20 {
+            shooter.run(&ctx, &mut app, 1, vec![]);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join("spell.ppm"));
     }
 }
