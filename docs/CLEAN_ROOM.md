@@ -19,3 +19,10 @@ To keep this project legally clean:
 The initial feature inventory (docs/FEATURES.md) came from public knowledge of
 the editor plus non-code bundle metadata: the Info.plist file-type list and the
 names of bundled language packages. No code was decompiled.
+
+## Color schemes and fonts
+The bundled color schemes are palettes transcribed from each project's published,
+openly licensed colors (MIT or Apache-2.0, credited in Help ▸ Licenses) and
+mapped onto Strata's own scope rules; no scheme files were copied from Sublime
+Text. The bundled fonts are the upstream OFL-1.1 releases, with their license
+texts in `assets/fonts/`.

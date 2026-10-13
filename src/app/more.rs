@@ -21,7 +21,7 @@ pub(super) enum Choosing {
     Project(Vec<PathBuf>),
     Symbol(Vec<(PathBuf, usize)>),
     /// Font picker: (editor font?, the fonts offered after "Default").
-    Font(bool, Vec<crate::fonts::InstalledFont>),
+    Font(bool, Vec<crate::fonts::FontChoice>),
     Snippet(Vec<crate::snippets::Snippet>),
 }
 
@@ -125,9 +125,9 @@ impl StrataApp {
     }
 
     pub(super) fn pick_font(&mut self, ctx: &egui::Context, editor: bool) {
-        let fonts = crate::fonts::installed_fonts();
+        let fonts = crate::fonts::font_choices(editor);
         let mut labels = vec![if editor { "Default (Hack)".to_owned() } else { "Default (Ubuntu)".to_owned() }];
-        labels.extend(fonts.iter().map(|f| f.name.clone()));
+        labels.extend(fonts.iter().map(|f| if f.note.is_empty() { f.name.clone() } else { format!("{} — {}", f.name, f.note) }));
         let hint = if editor { "Editor font (monospaced fonts work best)" } else { "Interface font" };
         self.choose(ctx, Choosing::Font(editor, fonts), hint, labels);
     }
@@ -141,7 +141,7 @@ impl StrataApp {
         self.fonts_key = Some(key);
         let editor = crate::fonts::find_font(&self.settings.font_face);
         let ui = crate::fonts::find_font(&self.settings.ui_font_face);
-        let mut errors = crate::fonts::apply(ctx, editor.as_deref(), ui.as_deref());
+        let mut errors = crate::fonts::apply(ctx, editor.as_ref(), ui.as_ref());
         if editor.is_none() && !self.settings.font_face.is_empty() {
             errors.push(format!("font \"{}\" not found", self.settings.font_face));
         }
@@ -431,7 +431,28 @@ impl StrataApp {
                 }
             });
             ui.add_space(6.0);
-            ui.label(egui::RichText::new("Syntax definitions come from syntect, the bat project (via two-face) and Sublime Text community packages, each under its own license; color schemes come with syntect. Strata's own PowerShell and JSX grammars are MIT.").small().weak());
+            ui.label(egui::RichText::new("Syntax definitions come from syntect, the bat project (via two-face) and Sublime Text community packages, each under its own license. Strata's own PowerShell and JSX grammars are MIT.").small().weak());
+            egui::CollapsingHeader::new("Color schemes").show(ui, |ui| {
+                ui.label(egui::RichText::new("Strata's schemes are palettes transcribed from each project's published colors and mapped onto Strata's own scope rules. The Classic schemes come with syntect (MIT).").small().weak());
+                egui::Grid::new("scheme-credits").striped(true).show(ui, |ui| {
+                    for (credit, names) in crate::highlight::themes::credits() {
+                        ui.label(credit.project).on_hover_text(names.join(", "));
+                        ui.label(egui::RichText::new(credit.license).weak());
+                        ui.label(egui::RichText::new(if credit.url.is_empty() { credit.author.to_owned() } else { format!("{} · {}", credit.author, credit.url) }).small().weak());
+                        ui.end_row();
+                    }
+                });
+            });
+            egui::CollapsingHeader::new("Fonts").show(ui, |ui| {
+                ui.label(egui::RichText::new("Bundled under the SIL Open Font License 1.1. Hack and Ubuntu come with egui.").small().weak());
+                egui::ScrollArea::vertical().id_salt("font-licenses").max_height(260.0).show(ui, |ui| {
+                    for f in crate::fonts::BUNDLED {
+                        egui::CollapsingHeader::new(f.name).id_salt(("font-license", f.name)).show(ui, |ui| {
+                            ui.label(egui::RichText::new(f.license).small().monospace());
+                        });
+                    }
+                });
+            });
             egui::CollapsingHeader::new("Syntax definition licenses").show(ui, |ui| {
                 egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                     ui.label(egui::RichText::new(crate::highlight::SYNTAX_LICENSES).small().monospace());

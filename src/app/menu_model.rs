@@ -154,10 +154,15 @@ fn settings_owned(app: &StrataApp) -> Vec<Item> {
     let face = |name: &str| if name.is_empty() { "Default".to_owned() } else { name.to_owned() };
     let mut ui_sizes: Vec<Item> = (10..=18).map(|n| Item::new(format!("{n} pt"), Act::Named(format!("uisize:{n}"))).checked(s.ui_font_size == n as f32)).collect();
     ui_sizes.extend([SEP(), c("Larger", Cmd::UiLarger), c("Smaller", Cmd::UiSmaller)]);
+    let plain_spacing = s.line_padding_top == 0.0 && s.line_padding_bottom == 0.0;
+    let spacing: Vec<Item> = [("Compact", 1.0), ("Comfortable", 1.2), ("Relaxed", 1.4), ("Spacious", 1.6)]
+        .into_iter()
+        .map(|(label, h)| Item::new(format!("{label} ({h:.1}×)"), Act::Named(format!("linespacing:{h}"))).checked(plain_spacing && (s.line_height - h).abs() < 0.01))
+        .collect();
     vec![
         c("Settings", Cmd::Settings),
         SEP(),
-        c("Select Color Scheme…", Cmd::SelectTheme),
+        sub("Color Scheme", app.theme_menu_items()),
         SEP(),
         sub(
             "Font",
@@ -166,6 +171,7 @@ fn settings_owned(app: &StrataApp) -> Vec<Item> {
                 c("Larger", Cmd::ZoomIn),
                 c("Smaller", Cmd::ZoomOut),
                 c("Reset Size", Cmd::ZoomReset),
+                sub("Line Spacing", spacing),
                 SEP(),
                 Item::new(format!("Interface Font: {}…", face(&s.ui_font_face)), Act::Cmd(Cmd::SelectUiFont)),
                 sub("Interface Size", ui_sizes),
@@ -407,10 +413,7 @@ impl StrataApp {
             .into_iter()
             .map(|s| Item::new(s, Act::Syntax(s.to_owned())).checked(d.highlighter.syntax_name() == s))
             .collect();
-        let theme: Vec<Item> = crate::highlight::theme_names()
-            .into_iter()
-            .map(|t| Item::new(t, Act::Theme(t.to_owned())).checked(self.settings.theme == t))
-            .collect();
+        let theme = self.theme_menu_items();
         let mut indentation = vec![Item::new("Indent Using Spaces", Act::Named("toggle_spaces".into())).checked(d.editor.use_spaces), SEP()];
         indentation.extend((1..=8).map(|n| Item::new(format!("Tab Width: {n}"), Act::TabWidth(n)).checked(d.editor.tab_width == n)));
         indentation.extend([SEP(), e("Guess Settings From Buffer", "guess_indent"), SEP(), e("Convert Indentation to Spaces", "to_spaces"), e("Convert Indentation to Tabs", "to_tabs")]);
@@ -716,11 +719,7 @@ impl StrataApp {
             Act::OpenRecent(p) => self.open_path(p, false),
             Act::OpenRecentFolder(p) => self.open_folder(p),
             Act::Syntax(s) => self.doc().highlighter.set_syntax(&s),
-            Act::Theme(t) => {
-                self.settings.theme = t;
-                self.apply_settings();
-                self.persist_settings();
-            }
+            Act::Theme(t) => self.pick_theme(t),
             // Like Sublime, these apply to the current file.
             Act::TabWidth(n) => self.doc().editor.tab_width = n,
             Act::Tab(i) if i < self.docs.len() => self.activate(i),
@@ -791,6 +790,13 @@ impl StrataApp {
                 }
                 n if n.starts_with("opacity:") => {
                     self.settings.window_opacity = n[8..].parse::<f32>().unwrap_or(100.0) / 100.0;
+                    self.persist_settings();
+                }
+                "appearance:auto" | "appearance:fixed" => self.set_follow_system(n == "appearance:auto"),
+                n if n.starts_with("linespacing:") => {
+                    self.settings.line_height = n[12..].parse().unwrap_or(1.0);
+                    self.settings.line_padding_top = 0.0;
+                    self.settings.line_padding_bottom = 0.0;
                     self.persist_settings();
                 }
                 n if n.starts_with("uisize:") => {

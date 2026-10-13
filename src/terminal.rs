@@ -77,8 +77,18 @@ impl Theme {
         Self { bg, fg, cursor, selection, ansi }
     }
 
+    /// Schemes with their own terminal palette (the curated ones) use its
+    /// hues; bright variants are a step lighter (darker on light schemes).
     pub fn from_highlighter(hl: &crate::highlight::Highlighter) -> Self {
-        Self::new(hl.background(), hl.foreground(), hl.caret(), hl.selection())
+        let mut theme = Self::new(hl.background(), hl.foreground(), hl.caret(), hl.selection());
+        if let Some(hues) = hl.ansi() {
+            let toward = if hl.is_light() { Color32::BLACK } else { Color32::WHITE };
+            for (i, c) in hues.into_iter().enumerate() {
+                theme.ansi[i + 1] = c;
+                theme.ansi[i + 9] = mix(c, toward, 0.18);
+            }
+        }
+        theme
     }
 
     /// xterm's 256 colors: the 16 ANSI ones, a 6×6×6 cube, then a gray ramp.
@@ -1158,6 +1168,18 @@ mod tests {
         let tmp = std::env::temp_dir();
         assert_eq!(start_dir(Some(Path::new("/proj")), Some(&tmp.join("x.rs"))), PathBuf::from("/proj"));
         assert_eq!(start_dir(None, Some(&tmp.join("x.rs"))), tmp);
+    }
+
+    #[test]
+    fn curated_schemes_bring_their_terminal_colors() {
+        let mut hl = crate::highlight::Highlighter::new();
+        hl.set_theme("Dracula");
+        let t = Theme::from_highlighter(&hl);
+        assert_eq!(t.ansi[1], Color32::from_rgb(0xff, 0x55, 0x55), "Dracula red");
+        assert_eq!(t.ansi[6], Color32::from_rgb(0x8b, 0xe9, 0xfd), "Dracula cyan");
+        assert_ne!(t.ansi[9], t.ansi[1], "bright red differs");
+        hl.set_theme("Strata Dark");
+        assert_eq!(Theme::from_highlighter(&hl).ansi[1], Color32::from_rgb(0xe0, 0x6c, 0x75), "fallback hues");
     }
 
     #[cfg(unix)]

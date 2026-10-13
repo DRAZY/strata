@@ -48,6 +48,22 @@ pub struct Settings {
     /// 0.3 (see-through) to 1.0 (opaque).
     pub window_opacity: f32,
     pub theme: String,
+    /// "fixed" uses `theme`; "auto" follows the system's light or dark
+    /// appearance with `light_theme` / `dark_theme`; "dark" / "light" pin one.
+    pub theme_mode: String,
+    pub dark_theme: String,
+    pub light_theme: String,
+    /// Colors over every scheme, e.g. {"background": "#1e1e2e", "comment": "#7f849c"}.
+    pub theme_overrides: std::collections::BTreeMap<String, String>,
+    /// The same, for one scheme: {"Nord": {"selection": "#434c5e"}}.
+    pub theme_overrides_by_theme: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    /// Line height as a multiple of the font's own (1.0 = unchanged).
+    pub line_height: f32,
+    /// Extra space above and below each line, in points (Sublime's names).
+    pub line_padding_top: f32,
+    pub line_padding_bottom: f32,
+    /// "no_italic", "no_underline" ("no_bold" is accepted; code is never bold).
+    pub font_options: Vec<String>,
     pub tab_size: usize,
     pub translate_tabs_to_spaces: bool,
     /// Enter keeps the current line's indentation.
@@ -103,6 +119,15 @@ impl Default for Settings {
             smooth_scroll: true,
             git_gutter: true,
             theme: crate::highlight::DEFAULT_THEME.into(),
+            theme_mode: "fixed".into(),
+            dark_theme: crate::highlight::DEFAULT_THEME.into(),
+            light_theme: "Strata Light".into(),
+            theme_overrides: Default::default(),
+            theme_overrides_by_theme: Default::default(),
+            line_height: 1.0,
+            line_padding_top: 0.0,
+            line_padding_bottom: 0.0,
+            font_options: Vec::new(),
             tab_size: 4,
             translate_tabs_to_spaces: true,
             auto_indent: true,
@@ -418,6 +443,27 @@ mod tests {
         assert!(s.save(&dir).is_err());
         assert_eq!(std::fs::read_to_string(Settings::path(&dir)).unwrap(), "{ nope");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn appearance_settings_parse_with_defaults() {
+        let s = Settings::parse("{}").unwrap();
+        assert_eq!((s.theme_mode.as_str(), s.line_height, s.line_padding_top), ("fixed", 1.0, 0.0));
+        assert!(s.theme_overrides.is_empty() && s.font_options.is_empty());
+        let text = r##"{
+            "theme_mode": "auto", "dark_theme": "Tokyo Night", "light_theme": "Catppuccin Latte",
+            // Colors over every scheme
+            "theme_overrides": { "background": "#1e1e2e", "comment": "#7f849c", },
+            "theme_overrides_by_theme": { "Nord": { "selection": "#434c5e" } },
+            "line_height": 1.4, "line_padding_top": 2, "line_padding_bottom": 1,
+            "font_options": ["no_italic"],
+        }"##;
+        let s = Settings::parse(text).unwrap();
+        assert_eq!((s.theme_mode.as_str(), s.dark_theme.as_str(), s.light_theme.as_str()), ("auto", "Tokyo Night", "Catppuccin Latte"));
+        assert_eq!(s.theme_overrides["comment"], "#7f849c");
+        assert_eq!(s.theme_overrides_by_theme["Nord"]["selection"], "#434c5e");
+        assert_eq!((s.line_height, s.line_padding_top, s.line_padding_bottom), (1.4, 2.0, 1.0));
+        assert_eq!(s.font_options, ["no_italic"]);
     }
 
     #[test]

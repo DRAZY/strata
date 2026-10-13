@@ -128,7 +128,8 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
   lines and selections, wrap paragraph at ruler, paste and indent.
 - **View**: word wrap (Alt+Cmd+W; on by default for Markdown and plain text),
   minimap, indent guides, bracket matching, distraction-free mode, hide tabs or
-  status bar, CJK/IME input, Strata Dark/Light color schemes.
+  status bar, CJK/IME input, 35 color schemes and bundled coding fonts (see
+  [Color schemes and fonts](#color-schemes-and-fonts)).
 - **Markdown preview** (View ▸ Markdown Preview, ⌃⇧V on macOS, Alt+Shift+V on
   Windows): a live, theme-colored preview beside the editor with GitHub-style
   tables, task lists, footnotes, alerts and highlighted code blocks; it follows
@@ -155,8 +156,8 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
   Svelte, Dockerfile, INI/.editorconfig, .env, CMake, nginx, Fish, CSV, Lua,
   Haskell, Julia, Groovy/Jenkinsfile and more, plus Strata's own PowerShell
   grammar. Markdown code fences highlight their language. Add your own
-  `.sublime-syntax` files to the config folder's `Syntaxes/` and `.tmTheme`
-  color schemes to `Themes/`; broken files are skipped and named in the status
+  `.sublime-syntax` files to the config folder's `Syntaxes/` and `.tmTheme` or
+  `.sublime-color-scheme` color schemes to `Themes/`; broken files are skipped and named in the status
   bar.
 - **Find**: find/replace with regex, quick find, use selection for find, and
   find in folder (parallel, respects .gitignore). Its **Where** field takes
@@ -185,7 +186,8 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
   and the find, replace, palette and find-in-folder fields.
 - **Projects**: open a folder (sidebar with New File/Folder, Rename, Reveal),
   save and reopen `.strata-project` files.
-- **Settings** in `settings.json` (⌘, opens it): font size, theme, tab size,
+- **Settings** in `settings.json` (⌘, opens it): fonts, line spacing, color
+  scheme (fixed or following the system), color overrides, tab size,
   spaces vs tabs, indentation detection, word wrap, wrap width, minimap,
   auto-complete, hot exit. Stored in `~/Library/Application Support/Strata`
   (macOS) or `%APPDATA%\Strata` (Windows).
@@ -198,7 +200,7 @@ Also: code folding (⌥⌘[ / ⌥⌘], ⌘K ⌘1…9), rulers and a fixed wrap c
 history, copy as HTML.
 
 Look and feel: a theme-colored gradient scrollbar with match and cursor
-ticks, pick any installed font for the editor and the interface (with sizes),
+ticks, bundled or installed fonts for the editor and the interface (with sizes),
 cursor styles (line, block, underline; blink, fade, solid), window opacity,
 bracket pair colors, visible whitespace and trailing-whitespace tint, color
 swatches under CSS colors, sticky scroll headers, smooth scrolling, and git
@@ -215,6 +217,86 @@ files over 8 MB. The bundled grammars come from syntect's defaults and the bat
 project (via the `two-face` crate, MIT/Apache-2.0); each grammar's own license
 text ships in Help ▸ Licenses.
 
+## Color schemes and fonts
+
+**33 curated color schemes** plus Strata Dark and Strata Light, grouped in
+View ▸ Color Scheme (also under Settings ▸ Color Scheme and the status bar.s Theme
+menu) as Dark, Light and High Contrast. **UI: Select Color Scheme** (in the
+command palette) previews each one as you arrow through the list; Esc puts
+the old one back.
+
+| Dark | Light | High contrast |
+|------|-------|---------------|
+| Strata Dark, One Dark, Dracula, Nord, Solarized Dark, Gruvbox Dark, Tokyo Night, Tokyo Night Storm, Catppuccin Mocha / Macchiato / Frappé, GitHub Dark, Monokai Extended, Ayu Dark, Ayu Mirage, Night Owl, Material Palenight, Rosé Pine, Rosé Pine Moon, Everforest Dark, Kanagawa Wave | Strata Light, One Light, Solarized Light, Gruvbox Light, Tokyo Night Day, Catppuccin Latte, GitHub Light, Ayu Light, Night Owl Light, Rosé Pine Dawn, Everforest Light, Kanagawa Lotus | High Contrast Dark, High Contrast Light |
+
+syntect's classic schemes (InspiredGitHub, base16 Ocean/Eighties/Mocha) are
+under Classic. Each curated scheme is the project's published palette (MIT,
+or Apache-2.0 for Material; credits in Help ▸ Licenses) mapped onto one shared
+set of scope rules, so every language gets the same coverage: comments,
+strings, escapes, keywords, operators, functions, types, constants, numbers,
+variables, parameters, properties, punctuation, tags, attributes,
+macros/decorators, Markdown headings/links/code, diffs and invalid code. Each
+also sets the editor colors (caret, selection, current line, line numbers,
+find matches, indent guides, bracket match, whitespace, accent) and its own
+terminal palette; tabs, side bar, status bar, menus, scrollbar, minimap and
+Markdown preview take their colors from the scheme. Text in every scheme
+meets WCAG AA contrast (4.5:1) and every syntax color at least 3:1; the
+high-contrast schemes meet 7:1 for text and 4.5:1 for every color (a test
+checks all of them).
+
+**Follow the system** (light or dark): View ▸ Color Scheme ▸ Follow System
+Appearance, or in `settings.json`:
+
+```jsonc
+"theme_mode": "auto",            // "fixed" (default: uses "theme"), "auto", "dark", "light"
+"dark_theme": "Tokyo Night",
+"light_theme": "Catppuccin Latte",
+```
+
+In Auto mode, picking a dark scheme sets `dark_theme` and a light one sets
+`light_theme`. `"theme": "auto"` works too, as in Sublime.
+
+**Your own colors**, without writing a scheme (applied live; names are the
+roles above, plus `background`, `foreground`, `caret`, `selection`,
+`line_highlight`, `gutter`, `gutter_foreground`, `find_highlight`, `guide`,
+`bracket`, `whitespace`, `accent`; colors as `#rgb`, `#rrggbb`, `#rrggbbaa`,
+`rgb()`, `hsl()`):
+
+```jsonc
+"theme_overrides": { "background": "#1e1e2e", "caret": "#f5e0dc", "comment": "#7f849c" },
+"theme_overrides_by_theme": { "Nord": { "selection": "#4c566a" } },
+"font_options": ["no_italic"],   // also "no_underline"
+```
+
+**Bring a scheme**: put `.tmTheme` or Sublime Text 3/4 `.sublime-color-scheme`
+files (variables, globals, rules with `scope`/`foreground`/`background`/
+`font_style`; `var()`, `color(… alpha() blend())`; comments and trailing
+commas allowed) in the config folder's `Themes/`. They appear under Your
+Themes, named after the file.
+
+**Fonts.** Four coding fonts ship with Strata, all under the SIL Open Font
+License 1.1: **JetBrains Mono**, **Fira Code** (both draw their coding
+ligatures, one cell per character), **IBM Plex Mono** and **Source Code Pro**,
+plus **Inter** for the interface. Settings ▸ Font ▸ Editor Font / Interface
+Font lists them first, then every font installed on the computer; a font that
+can't be found falls back to the built-in Hack (editor) or Ubuntu (interface)
+and says so in the status bar. Font ▸ Line Spacing picks 1.0–1.6× line
+height; in `settings.json`:
+
+```jsonc
+"font_face": "JetBrains Mono",   // a bundled or installed font's name, or a font file path
+"font_size": 14,
+"ui_font_face": "Inter",
+"ui_font_size": 13,
+"line_height": 1.3,              // multiple of the font's own line height
+"line_padding_top": 0,           // extra points above / below each line (Sublime's names)
+"line_padding_bottom": 0,
+"caret_width": 2,
+```
+
+Settings ▸ Settings (⌘,) opens `settings.json`; a new file is written with every
+setting at its default, the ones above included.
+
 ## Development
 
 `cargo test` runs editor-core unit tests plus headless egui tests that drive
@@ -226,8 +308,8 @@ macOS runner and a Windows x64 runner.
 Dev aids (all pair with `STRATA_SCREENSHOT=out.ppm`, which renders the window,
 saves a screenshot and exits): `STRATA_DEV_FIND=query` (+ `STRATA_DEV_FIND_REGEX=1`),
 `STRATA_DEV_FIND_IN_FILES=query` (+ `STRATA_DEV_WHERE`, `STRATA_DEV_REPLACE`,
-`STRATA_DEV_REPLACE_STEP=confirm|run`), `STRATA_DEV_PALETTE="p:query"` or
-`"cmd:query"`, `STRATA_SCREENSHOT_TYPE='fn\t'` (types into the editor first; `\t`
+`STRATA_DEV_REPLACE_STEP=confirm|run`), `STRATA_DEV_PALETTE="p:query"`,
+`"cmd:query"`, `"theme:query"` (the color scheme picker) or `"licenses:"`, `STRATA_SCREENSHOT_TYPE='fn\t'` (types into the editor first; `\t`
 presses Tab). `STRATA_CONFIG_DIR=dir` uses a separate settings/session folder (and its own
 single-instance socket, so a test copy never talks to your everyday Strata;
 for the .app use `open --env STRATA_CONFIG_DIR=dir -a dist/Strata.app file`,

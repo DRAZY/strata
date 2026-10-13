@@ -40,6 +40,8 @@ pub struct EditorView {
     pub context_line: Option<usize>,
     scroll: Vec2,
     pub font_size: f32,
+    /// Line height multiple, extra points above and below each line.
+    pub line_spacing: (f32, f32, f32),
     /// Widest line seen so far; bounds horizontal scrolling.
     max_width: f32,
     scroll_to_cursor: bool,
@@ -159,6 +161,9 @@ struct Metrics {
     full: Rect,
     font: FontId,
     row_h: f32,
+    /// Space above the text in each row (line spacing), and the text's own height.
+    pad: f32,
+    text_h: f32,
     char_w: f32,
     gutter: Rect,
     text: Rect,
@@ -185,6 +190,7 @@ impl EditorView {
             id: Id::new("strata-editor"),
             scroll: Vec2::ZERO,
             font_size: 14.0,
+            line_spacing: (1.0, 0.0, 0.0),
             max_width: 0.0,
             scroll_to_cursor: false,
             center_cursor: false,
@@ -614,7 +620,8 @@ impl EditorView {
 
     fn metrics(&self, ui: &Ui, ed: &Editor, rect: Rect) -> Metrics {
         let font = FontId::monospace(self.font_size);
-        let (row_h, char_w) = ui.fonts_mut(|f| (f.row_height(&font), f.glyph_width(&font, 'M')));
+        let (text_h, char_w) = ui.fonts_mut(|f| (f.row_height(&font), f.glyph_width(&font, 'M')));
+        let (row_h, pad) = row_height(text_h, self.line_spacing);
         let digits = ed.buffer.len_lines().to_string().len().max(3);
         let gutter_w = (digits as f32 + 3.0) * char_w;
         let gutter = Rect::from_min_size(rect.min, vec2(gutter_w, rect.height()));
@@ -631,7 +638,7 @@ impl EditorView {
             self.wrap_column.map_or(fit, |n| fit.min(n.max(1)))
         });
         let scroll_x = if wrap.is_some() { 0.0 } else { self.scroll.x };
-        Metrics { full: rect, font, row_h, char_w, gutter, text, origin_x: text.left() + char_w - scroll_x, minimap, wrap }
+        Metrics { full: rect, font, row_h, pad, text_h, char_w, gutter, text, origin_x: text.left() + char_w - scroll_x, minimap, wrap }
     }
 
     // ---- visual rows (one per line without wrap, none for folded lines) ----
@@ -1086,7 +1093,7 @@ impl EditorView {
             return;
         }
         let painter = ui.painter();
-        let (bg, fg, accent, sel) = (hl.background(), hl.foreground(), hl.caret(), hl.selection());
+        let (bg, fg, accent, sel) = (hl.background(), hl.foreground(), hl.accent(), hl.selection());
         painter.rect_filled(track, 0.0, blend(bg, fg, 0.04));
         painter.vline(track.left() + 0.5, track.y_range(), Stroke::new(1.0, blend(bg, fg, 0.08)));
         self.paint_overview(painter, ed, hl, m, track, content, matches);
@@ -1193,7 +1200,11 @@ impl EditorView {
         let bg = hl.background();
         let light = hl.is_light();
         let fg = hl.foreground();
-        let ws_color = fg.gamma_multiply(0.35);
+        let ws_color = hl.whitespace();
+        let bracket_color = hl.bracket();
+        // Find matches: a soft fill in the scheme's find color, outlined.
+        let find_fill = hl.find_highlight().map(|c| c.to_opaque().gamma_multiply(if light { 0.30 } else { 0.24 }));
+        let find_stroke = hl.find_highlight().map_or_else(|| fg.gamma_multiply(0.7), |c| blend(bg, c.to_opaque(), 0.85));
         let trail_color = trailing_color(bg, light);
         let bracket_err = error_color(light);
         let sel_color = hl.selection();
@@ -1352,7 +1363,10 @@ impl EditorView {
                     let b = r.end.min(row_end);
                     if b > a {
                         let rect = Rect::from_min_max(pos2(x_at(a), y), pos2(x_at(b), y + m.row_h));
-                        text_painter.rect_stroke(rect, 2.0, Stroke::new(1.0, fg.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                        if let Some(fill) = find_fill {
+                            text_painter.rect_filled(rect, 2.0, fill);
+                        }
+                        text_painter.rect_stroke(rect, 2.0, Stroke::new(1.0, find_stroke), egui::StrokeKind::Inside);
                     }
                     if r.end > row_end {
                         break;
@@ -1372,8 +1386,9 @@ impl EditorView {
                 if let Some((a, b)) = bracket {
                     for p in [a, b] {
                         if p >= row_start && p < row_end {
-                            let under = Rect::from_min_max(pos2(x_at(p), y + m.row_h - 2.0), pos2(x_at(p + 1), y + m.row_h - 0.5));
-                            text_painter.rect_filled(under, 0.0, caret_color);
+                            let base = y + m.pad + m.text_h;
+                            let under = Rect::from_min_max(pos2(x_at(p), base - 2.0), pos2(x_at(p + 1), base - 0.5));
+                            text_painter.rect_filled(under, 0.0, bracket_color);
                         }
                     }
                 }
@@ -1382,13 +1397,14 @@ impl EditorView {
                 for (cr, color) in &swatches {
                     let (a, b) = ((line_start + cr.start).max(row_start), (line_start + cr.end).min(row_end));
                     if b > a {
-                        let bar = Rect::from_min_max(pos2(x_at(a), y + m.row_h - 3.5), pos2(x_at(b), y + m.row_h - 0.5));
+                        let base = y + m.pad + m.text_h;
+                        let bar = Rect::from_min_max(pos2(x_at(a), base - 3.5), pos2(x_at(b), base - 0.5));
                         text_painter.rect_filled(bar, 1.5, blend(bg, color.to_opaque(), color.a() as f32 / 255.0));
                         text_painter.rect_stroke(bar, 1.5, Stroke::new(0.5, fg.gamma_multiply(0.25)), egui::StrokeKind::Outside);
                     }
                 }
 
-                text_painter.galley(pos2(m.origin_x, y), galley.clone(), fg);
+                text_painter.galley(pos2(m.origin_x, y + m.pad), galley.clone(), fg);
 
                 if let Some(chars) = &ws_chars {
                     let spans: Vec<Range<usize>> = match self.show_whitespace {
@@ -1426,8 +1442,8 @@ impl EditorView {
                 // A folded header ends in a "…" pill; clicking it unfolds.
                 if last_sub && self.folds.at_header(line).is_some() {
                     let x = m.origin_x + galley.size().x + m.char_w * 0.6;
-                    let pill = Rect::from_min_size(pos2(x, y + m.row_h * 0.15), vec2(m.char_w * 2.4, m.row_h * 0.7));
-                    text_painter.rect_filled(pill, m.row_h * 0.3, fg.gamma_multiply(0.18));
+                    let pill = Rect::from_min_size(pos2(x, y + m.pad + m.text_h * 0.15), vec2(m.char_w * 2.4, m.text_h * 0.7));
+                    text_painter.rect_filled(pill, m.text_h * 0.3, fg.gamma_multiply(0.18));
                     text_painter.text(pill.center(), Align2::CENTER_CENTER, "…", m.font.clone(), fg.gamma_multiply(0.8));
                     self.pills.push((pill, line));
                 }
@@ -1437,7 +1453,9 @@ impl EditorView {
                         continue;
                     }
                     let x = x_at(s.head);
-                    let caret = Rect::from_min_size(pos2(x - self.caret_width / 2.0, y), vec2(self.caret_width, m.row_h));
+                    // The caret spans the text, not the line spacing around it.
+                    let (ty, th) = (y + (m.pad - 1.0).max(0.0), (m.text_h + 2.0).min(m.row_h));
+                    let caret = Rect::from_min_size(pos2(x - self.caret_width / 2.0, ty), vec2(self.caret_width, th));
                     if s.head == primary_head {
                         self.caret_rect = Some(caret);
                     }
@@ -1447,8 +1465,8 @@ impl EditorView {
                             let color = caret_color.gamma_multiply(self.caret_alpha);
                             match self.caret_shape {
                                 CaretShape::Line => text_painter.rect_filled(caret, 0.0, color),
-                                CaretShape::Block => text_painter.rect_filled(Rect::from_min_size(pos2(x, y), vec2(cw, m.row_h)), 1.0, color.gamma_multiply(0.55)),
-                                CaretShape::Underline => text_painter.rect_filled(Rect::from_min_size(pos2(x, y + m.row_h - 2.5), vec2(cw, 2.5)), 0.0, color),
+                                CaretShape::Block => text_painter.rect_filled(Rect::from_min_size(pos2(x, ty), vec2(cw, th)), 1.0, color.gamma_multiply(0.55)),
+                                CaretShape::Underline => text_painter.rect_filled(Rect::from_min_size(pos2(x, ty + th - 2.5), vec2(cw, 2.5)), 0.0, color),
                             };
                         }
                     } else {
@@ -1495,7 +1513,7 @@ impl EditorView {
                     }
                     let num_color = if on_caret_line { fg } else { gutter_fg };
                     painter.text(
-                        pos2(m.gutter.right() - m.char_w * 1.5, y),
+                        pos2(m.gutter.right() - m.char_w * 1.5, y + m.pad),
                         Align2::RIGHT_TOP,
                         (line + 1).to_string(),
                         m.font.clone(),
@@ -1511,8 +1529,8 @@ impl EditorView {
 
     /// Theme-derived bracket colors, picked once per theme.
     fn bracket_palette(&mut self, hl: &Highlighter) -> Vec<Color32> {
-        if self.palette.as_ref().is_none_or(|(name, _)| name != hl.theme_name()) {
-            self.palette = Some((hl.theme_name().into(), decor::bracket_palette(hl.theme_name())));
+        if self.palette.as_ref().is_none_or(|(key, _)| *key != hl.theme_key()) {
+            self.palette = Some((hl.theme_key(), decor::bracket_palette(hl.theme_name())));
         }
         self.palette.as_ref().map(|(_, p)| p.clone()).unwrap_or_default()
     }
@@ -1545,8 +1563,8 @@ impl EditorView {
             let lr = LineRows::new(text.chars(), m.wrap, tab);
             let end = byte_offsets(&text, &[lr.range(0).end])[0];
             let galley = layout_segment(ui, &style, 0..end, 0, None);
-            text_painter.galley(pos2(m.origin_x, y), galley, fg);
-            painter.text(pos2(m.gutter.right() - m.char_w * 1.5, y), Align2::RIGHT_TOP, (line + 1).to_string(), m.font.clone(), gutter_fg);
+            text_painter.galley(pos2(m.origin_x, y + m.pad), galley, fg);
+            painter.text(pos2(m.gutter.right() - m.char_w * 1.5, y + m.pad), Align2::RIGHT_TOP, (line + 1).to_string(), m.font.clone(), gutter_fg);
             self.sticky.push((row, line, slot));
         }
         let bottom = m.text.top() + heads.len() as f32 * m.row_h;
@@ -1738,6 +1756,19 @@ pub enum CaretBlink {
 }
 
 /// Blend toward `to` by `t` (0 = `from`).
+/// Row height and the space above the text for a font row of `text_h`, given
+/// (line height multiple, padding above, padding below) as in the settings.
+/// The space above is whole points so text stays crisp.
+fn row_height(text_h: f32, spacing: (f32, f32, f32)) -> (f32, f32) {
+    let (mult, top, bottom) = spacing;
+    let mult = if mult.is_finite() { mult.clamp(0.8, 3.0) } else { 1.0 };
+    let pad = |p: f32| if p.is_finite() { p.clamp(0.0, 40.0) } else { 0.0 };
+    let spaced = text_h * mult;
+    let row = spaced + pad(top) + pad(bottom);
+    let above = (((spaced - text_h) / 2.0).max(0.0) + pad(top)).round();
+    (row, above)
+}
+
 fn blend(from: Color32, to: Color32, t: f32) -> Color32 {
     let m = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
     Color32::from_rgb(m(from.r(), to.r()), m(from.g(), to.g()), m(from.b(), to.b()))
@@ -2433,6 +2464,21 @@ mod tests {
         h.view.wrap_column = Some(500);
         h.frame(vec![]);
         assert_eq!(h.view.last_wrap, Some(cols), "the window is narrower");
+    }
+
+    #[test]
+    fn line_spacing_changes_the_row_height() {
+        assert_eq!(row_height(16.0, (1.0, 0.0, 0.0)), (16.0, 0.0));
+        assert_eq!(row_height(16.0, (1.5, 2.0, 3.0)), (29.0, 6.0));
+        assert_eq!(row_height(16.0, (f32::NAN, -5.0, 99.0)), (56.0, 0.0), "bad values are clamped");
+        let text: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let mut h = Harness::new(&text);
+        h.view.line_spacing = (1.5, 2.0, 3.0);
+        let (row, _) = row_height(h.row_h(), h.view.line_spacing);
+        assert!(row > h.row_h() * 1.5);
+        h.view.scroll_lines(5);
+        h.frame(vec![]);
+        assert_eq!(h.view.scroll.y, 5.0 * row, "scrolling moves by the spaced row");
     }
 
     #[test]

@@ -145,6 +145,10 @@ impl Palette {
         self.show_mode(Mode::Choice, "", ctx, egui_ctx);
     }
 
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
     pub fn close(&mut self) {
         self.open = false;
         self.files.stop();
@@ -172,7 +176,8 @@ impl Palette {
             Mode::Files => self.goto_rows(),
             Mode::Theme => {
                 let names = crate::highlight::theme_names();
-                rank_rows(&self.text, &names, |n| n, |n| Pick::Theme(n.to_string()), |_| String::new())
+                let group = |n: &&str| crate::highlight::theme_group(n).map_or("", |g| g.label()).to_owned();
+                rank_rows(&self.text, &names, |n| n, |n| Pick::Theme(n.to_string()), group)
             }
             Mode::Syntax => {
                 let names = crate::highlight::syntax_names();
