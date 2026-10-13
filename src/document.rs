@@ -41,6 +41,11 @@ pub struct Document {
     pub encoding: Encoding,
     /// Tab name for a generated, pathless tab (e.g. "Default Key Bindings").
     pub title: Option<String>,
+    /// Tabs showing one buffer (New View into File, Compare) share this id;
+    /// see `app::clones`.
+    pub view_group: Option<u64>,
+    /// A side-by-side Compare tab: `editor` is its right (editable) side.
+    pub compare: Option<Box<crate::compare::Compare>>,
 }
 
 pub fn mtime(path: &Path) -> Option<SystemTime> {
@@ -76,6 +81,8 @@ impl Document {
             git_changes: Vec::new(),
             git_version: None,
             title: None,
+            view_group: None,
+            compare: None,
         }
     }
 
@@ -144,6 +151,9 @@ impl Document {
     }
 
     pub fn name(&self) -> String {
+        if let Some(c) = &self.compare {
+            return c.title();
+        }
         self.path
             .as_ref()
             .and_then(|p| p.file_name())

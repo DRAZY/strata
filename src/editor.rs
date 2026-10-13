@@ -6,7 +6,9 @@
 use crate::buffer::Buffer;
 use crate::find::{self, Query};
 use crate::indent;
+use std::cell::RefCell;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,14 +66,49 @@ struct Transaction {
     kind: Option<EditKind>,
 }
 
-pub struct Editor {
-    pub buffer: Buffer,
-    sels: Vec<Selection>,
-    primary: usize,
+/// Undo history and saved point: one per buffer, shared by every view of it
+/// (File ▸ New View into File), so undo and "unsaved" follow the text.
+struct History {
     undo: Vec<Transaction>,
     redo: Vec<Transaction>,
     next_id: u64,
     saved_id: u64,
+    /// `Editor::key` of the view that recorded the last step: typing only
+    /// coalesces into a step its own view made.
+    last_owner: u64,
+}
+
+impl History {
+    fn new() -> Rc<RefCell<History>> {
+        Rc::new(RefCell::new(History { undo: Vec::new(), redo: Vec::new(), next_id: 1, saved_id: 0, last_owner: 0 }))
+    }
+}
+
+/// A process-unique `Editor::key`.
+fn next_key() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// One text replacement as applied to the buffer, for mirroring an edit
+/// into the other views of the same buffer (see `Editor::new_view`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Splice {
+    pub at: usize,
+    pub removed: usize,
+    pub text: String,
+}
+
+pub struct Editor {
+    pub buffer: Buffer,
+    sels: Vec<Selection>,
+    primary: usize,
+    history: Rc<RefCell<History>>,
+    /// Identifies this view in `History::last_owner`.
+    key: u64,
+    /// Splices since the last `take_journal`, kept only while other views
+    /// share the buffer.
+    journal: Option<Vec<Splice>>,
     can_coalesce: bool,
     changed_from: Option<usize>,
     /// Bumped on every text change; keys caches like search results.
@@ -415,10 +452,9 @@ impl Editor {
             buffer,
             sels: vec![Selection::cursor(0)],
             primary: 0,
-            undo: Vec::new(),
-            redo: Vec::new(),
-            next_id: 1,
-            saved_id: 0,
+            history: History::new(),
+            key: next_key(),
+            journal: None,
             can_coalesce: false,
             changed_from: Some(0),
             version: 0,
@@ -452,7 +488,7 @@ impl Editor {
     }
 
     fn current_id(&self) -> u64 {
-        self.undo.last().map_or(0, |t| t.id)
+        self.history.borrow().undo.last().map_or(0, |t| t.id)
     }
 
     pub fn version(&self) -> u64 {
@@ -461,7 +497,7 @@ impl Editor {
 
     /// Undo steps recorded so far; drops when an undo pops one.
     pub fn history_len(&self) -> usize {
-        self.undo.len()
+        self.history.borrow().undo.len()
     }
 
     /// Ranges kept in step with every later edit (including undo): text typed
@@ -488,11 +524,109 @@ impl Editor {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.current_id() != self.saved_id
+        self.current_id() != self.history.borrow().saved_id
     }
 
     pub fn mark_saved(&mut self) {
-        self.saved_id = self.current_id();
+        let id = self.current_id();
+        self.history.borrow_mut().saved_id = id;
+    }
+
+    // ---- views sharing one buffer ---------------------------------------
+
+    /// Another view of this buffer (New View into File): same text, undo
+    /// history and saved state, its own selections, marks and soft undo.
+    /// Edits made in either show up in the other once the app passes
+    /// `take_journal` of one to `apply_foreign` of the other.
+    pub fn new_view(&mut self) -> Editor {
+        let mut buffer = Buffer::from_str(&self.text_snapshot());
+        buffer.set_line_ending(self.buffer.line_ending());
+        buffer.lossy = self.buffer.lossy;
+        let mut view = Editor::new(buffer);
+        view.history = self.history.clone();
+        (view.tab_width, view.use_spaces, view.auto_indent, view.smart_indent) = (self.tab_width, self.use_spaces, self.auto_indent, self.smart_indent);
+        view.indent_rules = self.indent_rules;
+        view.read_only = self.read_only;
+        view.place_selections(self.sels.clone(), self.primary().head);
+        view.bookmarks = self.bookmarks.clone();
+        self.journal.get_or_insert_with(Vec::new);
+        view.journal = Some(Vec::new());
+        view
+    }
+
+    /// Both are views of one buffer (they share undo history).
+    pub fn shares_history(&self, other: &Editor) -> bool {
+        Rc::ptr_eq(&self.history, &other.history)
+    }
+
+    /// Views of this buffer, this one included.
+    pub fn view_count(&self) -> usize {
+        Rc::strong_count(&self.history)
+    }
+
+    /// Distinct for every editor ever made (caches keyed on `version` add it,
+    /// since a replaced editor starts counting again).
+    pub fn id(&self) -> u64 {
+        self.key
+    }
+
+    /// Edits are being recorded for other views.
+    pub fn journaling(&self) -> bool {
+        self.journal.is_some()
+    }
+
+    /// Record splices for other views (`take_journal`), or stop recording.
+    pub fn set_journal(&mut self, on: bool) {
+        if on != self.journal.is_some() {
+            self.journal = on.then(Vec::new);
+        }
+    }
+
+    /// Text changes since the last call, in the order they were applied.
+    pub fn take_journal(&mut self) -> Vec<Splice> {
+        self.journal.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    /// Replay another view's edits. Nothing is recorded for undo (the
+    /// history is shared); selections, bookmarks and marks move with the
+    /// text like they do for this view's own edits.
+    pub fn apply_foreign(&mut self, splices: &[Splice]) {
+        if splices.is_empty() {
+            return;
+        }
+        let journal = self.journal.take();
+        let mut sels = std::mem::take(&mut self.sels);
+        for s in splices {
+            let at = s.at.min(self.buffer.len_chars());
+            let removed = s.removed.min(self.buffer.len_chars() - at);
+            self.splice(at, removed, &s.text);
+            let n = s.text.chars().count();
+            let shift = |p: &mut usize| {
+                if *p >= at + removed && *p > at {
+                    *p = *p + n - removed;
+                } else if *p > at {
+                    *p = at + n;
+                }
+            };
+            for sel in &mut sels {
+                shift(&mut sel.anchor);
+                shift(&mut sel.head);
+                sel.goal = None;
+            }
+        }
+        let head = sels.get(self.primary).map_or(0, |s| s.head);
+        self.place_selections(sels, head);
+        self.journal = journal;
+        self.can_coalesce = false;
+    }
+
+    /// Leave the shared history: this view keeps the text but starts an
+    /// empty undo history of its own. Returns whether it had unsaved changes.
+    pub fn detach_history(&mut self) -> bool {
+        let dirty = self.is_dirty();
+        self.history = History::new();
+        self.journal = None;
+        dirty
     }
 
     /// First line touched since the last call; the highlighter re-parses from there.
@@ -587,7 +721,7 @@ impl Editor {
     /// Identifies the current text in undo history: the top transaction and
     /// how many changes it holds (typing coalesces into it).
     fn text_state(&self) -> (u64, usize) {
-        (self.current_id(), self.undo.last().map_or(0, |t| t.changes.len()))
+        (self.current_id(), self.history.borrow().undo.last().map_or(0, |t| t.changes.len()))
     }
 
     /// Sort, merge overlaps, and re-find the primary selection.
@@ -633,6 +767,9 @@ impl Editor {
     /// the removed span collapse to its start, later ones shift.
     fn splice(&mut self, at: usize, remove: usize, text: &str) {
         self.note_change(at);
+        if let Some(j) = &mut self.journal {
+            j.push(Splice { at, removed: remove, text: text.to_owned() });
+        }
         self.buffer.remove(at..at + remove);
         self.buffer.insert(at, text);
         let n = text.chars().count();
@@ -755,11 +892,11 @@ impl Editor {
         if changes.is_empty() {
             return;
         }
-        self.redo.clear();
         self.sel_future.clear();
-
-        let saved_id = self.saved_id;
-        if let (Some(k), true, Some(last)) = (kind, self.can_coalesce, self.undo.last_mut())
+        let mut h = self.history.borrow_mut();
+        h.redo.clear();
+        let (saved_id, mine) = (h.saved_id, h.last_owner == self.key);
+        if let (Some(k), true, true, Some(last)) = (kind, self.can_coalesce, mine, h.undo.last_mut())
             && last.kind == Some(k)
             && last.id != saved_id
         {
@@ -767,36 +904,33 @@ impl Editor {
             last.after = self.sels.clone();
             return;
         }
-        self.undo.push(Transaction {
-            id: self.next_id,
-            changes,
-            before,
-            after: self.sels.clone(),
-            kind,
-        });
-        self.next_id += 1;
+        let id = h.next_id;
+        h.undo.push(Transaction { id, changes, before, after: self.sels.clone(), kind });
+        h.next_id += 1;
+        h.last_owner = self.key;
+        drop(h);
         self.can_coalesce = kind.is_some();
     }
 
     pub fn undo(&mut self) {
-        let Some(t) = self.undo.pop() else { return };
+        let Some(t) = self.history.borrow_mut().undo.pop() else { return };
         for c in t.changes.iter().rev() {
             self.splice(c.at, c.inserted.chars().count(), &c.removed);
         }
         let head = t.before.first().map_or(0, |s| s.head);
         self.place_selections(t.before.clone(), head);
-        self.redo.push(t);
+        self.history.borrow_mut().redo.push(t);
         self.can_coalesce = false;
     }
 
     pub fn redo(&mut self) {
-        let Some(t) = self.redo.pop() else { return };
+        let Some(t) = self.history.borrow_mut().redo.pop() else { return };
         for c in &t.changes {
             self.splice(c.at, c.removed.chars().count(), &c.inserted);
         }
         let head = t.after.first().map_or(0, |s| s.head);
         self.place_selections(t.after.clone(), head);
-        self.undo.push(t);
+        self.history.borrow_mut().undo.push(t);
         self.can_coalesce = false;
     }
 

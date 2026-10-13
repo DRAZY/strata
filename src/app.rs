@@ -118,11 +118,19 @@ pub struct StrataApp {
     keymap: keymap_ui::KeymapState,
     /// Help ▸ Documentation (see `help_ui`).
     help: help_ui::HelpState,
+    /// Tabs sharing a buffer (see `clones`).
+    views: clones::Views,
+    /// File ▸ Print… options (see `printing`).
+    print: printing::PrintDialog,
 }
 
+mod clones;
+mod compare_ui;
 mod completion;
 mod context_menus;
 mod features;
+#[cfg(test)]
+mod headless;
 mod help_ui;
 mod keymap_ui;
 mod launch;
@@ -130,6 +138,7 @@ pub(crate) mod menu_model;
 mod more;
 mod terminal_ui;
 mod preview;
+mod printing;
 mod replace_files;
 mod snippets_ui;
 mod textutil;
@@ -242,6 +251,8 @@ impl StrataApp {
             context: context_menus::ContextMenus::new(),
             link: windows::Link::default(),
             help: help_ui::HelpState::default(),
+            views: Default::default(),
+            print: Default::default(),
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -384,7 +395,7 @@ impl StrataApp {
     /// Open a file in a tab, reusing its tab if it's already open.
     /// `preview` tabs (single click in the sidebar) replace each other until edited.
     fn open_path(&mut self, path: PathBuf, preview: bool) {
-        if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
+        if let Some(i) = self.tab_for_path(&path) {
             if !preview {
                 self.docs[i].preview = false;
             }
@@ -471,7 +482,7 @@ impl StrataApp {
 
     /// Ask before closing a tab with unsaved changes. True if it may close.
     fn confirm_close(&mut self, i: usize) -> bool {
-        if !self.docs[i].is_dirty() {
+        if !self.docs[i].is_dirty() || self.later_view(i) {
             return true;
         }
         let answer = rfd::MessageDialog::new()
@@ -488,7 +499,7 @@ impl StrataApp {
     }
 
     fn close_tab(&mut self, i: usize) -> bool {
-        if i >= self.docs.len() || !self.confirm_close(i) {
+        if i >= self.docs.len() || (self.other_view(i).is_none() && !self.confirm_close(i)) {
             return false;
         }
         self.dragging_tab = None;
@@ -709,8 +720,12 @@ impl StrataApp {
         }
         let backups = Session::backups(dir);
         let mut unreadable = Vec::new();
+        // The tab each saved tab became (views of one buffer name an earlier one).
+        let mut restored: Vec<Option<usize>> = Vec::new();
         for tab in &session.tabs {
+            let source = tab.clone_of.and_then(|k| restored.get(k).copied().flatten());
             let doc = match (&tab.backup, &tab.path) {
+                _ if source.is_some() => source.map(|k| self.new_view_of(k)),
                 (Some(name), path) => match std::fs::read(backups.join(name)) {
                     Ok(bytes) => {
                         let mut d = Document::from_buffer(path.clone(), Buffer::from_bytes(&bytes));
@@ -730,7 +745,10 @@ impl StrataApp {
                 (None, Some(path)) if path.exists() => Document::open(path.clone()).ok(),
                 _ => None,
             };
-            let Some(mut doc) = doc else { continue };
+            let Some(mut doc) = doc else {
+                restored.push(None);
+                continue;
+            };
             doc.wrap = tab.wrap;
             if let Some(s) = &tab.syntax {
                 doc.highlighter.set_syntax(s);
@@ -750,6 +768,7 @@ impl StrataApp {
             let d = self.docs.remove(self.active);
             self.docs.push(d);
             self.docs[n].stamp = tab.stamp;
+            restored.push(Some(n));
         }
         self.next_stamp = self.docs.iter().map(|d| d.stamp).max().unwrap_or(0) + 1;
         self.activate(session.active.min(self.docs.len().saturating_sub(1)));
@@ -819,11 +838,22 @@ impl StrataApp {
     /// (names unique across every window saved with it).
     fn window_state(&self, backups: &mut Vec<(String, String)>) -> WindowState {
         let mut tabs = Vec::new();
-        for d in &self.docs {
+        // Saved tab of each doc, for views of one buffer (see `clones`).
+        let mut saved: Vec<Option<usize>> = Vec::new();
+        for (i, d) in self.docs.iter().enumerate() {
+            let clone_of = match self.session_view_of(i) {
+                Some(None) => {
+                    saved.push(None);
+                    continue;
+                }
+                Some(Some(k)) => saved[k],
+                None => None,
+            };
+            saved.push((!d.is_blank()).then_some(tabs.len()));
             if d.is_blank() {
                 continue;
             }
-            let backup = d.is_dirty().then(|| {
+            let backup = (d.is_dirty() && clone_of.is_none()).then(|| {
                 let name = Session::backup_name(backups.len());
                 backups.push((name.clone(), d.editor.buffer.slice(0..d.editor.buffer.len_chars())));
                 name
@@ -841,6 +871,7 @@ impl StrataApp {
                 wrap: d.wrap,
                 encoding: Some(d.encoding.id().to_owned()),
                 stamp: d.stamp,
+                clone_of,
             });
         }
         WindowState {
@@ -955,6 +986,16 @@ impl StrataApp {
                 self.persist_settings();
             }
             Cmd::ExportMarkdownHtml => self.export_markdown_html(),
+            Cmd::CloneFile => self.clone_file(),
+            Cmd::CompareWith => self.compare_with(ctx, self.active),
+            Cmd::CompareWithHead => self.compare_with_head(self.active),
+            Cmd::NextDifference => self.step_difference(true),
+            Cmd::PrevDifference => self.step_difference(false),
+            Cmd::CompareSwap => self.compare_toggle(true),
+            Cmd::CompareIgnoreWhitespace => self.compare_toggle(false),
+            Cmd::Print => self.open_print(printing::Output::Viewer),
+            Cmd::ExportPdf => self.open_print(printing::Output::Pdf),
+            Cmd::ExportHtml => self.open_print(printing::Output::Html),
             Cmd::PasteFromHistory => self.paste_from_history(ctx),
             Cmd::NewBuildSystem => self.new_build_system(),
             Cmd::ToggleSaveAllOnBuild => {
@@ -1817,7 +1858,10 @@ impl StrataApp {
                     let is_active = i == self.active;
                     let d = &mut self.docs[i];
                     let matches = if find_open && is_active { std::mem::take(&mut d.finder.matches) } else { Vec::new() };
-                    let resp = d.view.show(ui, &mut d.editor, &mut d.highlighter, &matches);
+                    let resp = match d.compare.as_mut() {
+                        Some(c) => compare_ui::show(c, ui, &mut d.editor, &mut d.highlighter, &mut d.view),
+                        None => d.view.show(ui, &mut d.editor, &mut d.highlighter, &matches),
+                    };
                     if find_open && is_active {
                         d.finder.matches = matches;
                     }
@@ -1995,6 +2039,10 @@ impl eframe::App for StrataApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
         let now = ctx.input(|i| i.time);
+        // Views of one buffer catch up with last frame's late edits (menus, palette).
+        if self.sync_views() {
+            ctx.request_repaint();
+        }
         // Menu choices: native ones arrive between frames, synthesized input joins this frame.
         #[cfg(target_os = "macos")]
         if self.native_menu.is_some() {
@@ -2213,6 +2261,7 @@ impl eframe::App for StrataApp {
                 }
                 Some(sidebar::Action::Status(s)) => self.status = s,
                 Some(sidebar::Action::ReplaceInFiles) => self.replace_in_files(Some(ui.ctx().clone())),
+                Some(sidebar::Action::Compare(p)) => self.compare_file_with_tab(ctx, p),
                 None => {}
             }
         }
@@ -2222,6 +2271,10 @@ impl eframe::App for StrataApp {
             d.editor.indent_rules = crate::indent::rules_for(d.highlighter.syntax_name());
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.panes(ui));
+        if self.sync_views() {
+            ctx.request_repaint();
+        }
+        self.compare_actions(ctx);
         {
             let d = &mut self.docs[self.active];
             if self.settings.auto_complete || self.completion.is_open() {
@@ -2231,6 +2284,7 @@ impl eframe::App for StrataApp {
         }
         self.snippet_from_completion();
         self.help_window(ctx);
+        self.print_dialog(ctx);
         let dialog_open = self.palette.open || self.about_open || self.licenses_open || self.help.open;
         if self.docs.len() == 1 && self.docs[0].is_blank() && self.layout.groups() == 1 && !dialog_open {
             self.welcome(ctx);
@@ -2240,6 +2294,9 @@ impl eframe::App for StrataApp {
             match mode {
                 // "split:2" puts the current tab in a second pane.
                 "split" => self.move_to_pane(q.parse::<usize>().unwrap_or(2).saturating_sub(1)),
+                // "splitview:120": Split View, the new view at line 120; "compare:path": Compare with that file.
+                "splitview" => self.dev_split_view(q),
+                "compare" => self.compare_with_file(self.active, Path::new(q)),
                 "p" => self.open_palette(ctx, palette::Mode::Files, q),
                 "about" => self.about_open = true,
                 "theme" => self.open_palette(ctx, palette::Mode::Theme, q),

@@ -150,8 +150,10 @@ impl StrataApp {
     fn take_tab(&mut self, i: usize) -> Document {
         let mut blank = Document::untitled();
         blank.group = self.docs[i].group;
-        let doc = std::mem::replace(&mut self.docs[i], blank);
+        let mut doc = std::mem::replace(&mut self.docs[i], blank);
         self.close_tab(i);
+        // Views of one buffer stay in step only within a window.
+        Self::detach_view(&mut doc);
         doc
     }
 

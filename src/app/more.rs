@@ -23,6 +23,8 @@ pub(super) enum Choosing {
     /// Font picker: (editor font?, the fonts offered after "Default").
     Font(bool, Vec<crate::fonts::FontChoice>),
     Snippet(Vec<crate::snippets::Snippet>),
+    /// Compare with…: the other side, for the tab with this view id.
+    Compare(Vec<super::compare_ui::CompareChoice>, egui::Id),
 }
 
 impl StrataApp {
@@ -112,6 +114,11 @@ impl StrataApp {
             Choosing::Snippet(list) => {
                 if let Some(s) = list.into_iter().nth(i) {
                     self.chose_snippet(s);
+                }
+            }
+            Choosing::Compare(choices, right) => {
+                if let Some(c) = choices.get(i).cloned() {
+                    self.compare_chosen(c, right);
                 }
             }
             Choosing::Symbol(spots) => {
@@ -507,6 +514,7 @@ const LICENSES: &[Credit] = &[
     credit("alacritty_terminal", "Apache-2.0", &["alacritty_terminal"]),
     credit("vte", "Apache-2.0 or MIT", &[]),
     credit("pulldown-cmark", "MIT", &["pulldown-cmark"]),
+    credit("flate2 (PDF compression)", "MIT or Apache-2.0", &["flate2"]),
     credit("rfd", "MIT", &["rfd"]),
     credit("muda", "Apache-2.0 or MIT", &["muda"]),
     credit("objc2 / block2 / objc2-foundation", "MIT", &["objc2", "block2", "objc2-foundation"]),

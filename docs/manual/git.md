@@ -47,6 +47,10 @@ These move the cursor to the start of the next or previous changed area, wrappin
 
 They work even when the change bars are turned off.
 
+## Compare with HEAD
+
+To see the whole file next to its last committed version, choose File ▸ Compare ▸ Compare with HEAD ("Git: Compare with HEAD" in the Command Palette, {{key:compare_with_head}}). The committed text is on the left and your file, still editable, on the right, with the changed lines and words marked. See [Comparing Files](compare.md).
+
 ## Show Unsaved Changes
 
 To see what you've changed since you last saved (rather than since the last commit), right-click in the editor and choose Show Unsaved Changes…. Strata opens a read-only tab named "Unsaved changes: …" with a unified diff of the file on disk against the text in the editor. This works for any saved file, in a repository or not, and is available when the file has unsaved changes.

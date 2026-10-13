@@ -83,6 +83,8 @@ Choose File ▸ Export ▸ Markdown as HTML… (or "Markdown: Export as HTML…"
 
 The page is exported from the text in the editor, so unsaved changes are included.
 
+To print a Markdown file as it looks in the preview, or save it as a PDF, use File ▸ Print… or File ▸ Export ▸ PDF…; see [Printing and Exporting](printing.md).
+
 The exported page:
 
 - is a single, standalone HTML file with its styles built in, so it needs no other files apart from any images it shows.

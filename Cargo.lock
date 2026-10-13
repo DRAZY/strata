@@ -3104,6 +3104,7 @@ dependencies = [
  "eframe",
  "egui",
  "encoding_rs",
+ "flate2",
  "globset",
  "ignore",
  "muda",
