@@ -14,7 +14,7 @@ use egui::{
 use std::ops::Range;
 use std::sync::Arc;
 
-const SCROLLBAR_W: f32 = 10.0;
+const SCROLLBAR_W: f32 = 14.0;
 const MINIMAP_W: f32 = 110.0;
 /// Minimap scale: pixels per line and per column.
 const MM_ROW: f32 = 2.0;
@@ -43,6 +43,8 @@ pub struct EditorView {
     /// Cmd/Ctrl+K pressed; the next key completes a chord.
     chord_k: bool,
     pub minimap: bool,
+    /// Pointer over (or dragging) the scrollbar: draw it brighter.
+    scrollbar_hot: bool,
     /// Caret blink restarts whenever the text or cursor changes.
     blink_epoch: f64,
     blink_key: (u64, usize, usize),
@@ -122,6 +124,7 @@ impl EditorView {
             box_from: None,
             chord_k: false,
             minimap: true,
+            scrollbar_hot: false,
             blink_epoch: 0.0,
             blink_key: (0, 0, 0),
             caret_on: true,
@@ -396,6 +399,7 @@ impl EditorView {
 
         self.paint(ui, ed, hl, &m, resp.has_focus(), matches);
         self.paint_minimap(ui, ed, hl, &m);
+        self.paint_scrollbar(ui, ed, hl, &m);
 
         if resp.has_focus() {
             // Enables the OS input method and positions its candidate window.
@@ -859,10 +863,35 @@ impl EditorView {
             let t = ((p.y - track.top() - thumb_h / 2.0) / (h - thumb_h)).clamp(0.0, 1.0);
             self.scroll.y = t * (content - h);
         }
+        self.scrollbar_hot = resp.hovered() || resp.dragged();
+    }
+
+    /// The scrollbar, drawn last: a tinted track, a thumb shaded from the
+    /// theme's caret color into its selection color, and a tick at the cursor.
+    fn paint_scrollbar(&self, ui: &Ui, ed: &Editor, hl: &Highlighter, m: &Metrics) {
+        let track = Rect::from_min_max(pos2(m.full.right() - SCROLLBAR_W, m.text.top()), pos2(m.full.right(), m.text.bottom()));
+        let content = self.content_height(ed, m);
+        let h = m.text.height();
+        if content <= h + 1.0 {
+            return;
+        }
+        let painter = ui.painter();
+        let (bg, fg, accent, sel) = (hl.background(), hl.foreground(), hl.caret(), hl.selection());
+        painter.rect_filled(track, 0.0, blend(bg, fg, 0.04));
+        painter.vline(track.left() + 0.5, track.y_range(), Stroke::new(1.0, blend(bg, fg, 0.08)));
+
+        let thumb_h = (h * h / content).max(40.0);
         let t = (self.scroll.y / (content - h)).clamp(0.0, 1.0);
-        let thumb = Rect::from_min_size(pos2(track.left() + 2.0, track.top() + t * (h - thumb_h)), vec2(SCROLLBAR_W - 4.0, thumb_h));
-        let alpha = if resp.hovered() || resp.dragged() { 110 } else { 60 };
-        ui.painter().rect_filled(thumb, 3.0, Color32::from_white_alpha(alpha));
+        let thumb = Rect::from_min_size(pos2(track.left() + 3.0, track.top() + t * (h - thumb_h)), vec2(SCROLLBAR_W - 6.0, thumb_h));
+        let strength = if self.scrollbar_hot { 1.0 } else { 0.7 };
+        let top = blend(bg, accent, 0.85 * strength);
+        let bottom = blend(bg, blend(accent, sel, 0.6), 0.75 * strength);
+        gradient_pill(painter, thumb, top, bottom);
+
+        // Where the primary cursor is in the file.
+        let row = self.pos_row(ed, m, ed.primary().head) as f32;
+        let y = track.top() + (row * m.row_h / content).clamp(0.0, 1.0) * h;
+        painter.hline(track.left() + 2.0..=track.right() - 2.0, y.round() + 0.5, Stroke::new(2.0, accent));
     }
 
     // ---- painting --------------------------------------------------------
@@ -1236,6 +1265,28 @@ fn selected_text(ed: &Editor) -> Option<String> {
     }
     let t = ed.buffer.slice(p.range());
     (!t.contains('\n') && !t.trim().is_empty()).then_some(t)
+}
+
+/// Blend toward `to` by `t` (0 = `from`).
+fn blend(from: Color32, to: Color32, t: f32) -> Color32 {
+    let m = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    Color32::from_rgb(m(from.r(), to.r()), m(from.g(), to.g()), m(from.b(), to.b()))
+}
+
+/// A vertical pill filled with a top-to-bottom gradient.
+fn gradient_pill(painter: &egui::Painter, r: Rect, top: Color32, bottom: Color32) {
+    let radius = r.width() / 2.0;
+    let body = Rect::from_min_max(pos2(r.left(), r.top() + radius), pos2(r.right(), r.bottom() - radius));
+    let mut mesh = egui::Mesh::default();
+    let i = mesh.vertices.len() as u32;
+    for (p, c) in [(body.left_top(), top), (body.right_top(), top), (body.right_bottom(), bottom), (body.left_bottom(), bottom)] {
+        mesh.colored_vertex(p, c);
+    }
+    mesh.add_triangle(i, i + 1, i + 2);
+    mesh.add_triangle(i, i + 2, i + 3);
+    painter.add(mesh);
+    painter.circle_filled(pos2(r.center().x, body.top()), radius, top);
+    painter.circle_filled(pos2(r.center().x, body.bottom()), radius, bottom);
 }
 
 /// Text spliced into a line for display only (IME composition).
