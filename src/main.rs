@@ -8,6 +8,7 @@ mod brackets;
 mod build;
 mod buffer;
 mod commands;
+mod ctxmenu;
 mod decor;
 mod document;
 mod editor;

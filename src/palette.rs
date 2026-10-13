@@ -275,6 +275,8 @@ impl Palette {
         let fg = visuals.text_color();
         let accent = visuals.selection.bg_fill;
         let mut clicked_outside = false;
+        // A click while the query field's context menu is open is that menu's.
+        let menu_open = egui::Popup::is_any_open(ctx);
         let area = egui::Area::new(egui::Id::new("palette"))
             .order(egui::Order::Foreground)
             .fixed_pos(egui::pos2(screen.center().x - width / 2.0, screen.top() + 44.0))
@@ -288,14 +290,10 @@ impl Palette {
                         Mode::Syntax => "Syntax",
                         Mode::Choice => self.choice_hint.as_str(),
                     };
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut self.text)
-                            .id(egui::Id::new("palette-query"))
-                            .hint_text(hint)
-                            .font(FontId::proportional(16.0))
-                            .desired_width(f32::INFINITY)
-                            .margin(vec2(8.0, 6.0)),
-                    );
+                    let id = egui::Id::new("palette-query");
+                    let field = crate::ctxmenu::text_field(ui, id, &mut self.text, |ui, text| {
+                        ui.add(egui::TextEdit::singleline(text).id(id).hint_text(hint).font(FontId::proportional(16.0)).desired_width(f32::INFINITY).margin(vec2(8.0, 6.0)))
+                    });
                     if std::mem::take(&mut self.focus) {
                         field.request_focus();
                     }
@@ -341,7 +339,7 @@ impl Palette {
                     });
                 });
             });
-        if ctx.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer() {
+        if ctx.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer() && !menu_open {
             clicked_outside = true;
         }
 

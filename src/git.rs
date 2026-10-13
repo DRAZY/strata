@@ -247,6 +247,92 @@ fn myers(a: &[u32], b: &[u32]) -> Option<Vec<(usize, usize)>> {
     Some(matches)
 }
 
+/// A unified diff (three lines of context) turning `old` into `new`, as
+/// `diff -u` writes it under `---`/`+++` headers named `old_name`/`new_name`.
+/// None when the texts are identical or too big to diff.
+pub fn unified_diff(old: &str, new: &str, old_name: &str, new_name: &str) -> Option<String> {
+    const CONTEXT: usize = 3;
+    if old == new {
+        return None;
+    }
+    fn lines(s: &str) -> Vec<&str> {
+        let mut v = split_lines(s);
+        // A final newline ends the last line rather than starting an empty one.
+        if s.ends_with('\n') {
+            v.pop();
+        }
+        if s.is_empty() {
+            v.clear();
+        }
+        v
+    }
+    let (a, b) = (lines(old), lines(new));
+    if a.len() > MAX_DIFF_LINES || b.len() > MAX_DIFF_LINES {
+        return None;
+    }
+    let mut out = format!("--- {old_name}\n+++ {new_name}\n");
+    if a == b {
+        out.push_str("(Only line endings or the newline at the end of the file differ.)\n");
+        return Some(out);
+    }
+    // Changed spans (old range, new range): the gaps between matched lines.
+    let mut ids: HashMap<&str, u32> = HashMap::with_capacity(a.len() + b.len());
+    fn intern<'a>(ids: &mut HashMap<&'a str, u32>, lines: &[&'a str]) -> Vec<u32> {
+        lines
+            .iter()
+            .map(|&l| {
+                let n = ids.len() as u32;
+                *ids.entry(l).or_insert(n)
+            })
+            .collect()
+    }
+    let (ai, bi) = (intern(&mut ids, &a), intern(&mut ids, &b));
+    let pre = ai.iter().zip(&bi).take_while(|(x, y)| x == y).count();
+    let suf = ai[pre..].iter().rev().zip(bi[pre..].iter().rev()).take_while(|(x, y)| x == y).count();
+    let (am, bm) = (&ai[pre..ai.len() - suf], &bi[pre..bi.len() - suf]);
+    let matched = myers(am, bm).unwrap_or_default();
+    let mut spans: Vec<(Range<usize>, Range<usize>)> = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    for (x, y) in matched.into_iter().chain(std::iter::once((am.len(), bm.len()))) {
+        if x > i || y > j {
+            spans.push((pre + i..pre + x, pre + j..pre + y));
+        }
+        (i, j) = (x + 1, y + 1);
+    }
+    // Spans whose context would touch become one hunk.
+    let mut k = 0;
+    while k < spans.len() {
+        let mut end = k;
+        while end + 1 < spans.len() && spans[end + 1].0.start - spans[end].0.end <= 2 * CONTEXT {
+            end += 1;
+        }
+        let a0 = spans[k].0.start.saturating_sub(CONTEXT);
+        let a1 = (spans[end].0.end + CONTEXT).min(a.len());
+        let b0 = spans[k].1.start - (spans[k].0.start - a0);
+        let b1 = spans[end].1.end + (a1 - spans[end].0.end);
+        let at = |start: usize, len: usize| if len == 0 { start } else { start + 1 };
+        out.push_str(&format!("@@ -{},{} +{},{} @@\n", at(a0, a1 - a0), a1 - a0, at(b0, b1 - b0), b1 - b0));
+        let mut pos = a0;
+        for (ar, br) in &spans[k..=end] {
+            for l in &a[pos..ar.start] {
+                out.push_str(&format!(" {l}\n"));
+            }
+            for l in &a[ar.clone()] {
+                out.push_str(&format!("-{l}\n"));
+            }
+            for l in &b[br.clone()] {
+                out.push_str(&format!("+{l}\n"));
+            }
+            pos = ar.end;
+        }
+        for l in &a[pos..a1] {
+            out.push_str(&format!(" {l}\n"));
+        }
+        k = end + 1;
+    }
+    Some(out)
+}
+
 /// Start line of the next (or previous) change after `line`, wrapping around.
 pub fn next_change(changes: &[(Range<usize>, LineChange)], line: usize, forward: bool) -> Option<usize> {
     let starts = changes.iter().map(|(r, _)| r.start);
@@ -425,6 +511,20 @@ mod tests {
 
     fn d(a: &str, b: &str) -> Changes {
         diff_lines(a, b)
+    }
+
+    #[test]
+    fn unified_diff_hunks_and_context() {
+        let old: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+        let new = old.replace("line 2\n", "line two\n").replace("line 18\n", "").replace("line 20\n", "line 20\nline 21\n");
+        let diff = unified_diff(&old, &new, "a.txt (on disk)", "a.txt (unsaved)").unwrap();
+        let expected = "--- a.txt (on disk)\n+++ a.txt (unsaved)\n\
+@@ -1,5 +1,5 @@\n line 1\n-line 2\n+line two\n line 3\n line 4\n line 5\n\
+@@ -15,6 +15,6 @@\n line 15\n line 16\n line 17\n-line 18\n line 19\n line 20\n+line 21\n";
+        assert_eq!(diff, expected);
+        assert_eq!(unified_diff("same\n", "same\n", "a", "b"), None);
+        assert_eq!(unified_diff("", "new\n", "a", "b").unwrap(), "--- a\n+++ b\n@@ -0,0 +1,1 @@\n+new\n");
+        assert!(unified_diff("x\n", "x", "a", "b").unwrap().contains("newline at the end"));
     }
 
     #[test]

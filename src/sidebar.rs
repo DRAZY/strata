@@ -94,6 +94,9 @@ pub struct Sidebar {
     in_tabs: (usize, usize),
     /// Outcome of the last replace (or undo), shown above the results.
     report: Option<(String, Vec<(PathBuf, String)>)>,
+    /// File to expand the tree to and scroll into view (Reveal in Side Bar),
+    /// and frames left to try: each folder level opens over a frame or so.
+    reveal: Option<(PathBuf, u8)>,
 }
 
 impl Sidebar {
@@ -116,7 +119,21 @@ impl Sidebar {
             disk: DiskReplace::default(),
             in_tabs: (0, 0),
             report: None,
+            reveal: None,
         }
+    }
+
+    /// Show `path` in the tree: open its folders, scroll to it. False if it
+    /// isn't inside the open folder.
+    pub fn reveal(&mut self, path: &Path) -> bool {
+        if !self.root.as_deref().is_some_and(|r| path.starts_with(r)) {
+            return false;
+        }
+        self.visible = true;
+        self.tab = Tab::Files;
+        self.reveal = Some((path.to_owned(), 60));
+        self.refresh();
+        true
     }
 
     pub fn open_folder(&mut self, root: PathBuf) {
@@ -287,12 +304,20 @@ impl Sidebar {
                         });
                     }
                     let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
-                    let header = egui::CollapsingHeader::new(RichText::new(name).strong())
-                        .id_salt(&root)
-                        .default_open(true)
-                        .show(ui, |ui| self.tree(ui, &root, current, &mut action));
+                    let mut header = egui::CollapsingHeader::new(RichText::new(name).strong()).id_salt(&root).default_open(true);
+                    if self.reveal.is_some() {
+                        header = header.open(Some(true));
+                    }
+                    let header = header.show(ui, |ui| self.tree(ui, &root, current, &mut action));
                     header.header_response.context_menu(|ui| self.menu(ui, &root, true, &mut action));
                 });
+                if let Some((_, tries)) = &mut self.reveal {
+                    *tries = tries.saturating_sub(1);
+                    if *tries == 0 {
+                        self.reveal = None;
+                    }
+                    ui.ctx().request_repaint();
+                }
                 action
             }
             Tab::Search => self.search_tab(ui, &root, open),
@@ -324,9 +349,8 @@ impl Sidebar {
             ui.ctx().copy_text(path.display().to_string());
             ui.close();
         }
-        let reveal = if cfg!(target_os = "macos") { "Reveal in Finder" } else { "Show in Explorer" };
-        if ui.button(reveal).clicked() {
-            if let Err(e) = reveal_in_file_manager(path) {
+        if ui.button(crate::ctxmenu::reveal_label()).clicked() {
+            if let Err(e) = crate::ctxmenu::reveal_in_file_manager(path) {
                 *action = Some(Action::Status(format!("Could not open the file manager: {e}")));
             }
             ui.close();
@@ -462,13 +486,18 @@ impl Sidebar {
         for (path, name, is_dir) in entries {
             if is_dir {
                 // Children are listed only once the folder is expanded.
-                let header = egui::CollapsingHeader::new(&name)
-                    .id_salt(&path)
-                    .default_open(false)
-                    .show(ui, |ui| self.tree(ui, &path, current, action));
+                let mut header = egui::CollapsingHeader::new(&name).id_salt(&path).default_open(false);
+                if self.reveal.as_ref().is_some_and(|(r, _)| r.starts_with(&path)) {
+                    header = header.open(Some(true));
+                }
+                let header = header.show(ui, |ui| self.tree(ui, &path, current, action));
                 header.header_response.context_menu(|ui| self.menu(ui, &path, true, action));
             } else {
                 let r = ui.selectable_label(current == Some(path.as_path()), &name);
+                if self.reveal.as_ref().is_some_and(|(r, _)| *r == path) {
+                    self.reveal = None;
+                    r.scroll_to_me(Some(egui::Align::Center));
+                }
                 r.context_menu(|ui| self.menu(ui, &path, false, action));
                 if r.double_clicked() {
                     *action = Some(Action::Open(path, false));
@@ -490,7 +519,10 @@ impl Sidebar {
         let mut field = |ui: &mut Ui, label: &str, text: &mut String, id: &str, hint: &str, focus: bool| {
             ui.horizontal(|ui| {
                 ui.add_sized([48.0, 18.0], egui::Label::new(RichText::new(label).small().weak()));
-                let r = ui.add(egui::TextEdit::singleline(text).id(egui::Id::new(id)).hint_text(hint).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
+                let id = egui::Id::new(id);
+                let r = crate::ctxmenu::text_field(ui, id, text, |ui, text| {
+                    ui.add(egui::TextEdit::singleline(text).id(id).hint_text(hint).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY))
+                });
                 if focus {
                     r.request_focus();
                 }
@@ -608,23 +640,6 @@ impl Sidebar {
 /// For comparing paths that may differ only by symlinks or `..`.
 fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned())
-}
-
-fn reveal_in_file_manager(path: &Path) -> std::io::Result<()> {
-    let mut cmd = if cfg!(target_os = "macos") {
-        let mut c = std::process::Command::new("open");
-        c.arg("-R").arg(path);
-        c
-    } else if cfg!(windows) {
-        let mut c = std::process::Command::new("explorer");
-        c.arg(format!("/select,{}", path.display()));
-        c
-    } else {
-        let mut c = std::process::Command::new("xdg-open");
-        c.arg(path.parent().unwrap_or(path));
-        c
-    };
-    cmd.spawn().map(|_| ())
 }
 
 /// "  42  preview text" with the match highlighted.

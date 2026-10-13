@@ -145,6 +145,13 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
   theme's palette, selection and scrollback. While it has the keyboard it keeps
   Ctrl and Alt keys (Alt/Option is Meta); ⌘C/⌘V/⌘K copy, paste and clear on
   macOS, Ctrl+Shift+C/V (or Ctrl+C with a selection) elsewhere.
+- **Right-click menus** everywhere, like Sublime's: the editor (Show Unsaved
+  Changes as a diff, Cut/Copy/Paste, Select All, Reveal in Finder, Copy File
+  Path, Reveal in Side Bar, Goto Definition, Toggle Comment, Fold), the line
+  numbers (bookmark, fold, copy line), tabs (Close Others, to the Right,
+  Unmodified), the terminal (Copy, Paste, Select All, Clear, New/Close, Hide)
+  and its tabs, the Markdown preview (copy as Markdown or HTML, export, hide),
+  and the find, replace, palette and find-in-folder fields.
 - **Projects**: open a folder (sidebar with New File/Folder, Rename, Reveal),
   save and reopen `.strata-project` files.
 - **Settings** in `settings.json` (⌘, opens it): font size, theme, tab size,

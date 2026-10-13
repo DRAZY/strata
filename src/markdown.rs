@@ -476,11 +476,17 @@ li.task-list-item,ul:has(>li>input[type=checkbox]){list-style:none}input[type=ch
 .footnote-definition{font-size:90%;color:var(--dim)}
 .markdown-alert{border-left-color:var(--link)}";
 
+/// Markdown `src` as HTML body markup (no page around it).
+pub fn to_html_fragment(src: &str) -> String {
+    let mut body = String::new();
+    pulldown_cmark::html::push_html(&mut body, pulldown_cmark::Parser::new_ext(src, options()));
+    body
+}
+
 /// A standalone HTML page for Markdown `src`. The title is the first heading,
 /// else `fallback_title`.
 pub fn to_html_document(src: &str, fallback_title: &str) -> String {
-    let mut body = String::new();
-    pulldown_cmark::html::push_html(&mut body, pulldown_cmark::Parser::new_ext(src, options()));
+    let body = to_html_fragment(src);
     let title = parse(src)
         .into_iter()
         .find_map(|b| match b.block {

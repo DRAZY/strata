@@ -79,6 +79,7 @@ pub fn label(mods: Modifiers, key: Key) -> String {
         Key::ArrowDown => "↓",
         Key::ArrowLeft => "←",
         Key::ArrowRight => "→",
+        Key::Backtick => "`",
         k => k.name(),
     };
     if MAC {
