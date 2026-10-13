@@ -221,7 +221,9 @@ Problems are reported in the status bar, and problems with a build also appear i
 
 | Message | What to do |
 |---|---|
-| Build systems: untitled.json: … | The file isn't valid JSON, or doesn't have the shape Strata expects (for example, a misspelled field name or a string where a list belongs). Your other build systems still load. |
+| Build systems: untitled.json: "cmd" (line 3) should be a list of strings, like ["make", "-j8"]; found string "make -j8" | A field has the wrong kind of value. The message names the field, its line and what it should look like. Your other build systems still load. |
+| Build systems: untitled.json: unknown field "cmdd" (line 2); the fields are … | A misspelled field name. The message lists the fields Strata knows. |
+| Build systems: untitled.json: expected value at line 1 column 11 | The file isn't valid JSON (a missing comma or quote, a comment, a trailing comma). |
 | Build systems: untitled.json: a build system needs a "name" and a "cmd" | Add the missing field. |
 | Build systems: My Make: bad file_regex: … | Fix the regular expression. |
 | No build system for this file | Nothing fits the current file. Use Build With…, or add a selector to your build system. |

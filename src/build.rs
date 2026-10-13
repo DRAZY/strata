@@ -402,11 +402,54 @@ pub struct BuildSystems {
     pub errors: Vec<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum OneOrMany {
-    One(Box<BuildSystem>),
-    Many(Vec<BuildSystem>),
+/// A build system file: one object, or a list of them. Errors name the
+/// field, its line and the shape it should have.
+fn parse_file(text: &str) -> Result<Vec<BuildSystem>, String> {
+    let parsed = match text.trim_start().chars().next() {
+        Some('{') => serde_json::from_str::<BuildSystem>(text).map(|s| vec![s]),
+        Some('[') => serde_json::from_str::<Vec<BuildSystem>>(text),
+        _ => {
+            return Err(match serde_json::from_str::<serde_json::Value>(text) {
+                Err(e) => e.to_string(),
+                Ok(_) => "the file should hold a build system object ({\"name\": \"…\", \"cmd\": [\"…\"]}) or a list of them in [ ]".into(),
+            });
+        }
+    };
+    parsed.map_err(|e| explain_error(text, &e))
+}
+
+/// serde's message for a bad build system file, in terms of its fields.
+fn explain_error(text: &str, e: &serde_json::Error) -> String {
+    let full = e.to_string().replace('`', "\"");
+    if !e.is_data() {
+        return full; // a JSON syntax error: serde says where
+    }
+    let line = e.line();
+    let msg = full.rsplit_once(" at line ").map_or(full.as_str(), |(m, _)| m);
+    if msg.starts_with("unknown field") {
+        return match msg.split_once(", expected one of ") {
+            Some((field, known)) => format!("{field} (line {line}); the fields are {known}"),
+            None => format!("{msg} (line {line})"),
+        };
+    }
+    // The key whose value is at the error position.
+    let offset = text.split_inclusive('\n').take(line.saturating_sub(1)).map(str::len).sum::<usize>() + e.column();
+    let before = &text[..offset.min(text.len())];
+    let key = regex::Regex::new(r#""([A-Za-z_]+)"\s*:"#).ok().and_then(|re| re.captures_iter(before).last()).map(|c| c[1].to_owned());
+    let Some(key) = key else { return format!("{msg} (line {line})") };
+    let shape = match key.as_str() {
+        "cmd" => "a list of strings, like [\"make\", \"-j8\"]",
+        "syntaxes" | "extensions" | "files" => "a list of strings, like [\"rs\", \"toml\"]",
+        "name" | "working_dir" | "file_regex" => "a string",
+        "env" => "an object of strings, like {\"CFLAGS\": \"-O2\"}",
+        "shell" => "true or false",
+        "priority" => "a whole number",
+        "selector" => "an object, like {\"extensions\": [\"c\"]}",
+        "variants" => "a list of objects, like [{\"name\": \"Run\", \"cmd\": [\"make\", \"run\"]}]",
+        _ => return format!("\"{key}\" (line {line}): {msg}"),
+    };
+    let found = msg.strip_prefix("invalid type: ").and_then(|m| m.split_once(", expected")).map(|(f, _)| format!("; found {f}")).unwrap_or_default();
+    format!("\"{key}\" (line {line}) should be {shape}{found}")
 }
 
 impl BuildSystems {
@@ -425,11 +468,10 @@ impl BuildSystems {
             for path in paths {
                 let parsed = std::fs::read_to_string(&path)
                     .map_err(|e| e.to_string())
-                    .and_then(|s| serde_json::from_str::<OneOrMany>(&s).map_err(|e| e.to_string()));
+                    .and_then(|s| parse_file(&s));
                 let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
                 match parsed {
-                    Ok(OneOrMany::One(s)) => systems.push(*s),
-                    Ok(OneOrMany::Many(v)) => systems.extend(v),
+                    Ok(v) => systems.extend(v),
                     Err(e) => {
                         errors.push(format!("{name}: {e}"));
                         continue;
@@ -1569,6 +1611,28 @@ mod tests {
         assert_eq!(systems.get("Python").unwrap().cmd[0], "pypy");
         assert_eq!(systems.systems.iter().filter(|s| s.name == "Python").count(), 1);
         fs::remove_dir_all(cfg).ok();
+    }
+
+    #[test]
+    fn broken_user_systems_say_what_and_where() {
+        let check = |text: &str, wants: &[&str]| {
+            let e = parse_file(text).unwrap_err();
+            assert!(!e.contains("untagged"), "{e}");
+            for w in wants {
+                assert!(e.contains(w), "{e:?} should mention {w:?}");
+            }
+        };
+        // A string where a list belongs, on line 3.
+        check("{\n  \"name\": \"Make\",\n  \"cmd\": \"make -j8\"\n}", &["\"cmd\"", "line 3", "list of strings", "[\"make\", \"-j8\"]"]);
+        // A misspelled field, in the second system of a list.
+        check("[{\"name\": \"A\", \"cmd\": [\"a\"]},\n {\"name\": \"B\", \"cmdd\": [\"b\"]}]", &["unknown field \"cmdd\"", "line 2", "cmd"]);
+        // Wrong type inside the selector.
+        check("{\"name\": \"X\", \"cmd\": [\"x\"],\n \"selector\": {\"extensions\": \"rs\"}}", &["\"extensions\"", "line 2", "list of strings"]);
+        // Neither an object nor a list.
+        check("\"make\"", &["a build system object", "or a list"]);
+        // Plain JSON syntax errors keep their position.
+        check("{ \"name\": }", &["line 1"]);
+        assert_eq!(parse_file("[{\"name\": \"A\", \"cmd\": [\"a\"]}]").unwrap().len(), 1);
     }
 
     #[test]
