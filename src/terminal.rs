@@ -575,6 +575,9 @@ pub struct Panel {
     theme: Option<Theme>,
     /// Background opacity of the text area (the window opacity setting); the tab row stays solid.
     pub opacity: f32,
+    /// This frame's text area and tab labels (tab index, response), for context menus.
+    pub body: Option<egui::Response>,
+    pub tab_labels: Vec<(usize, egui::Response)>,
 }
 
 impl Default for Panel {
@@ -595,7 +598,17 @@ struct Cell {
 
 impl Panel {
     pub fn new() -> Self {
-        Self { opacity: 1.0, tabs: Vec::new(), active: 0, visible: false, focus_next: false, id: egui::Id::new("strata-terminal"), theme: None }
+        Self {
+            opacity: 1.0,
+            tabs: Vec::new(),
+            active: 0,
+            visible: false,
+            focus_next: false,
+            id: egui::Id::new("strata-terminal"),
+            theme: None,
+            body: None,
+            tab_labels: Vec::new(),
+        }
     }
 
     pub fn has_focus(&self, ctx: &egui::Context) -> bool {
@@ -618,6 +631,57 @@ impl Panel {
 
     pub fn active_terminal(&self) -> Option<&Terminal> {
         self.tabs.get(self.active)
+    }
+
+    /// The active terminal has selected text.
+    pub fn has_selection(&self) -> bool {
+        self.active_terminal().is_some_and(|t| t.selection_text().is_some())
+    }
+
+    /// Copy the active terminal's selection (kept selected). False if none.
+    pub fn copy(&self, ctx: &egui::Context) -> bool {
+        match self.active_terminal().and_then(Terminal::selection_text) {
+            Some(s) => {
+                ctx.copy_text(s);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Paste into the active shell (bracketed when the shell asks for it).
+    pub fn paste(&self, text: &str) {
+        if let Some(t) = self.active_terminal() {
+            t.paste(text);
+        }
+    }
+
+    /// Select the active terminal's whole scrollback and screen.
+    pub fn select_all(&self) {
+        let Some(t) = self.active_terminal() else { return };
+        let mut term = t.term.lock();
+        let (top, bottom, last) = (term.grid().topmost_line(), term.grid().bottommost_line(), term.grid().last_column());
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(top, Column(0)), Side::Left);
+        sel.update(Point::new(bottom, last), Side::Right);
+        term.selection = Some(sel);
+    }
+
+    /// Clear the active terminal's scrollback (Cmd+K).
+    pub fn clear(&self) {
+        if let Some(t) = self.active_terminal() {
+            t.clear();
+        }
+    }
+
+    /// Close terminal `i`, hanging up its shell. True if none are left.
+    pub fn close(&mut self, i: usize) -> bool {
+        if i < self.tabs.len() {
+            self.tabs.remove(i);
+            if self.active > i || self.active >= self.tabs.len() {
+                self.active = self.active.saturating_sub(1);
+            }
+        }
+        self.tabs.is_empty()
     }
 
     /// Process emulator events; close tabs whose shell exited. True when the
@@ -653,6 +717,8 @@ impl Panel {
         self.theme = Some(theme.clone());
         let mut action = None;
         let now = ui.input(|i| i.time);
+        self.body = None;
+        self.tab_labels.clear();
         let header_bg = ui.painter().add(egui::Shape::Noop);
         let header = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -663,10 +729,12 @@ impl Panel {
                 if ringing {
                     text = text.color(ui.visuals().warn_fg_color);
                 }
-                if ui.selectable_label(i == self.active, text).on_hover_text(t.title()).clicked() {
+                let label = ui.selectable_label(i == self.active, text).on_hover_text(t.title());
+                if label.clicked() {
                     self.active = i;
                     self.focus_next = true;
                 }
+                self.tab_labels.push((i, label));
                 if ui.small_button("×").on_hover_text("Close this terminal").clicked() {
                     close = Some(i);
                 }
@@ -680,14 +748,10 @@ impl Panel {
                     action = Some(PanelAction::Hide);
                 }
             });
-            if let Some(i) = close {
-                self.tabs.remove(i);
-                if self.active > i || self.active >= self.tabs.len() {
-                    self.active = self.active.saturating_sub(1);
-                }
-                if self.tabs.is_empty() {
-                    action = Some(PanelAction::Hide);
-                }
+            if let Some(i) = close
+                && self.close(i)
+            {
+                action = Some(PanelAction::Hide);
             }
         });
         let full = ui.max_rect();
@@ -700,6 +764,7 @@ impl Panel {
         let Some(t) = self.tabs.get_mut(self.active) else {
             return action;
         };
+        self.body = Some(resp.clone());
         if self.focus_next || resp.clicked() || resp.drag_started() {
             resp.request_focus();
             self.focus_next = false;
@@ -810,11 +875,12 @@ fn mouse(ui: &egui::Ui, t: &mut Terminal, resp: &egui::Response, origin: egui::P
             let mut sel = Selection::new(kind, p, side);
             sel.update(p, side);
             t.term.lock().selection = Some(sel);
-        } else if resp.drag_started() {
+        } else if resp.drag_started_by(egui::PointerButton::Primary) {
+            // Right-drags and right-clicks leave the selection alone (context menu).
             let start = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
             let (p, side) = to_point(start, offset);
             t.term.lock().selection = Some(Selection::new(SelectionType::Simple, p, side));
-        } else if resp.dragged() {
+        } else if resp.dragged_by(egui::PointerButton::Primary) {
             let (p, side) = to_point(pos, offset);
             if let Some(sel) = t.term.lock().selection.as_mut() {
                 sel.update(p, side);

@@ -35,6 +35,9 @@ const TICKS_DIRECT: usize = 2_000;
 pub struct EditorView {
     /// Distinct per view, so several editors can share a window (split panes).
     pub id: Id,
+    /// Line whose gutter (line number) was last right-clicked; None after a
+    /// right-click in the text. Picks the gutter or the text context menu.
+    pub context_line: Option<usize>,
     scroll: Vec2,
     pub font_size: f32,
     /// Widest line seen so far; bounds horizontal scrolling.
@@ -225,6 +228,7 @@ impl EditorView {
             sticky: Vec::new(),
             anim: None,
             jump: false,
+            context_line: None,
         }
     }
 
@@ -359,7 +363,7 @@ impl EditorView {
     }
 
     /// Fold or unfold the region starting at `line` (gutter arrow).
-    fn toggle_fold_at(&mut self, ed: &mut Editor, line: usize) {
+    pub fn toggle_fold_at(&mut self, ed: &mut Editor, line: usize) {
         self.sync_folds(ed);
         if let Some(i) = self.folds.at_header(line) {
             let header = self.folds.list()[i].header;
@@ -490,7 +494,8 @@ impl EditorView {
     }
 
     /// `matches`: sorted find results to outline (empty when find is closed).
-    pub fn show(&mut self, ui: &mut Ui, ed: &mut Editor, hl: &mut Highlighter, matches: &[Range<usize>]) {
+    /// Returns the text area's response (for its context menu).
+    pub fn show(&mut self, ui: &mut Ui, ed: &mut Editor, hl: &mut Highlighter, matches: &[Range<usize>]) -> egui::Response {
         let id = self.id;
         let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
         let resp = ui.interact(rect, id, Sense::click_and_drag());
@@ -523,6 +528,7 @@ impl EditorView {
         self.flush_changes(hl);
         self.keep_top_line(ed, &m);
         self.handle_mouse(ui, ed, &resp, &m);
+        self.context_click(ui, ed, &resp, &m);
         self.sync(ed, &m);
         self.keep_top_line(ed, &m);
         let wheel = ui.input(|i| i.smooth_scroll_delta);
@@ -572,6 +578,37 @@ impl EditorView {
             }
         } else {
             self.preedit.clear();
+        }
+        resp
+    }
+
+    /// Right-click, like Sublime: the caret moves to the click unless it lands
+    /// in a selection (so Copy/Cut act on it). In the gutter, on the line.
+    fn context_click(&mut self, ui: &Ui, ed: &mut Editor, resp: &egui::Response, m: &Metrics) {
+        if !resp.secondary_clicked() {
+            return;
+        }
+        let Some(p) = resp.interact_pointer_pos().or(resp.hover_pos()) else { return };
+        resp.request_focus();
+        if p.x < m.text.left() {
+            let row = self.row_at(m, p.y).max(0.0) as usize;
+            let line = self.row_line(ed, m, row.min(self.total_rows(ed, m) - 1)).0;
+            self.context_line = Some(line);
+            let b = &ed.buffer;
+            let inside = ed.selections().iter().any(|s| !s.is_empty() && (b.line_of(s.start())..=b.line_of(s.end())).contains(&line));
+            if !inside {
+                ed.click(ed.buffer.line_start(line), false);
+            }
+            return;
+        }
+        self.context_line = None;
+        // The minimap and scrollbar keep the caret where it is.
+        if p.x >= m.text.right() {
+            return;
+        }
+        let pos = self.pos_to_char(ui, ed, m, p);
+        if !ed.selections().iter().any(|s| !s.is_empty() && s.start() <= pos && pos <= s.end()) {
+            ed.click(pos, false);
         }
     }
 
@@ -918,7 +955,7 @@ impl EditorView {
             } else {
                 ed.click(pos, mods.shift);
             }
-        } else if resp.dragged() {
+        } else if resp.dragged_by(PointerButton::Primary) {
             ed.drag_to(pos);
             self.autoscroll(ui, m, pointer);
         }

@@ -13,13 +13,14 @@ impl StrataApp {
         let bg = d.highlighter.background().gamma_multiply(self.settings.window_opacity.clamp(0.3, 1.0));
         let width = ui.available_width();
         self.markdown.font_size = self.settings.font_size;
-        let action = egui::Panel::right("markdown-preview")
+        let out = egui::Panel::right("markdown-preview")
             .resizable(true)
             .default_size(width * 0.45)
             .min_size(180.0)
             .frame(egui::Frame::new().fill(bg))
-            .show(ui, |ui| self.markdown.show(ui, d))
-            .inner;
+            .show(ui, |ui| self.markdown.show(ui, d));
+        self.preview_context_menu(&out.response);
+        let action = out.inner;
         match action {
             Some(Action::Open(p)) => self.open_path(p, false),
             Some(Action::Status(s)) => self.status = s,

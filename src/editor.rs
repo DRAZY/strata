@@ -95,6 +95,8 @@ pub struct Editor {
     /// Merge class of the selection change about to happen (see `SelStep`).
     sel_merge: u8,
     rng: Rng,
+    /// Edits are ignored (views like Show Unsaved Changes); selection still works.
+    pub read_only: bool,
 }
 
 /// Soft-undo history entries kept at most.
@@ -400,6 +402,7 @@ impl Editor {
             sel_future: Vec::new(),
             sel_merge: 0,
             rng: Rng::from_time(),
+            read_only: false,
         }
     }
 
@@ -608,6 +611,9 @@ impl Editor {
 
     /// Apply sorted, non-overlapping replacements as one undo step.
     fn apply_landing(&mut self, edits: Vec<Edit>, kind: Option<EditKind>, land: Land) {
+        if self.read_only {
+            return;
+        }
         let before = self.sels.clone();
         let primary_idx = self.primary;
         let mut delta: isize = 0;
@@ -657,6 +663,9 @@ impl Editor {
         sels: Vec<Selection>,
         primary_head: usize,
     ) {
+        if self.read_only {
+            return;
+        }
         edits.sort_by_key(|(r, _)| r.start);
         let before = self.sels.clone();
         let mut delta: isize = 0;

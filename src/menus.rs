@@ -135,7 +135,8 @@ pub fn menu_bar(ui: &mut egui::Ui, menus: &Menus) -> Option<Act> {
     chosen
 }
 
-fn items_ui(ui: &mut egui::Ui, items: &[Item], chosen: &mut Option<Act>) {
+/// Menu rows (also used by right-click menus); sets `chosen` when one is clicked.
+pub fn items_ui(ui: &mut egui::Ui, items: &[Item], chosen: &mut Option<Act>) {
     for it in items {
         match it {
             Item::Action { label, act, keys, hint, check, enabled } => {

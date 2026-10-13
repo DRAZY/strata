@@ -104,9 +104,12 @@ pub struct StrataApp {
     terminal: crate::terminal::Panel,
     /// The terminal panel's launch-time setup ran.
     terminal_started: bool,
+    /// Right-click menus (see `context_menus`).
+    context: context_menus::ContextMenus,
 }
 
 mod completion;
+mod context_menus;
 mod features;
 mod menu_model;
 mod more;
@@ -175,6 +178,7 @@ impl StrataApp {
             git_ctx_missing: true,
             terminal: crate::terminal::Panel::new(),
             terminal_started: false,
+            context: context_menus::ContextMenus::new(),
         };
         app.build = crate::build::Build::new(app.config.clone());
         if let Some(dir) = app.config.clone() {
@@ -1355,13 +1359,10 @@ impl StrataApp {
                 ui.toggle_value(&mut q.case_sensitive, "Aa").on_hover_text("Case sensitive");
                 ui.toggle_value(&mut q.whole_word, "\"ab\"").on_hover_text("Whole word");
             });
-            let field = ui.add_sized(
-                [320.0, ui.spacing().interact_size.y],
-                egui::TextEdit::singleline(&mut q.text)
-                    .id(egui::Id::new("find-query"))
-                    .hint_text("Find")
-                    .font(egui::TextStyle::Monospace),
-            );
+            let id = egui::Id::new("find-query");
+            let field = crate::ctxmenu::text_field(ui, id, &mut q.text, |ui, text| {
+                ui.add_sized([320.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text("Find").font(egui::TextStyle::Monospace))
+            });
             if std::mem::take(&mut self.find.focus_query) {
                 field.request_focus();
             }
@@ -1386,13 +1387,11 @@ impl StrataApp {
             if self.find.replace {
                 ui.label("");
                 let regex = self.find.query.regex;
-                let field = ui.add_sized(
-                    [320.0, ui.spacing().interact_size.y],
-                    egui::TextEdit::singleline(&mut self.find.replacement)
-                        .id(egui::Id::new("replace-text"))
-                        .hint_text(if regex { "Replace ($1 for groups)" } else { "Replace" })
-                        .font(egui::TextStyle::Monospace),
-                );
+                let id = egui::Id::new("replace-text");
+                let hint = if regex { "Replace ($1 for groups)" } else { "Replace" };
+                let field = crate::ctxmenu::text_field(ui, id, &mut self.find.replacement, |ui, text| {
+                    ui.add_sized([320.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text(hint).font(egui::TextStyle::Monospace))
+                });
                 if field.lost_focus() && enter {
                     action = Some(if mods.command { "replace-all" } else { "replace" });
                     field.request_focus();
@@ -1594,6 +1593,7 @@ impl StrataApp {
                     } else if resp.clicked() {
                         action = Some(TabAction::Activate(i));
                     }
+                    self.tab_context_menu(&resp, i);
                 }
                 // Double-click the empty part of the bar for a new tab.
                 let rest = ui.allocate_exact_size(vec2(ui.available_width().max(40.0), height), Sense::click()).1;
@@ -1665,10 +1665,11 @@ impl StrataApp {
                     let is_active = i == self.active;
                     let d = &mut self.docs[i];
                     let matches = if find_open && is_active { std::mem::take(&mut d.finder.matches) } else { Vec::new() };
-                    d.view.show(ui, &mut d.editor, &mut d.highlighter, &matches);
+                    let resp = d.view.show(ui, &mut d.editor, &mut d.highlighter, &matches);
                     if find_open && is_active {
                         d.finder.matches = matches;
                     }
+                    self.editor_context_menu(&resp, i);
                 }
                 None => {
                     let resp = ui.allocate_rect(body, Sense::click());
@@ -2095,7 +2096,12 @@ impl eframe::App for StrataApp {
         }
         let events = self.palette.show(ctx);
         self.palette_events(ctx, events);
+        self.run_context_actions(ctx);
         self.track_copies(ctx);
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.dev_context_input(ctx, raw_input);
     }
 }
 

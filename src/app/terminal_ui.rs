@@ -76,6 +76,7 @@ impl StrataApp {
             .min_size(60.0)
             .frame(egui::Frame::side_top_panel(ui.style()).fill(egui::Color32::TRANSPARENT))
             .show(ui, |ui| self.terminal.show(ui, &theme, font_size));
+        self.terminal_context_menus();
         match out.inner {
             Some(PanelAction::Hide) => {
                 self.set_terminal_visible(false);
