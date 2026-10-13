@@ -260,8 +260,8 @@ A command's first shortcut is the one shown. A binding with a `context` isn't sh
 
 A few standard keys are handled outside the keymap:
 
-- **Cut, Copy and Paste** (primary+X, primary+C, primary+V). They aren't listed in the defaults and always cut, copy and paste. If you bind one of these keys, the menu stops showing it, but the key may still copy or paste, so it's best to leave them alone.
-- **Quit Strata** (Cmd+Q on macOS). If you bind `super+q` to a command, the menu item gives up the key and your binding gets it.
+- **Cut, Copy and Paste** (primary+X, primary+C, primary+V). They aren't listed in the defaults; unbound, they cut, copy and paste. If you bind one of these keys (with or without Shift), your binding runs instead wherever it applies, and the menu item stops showing the key. Where your binding doesn't apply (for example a binding for the editor while you type in the find bar), the key still cuts, copies or pastes. Paste and Indent ({{key:paste_and_indent}}) works this way too.
+- **Quit Strata** and, on macOS, **Quit and Keep Windows** (Cmd+Q and Cmd+Option+Q). If you bind one of these keys to a command, the menu item gives up the key and your binding gets it.
 
 Undo, Redo and Select All are ordinary commands (`undo`, `redo`, `select_all`) and can be rebound like any other.
 

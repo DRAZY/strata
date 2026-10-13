@@ -1250,7 +1250,8 @@ impl StrataApp {
             "soft_undo" => e.soft_undo(),
             "soft_redo" => e.soft_redo(),
             "paste_and_indent" => {
-                if let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
+                let text = self.keymap.pasted.take().map_or_else(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok(), Some);
+                if let Some(text) = text {
                     e.paste_and_indent(&text);
                 }
             }
@@ -1961,6 +1962,8 @@ impl eframe::App for StrataApp {
             ctx.input_mut(|i| i.events.extend(events));
         }
         self.handle_shortcuts(ctx);
+        // A pasted text not taken by Paste and Indent this frame is stale.
+        self.keymap.pasted = None;
         self.record_macro_input(ctx);
         self.build.poll(ctx);
         let typed_word = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t.chars().all(|c| c.is_alphanumeric() || c == '_'))));
@@ -2556,6 +2559,62 @@ mod tests {
             eframe::App::ui(app, ui, &mut frame);
         });
         out.textures_delta.clear();
+    }
+
+    /// A frame as eframe runs it: the raw input hook first.
+    fn render_hooked(app: &mut StrataApp, ctx: &Context, events: Vec<Event>, modifiers: Modifiers) {
+        let events = std::iter::once(Event::ModifiersChanged(modifiers)).chain(events).collect();
+        let mut raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 600.0))), events, ..Default::default() };
+        eframe::App::raw_input_hook(app, ctx, &mut raw);
+        let mut out = ctx.run_ui(raw, |ui| {
+            let mut frame = eframe::Frame::_new_kittest();
+            eframe::App::ui(app, ui, &mut frame);
+        });
+        out.textures_delta.clear();
+    }
+
+    /// The primary modifier as egui-winit reports it.
+    fn primary() -> Modifiers {
+        if cfg!(target_os = "macos") { Modifiers::MAC_CMD | Modifiers::COMMAND } else { Modifiers::CTRL | Modifiers::COMMAND }
+    }
+
+    #[test]
+    fn keys_egui_turns_into_copy_cut_paste_still_reach_the_keymap() {
+        use crate::keybindings::{Keymap, install};
+        let ctx = Context::default();
+        let mut app = app_with("one\n");
+        let (k, _) = Keymap::with_user(r#"[ { "keys": ["primary+c"], "command": "duplicate_line" } ]"#).unwrap();
+        install(k);
+        app.doc().view.focus();
+        render_hooked(&mut app, &ctx, vec![], Modifiers::NONE);
+        // egui-winit sends ⌘C / Ctrl+C as Event::Copy, never as a key press.
+        render_hooked(&mut app, &ctx, vec![Event::Copy], primary());
+        install(Keymap::defaults());
+        assert_eq!(text(&app), "one\none\n", "the user's binding ran");
+    }
+
+    #[test]
+    fn paste_and_indent_shortcut_is_not_a_plain_paste() {
+        let ctx = Context::default();
+        let mut app = app_with("    a\n    ");
+        let end = ed(&app).buffer.len_chars();
+        app.doc().editor.select_ranges(&[end..end], 0);
+        app.doc().view.focus();
+        render_hooked(&mut app, &ctx, vec![], Modifiers::NONE);
+        let pasted = "if x:\n    y\n";
+        let mut want = Editor::new(Buffer::from_str("    a\n    "));
+        want.select_ranges(&[end..end], 0);
+        want.paste_and_indent(pasted);
+        let want = want.buffer.slice(0..want.buffer.len_chars());
+        // Ctrl+Shift+V (⇧⌘V) arrives as Event::Paste with the clipboard text.
+        render_hooked(&mut app, &ctx, vec![Event::Paste(pasted.into())], primary() | Modifiers::SHIFT);
+        assert_eq!(text(&app), want);
+        // Plain ⌘V / Ctrl+V still pastes as is.
+        let mut app = app_with("");
+        app.doc().view.focus();
+        render_hooked(&mut app, &ctx, vec![], Modifiers::NONE);
+        render_hooked(&mut app, &ctx, vec![Event::Paste("  z".into())], primary());
+        assert_eq!(text(&app), "  z");
     }
 
     #[test]

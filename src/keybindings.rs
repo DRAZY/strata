@@ -856,6 +856,18 @@ impl Keymap {
         None
     }
 
+    /// Would a press of `key` with `mods` run a binding now (alone, as a
+    /// chord's first key, or completing the pending chord)?
+    pub fn takes(&self, mods: Modifiers, key: Key, kc: &KeyContext, chord: &Chord) -> bool {
+        let press = (key, Some(key), mods);
+        if let Some((first, _)) = &chord.pending
+            && self.find(Some(*first), press, kc, false).is_some()
+        {
+            return true;
+        }
+        self.find(None, press, kc, true).is_some() || self.find(None, press, kc, false).is_some()
+    }
+
     /// Take this frame's key presses that are bound, in order. A chord's first
     /// key waits in `chord` for the next press; Escape cancels it.
     pub fn dispatch(&self, ctx: &egui::Context, kc: &KeyContext, chord: &mut Chord) -> Vec<Fired> {

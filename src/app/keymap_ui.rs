@@ -16,6 +16,11 @@ pub struct KeymapState {
     chord: Chord,
     /// Problems found loading the file at startup, for the status bar.
     startup: Option<String>,
+    /// Clipboard text of a Paste event turned back into a key press (see
+    /// `clipboard_keys`), for Paste and Indent this frame.
+    pub pasted: Option<String>,
+    /// Modifiers held at the end of the last frame.
+    last_mods: egui::Modifiers,
 }
 
 impl KeymapState {
@@ -23,7 +28,7 @@ impl KeymapState {
     pub fn new(config: Option<&Path>) -> Self {
         let mut file = KeymapFile::new(config);
         let startup = file.load(true);
-        Self { file, chord: Chord::default(), startup }
+        Self { file, chord: Chord::default(), startup, pasted: None, last_mods: egui::Modifiers::NONE }
     }
 
     /// A chord's first key was pressed; the next key finishes it.
@@ -49,16 +54,64 @@ impl StrataApp {
     }
 
     /// Run the commands bound to this frame's key presses.
-    pub(super) fn dispatch_keys(&mut self, ctx: &egui::Context) {
+    /// What has the keyboard, for bindings' contexts.
+    fn key_context(&self, ctx: &egui::Context) -> KeyContext {
         let terminal = self.terminal_has_keys(ctx);
         let editor = !terminal && self.docs[self.active].view.has_focus(ctx);
-        let kc = KeyContext {
+        KeyContext {
             editor,
             terminal,
             panel_focus: terminal || (self.find.open && !editor && !self.palette.open),
             panel_visible: self.find.open || self.terminal.visible,
             overlay: self.palette.open,
-        };
+        }
+    }
+
+    /// egui-winit turns primary+C/X/V (Shift included) into Copy, Cut and
+    /// Paste events before any key press is seen, so a key binding on those
+    /// keys never fired, and Ctrl+Shift+V (Paste and Indent) pasted plainly.
+    /// Where a binding takes the key right now, put the key press back; a
+    /// Paste's text is kept for Paste and Indent. Runs in every window's
+    /// frame, before the keymap (eframe's raw input hook only sees the first window).
+    fn clipboard_keys(&mut self, ctx: &egui::Context, kc: &KeyContext) {
+        use egui::{Event, Key};
+        let keymap = keybindings::current();
+        let (chord, before) = (&self.keymap.chord, self.keymap.last_mods);
+        let pasted = ctx.input_mut(|i| {
+            let mut pasted = None;
+            // The modifiers as each event happened, starting from the last frame's.
+            let mut mods = before;
+            for ev in &mut i.events {
+                let key = match ev {
+                    Event::ModifiersChanged(m) => {
+                        mods = *m;
+                        continue;
+                    }
+                    Event::Copy => Key::C,
+                    Event::Cut => Key::X,
+                    Event::Paste(_) => Key::V,
+                    _ => continue,
+                };
+                // Shift+Insert and friends on Windows, or a menu's Copy/Paste: leave them.
+                if !mods.command || !keymap.takes(mods, key, kc, chord) {
+                    continue;
+                }
+                if let Event::Paste(text) = ev {
+                    pasted = Some(std::mem::take(text));
+                }
+                *ev = Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: mods };
+            }
+            pasted
+        });
+        self.keymap.last_mods = ctx.input(|i| i.modifiers);
+        if pasted.is_some() {
+            self.keymap.pasted = pasted;
+        }
+    }
+
+    pub(super) fn dispatch_keys(&mut self, ctx: &egui::Context) {
+        let kc = self.key_context(ctx);
+        self.clipboard_keys(ctx, &kc);
         let keymap = keybindings::current();
         for fired in keymap.dispatch(ctx, &kc, &mut self.keymap.chord) {
             let Some(target) = fired.action else { continue };
