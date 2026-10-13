@@ -1733,7 +1733,6 @@ impl StrataApp {
                 ui.label(words);
             }
             ui.separator();
-            ui.label(&self.status);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let d = &mut self.docs[self.active];
                 ui.menu_button(d.highlighter.syntax_name().to_owned(), |ui| {
@@ -1817,6 +1816,10 @@ impl StrataApp {
                 })
                 .response
                 .on_hover_text("Color scheme");
+                // The message takes whatever room is left, cut short with … rather than overlapping.
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(&self.status).truncate()).on_hover_text(&self.status);
+                });
             });
         });
     }
