@@ -116,6 +116,17 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
   Python `def` `class` `ifmain` `for`; JS/TS `fn` `arrow` `log` `imp`; Go
   `func` `iferr`; Markdown `link` `img` `code` `table`; HTML `html5` `a`
   `div`; shell `shebang` `if` `for`. A user snippet with the same trigger wins.
+- **Languages**: about 200 grammars, chosen by file name, extension or first
+  line. Beyond syntect's defaults (C/C++, C#, Go, Java, JavaScript, Python,
+  Ruby, Rust, PHP, HTML, CSS, SQL, YAML, JSON, Markdown, shell, Makefile, Diff…)
+  it bundles bat's collection: TypeScript, TSX, JSX, TOML, Swift, Kotlin, Dart,
+  Elixir, Zig, Nix, Terraform/HCL, GraphQL, Protobuf, SCSS/Sass/Less, Vue,
+  Svelte, Dockerfile, INI/.editorconfig, .env, CMake, nginx, Fish, CSV, Lua,
+  Haskell, Julia, Groovy/Jenkinsfile and more, plus Strata's own PowerShell
+  grammar. Markdown code fences highlight their language. Add your own
+  `.sublime-syntax` files to the config folder's `Syntaxes/` and `.tmTheme`
+  color schemes to `Themes/`; broken files are skipped and named in the status
+  bar.
 - **Find**: find/replace with regex, quick find, use selection for find, and
   find in folder (parallel, respects .gitignore). Its **Where** field takes
   folders, `*.rs`-style includes, `-*.min.js` excludes, `<open folders>` and
@@ -162,8 +173,9 @@ Known gaps: no replace-in-files, no plugin/package system, no
 spell check, no macros, one window per app instance (no New Window), cloned
 views of one file in two panes aren't supported, and Finder "Open With" isn't
 wired up (drag the file onto the window or use ⌘O). Word wrap turns off for
-files over 8 MB. The bundled grammars come from syntect's defaults; their
-licensing must be verified before a public release.
+files over 8 MB. The bundled grammars come from syntect's defaults and the bat
+project (via the `two-face` crate, MIT/Apache-2.0); each grammar's own license
+text ships in Help ▸ Licenses.
 
 ## Development
 

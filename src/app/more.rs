@@ -431,7 +431,12 @@ impl StrataApp {
                 }
             });
             ui.add_space(6.0);
-            ui.label(egui::RichText::new("Syntax definitions and color schemes bundled with syntect come from the Sublime Text community packages and their own licenses.").small().weak());
+            ui.label(egui::RichText::new("Syntax definitions come from syntect, the bat project (via two-face) and Sublime Text community packages, each under its own license; color schemes come with syntect. Strata's own PowerShell and JSX grammars are MIT.").small().weak());
+            egui::CollapsingHeader::new("Syntax definition licenses").show(ui, |ui| {
+                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                    ui.label(egui::RichText::new(crate::highlight::SYNTAX_LICENSES).small().monospace());
+                });
+            });
         });
         self.licenses_open = open;
     }
@@ -442,6 +447,7 @@ const LICENSES: &[(&str, &str)] = &[
     ("wgpu", "MIT or Apache-2.0"),
     ("ropey", "MIT"),
     ("syntect", "MIT"),
+    ("two-face (bat's syntax collection)", "MIT or Apache-2.0"),
     ("regex", "MIT or Apache-2.0"),
     ("ignore", "MIT or Unlicense"),
     ("encoding_rs", "Apache-2.0 or MIT (data: BSD-3-Clause)"),

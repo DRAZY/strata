@@ -124,7 +124,9 @@ use menu_model::EDITOR_COMMANDS;
 
 impl StrataApp {
     pub fn new(path: Option<PathBuf>, config: Option<PathBuf>) -> Self {
+        let asset_errors = crate::highlight::load_user_assets(config.as_deref());
         let (settings, settings_error) = config.as_deref().map(Settings::load).unwrap_or_default();
+        let settings_error = settings_error.or_else(|| (!asset_errors.is_empty()).then(|| asset_errors.join("; ")));
         let settings_mtime = config.as_deref().and_then(|d| std::fs::metadata(Settings::path(d)).and_then(|m| m.modified()).ok());
         let mut app = Self {
             docs: Vec::new(),

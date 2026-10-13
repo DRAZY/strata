@@ -54,7 +54,7 @@ impl Document {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let mut view = EditorView::new();
         view.id = egui::Id::new(("strata-editor", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-        let mut highlighter = Highlighter::new();
+        let mut highlighter = Highlighter::for_editor();
         highlighter.detect(path.as_deref(), &buffer.line_text(0));
         Self {
             disk_mtime: path.as_deref().and_then(mtime),
