@@ -266,6 +266,11 @@ impl EditorView {
     /// Cmd/Ctrl+K was pressed and the view waits for the chord's second key;
     /// app-level shortcuts on that key (Cmd+1…9, Cmd+0) should stand aside.
     #[allow(dead_code)] // for the app's shortcut handling
+    /// First buffer line in view (Markdown preview scroll sync).
+    pub fn top_line(&self) -> usize {
+        self.top_line
+    }
+
     pub fn chord_pending(&self) -> bool {
         self.chord_k
     }

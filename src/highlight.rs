@@ -60,6 +60,48 @@ pub fn to_html(text: &str, syntax: &str, theme: &str) -> String {
     syntect::html::highlighted_html_for_string(text, &SYNTAXES, syntax, theme).unwrap_or_else(|_| format!("<pre>{text}</pre>"))
 }
 
+/// The theme's foreground for a scope like "markup.heading", if it sets one
+/// (Markdown preview colors).
+pub fn scope_color(theme: &str, scope: &str) -> Option<Color32> {
+    let theme = THEMES.themes.get(theme)?;
+    let stack = <ScopeStack as std::str::FromStr>::from_str(scope).ok()?;
+    let hl = ThemeHighlighter::new(theme);
+    let style = hl.style_for_stack(stack.as_slice());
+    let fg = theme.settings.foreground?;
+    (style.foreground != fg).then(|| to_color(style.foreground))
+}
+
+/// Colored spans for a code snippet whose language is a fence tag like
+/// "rust" or "py". None when the language is unknown (render it plain).
+/// Byte ranges cover the whole snippet; very long snippets stop early.
+pub fn highlight_snippet(code: &str, lang: &str, theme: &str) -> Option<Vec<Span>> {
+    let lang = lang.trim();
+    if lang.is_empty() {
+        return None;
+    }
+    let syntax = SYNTAXES.find_syntax_by_token(lang).or_else(|| SYNTAXES.find_syntax_by_extension(&lang.to_lowercase()))?;
+    let theme = THEMES.themes.get(theme).unwrap_or(&THEMES.themes[DEFAULT_THEME]);
+    let mut h = syntect::easy::HighlightLines::new(syntax, theme);
+    let mut spans = Vec::new();
+    let mut offset = 0;
+    for (n, line) in syntect::util::LinesWithEndings::from(code).enumerate() {
+        if n >= 5_000 || line.len() > MAX_LINE {
+            break;
+        }
+        let Ok(pieces) = h.highlight_line(line, &SYNTAXES) else { break };
+        for (style, piece) in pieces {
+            spans.push(Span {
+                range: offset..offset + piece.len(),
+                color: to_color(style.foreground),
+                italic: style.font_style.contains(FontStyle::ITALIC),
+                underline: false,
+            });
+            offset += piece.len();
+        }
+    }
+    Some(spans)
+}
+
 /// Syntax name for a file by extension, if it isn't plain text.
 pub fn syntax_for_path(path: &Path) -> Option<String> {
     let ext = path.extension()?.to_str()?;

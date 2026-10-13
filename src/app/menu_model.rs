@@ -230,6 +230,8 @@ impl StrataApp {
             c("Save As…", Cmd::SaveAs),
             c("Save All", Cmd::SaveAll),
             SEP(),
+            sub("Export", vec![c("Markdown as HTML…", Cmd::ExportMarkdownHtml).enabled(crate::markdown::is_markdown(d.path.as_deref(), d.highlighter.syntax_name()))]),
+            SEP(),
             c("Close Window", Cmd::CloseWindow),
             SEP(),
             c("Close File", Cmd::CloseTab),
@@ -436,6 +438,7 @@ impl StrataApp {
                 SEP(),
                 c("Toggle Full Screen", Cmd::Fullscreen).checked(self.fullscreen),
                 c("Toggle Distraction Free", Cmd::DistractionFree).checked(self.distraction.is_some()),
+                c("Markdown Preview", Cmd::ToggleMarkdownPreview).checked(self.settings.markdown_preview),
                 SEP(),
                 sub(
                     "Layout",

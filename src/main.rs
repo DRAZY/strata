@@ -23,6 +23,7 @@ mod highlight;
 mod keys;
 mod menus;
 mod lang;
+mod markdown;
 mod palette;
 mod panes;
 mod search;

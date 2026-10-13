@@ -64,6 +64,7 @@ pub struct StrataApp {
     /// What distraction-free mode hid, to restore on exit.
     distraction: Option<(bool, bool)>,
     about_open: bool,
+    markdown: crate::markdown::Preview,
     #[cfg(target_os = "macos")]
     native_menu: Option<crate::menus::native::NativeMenu>,
     build: crate::build::Build,
@@ -106,6 +107,7 @@ mod completion;
 mod features;
 mod menu_model;
 mod more;
+mod preview;
 mod textutil;
 
 #[cfg(test)]
@@ -143,6 +145,7 @@ impl StrataApp {
             jumps_forward: Vec::new(),
             distraction: None,
             about_open: false,
+            markdown: crate::markdown::Preview::default(),
             #[cfg(target_os = "macos")]
             native_menu: None,
             pending_events: Vec::new(),
@@ -810,6 +813,11 @@ impl StrataApp {
             Cmd::GotoReference => self.goto_reference(),
             Cmd::GotoSymbolInProject => self.goto_symbol_in_project(ctx),
             Cmd::CopyAsHtml => self.copy_as_html(),
+            Cmd::ToggleMarkdownPreview => {
+                self.settings.markdown_preview = !self.settings.markdown_preview;
+                self.persist_settings();
+            }
+            Cmd::ExportMarkdownHtml => self.export_markdown_html(),
             Cmd::PasteFromHistory => self.paste_from_history(ctx),
             Cmd::NewBuildSystem => self.new_build_system(),
             Cmd::ToggleSaveAllOnBuild => {
@@ -1973,6 +1981,8 @@ impl eframe::App for StrataApp {
         if self.find.open {
             egui::Panel::bottom("find").show(ui, |ui| self.find_bar(ui));
         }
+
+        self.markdown_panel(ui);
 
         if self.sidebar.visible && self.sidebar.root.is_some() {
             let current = self.docs[self.active].path.clone();

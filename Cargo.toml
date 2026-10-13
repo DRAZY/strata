@@ -15,6 +15,7 @@ ropey = { version = "1.6.1", default-features = false, features = ["simd", "cr_l
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 encoding_rs = "0.8.42"
 arboard = { version = "3", default-features = false }
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21.2", default-features = false }
