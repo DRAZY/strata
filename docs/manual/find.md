@@ -12,15 +12,44 @@ The label next to the field tells you where you are: "3 of 12", "12 matches" (wh
 
 ### Search options
 
-Three toggle buttons sit to the left of the Find field. Click one to turn it on or off.
+Toggle buttons sit to the left of the Find field. Click one, or press its key, to turn it on or off; hover over a button to see its key. The keys work whenever the window has the keyboard, so you can flip an option without leaving the editor.
 
-| Button | Option | What it does |
-|---|---|---|
-| `.*` | Regular expression | Treat the text as a regular expression. |
-| `Aa` | Case sensitive | Match upper and lower case exactly. Off by default, so searches ignore case. |
-| `"ab"` | Whole word | Only match whole words. |
+| Button | Option | Key | What it does |
+|---|---|---|---|
+| `.*` | Regular expression | {{key:toggle_regex}} | Treat the text as a regular expression. |
+| `Aa` | Case sensitive | {{key:toggle_case_sensitive}} | Match upper and lower case exactly. Off by default, so searches ignore case. |
+| `"ab"` | Whole word | {{key:toggle_whole_word}} | Only match whole words. |
+| `☰` | In selection | {{key:toggle_in_selection}} | Search only inside the selected text. See [In Selection](#in-selection). |
+| `⟳` | Wrap | {{key:toggle_wrap}} | Find Next and Find Previous continue from the other end of the file. On by default. With it off they stop at the last (or first) match and the status bar says "No more matches". |
+| `▣` | Highlight matches | {{key:toggle_highlight_matches}} | Outline every match in the file (and mark them on the scrollbar) while the bar is open. On by default. |
+| `AB` | Preserve case | {{key:toggle_preserve_case}} | Shown on the Replace row: replacements take the case of the text they replace. See [Preserve case](#preserve-case). |
 
-The options have no keyboard shortcuts. They stay as you set them while Strata is running.
+On macOS, Whole Word has no key by default because ⌥⌘W is View ▸ Word Wrap; bind `toggle_whole_word` in [Key Bindings](keybindings.md) if you want one. Wrap and Highlight Matches have no key by default. Every option is also in the Command Palette ("Find: Toggle In Selection" and so on).
+
+The options, and the last search and replacement text, are saved with the window's session, so they're still set after you quit and reopen Strata.
+
+### In Selection
+
+With In Selection on, the find bar searches only the text that was selected when you turned it on. Select some lines (or make several selections with multiple cursors), then press {{key:toggle_in_selection}} or click `☰`. Next, Previous, Find All, Replace and Replace All then stay inside those ranges, and the match count only counts matches there. A match must fit entirely inside a selected range.
+
+The searched ranges are remembered for each tab, so stepping through matches (which changes the selection) doesn't change what is searched. They follow your edits: replacing text inside them, or typing before them, keeps them covering the same text. To search a different part of the file, select it and turn In Selection off and on again, or reopen the find bar with a selection that spans several lines (or with several selections). If there was nothing selected, the label says "No selection".
+
+Like Sublime Text, the `auto_find_in_selection` setting (off by default) turns In Selection on by itself when you open the find bar while a selection spans several lines. A selection on a single line still becomes the search text instead.
+
+Replace All with In Selection on replaces only inside the selection, as a single undo step, and the status bar says "Replaced N occurrences in the selection".
+
+### Preserve case
+
+With Preserve Case on, each replacement is changed to match the case of the text it replaces:
+
+| Found | Replace with `bar` gives |
+|---|---|
+| `foo` | `bar` |
+| `Foo` | `Bar` |
+| `FOO` | `BAR` |
+| `fOo` (mixed) | `bar`, as typed |
+
+Words joined by `-` or `_` are matched part by part when the found text and the replacement are joined the same way and have the same number of parts: replacing `foo_bar` with `new_name` turns `FOO_BAR` into `NEW_NAME`, and replacing `foo-bar` with `new-name` turns `Foo-BAR` into `New-NAME`. Preserve Case usually goes with Case sensitive turned off, so that one search finds every spelling. It works in regular expression replacements too, on the whole replacement.
 
 ### Keys in the find bar
 

@@ -115,6 +115,10 @@ pub struct EditorView {
     anim: Option<ScrollAnim>,
     /// This frame's scroll change is a jump worth animating.
     jump: bool,
+    /// Misspelled words to underline (filled by the app, see `spell::Marks`).
+    pub spell: crate::spell::Marks,
+    /// First and last line painted last frame.
+    painted: (usize, usize),
 }
 
 /// What `show_whitespace` marks.
@@ -232,7 +236,14 @@ impl EditorView {
             anim: None,
             jump: false,
             context_line: None,
+            spell: Default::default(),
+            painted: (0, 0),
         }
+    }
+
+    /// Lines painted last frame (what spell check looks at).
+    pub fn visible_lines(&self) -> std::ops::RangeInclusive<usize> {
+        self.painted.0..=self.painted.1
     }
 
     /// Wrap is on and the buffer is small enough to wrap.
@@ -1107,6 +1118,7 @@ impl EditorView {
         let last_row = (first_row + (m.text.height() / m.row_h).ceil() as usize).min(total - 1);
         let (first, first_sub) = self.row_line(ed, m, first_row);
         let last = self.row_line(ed, m, last_row).0;
+        self.painted = (first, last);
         if !hl.prepare(&ed.buffer, first..=last) {
             ui.ctx().request_repaint();
         }
@@ -1188,6 +1200,8 @@ impl EditorView {
             } else {
                 Vec::new()
             };
+            // Misspelled words, as line char ranges.
+            let misspelled: Vec<Range<usize>> = self.spell.for_line(line, &text).map(<[_]>::to_vec).unwrap_or_default();
             // Chars to look through for whitespace marks.
             let ws_chars: Option<Vec<char>> = match self.show_whitespace {
                 Whitespace::None => None,
@@ -1332,6 +1346,14 @@ impl EditorView {
                 }
 
                 text_painter.galley(pos2(m.origin_x, y + m.pad), galley.clone(), fg);
+
+                // Misspellings: a wavy underline.
+                for w in &misspelled {
+                    let (a, b) = ((line_start + w.start).max(row_start), (line_start + w.end).min(row_end));
+                    if b > a {
+                        squiggle(&text_painter, x_at(a), x_at(b), y + m.pad + m.text_h - 1.0, bracket_err);
+                    }
+                }
 
                 if let Some(chars) = &ws_chars {
                     let spans: Vec<Range<usize>> = match self.show_whitespace {
@@ -1754,7 +1776,15 @@ fn trailing_color(bg: Color32, light: bool) -> Color32 {
     blend(bg, Color32::from_rgb(0xE0, 0x40, 0x40), if light { 0.16 } else { 0.22 })
 }
 
-/// Unmatched brackets.
+/// A wavy line from `x0` to `x1` around `y` (spelling errors).
+fn squiggle(painter: &egui::Painter, x0: f32, x1: f32, y: f32, color: Color32) {
+    const STEP: f32 = 2.0;
+    let n = ((x1 - x0) / STEP).ceil().max(1.0) as usize;
+    let points = (0..=n).map(|k| pos2((x0 + k as f32 * STEP).min(x1), y + if k % 2 == 0 { -1.0 } else { 1.0 })).collect();
+    painter.add(egui::Shape::line(points, Stroke::new(1.0, color)));
+}
+
+/// Unmatched brackets, and misspelled words.
 fn error_color(light: bool) -> Color32 {
     if light { Color32::from_rgb(0xD0, 0x20, 0x20) } else { Color32::from_rgb(0xFF, 0x55, 0x55) }
 }

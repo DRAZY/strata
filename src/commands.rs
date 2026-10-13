@@ -123,6 +123,18 @@ pub enum Cmd {
     OpenLogFolder,
     ShowLatestLog,
     ReportProblem,
+    // Find bar options (see `app/find_options.rs`).
+    ToggleFindRegex,
+    ToggleFindCase,
+    ToggleFindWholeWord,
+    ToggleFindInSelection,
+    ToggleFindWrap,
+    ToggleFindPreserveCase,
+    ToggleFindHighlight,
+    // Spell check (see `app/spelling.rs`).
+    ToggleSpellCheck,
+    NextMisspelling,
+    PrevMisspelling,
 }
 
 impl Cmd {
@@ -249,6 +261,16 @@ impl Cmd {
         Cmd::OpenLogFolder,
         Cmd::ShowLatestLog,
         Cmd::ReportProblem,
+        Cmd::ToggleFindRegex,
+        Cmd::ToggleFindCase,
+        Cmd::ToggleFindWholeWord,
+        Cmd::ToggleFindInSelection,
+        Cmd::ToggleFindWrap,
+        Cmd::ToggleFindPreserveCase,
+        Cmd::ToggleFindHighlight,
+        Cmd::ToggleSpellCheck,
+        Cmd::NextMisspelling,
+        Cmd::PrevMisspelling,
     ];
 
     pub fn name(self) -> &'static str {
@@ -375,6 +397,16 @@ impl Cmd {
             Cmd::ToggleTerminal => "View: Toggle Terminal",
             Cmd::NewTerminal => "Terminal: New Terminal",
             Cmd::KeyBindings => "Preferences: Key Bindings",
+            Cmd::ToggleFindRegex => "Find: Toggle Regular Expression",
+            Cmd::ToggleFindCase => "Find: Toggle Case Sensitive",
+            Cmd::ToggleFindWholeWord => "Find: Toggle Whole Word",
+            Cmd::ToggleFindInSelection => "Find: Toggle In Selection",
+            Cmd::ToggleFindWrap => "Find: Toggle Wrap",
+            Cmd::ToggleFindPreserveCase => "Find: Toggle Preserve Case",
+            Cmd::ToggleFindHighlight => "Find: Toggle Highlight Matches",
+            Cmd::ToggleSpellCheck => "View: Toggle Spell Check",
+            Cmd::NextMisspelling => "View: Next Misspelling",
+            Cmd::PrevMisspelling => "View: Previous Misspelling",
         }
     }
 
@@ -510,6 +542,17 @@ impl Cmd {
             Cmd::MoveToGroup(1) => &[(CTRL_SHIFT, Key::Num2)],
             Cmd::MoveToGroup(2) => &[(CTRL_SHIFT, Key::Num3)],
             Cmd::MoveToGroup(_) => &[(CTRL_SHIFT, Key::Num4)],
+            // Sublime's find panel keys: ⌥⌘ + letter on macOS, Alt + letter elsewhere.
+            // Whole Word has none on macOS, where ⌥⌘W is Word Wrap.
+            Cmd::ToggleFindRegex => if MAC { &[(CMD_ALT, Key::R)] } else { &[(ALT, Key::R)] },
+            Cmd::ToggleFindCase => if MAC { &[(CMD_ALT, Key::C)] } else { &[(ALT, Key::C)] },
+            Cmd::ToggleFindWholeWord => if MAC { &[] } else { &[(ALT, Key::W)] },
+            Cmd::ToggleFindInSelection => if MAC { &[(CMD_ALT, Key::L)] } else { &[(ALT, Key::L)] },
+            Cmd::ToggleFindPreserveCase => if MAC { &[(CMD_ALT, Key::A)] } else { &[(ALT, Key::A)] },
+            Cmd::ToggleFindWrap | Cmd::ToggleFindHighlight => &[],
+            Cmd::ToggleSpellCheck => &[(NONE, Key::F6)],
+            Cmd::NextMisspelling => &[(CTRL, Key::F6)],
+            Cmd::PrevMisspelling => &[(CTRL_SHIFT, Key::F6)],
         }
     }
 
@@ -644,6 +687,16 @@ impl Cmd {
             Cmd::NewSnippet => "new_snippet",
             Cmd::InstallShellCommand => "install_shell_command",
             Cmd::KeyBindings => "key_bindings",
+            Cmd::ToggleFindRegex => "toggle_regex",
+            Cmd::ToggleFindCase => "toggle_case_sensitive",
+            Cmd::ToggleFindWholeWord => "toggle_whole_word",
+            Cmd::ToggleFindInSelection => "toggle_in_selection",
+            Cmd::ToggleFindWrap => "toggle_wrap",
+            Cmd::ToggleFindPreserveCase => "toggle_preserve_case",
+            Cmd::ToggleFindHighlight => "toggle_highlight_matches",
+            Cmd::ToggleSpellCheck => "toggle_spell_check",
+            Cmd::NextMisspelling => "next_misspelling",
+            Cmd::PrevMisspelling => "prev_misspelling",
         }
     }
 }

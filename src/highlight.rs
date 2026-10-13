@@ -16,7 +16,7 @@ use syntect::highlighting::{
     FontStyle, HighlightIterator, HighlightState, Highlighter as ThemeHighlighter, Theme, ThemeSet,
 };
 use syntect::parsing::syntax_definition::Pattern;
-use syntect::parsing::{ParseState, Regex, ScopeStack, SyntaxDefinition, SyntaxReference, SyntaxSet};
+use syntect::parsing::{ParseState, Regex, ScopeStack, ScopeStackOp, SyntaxDefinition, SyntaxReference, SyntaxSet};
 
 pub mod scheme;
 pub mod themes;
@@ -488,6 +488,10 @@ pub struct Highlighter {
     lines: HashMap<usize, LineSpans>,
     /// Compile a grammar's regexes off the UI thread the first time it is used.
     warm_up: bool,
+    /// Spell check's scope selector; with one, highlighting a line also
+    /// records which of its bytes are prose (`prose`).
+    prose_selector: Option<Arc<crate::spell::Selector>>,
+    prose: HashMap<usize, Arc<Vec<Range<usize>>>>,
 }
 
 /// One grammar's first-use regex compilation, run on a worker thread.
@@ -520,6 +524,55 @@ impl Highlighter {
             checkpoints: Vec::new(),
             lines: HashMap::new(),
             warm_up: false,
+            prose_selector: None,
+            prose: HashMap::new(),
+        }
+    }
+
+    /// Start (or stop) recording prose ranges for spell check. A different
+    /// selector re-highlights the lines shown.
+    pub fn set_prose_selector(&mut self, selector: Option<Arc<crate::spell::Selector>>) {
+        let same = match (&self.prose_selector, &selector) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.prose_selector = selector;
+            self.lines.clear();
+            self.prose.clear();
+        }
+    }
+
+    /// Byte ranges of `line` matching the prose selector, once highlighted.
+    pub fn prose(&self, line: usize) -> Option<Arc<Vec<Range<usize>>>> {
+        self.prose.get(&line).cloned()
+    }
+
+    /// Prose ranges of the lines from `from` on, parsing from the nearest
+    /// checkpoint (lines not yet highlighted included); `f` gets each line's
+    /// number, text and ranges and returns false to stop.
+    pub fn prose_lines(&self, buffer: &Buffer, from: usize, mut f: impl FnMut(usize, &str, &[Range<usize>]) -> bool) {
+        let Some(selector) = self.prose_selector.clone() else { return };
+        let (mut parse, mut stack, start) = match self.checkpoints.len() {
+            0 => (ParseState::new(self.syntax()), ScopeStack::new(), 0),
+            len => {
+                let k = (from / CHUNK).min(len - 1);
+                let (p, h) = &self.checkpoints[k];
+                (p.clone(), h.path.clone(), k * CHUNK)
+            }
+        };
+        for line in start..buffer.len_lines() {
+            let text = buffer.line_text(line);
+            let prose = if text.len() > MAX_LINE {
+                Vec::new()
+            } else {
+                let Ok(ops) = parse.parse_line(&format!("{text}\n"), &SYNTAXES) else { return };
+                prose_ranges(&selector, &mut stack, &ops, text.len())
+            };
+            if line >= from && !f(line, &text, &prose) {
+                return;
+            }
         }
     }
 
@@ -712,6 +765,7 @@ impl Highlighter {
             self.checkpoints.clear();
         }
         self.lines.retain(|&l, _| l < line);
+        self.prose.retain(|&l, _| l < line);
     }
 
     /// Highlighted spans for a line, if ready. Call `prepare` first each frame.
@@ -733,6 +787,7 @@ impl Highlighter {
         // Keep memory flat when scrolling through a huge file.
         if self.lines.len() > 8_192 {
             self.lines.retain(|&l, _| l + 2_000 >= first && l <= last + 2_000);
+            self.prose.retain(|&l, _| l + 2_000 >= first && l <= last + 2_000);
         }
         let scheme = self.scheme.clone();
         let hl = ThemeHighlighter::new(&scheme.theme);
@@ -756,9 +811,13 @@ impl Highlighter {
                 self.checkpoints.push((parse.clone(), high.clone()));
             }
             let text = buffer.line_text(line);
-            let spans = self.highlight_line(&hl, &mut parse, &mut high, &text);
+            let mut prose = (line >= first && self.prose_selector.is_some()).then(Vec::new);
+            let spans = self.highlight_line(&hl, &mut parse, &mut high, &text, prose.as_mut());
             if line >= first {
                 self.lines.insert(line, spans);
+            }
+            if let Some(p) = prose {
+                self.prose.insert(line, Arc::new(p));
             }
             line += 1;
         }
@@ -811,6 +870,7 @@ impl Highlighter {
         parse: &mut ParseState,
         high: &mut HighlightState,
         text: &str,
+        prose: Option<&mut Vec<Range<usize>>>,
     ) -> LineSpans {
         let fg = self.foreground();
         if text.len() > MAX_LINE {
@@ -821,6 +881,9 @@ impl Highlighter {
         let Ok(ops) = parse.parse_line(&with_nl, &SYNTAXES) else {
             return Arc::new(vec![plain(0..text.len(), fg)]);
         };
+        if let (Some(out), Some(selector)) = (prose, &self.prose_selector) {
+            *out = prose_ranges(selector, &mut high.path.clone(), &ops, text.len());
+        }
         let mut spans = Vec::new();
         let mut offset = 0;
         for (style, piece) in HighlightIterator::new(high, &ops, &with_nl, hl) {
@@ -837,6 +900,33 @@ impl Highlighter {
         }
         Arc::new(spans)
     }
+}
+
+/// The byte ranges of a line (`len` bytes, parsed into `ops` from `stack`)
+/// whose scope matches `selector`, merged. `stack` ends as the line leaves it.
+fn prose_ranges(selector: &crate::spell::Selector, stack: &mut ScopeStack, ops: &[(usize, ScopeStackOp)], len: usize) -> Vec<Range<usize>> {
+    let mut out: Vec<Range<usize>> = Vec::new();
+    let add = |out: &mut Vec<Range<usize>>, r: Range<usize>| match out.last_mut() {
+        Some(last) if last.end == r.start => last.end = r.end,
+        _ => out.push(r),
+    };
+    let mut pos = 0;
+    for (at, op) in ops {
+        let at = (*at).min(len);
+        if at > pos {
+            if selector.matches(stack.as_slice()) {
+                add(&mut out, pos..at);
+            }
+            pos = at;
+        }
+        if stack.apply(op).is_err() {
+            return out;
+        }
+    }
+    if len > pos && selector.matches(stack.as_slice()) {
+        add(&mut out, pos..len);
+    }
+    out
 }
 
 fn plain(range: Range<usize>, color: Color32) -> Span {

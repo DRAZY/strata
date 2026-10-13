@@ -293,6 +293,43 @@ Lines break after the last space that fits. A word too long for a line is cut wh
 > [!NOTE]
 > Files larger than about 8 million characters are never wrapped, to keep editing them fast.
 
+## Spell check
+
+**View ▸ Spell Check** ({{key:toggle_spell_check}}) underlines misspelled words with a wavy red line. It's off by default; the choice is saved as the `spell_check` setting and applies to every file.
+
+Spell check reads prose, not code:
+
+- In source code, only comments and strings are checked. Variable names, keywords and the rest of the code are left alone.
+- In Markdown, plain text, Git commit messages and other text files, everything is checked except code (inline code and fenced code blocks, apart from the comments and strings inside them), links and tags.
+- Identifiers in prose are split into words: `camelCase`, `PascalCase` and `snake_case` are checked as `camel`, `Case` and so on.
+- Words with digits (`utf8`), short ALL-CAPS words (acronyms like `HTTP` or `JSON`, up to four letters), long hexadecimal strings, URLs, email addresses, file names and paths (anything with a `.`, `/` or `@` inside), and text in backticks are skipped. So are words in non-Latin scripts.
+
+What counts as prose is the `spelling_selector` setting, a scope selector like Sublime Text's: comma-separated alternatives, each a scope (such as `source comment`) with optional `- exclusions`, where `-(a, b)` excludes several at once. See [Settings](settings.md#find-and-spelling) for the default.
+
+### Fixing words
+
+Right-click a misspelled word. The top of the menu lists up to five suggestions; pick one to replace the word. Below them:
+
+| Item | What it does |
+|---|---|
+| Ignore Word | Accept the word everywhere until you quit Strata. |
+| Add Word to Dictionary | Accept the word from now on: it's added to the `added_words` setting in `settings.json`. A word added in lower case also covers its capitalized form. |
+
+To remove an added word, delete it from `added_words` in `settings.json`.
+
+### Moving between misspellings
+
+| Command | Shortcut | What it does |
+|---|---|---|
+| View ▸ Next Misspelling | {{key:next_misspelling}} | Select the next misspelled word after the cursor, wrapping around to the top. |
+| View ▸ Prev Misspelling | {{key:prev_misspelling}} | Select the previous one, wrapping around to the bottom. |
+
+### Dictionaries
+
+**View ▸ Dictionary** picks the language: `en_US` (American English, the default) or `en_GB` (British English, with "-ise" spellings). Both are the SCOWL Hunspell dictionaries, built into Strata, so spell check works the same on every platform and needs no download. The choice is the `dictionary` setting.
+
+Underlines are worked out only for the lines on screen, and remembered per line, so typing and scrolling stay fast even in large files.
+
 ## Undo and redo
 
 **Edit ▸ Undo** ({{key:undo}}) and **Edit ▸ Redo** ({{key:redo}}) step through your changes. A run of typing is undone in one step, and so is any single command, even one that changed text at many cursors. Undo also puts the cursors back where they were.

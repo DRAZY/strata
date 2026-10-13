@@ -40,6 +40,7 @@ mod replace;
 mod search;
 mod session;
 mod snippets;
+mod spell;
 mod shell_command;
 mod sidebar;
 mod terminal;

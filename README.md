@@ -40,6 +40,7 @@ assets. Read `docs/CLEAN_ROOM.md` before contributing.
 | Core | Rust | Speed, memory safety, single binary |
 | Text buffer | `ropey` | Rope with O(log n) edits on huge files |
 | Highlighting | `syntect` | Reads `.sublime-syntax` + `.tmTheme` natively |
+| Spell check | `spellbook` + SCOWL | Pure-Rust Hunspell; same results on every platform |
 | Parsing (later) | `tree-sitter` | Structural selection, symbols |
 | UI | `winit` + `wgpu` | GPU text rendering, Sublime-level responsiveness |
 | Plugins | Lua or WASM | Sandboxed, embeddable |
@@ -125,6 +126,9 @@ command palette, which shows its shortcut.
 | Find / replace | ⌘F / ⌥⌘F | Ctrl+F / Ctrl+H |
 | Next / previous match | ⌘G / ⇧⌘G | F3 / Shift+F3 |
 | Find in folder | ⇧⌘F | Ctrl+Shift+F |
+| Find: in selection / preserve case | ⌥⌘L / ⌥⌘A | Alt+L / Alt+A |
+| Find: regex / case sensitive | ⌥⌘R / ⌥⌘C | Alt+R / Alt+C |
+| Spell check / next, previous misspelling | F6 / ⌃F6, ⌃⇧F6 | F6 / Ctrl+F6, Ctrl+Shift+F6 |
 | Toggle terminal / new terminal | ⌃\` / ⌃⇧\` | Ctrl+\` / Ctrl+Shift+\` |
 
 In the find bar: Enter next, Shift+Enter previous, Alt+Enter Find All (a cursor
@@ -225,7 +229,15 @@ keymap, comments and trailing commas allowed:
   `.sublime-syntax` files to the config folder's `Syntaxes/` and `.tmTheme` or
   `.sublime-color-scheme` color schemes to `Themes/`; broken files are skipped and named in the status
   bar.
-- **Find**: find/replace with regex, quick find, use selection for find, and
+- **Spell check** (View ▸ Spell Check, F6): wavy underlines for misspelled
+  words in comments, strings and prose (Sublime's `spelling_selector`),
+  camelCase/snake_case aware; right-click for suggestions, Ignore Word and Add
+  Word to Dictionary (`added_words`); Next/Prev Misspelling; bundled SCOWL
+  en_US and en_GB Hunspell dictionaries via the pure-Rust `spellbook` crate.
+- **Find**: find/replace with regex, case, whole word, In Selection (searches
+  and replaces only inside the selection, multi-cursor too, tracking edits;
+  `auto_find_in_selection`), Wrap, Preserve Case and Highlight Matches
+  toggles, all saved in the session; quick find, use selection for find, and
   find in folder (parallel, respects .gitignore). Its **Where** field takes
   folders, `*.rs`-style includes, `-*.min.js` excludes, `<open folders>` and
   `<open files>`. **Replace in Files** (Find ▸ Replace in Files…) asks

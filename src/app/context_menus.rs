@@ -132,7 +132,9 @@ impl StrataApp {
     fn editor_items(&self, i: usize) -> Vec<Item> {
         let d = &self.docs[i];
         let writable = !d.editor.read_only;
-        let mut items = vec![Item::new("Show Unsaved Changes…", named(UNSAVED)).enabled(d.path.is_some() && d.is_dirty()), Item::Separator];
+        // Spelling suggestions for a misspelled word under the cursor come first.
+        let mut items = self.spelling_items(i);
+        items.extend([Item::new("Show Unsaved Changes…", named(UNSAVED)).enabled(d.path.is_some() && d.is_dirty()), Item::Separator]);
         // With nothing selected, Cut and Copy take the caret's line (like Sublime).
         items.extend(ctxmenu::clipboard_items(writable, true, writable));
         items.push(Item::Separator);

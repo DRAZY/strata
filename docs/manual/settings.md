@@ -77,6 +77,7 @@ Many settings have a menu item, so you rarely need to edit the file for them:
 | Tools ▸ Save All on Build | `save_all_on_build` |
 | Tools ▸ On Save | `trim_trailing_white_space_on_save`, `ensure_newline_at_eof_on_save`, `save_on_focus_lost` |
 | View ▸ Terminal, and resizing the terminal panel | `terminal_visible`, `terminal_height` |
+| View ▸ Spell Check, View ▸ Dictionary, and Add Word to Dictionary in the editor's right-click menu | `spell_check`, `dictionary`, `added_words` |
 
 ## All Settings
 
@@ -150,6 +151,18 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `smart_indent` | true/false | `true` | Language-aware indentation: indent after an opening bracket, a Python or YAML colon, or an opening tag, and line up closing brackets, `end`, `fi` and closing tags. Needs `auto_indent`. See [Languages and Syntaxes](languages.md#smart-indentation). |
 | `auto_complete` | true/false | `true` | Offer word completions while you type. {{key:auto_complete}} shows completions even when this is off. |
 | `wrap_width` | whole number | `80` | The column used by Edit ▸ Wrap ▸ Wrap Paragraph at Ruler ({{key:wrap_lines}}) when `rulers` is empty (otherwise the first ruler is used). |
+
+### Find and spelling
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `auto_find_in_selection` | true/false | `false` | Opening the find bar while a selection spans several lines turns on In Selection, so the search stays inside it. See [In Selection](find.md#in-selection). |
+| `spell_check` | true/false | `false` | Underline misspelled words in comments, strings and prose. View ▸ Spell Check ({{key:toggle_spell_check}}) turns it on and off. See [Spell Check](editing.md#spell-check). |
+| `dictionary` | text | `"en_US"` | The dictionary spell check uses: `"en_US"` (American English) or `"en_GB"` (British English). |
+| `added_words` | list of text | `[]` | Words spell check always accepts, for example `["Strata", "egui"]`. Add Word to Dictionary in the right-click menu adds to it. A word in lower case also covers its capitalized form. |
+| `spelling_selector` | text | see below | Which text is checked, as a scope selector (see [Spell Check](editing.md#spell-check)). The default checks comments and strings in code, and prose elsewhere apart from code, links and tags. |
+
+The default `spelling_selector` is `"source string.quoted - punctuation - meta.preprocessor.include, source comment - source comment.block.preprocessor, -(source, constant, keyword, storage, support, variable, markup.underline.link, markup.raw, meta.tag)"`.
 
 ### Saving
 

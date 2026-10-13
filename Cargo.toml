@@ -20,6 +20,7 @@ arboard = { version = "3", default-features = false }
 alacritty_terminal = { version = "0.26.0", default-features = false }
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 log = "0.4.34"
+spellbook = "0.4.2"
 
 # build.rs precompiles bat's extra syntaxes (via two-face) plus assets/syntaxes.
 [build-dependencies]

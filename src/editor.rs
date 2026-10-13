@@ -104,6 +104,8 @@ pub struct Editor {
     rng: Rng,
     /// Ranges that follow edits (snippet fields); see `set_tracked`.
     tracked: Vec<Range<usize>>,
+    /// Find ▸ In Selection's ranges; they follow edits like `tracked`.
+    find_scope: Option<Vec<Range<usize>>>,
     /// Edits are ignored (views like Show Unsaved Changes); selection still works.
     pub read_only: bool,
 }
@@ -437,6 +439,7 @@ impl Editor {
             sel_merge: 0,
             rng: Rng::from_time(),
             tracked: Vec::new(),
+            find_scope: None,
             read_only: false,
         }
     }
@@ -473,6 +476,16 @@ impl Editor {
 
     pub fn tracked(&self) -> &[Range<usize>] {
         &self.tracked
+    }
+
+    /// The ranges Find ▸ In Selection searches; like `set_tracked`'s, they
+    /// follow every later edit, so replacing inside them keeps them right.
+    pub fn set_find_scope(&mut self, ranges: Option<Vec<Range<usize>>>) {
+        self.find_scope = ranges;
+    }
+
+    pub fn find_scope(&self) -> Option<&[Range<usize>]> {
+        self.find_scope.as_deref()
     }
 
     /// Whole text as one string, cached until the next edit (for regex search).
@@ -636,7 +649,7 @@ impl Editor {
         self.buffer.remove(at..at + remove);
         self.buffer.insert(at, text);
         let n = text.chars().count();
-        for r in &mut self.tracked {
+        for r in self.tracked.iter_mut().chain(self.find_scope.iter_mut().flatten()) {
             *r = track_edit(r, at, remove, n);
         }
         if self.bookmarks.is_empty() && self.marks.is_empty() {
