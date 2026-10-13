@@ -1850,8 +1850,9 @@ impl StrataApp {
                     }
                 });
                 ui.separator();
-                let mut tab = self.settings.tab_size;
-                let mut spaces = self.settings.translate_tabs_to_spaces;
+                // Like Sublime, this shows and changes the current file's indentation.
+                let (old_tab, old_spaces) = (self.docs[self.active].editor.tab_width, self.docs[self.active].editor.use_spaces);
+                let (mut tab, mut spaces) = (old_tab, old_spaces);
                 ui.menu_button(format!("{}: {tab}", if spaces { "Spaces" } else { "Tab Size" }), |ui| {
                     ui.checkbox(&mut spaces, "Indent using spaces");
                     ui.separator();
@@ -1859,11 +1860,10 @@ impl StrataApp {
                         ui.radio_value(&mut tab, n, format!("Width: {n}"));
                     }
                 });
-                if (tab, spaces) != (self.settings.tab_size, self.settings.translate_tabs_to_spaces) {
-                    self.settings.tab_size = tab;
-                    self.settings.translate_tabs_to_spaces = spaces;
-                    self.apply_indentation();
-                    self.persist_settings();
+                if (tab, spaces) != (old_tab, old_spaces) {
+                    let e = &mut self.docs[self.active].editor;
+                    e.tab_width = tab;
+                    e.use_spaces = spaces;
                 }
                 ui.separator();
                 let theme = self.docs[self.active].highlighter.theme_name().to_owned();
