@@ -95,6 +95,8 @@ pub struct Editor {
     /// Merge class of the selection change about to happen (see `SelStep`).
     sel_merge: u8,
     rng: Rng,
+    /// Ranges that follow edits (snippet fields); see `set_tracked`.
+    tracked: Vec<Range<usize>>,
 }
 
 /// Soft-undo history entries kept at most.
@@ -360,6 +362,28 @@ fn map_pos(edits: &[Edit], pos: usize, after: bool) -> usize {
 
 /// A selection mapped through edits: cursors stick after insertions,
 /// selections grow to include text inserted at either edge.
+/// `r` after replacing `remove` chars at `at` with `n` chars (see `Editor::set_tracked`).
+fn track_edit(r: &Range<usize>, at: usize, remove: usize, n: usize) -> Range<usize> {
+    let old_end = at + remove;
+    let start = if r.start < at {
+        r.start
+    } else if r.start == at {
+        if remove == 0 && r.end > r.start { r.start + n } else { r.start }
+    } else if r.start >= old_end {
+        r.start + n - remove
+    } else {
+        at
+    };
+    let end = if r.end < at || (r.end == at && remove > 0) {
+        r.end
+    } else if r.end >= old_end {
+        r.end + n - remove
+    } else {
+        at + n
+    };
+    start.min(end)..end
+}
+
 fn map_sel(edits: &[Edit], s: &Selection) -> Selection {
     if s.is_empty() {
         return Selection::cursor(map_pos(edits, s.head, true));
@@ -400,6 +424,7 @@ impl Editor {
             sel_future: Vec::new(),
             sel_merge: 0,
             rng: Rng::from_time(),
+            tracked: Vec::new(),
         }
     }
 
@@ -419,6 +444,22 @@ impl Editor {
 
     pub fn version(&self) -> u64 {
         self.version
+    }
+
+    /// Undo steps recorded so far; drops when an undo pops one.
+    pub fn history_len(&self) -> usize {
+        self.undo.len()
+    }
+
+    /// Ranges kept in step with every later edit (including undo): text typed
+    /// inside or at the end of a range grows it, text inserted right before a
+    /// non-empty range shifts it, and an empty range absorbs text typed at it.
+    pub fn set_tracked(&mut self, ranges: Vec<Range<usize>>) {
+        self.tracked = ranges;
+    }
+
+    pub fn tracked(&self) -> &[Range<usize>] {
+        &self.tracked
     }
 
     /// Whole text as one string, cached until the next edit (for regex search).
@@ -581,10 +622,13 @@ impl Editor {
         self.note_change(at);
         self.buffer.remove(at..at + remove);
         self.buffer.insert(at, text);
+        let n = text.chars().count();
+        for r in &mut self.tracked {
+            *r = track_edit(r, at, remove, n);
+        }
         if self.bookmarks.is_empty() && self.marks.is_empty() {
             return;
         }
-        let n = text.chars().count();
         let shift = |b: &mut usize| {
             if *b >= at + remove && *b > at {
                 *b = *b + n - remove;

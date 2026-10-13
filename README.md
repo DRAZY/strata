@@ -102,6 +102,20 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
   Windows): a live, theme-colored preview beside the editor with GitHub-style
   tables, task lists, footnotes, alerts and highlighted code blocks; it follows
   the editor's scroll. File ▸ Export ▸ Markdown as HTML… saves a standalone page.
+- **Snippets** in Sublime's `.sublime-snippet` format (bring your own: put
+  them anywhere under the config folder's `Snippets/`; they reload when
+  changed). Type a trigger and press Tab, or pick one from the completion list
+  or Tools ▸ Snippets…; Tab / Shift+Tab move through `$1…$n` fields, `$0` is
+  the last stop, Esc finishes. Supports `${1:placeholders}` (nested), mirrored
+  fields (edited together), `$TM_FILENAME`, `$TM_FILEPATH`, `$TM_SELECTED_TEXT`,
+  `$TM_CURRENT_LINE`, `$TM_CURRENT_WORD`, `$TM_LINE_INDEX`, `$TM_LINE_NUMBER`,
+  `${VAR:default}`, `${VAR/regex/format/flags}` and `${1/regex/format/flags}`
+  (refreshed when Tab leaves the field), and `<scope>` selectors (`,`, `-`,
+  descendants). Expands at every cursor. Tools ▸ Developer ▸ New Snippet…
+  opens a template. Built-ins: Rust `fn` `impl` `test` `match` `struct`;
+  Python `def` `class` `ifmain` `for`; JS/TS `fn` `arrow` `log` `imp`; Go
+  `func` `iferr`; Markdown `link` `img` `code` `table`; HTML `html5` `a`
+  `div`; shell `shebang` `if` `for`. A user snippet with the same trigger wins.
 - **Find**: find/replace with regex, quick find, use selection for find, and
   find in folder (parallel, respects .gitignore).
 - **Build systems** (Tools ▸ Build, ⌘B): Cargo, Rust, Python, Node, Go, C/C++,
@@ -155,7 +169,8 @@ macOS runner and a Windows x64 runner.
 Dev aids (all pair with `STRATA_SCREENSHOT=out.ppm`, which renders the window,
 saves a screenshot and exits): `STRATA_DEV_FIND=query` (+ `STRATA_DEV_FIND_REGEX=1`),
 `STRATA_DEV_FIND_IN_FILES=query`, `STRATA_DEV_PALETTE="p:query"` or
-`"cmd:query"`. `STRATA_CONFIG_DIR=dir` uses a separate settings/session folder.
+`"cmd:query"`, `STRATA_SCREENSHOT_TYPE='fn\t'` (types into the editor first; `\t`
+presses Tab). `STRATA_CONFIG_DIR=dir` uses a separate settings/session folder.
 
 ## Test build for macOS (Apple silicon)
 

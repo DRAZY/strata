@@ -594,6 +594,7 @@ impl StrataApp {
             "Tools".into(),
             vec![
                 c("Command Palette…", Cmd::CommandPalette),
+                c("Snippets…", Cmd::Snippets),
                 SEP(),
                 sub("Build System", systems),
                 c("Build", Cmd::Build),
@@ -613,6 +614,8 @@ impl StrataApp {
                 SEP(),
                 c(if self.macro_recording.is_some() { "Stop Recording Macro" } else { "Record Macro" }, Cmd::RecordMacro),
                 c("Playback Macro", Cmd::PlaybackMacro).enabled(!self.macro_last.is_empty()),
+                SEP(),
+                sub("Developer", vec![c("New Snippet…", Cmd::NewSnippet)]),
                 SEP(),
                 sub(
                     "Text",

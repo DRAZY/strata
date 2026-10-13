@@ -28,6 +28,7 @@ mod palette;
 mod panes;
 mod search;
 mod session;
+mod snippets;
 mod sidebar;
 mod terminal;
 mod symbols;
