@@ -4,9 +4,11 @@
 #![allow(clippy::single_range_in_vec_init)]
 
 mod app;
+mod brackets;
 mod build;
 mod buffer;
 mod commands;
+mod decor;
 mod document;
 mod editor;
 mod encoding;
