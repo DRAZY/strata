@@ -51,6 +51,8 @@ pub struct Settings {
     pub tab_size: usize,
     pub translate_tabs_to_spaces: bool,
     pub minimap: bool,
+    /// Live Markdown preview beside the editor.
+    pub markdown_preview: bool,
     pub show_tabs: bool,
     pub show_status_bar: bool,
     /// Soft-wrap every file. Prose syntaxes (Markdown, plain text…) wrap regardless.
@@ -100,6 +102,7 @@ impl Default for Settings {
             tab_size: 4,
             translate_tabs_to_spaces: true,
             minimap: true,
+            markdown_preview: false,
             show_tabs: true,
             show_status_bar: true,
             word_wrap: false,

@@ -98,6 +98,10 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
 - **View**: word wrap (Alt+Cmd+W; on by default for Markdown and plain text),
   minimap, indent guides, bracket matching, distraction-free mode, hide tabs or
   status bar, CJK/IME input, Strata Dark/Light color schemes.
+- **Markdown preview** (View ▸ Markdown Preview, ⌃⇧V on macOS, Alt+Shift+V on
+  Windows): a live, theme-colored preview beside the editor with GitHub-style
+  tables, task lists, footnotes, alerts and highlighted code blocks; it follows
+  the editor's scroll. File ▸ Export ▸ Markdown as HTML… saves a standalone page.
 - **Find**: find/replace with regex, quick find, use selection for find, and
   find in folder (parallel, respects .gitignore).
 - **Build systems** (Tools ▸ Build, ⌘B): Cargo, Rust, Python, Node, Go, C/C++,
