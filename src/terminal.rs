@@ -573,6 +573,8 @@ pub struct Panel {
     focus_next: bool,
     id: egui::Id,
     theme: Option<Theme>,
+    /// Background opacity of the text area (the window opacity setting); the tab row stays solid.
+    pub opacity: f32,
 }
 
 impl Default for Panel {
@@ -593,7 +595,7 @@ struct Cell {
 
 impl Panel {
     pub fn new() -> Self {
-        Self { tabs: Vec::new(), active: 0, visible: false, focus_next: false, id: egui::Id::new("strata-terminal"), theme: None }
+        Self { opacity: 1.0, tabs: Vec::new(), active: 0, visible: false, focus_next: false, id: egui::Id::new("strata-terminal"), theme: None }
     }
 
     pub fn has_focus(&self, ctx: &egui::Context) -> bool {
@@ -651,7 +653,8 @@ impl Panel {
         self.theme = Some(theme.clone());
         let mut action = None;
         let now = ui.input(|i| i.time);
-        ui.horizontal(|ui| {
+        let header_bg = ui.painter().add(egui::Shape::Noop);
+        let header = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             let mut close = None;
             for (i, t) in self.tabs.iter().enumerate() {
@@ -687,10 +690,13 @@ impl Panel {
                 }
             }
         });
+        let full = ui.max_rect();
+        let header_rect = egui::Rect::from_min_max(full.min, egui::pos2(full.right(), header.response.rect.bottom() + ui.spacing().item_spacing.y));
+        ui.painter().set(header_bg, egui::Shape::rect_filled(header_rect.expand2(egui::vec2(8.0, 4.0)), 0.0, ui.visuals().panel_fill));
         let rect = ui.available_rect_before_wrap();
         let resp = ui.interact(rect, self.id, Sense::click_and_drag());
         ui.allocate_rect(rect, Sense::hover());
-        ui.painter().rect_filled(rect, 0.0, theme.bg);
+        ui.painter().rect_filled(rect.expand2(egui::vec2(8.0, 4.0)), 0.0, theme.bg.gamma_multiply(self.opacity));
         let Some(t) = self.tabs.get_mut(self.active) else {
             return action;
         };

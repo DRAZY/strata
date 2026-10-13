@@ -69,10 +69,12 @@ impl StrataApp {
         }
         let theme = terminal::Theme::from_highlighter(&self.docs[self.active].highlighter);
         let font_size = self.settings.font_size;
+        self.terminal.opacity = self.settings.window_opacity.clamp(0.3, 1.0);
         let out = egui::Panel::bottom("terminal")
             .resizable(true)
             .default_size(self.settings.terminal_height.clamp(80.0, 2000.0))
             .min_size(60.0)
+            .frame(egui::Frame::side_top_panel(ui.style()).fill(egui::Color32::TRANSPARENT))
             .show(ui, |ui| self.terminal.show(ui, &theme, font_size));
         match out.inner {
             Some(PanelAction::Hide) => {

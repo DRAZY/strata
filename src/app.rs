@@ -1451,8 +1451,8 @@ impl StrataApp {
         let (bg, fg, sel, light) = (hl.background(), hl.foreground(), hl.selection(), hl.is_light());
         let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
         let panel = if light { shade(bg, 0.94) } else { shade(bg, 0.82) };
-        // Panels share the window's see-through setting; popups stay solid.
-        v.panel_fill = panel.gamma_multiply(opacity);
+        // Chrome (tabs, sidebar, status bar, menus) stays solid; only the text areas see through.
+        v.panel_fill = panel;
         v.window_fill = mix(panel, bg, 0.5);
         v.extreme_bg_color = if light { shade(bg, 1.02) } else { shade(bg, 0.7) };
         v.faint_bg_color = mix(panel, fg, 0.04);
