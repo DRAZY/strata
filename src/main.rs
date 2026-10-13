@@ -30,6 +30,7 @@ mod panes;
 mod replace;
 mod search;
 mod session;
+mod snippets;
 mod sidebar;
 mod terminal;
 mod symbols;

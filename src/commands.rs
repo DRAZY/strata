@@ -109,6 +109,8 @@ pub enum Cmd {
     PrevModification,
     ToggleTerminal,
     NewTerminal,
+    Snippets,
+    NewSnippet,
 }
 
 impl Cmd {
@@ -223,6 +225,8 @@ impl Cmd {
         Cmd::PrevModification,
         Cmd::ToggleTerminal,
         Cmd::NewTerminal,
+        Cmd::Snippets,
+        Cmd::NewSnippet,
     ];
 
     pub fn name(self) -> &'static str {
@@ -322,6 +326,8 @@ impl Cmd {
             Cmd::ExportMarkdownHtml => "Markdown: Export as HTML…",
             Cmd::PasteFromHistory => "Edit: Paste from History",
             Cmd::NewBuildSystem => "Tools: Build System: New Build System…",
+            Cmd::Snippets => "Tools: Snippets…",
+            Cmd::NewSnippet => "Tools: Developer: New Snippet…",
             Cmd::ToggleSaveAllOnBuild => "Tools: Save All on Build",
             Cmd::RecordMacro => "Tools: Record Macro",
             Cmd::PlaybackMacro => "Tools: Playback Macro",
@@ -436,6 +442,7 @@ impl Cmd {
             Cmd::ExportMarkdownHtml => &[],
             Cmd::PasteFromHistory => if MAC { &[(CMD_ALT, Key::V)] } else { &[(CTRL_ALT, Key::V)] },
             Cmd::NewBuildSystem => &[],
+            Cmd::Snippets | Cmd::NewSnippet => &[],
             Cmd::ToggleSaveAllOnBuild => &[],
             Cmd::RecordMacro => &[(CTRL, Key::Q)],
             Cmd::PlaybackMacro => &[(CTRL_SHIFT, Key::Q)],

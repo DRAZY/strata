@@ -73,6 +73,7 @@ pub struct StrataApp {
     /// Build With… choices offered in the palette.
     build_choices: Vec<crate::build::BuildChoice>,
     completion: completion::Completion,
+    snippets: snippets_ui::SnippetState,
     choosing: more::Choosing,
     /// Text copied from Strata, newest first (Paste from History).
     clip_history: Vec<String>,
@@ -115,6 +116,7 @@ mod more;
 mod terminal_ui;
 mod preview;
 mod replace_files;
+mod snippets_ui;
 mod textutil;
 
 #[cfg(test)]
@@ -162,6 +164,7 @@ impl StrataApp {
             build: crate::build::Build::new(None),
             build_choices: Vec::new(),
             completion: completion::Completion::default(),
+            snippets: Default::default(),
             choosing: more::Choosing::Nothing,
             clip_history: Vec::new(),
             find_result: None,
@@ -182,6 +185,7 @@ impl StrataApp {
             terminal_started: false,
         };
         app.build = crate::build::Build::new(app.config.clone());
+        app.snippets = snippets_ui::SnippetState::new(app.config.as_deref());
         if let Some(dir) = app.config.clone() {
             app.session_lock = SessionLock::acquire(&dir);
             if app.session_lock.is_none() {
@@ -467,7 +471,7 @@ impl StrataApp {
     fn save(&mut self, i: usize, choose: bool) -> bool {
         let target = match (&self.docs[i].path, choose) {
             (Some(p), false) => Some(p.clone()),
-            _ => rfd::FileDialog::new().set_file_name(self.docs[i].name()).save_file(),
+            _ => self.save_dialog(i).save_file(),
         };
         let Some(path) = target else { return false };
         if !self.confirm_overwrite(i, &path) {
@@ -483,6 +487,7 @@ impl StrataApp {
                 if self.config.as_deref().map(Settings::path).as_ref() == Some(&path) {
                     self.reload_settings();
                 }
+                self.snippet_saved(&path);
                 true
             }
             Err(e) => {
@@ -894,7 +899,12 @@ impl StrataApp {
             Cmd::ToggleBuildResults => self.build.visible = !self.build.visible,
             Cmd::ToggleTerminal => self.toggle_terminal(ctx),
             Cmd::NewTerminal => self.new_terminal(ctx),
-            Cmd::ShowCompletions => self.completion.open(&mut self.docs[self.active], true),
+            Cmd::Snippets => self.show_snippets(ctx),
+            Cmd::NewSnippet => self.new_snippet(),
+            Cmd::ShowCompletions => {
+                self.completion.open(&mut self.docs[self.active], true, &self.snippets.lib);
+                self.snippet_from_completion();
+            }
             Cmd::CloseWindow => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::RevertFile => self.revert(),
             Cmd::ClearRecent => self.clear_recent(),
@@ -1908,7 +1918,9 @@ impl eframe::App for StrataApp {
             let d = &mut self.docs[self.active];
             self.completion.keys(ctx, d);
         }
-        self.devshot.tick(ctx);
+        self.snippet_keys(ctx);
+        let typed = self.devshot.tick(ctx);
+        self.pending_events.extend(typed);
         self.apply_fonts(ctx);
         self.style_chrome(ctx);
 
@@ -2101,10 +2113,11 @@ impl eframe::App for StrataApp {
         {
             let d = &mut self.docs[self.active];
             if self.settings.auto_complete || self.completion.is_open() {
-                self.completion.after_edit(d, typed_word && self.settings.auto_complete);
+                self.completion.after_edit(d, typed_word && self.settings.auto_complete, &self.snippets.lib);
             }
             self.completion.show(ctx, d);
         }
+        self.snippet_from_completion();
         let dialog_open = self.palette.open || self.about_open || self.licenses_open;
         if self.docs.len() == 1 && self.docs[0].is_blank() && self.layout.groups() == 1 && !dialog_open {
             self.welcome(ctx);

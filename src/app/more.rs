@@ -22,6 +22,7 @@ pub(super) enum Choosing {
     Symbol(Vec<(PathBuf, usize)>),
     /// Font picker: (editor font?, the fonts offered after "Default").
     Font(bool, Vec<crate::fonts::InstalledFont>),
+    Snippet(Vec<crate::snippets::Snippet>),
 }
 
 impl StrataApp {
@@ -107,6 +108,11 @@ impl StrataApp {
                     self.settings.ui_font_face = name;
                 }
                 self.persist_settings();
+            }
+            Choosing::Snippet(list) => {
+                if let Some(s) = list.into_iter().nth(i) {
+                    self.chose_snippet(s);
+                }
             }
             Choosing::Symbol(spots) => {
                 if let Some((p, line)) = spots.get(i).cloned() {

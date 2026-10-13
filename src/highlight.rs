@@ -286,6 +286,46 @@ impl Highlighter {
         true
     }
 
+    /// Scope names (outermost first) at char `pos`, e.g. ["source.rust",
+    /// "meta.function.rust"]: what snippet `<scope>` selectors are matched
+    /// against. Resumes from the nearest checkpoint; far from any, only the
+    /// syntax's base scope is reported.
+    pub fn scope_at(&self, buffer: &Buffer, pos: usize) -> Vec<String> {
+        let syntax = self.syntax();
+        let base = vec![syntax.scope.build_string()];
+        let pos = pos.min(buffer.len_chars());
+        let line = buffer.line_of(pos);
+        let (mut parse, mut stack, from) = match self.checkpoints.len() {
+            0 => (ParseState::new(syntax), ScopeStack::new(), 0),
+            len => {
+                let k = (line / CHUNK).min(len - 1);
+                let (p, h) = &self.checkpoints[k];
+                (p.clone(), h.path.clone(), k * CHUNK)
+            }
+        };
+        if line - from > 2 * BUDGET {
+            return base;
+        }
+        let upto = buffer.char_to_byte(pos) - buffer.char_to_byte(buffer.line_start(line));
+        for l in from..=line {
+            let text = buffer.line_text(l);
+            if text.len() > MAX_LINE {
+                return base;
+            }
+            let Ok(ops) = parse.parse_line(&format!("{text}\n"), &SYNTAXES) else { return base };
+            for (at, op) in ops {
+                if l == line && at > upto {
+                    break;
+                }
+                if stack.apply(&op).is_err() {
+                    return base;
+                }
+            }
+        }
+        let names: Vec<String> = stack.as_slice().iter().map(|s| s.build_string()).collect();
+        if names.is_empty() { base } else { names }
+    }
+
     fn highlight_line(
         &self,
         hl: &ThemeHighlighter,
@@ -351,6 +391,21 @@ mod tests {
         // Rust keyword `let` should not be the plain foreground color.
         let spans = h.line(160).unwrap();
         assert_ne!(spans[0].color, h.foreground());
+    }
+
+    #[test]
+    fn scope_at_reports_the_scope_stack() {
+        let buf = Buffer::from_str("fn main() {\n    // note\n    let s = \"hi\";\n}\n");
+        let mut h = Highlighter::new();
+        h.detect(Some(Path::new("a.rs")), "");
+        let at = |h: &Highlighter, line: usize, col: usize| h.scope_at(&buf, buf.line_start(line) + col);
+        assert_eq!(at(&h, 0, 0)[0], "source.rust");
+        assert!(at(&h, 1, 7).iter().any(|s| s.starts_with("comment.line")));
+        assert!(at(&h, 2, 13).iter().any(|s| s.starts_with("string.quoted")));
+        // Same answer when resuming from checkpoints.
+        assert!(h.prepare(&buf, 0..=3));
+        assert!(at(&h, 2, 13).iter().any(|s| s.starts_with("string.quoted")));
+        assert_eq!(Highlighter::new().scope_at(&buf, 3), ["text.plain"]);
     }
 
     #[test]

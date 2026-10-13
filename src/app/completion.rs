@@ -1,7 +1,10 @@
 //! Word completion popup: words from the buffer that start with what you're
-//! typing, shown under the caret. Up/Down choose, Enter or Tab insert, Esc closes.
+//! typing, shown under the caret, plus snippets whose trigger starts with it
+//! (labelled with their description). Up/Down choose, Enter or Tab insert,
+//! Esc closes.
 
 use crate::document::Document;
+use crate::snippets::{Library, Snippet};
 use egui::{Key, Modifiers, Sense, vec2};
 
 const MAX_ITEMS: usize = 12;
@@ -10,10 +13,27 @@ const MAX_ITEMS: usize = 12;
 pub struct Completion {
     /// Editor (view id) the list belongs to; None when closed.
     owner: Option<egui::Id>,
-    items: Vec<String>,
+    items: Vec<Item>,
     selected: usize,
     /// (text version, cursor) the list was computed for.
     key: (u64, usize),
+    /// A snippet chosen from the list with the prefix it replaces; the app
+    /// expands it (it owns the field session).
+    accepted: Option<(Snippet, String)>,
+}
+
+enum Item {
+    Word(String),
+    Snippet(Snippet),
+}
+
+impl Item {
+    fn text(&self) -> &str {
+        match self {
+            Item::Word(w) => w,
+            Item::Snippet(s) => &s.trigger,
+        }
+    }
 }
 
 impl Completion {
@@ -28,11 +48,24 @@ impl Completion {
 
     /// Show completions for the word before the cursor. `explicit` (Ctrl+Space)
     /// inserts a single candidate right away.
-    pub fn open(&mut self, d: &mut Document, explicit: bool) {
-        let items = d.editor.completions(MAX_ITEMS);
+    pub fn open(&mut self, d: &mut Document, explicit: bool, snippets: &Library) {
+        let words = d.editor.completions(MAX_ITEMS);
+        let (exact, partial): (Vec<Snippet>, Vec<Snippet>) = match d.editor.word_prefix_at_cursor() {
+            Some((start, prefix)) => {
+                let scopes = d.highlighter.scope_at(&d.editor.buffer, start);
+                snippets.completions(&prefix, &scopes).into_iter().cloned().partition(|s| s.trigger == prefix)
+            }
+            None => Default::default(),
+        };
+        // A trigger typed in full comes first, other snippets after the words.
+        let mut items: Vec<Item> = exact.into_iter().map(Item::Snippet).collect();
+        items.extend(words.into_iter().map(Item::Word));
+        items.extend(partial.into_iter().map(Item::Snippet));
+        items.truncate(MAX_ITEMS);
         self.key = (d.editor.version(), d.editor.primary().head);
         if explicit && items.len() == 1 {
-            d.editor.complete(&items[0]);
+            self.items = items;
+            self.accept(d, 0);
             self.close();
             return;
         }
@@ -47,14 +80,14 @@ impl Completion {
 
     /// After typing: open when a word of 2+ chars is being typed, refresh or
     /// close when the text or cursor moved.
-    pub fn after_edit(&mut self, d: &mut Document, typed_word_char: bool) {
+    pub fn after_edit(&mut self, d: &mut Document, typed_word_char: bool, snippets: &Library) {
         let key = (d.editor.version(), d.editor.primary().head);
         if key == self.key {
             return;
         }
         let long_enough = d.editor.word_prefix_at_cursor().is_some_and(|(_, p)| p.chars().count() >= 2);
         if (self.is_open() || typed_word_char) && long_enough && d.editor.selections().len() < 50 {
-            self.open(d, false);
+            self.open(d, false, snippets);
         } else {
             self.close();
             self.key = key;
@@ -82,8 +115,7 @@ impl Completion {
             self.selected = (self.selected + 1) % n;
         }
         if accept {
-            let word = self.items[self.selected].clone();
-            d.editor.complete(&word);
+            self.accept(d, self.selected);
             d.view.reveal();
             self.close();
             self.key = (d.editor.version(), d.editor.primary().head);
@@ -93,6 +125,26 @@ impl Completion {
             self.key = (d.editor.version(), d.editor.primary().head);
         }
         up || down || accept || esc
+    }
+
+    /// Insert a word, or hand a snippet to the app (`take_snippet`).
+    fn accept(&mut self, d: &mut Document, i: usize) {
+        match &self.items[i] {
+            Item::Word(w) => d.editor.complete(w),
+            Item::Snippet(s) => {
+                let prefix = d.editor.word_prefix_at_cursor().map(|(_, p)| p).unwrap_or_default();
+                self.accepted = Some((s.clone(), prefix));
+            }
+        }
+    }
+
+    pub fn take_snippet(&mut self) -> Option<(Snippet, String)> {
+        self.accepted.take()
+    }
+
+    #[cfg(test)]
+    pub fn has_snippet(&self, trigger: &str) -> bool {
+        self.items.iter().any(|i| matches!(i, Item::Snippet(s) if s.trigger == trigger))
     }
 
     /// Draw the list under the caret; a click inserts that word.
@@ -109,13 +161,24 @@ impl Completion {
             .fixed_pos(caret.left_bottom() + vec2(-4.0, 2.0))
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).inner_margin(4.0).show(ui, |ui| {
-                    let width = self.items.iter().map(|w| w.chars().count()).max().unwrap_or(8) as f32 * font.size * 0.62 + 24.0;
-                    for (i, word) in self.items.iter().enumerate() {
+                    let char_w = font.size * 0.62;
+                    let text_w = self.items.iter().map(|w| w.text().chars().count()).max().unwrap_or(8) as f32 * char_w;
+                    let note = |item: &Item| match item {
+                        Item::Snippet(s) => Some(format!("{}  ⇥", s.label())),
+                        Item::Word(_) => None,
+                    };
+                    let note_w = self.items.iter().filter_map(note).map(|n| n.chars().count()).max().map_or(0.0, |n| n as f32 * char_w + 24.0);
+                    let width = text_w + note_w + 24.0;
+                    let dim = ui.visuals().weak_text_color();
+                    for (i, item) in self.items.iter().enumerate() {
                         let (rect, resp) = ui.allocate_exact_size(vec2(width.max(140.0), row_h), Sense::click());
                         if i == self.selected {
                             ui.painter().rect_filled(rect, 3.0, ui.visuals().selection.bg_fill);
                         }
-                        ui.painter().text(rect.left_center() + vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, word, font.clone(), ui.visuals().text_color());
+                        ui.painter().text(rect.left_center() + vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, item.text(), font.clone(), ui.visuals().text_color());
+                        if let Some(n) = note(item) {
+                            ui.painter().text(rect.right_center() - vec2(8.0, 0.0), egui::Align2::RIGHT_CENTER, n, font.clone(), dim);
+                        }
                         if resp.clicked() {
                             chosen = Some(i);
                         }
@@ -123,7 +186,7 @@ impl Completion {
                 });
             });
         if let Some(i) = chosen {
-            d.editor.complete(&self.items[i].clone());
+            self.accept(d, i);
             d.view.focus();
             self.close();
         }
@@ -145,12 +208,11 @@ mod tests {
     fn opens_after_two_chars_and_inserts_the_choice() {
         let mut d = doc("alphabet alpine al", 18);
         let mut c = Completion::default();
-        c.after_edit(&mut d, true);
+        c.after_edit(&mut d, true, &Library::default());
         assert!(c.is_open());
         assert_eq!(c.items.len(), 2);
-        c.selected = c.items.iter().position(|w| w == "alpine").unwrap();
-        let word = c.items[c.selected].clone();
-        d.editor.complete(&word);
+        c.selected = c.items.iter().position(|w| w.text() == "alpine").unwrap();
+        c.accept(&mut d, c.selected);
         assert_eq!(d.editor.buffer.slice(0..d.editor.buffer.len_chars()), "alphabet alpine alpine");
     }
 
@@ -158,7 +220,7 @@ mod tests {
     fn explicit_with_one_match_completes_immediately() {
         let mut d = doc("unique un", 9);
         let mut c = Completion::default();
-        c.open(&mut d, true);
+        c.open(&mut d, true, &Library::default());
         assert!(!c.is_open());
         assert_eq!(d.editor.buffer.slice(0..d.editor.buffer.len_chars()), "unique unique");
     }
@@ -167,7 +229,25 @@ mod tests {
     fn one_letter_does_not_pop_up() {
         let mut d = doc("apple a", 7);
         let mut c = Completion::default();
-        c.after_edit(&mut d, true);
+        c.after_edit(&mut d, true, &Library::default());
         assert!(!c.is_open());
+    }
+
+    #[test]
+    fn snippets_join_the_list_only_in_their_scope() {
+        let mut d = Document::from_buffer(Some("a.rs".into()), Buffer::from_str("impossible im"));
+        d.editor.select_ranges(&[13..13], 0);
+        let mut c = Completion::default();
+        c.after_edit(&mut d, true, &Library::default());
+        let texts: Vec<&str> = c.items.iter().map(Item::text).collect();
+        assert_eq!(texts, ["impossible", "impl"]);
+        c.accept(&mut d, 1);
+        let (s, prefix) = c.take_snippet().unwrap();
+        assert_eq!((s.trigger.as_str(), prefix.as_str()), ("impl", "im"));
+
+        let mut py = Document::from_buffer(Some("a.py".into()), Buffer::from_str("im"));
+        py.editor.select_ranges(&[2..2], 0);
+        c.after_edit(&mut py, true, &Library::default());
+        assert!(!c.is_open(), "no Rust snippets in Python");
     }
 }
