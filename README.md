@@ -103,7 +103,14 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
   tables, task lists, footnotes, alerts and highlighted code blocks; it follows
   the editor's scroll. File ▸ Export ▸ Markdown as HTML… saves a standalone page.
 - **Find**: find/replace with regex, quick find, use selection for find, and
-  find in folder (parallel, respects .gitignore).
+  find in folder (parallel, respects .gitignore). Its **Where** field takes
+  folders, `*.rs`-style includes, `-*.min.js` excludes, `<open folders>` and
+  `<open files>`. **Replace in Files** (Find ▸ Replace in Files…) asks
+  "Replace N occurrences across M files?"; regex replacements take `$1`,
+  `${name}` or `\1`. Open files change in their tabs (one undo step, left
+  unsaved); the rest are rewritten atomically in their own encoding and line
+  endings, skipping binary, undecodable, read-only, over-50 MB and
+  changed-since-search files. Undo Replace in Files restores what was written.
 - **Build systems** (Tools ▸ Build, ⌘B): Cargo, Rust, Python, Node, Go, C/C++,
   Make, npm, Ruby, shell, chosen automatically; output panel with clickable
   errors, F4 for the next result. Add your own as JSON in the config folder's
@@ -154,7 +161,8 @@ macOS runner and a Windows x64 runner.
 
 Dev aids (all pair with `STRATA_SCREENSHOT=out.ppm`, which renders the window,
 saves a screenshot and exits): `STRATA_DEV_FIND=query` (+ `STRATA_DEV_FIND_REGEX=1`),
-`STRATA_DEV_FIND_IN_FILES=query`, `STRATA_DEV_PALETTE="p:query"` or
+`STRATA_DEV_FIND_IN_FILES=query` (+ `STRATA_DEV_WHERE`, `STRATA_DEV_REPLACE`,
+`STRATA_DEV_REPLACE_STEP=confirm|run`), `STRATA_DEV_PALETTE="p:query"` or
 `"cmd:query"`. `STRATA_CONFIG_DIR=dir` uses a separate settings/session folder.
 
 ## Test build for macOS (Apple silicon)

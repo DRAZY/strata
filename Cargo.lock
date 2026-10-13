@@ -3103,6 +3103,7 @@ dependencies = [
  "eframe",
  "egui",
  "encoding_rs",
+ "globset",
  "ignore",
  "muda",
  "pulldown-cmark",

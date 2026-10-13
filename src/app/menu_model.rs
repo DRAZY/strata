@@ -388,6 +388,7 @@ impl StrataApp {
                 c("Use Selection for Replace", Cmd::UseSelectionForReplace),
                 SEP(),
                 c("Find in Files…", Cmd::FindInFiles),
+                c("Replace in Files…", Cmd::ReplaceInFiles),
                 sub(
                     "Find Results",
                     vec![

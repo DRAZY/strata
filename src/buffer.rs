@@ -76,31 +76,7 @@ impl Buffer {
     /// written.
     pub fn write_to(&self, path: &Path, enc: Encoding) -> std::io::Result<()> {
         self.check_encodable(enc).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
-        let dir = target.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let tmp = dir.join(format!(".{name}.strata-{}.tmp", std::process::id()));
-        match self.write_file(&tmp, enc) {
-            Ok(()) => {
-                if let Ok(meta) = std::fs::metadata(&target) {
-                    let _ = std::fs::set_permissions(&tmp, meta.permissions());
-                }
-                std::fs::rename(&tmp, &target).inspect_err(|_| {
-                    let _ = std::fs::remove_file(&tmp);
-                })
-            }
-            // Can't create files in the folder (but maybe can write the file): write in place.
-            Err(_) => {
-                let _ = std::fs::remove_file(&tmp);
-                self.write_file(&target, enc)
-            }
-        }
-    }
-
-    fn write_file(&self, path: &Path, enc: Encoding) -> std::io::Result<()> {
-        let mut out = BufWriter::new(std::fs::File::create(path)?);
-        encoding::encode_to(self.rope.chunks(), enc, &mut out)?;
-        out.into_inner().map_err(|e| e.into_error())?.sync_all()
+        write_atomic(path, |out| encoding::encode_to(self.rope.chunks(), enc, out))
     }
 
     pub fn line_ending(&self) -> LineEnding {
@@ -189,6 +165,37 @@ impl Buffer {
     pub fn remove(&mut self, range: Range<usize>) {
         if !range.is_empty() {
             self.rope.remove(range);
+        }
+    }
+}
+
+/// Replace `path` with what `fill` writes, never leaving a half-written
+/// file: write a temp file next to the target, flush it to disk, then rename
+/// it over the original. Symlinks are followed (the link stays a link) and
+/// the original's permissions are kept.
+pub fn write_atomic(path: &Path, fill: impl Fn(&mut BufWriter<std::fs::File>) -> std::io::Result<()>) -> std::io::Result<()> {
+    let write = |p: &Path| -> std::io::Result<()> {
+        let mut out = BufWriter::new(std::fs::File::create(p)?);
+        fill(&mut out)?;
+        out.into_inner().map_err(|e| e.into_error())?.sync_all()
+    };
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    let dir = target.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = dir.join(format!(".{name}.strata-{}.tmp", std::process::id()));
+    match write(&tmp) {
+        Ok(()) => {
+            if let Ok(meta) = std::fs::metadata(&target) {
+                let _ = std::fs::set_permissions(&tmp, meta.permissions());
+            }
+            std::fs::rename(&tmp, &target).inspect_err(|_| {
+                let _ = std::fs::remove_file(&tmp);
+            })
+        }
+        // Can't create files in the folder (but maybe can write the file): write in place.
+        Err(_) => {
+            let _ = std::fs::remove_file(&tmp);
+            write(&target)
         }
     }
 }
