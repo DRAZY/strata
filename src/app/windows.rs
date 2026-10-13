@@ -172,7 +172,7 @@ impl StrataApp {
 
     /// One blank tab and no folder.
     fn pristine(&self) -> bool {
-        self.docs.len() == 1 && self.docs[0].is_blank() && self.sidebar.root.is_none()
+        self.docs.len() == 1 && self.docs[0].is_blank() && self.sidebar.roots.is_empty()
     }
 }
 

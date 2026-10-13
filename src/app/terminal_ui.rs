@@ -6,7 +6,10 @@ use crate::terminal::{self, PanelAction};
 
 impl StrataApp {
     fn terminal_dir(&self) -> std::path::PathBuf {
-        terminal::start_dir(self.sidebar.root.as_deref(), self.docs[self.active].path.as_deref())
+        // The folder holding the current file, else the first folder.
+        let file = self.docs[self.active].path.as_deref();
+        let folder = file.and_then(|f| self.sidebar.root_of(f)).or(self.sidebar.root());
+        terminal::start_dir(folder, file)
     }
 
     fn set_terminal_visible(&mut self, on: bool) {

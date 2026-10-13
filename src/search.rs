@@ -131,17 +131,24 @@ pub struct Scope {
 }
 
 impl Scope {
+    #[cfg(test)]
     pub fn folder(root: &Path) -> Self {
-        Scope { folders: vec![root.to_owned()], ..Default::default() }
+        Self::folders(vec![root.to_owned()])
+    }
+
+    pub fn folders(roots: Vec<PathBuf>) -> Self {
+        Scope { folders: roots, ..Default::default() }
     }
 
     /// Parse Sublime's "Where" syntax: comma-separated folders or files
-    /// (relative to `root`), `<open folders>`, `<open files>`, include globs
-    /// like `*.rs` and exclude globs like `-*.min.js` or `-target/`. A glob
-    /// without a `/` matches file names (excludes also match folder names);
-    /// one with a `/` matches the path relative to the searched folder.
-    /// Only globs (or an empty field) searches `root`.
-    pub fn parse(spec: &str, root: Option<&Path>, open_files: &[PathBuf]) -> Result<Scope, String> {
+    /// (relative paths are looked up in each of `roots`), `<open folders>`,
+    /// `<open files>`, include globs like `*.rs` and exclude globs like
+    /// `-*.min.js` or `-target/`. A glob without a `/` matches file names
+    /// (excludes also match folder names); one with a `/` matches the path
+    /// relative to the searched folder. Only globs (or an empty field)
+    /// searches every folder in `roots`, or with none, like Sublime, the
+    /// open files.
+    pub fn parse(spec: &str, roots: &[PathBuf], open_files: &[PathBuf]) -> Result<Scope, String> {
         let mut scope = Scope::default();
         let mut named_place = false;
         for token in spec.split(',').map(str::trim).filter(|t| !t.is_empty()) {
@@ -150,7 +157,7 @@ impl Scope {
                 scope.exclude.push(glob.to_owned());
             } else if token == "<open folders>" || token == "<project>" {
                 named_place = true;
-                scope.folders.extend(root.map(Path::to_owned));
+                scope.folders.extend(roots.iter().cloned());
             } else if token == "<open files>" {
                 named_place = true;
                 scope.files.extend(open_files.iter().cloned());
@@ -159,7 +166,7 @@ impl Scope {
                 scope.include.push(token.to_owned());
             } else {
                 named_place = true;
-                let path = expand_path(token, root);
+                let path = expand_path(token, roots);
                 if path.is_dir() {
                     scope.folders.push(path);
                 } else if path.is_file() {
@@ -170,9 +177,13 @@ impl Scope {
             }
         }
         if !named_place {
-            match root {
-                Some(root) => scope.folders.push(root.to_owned()),
-                None => return Err("No folder to search: open one, or list folders in Where".into()),
+            if roots.is_empty() {
+                if open_files.is_empty() {
+                    return Err("Nothing to search: open a folder (File ▸ Open Folder…) or a file, or list folders in Where".into());
+                }
+                scope.files.extend(open_files.iter().cloned());
+            } else {
+                scope.folders.extend(roots.iter().cloned());
             }
         }
         if scope.folders.is_empty() && scope.files.is_empty() {
@@ -182,17 +193,19 @@ impl Scope {
     }
 }
 
-fn expand_path(token: &str, root: Option<&Path>) -> PathBuf {
+/// A Where path: `~/…` is in the home folder, and a relative path is in the
+/// first of `roots` that has it (else the first).
+fn expand_path(token: &str, roots: &[PathBuf]) -> PathBuf {
     if let Some(rest) = token.strip_prefix("~/").or_else(|| token.strip_prefix("~\\"))
         && let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
     {
         return PathBuf::from(home).join(rest);
     }
     let p = PathBuf::from(token);
-    match root {
-        Some(root) if p.is_relative() => root.join(p),
-        _ => p,
+    if p.is_absolute() || roots.is_empty() {
+        return p;
     }
+    roots.iter().map(|r| r.join(&p)).find(|q| q.exists()).unwrap_or_else(|| roots[0].join(&p))
 }
 
 fn compile(globs: &[String]) -> Result<Option<GlobSet>, String> {
@@ -276,6 +289,7 @@ pub struct Search {
 
 impl Search {
     /// Search the folder `root`.
+    #[cfg(test)]
     pub fn start(&mut self, root: &Path, q: &Query, ctx: Option<egui::Context>) {
         self.start_in(Scope::folder(root), "", q, ctx);
     }
@@ -498,7 +512,7 @@ mod tests {
     }
 
     fn run_where(root: &Path, spec: &str, open: &[PathBuf], q: &Query) -> Result<Vec<String>, String> {
-        let scope = Scope::parse(spec, Some(root), open)?;
+        let scope = Scope::parse(spec, &[root.to_owned()], open)?;
         let mut s = Search::default();
         s.start_in(scope, spec, q, None);
         s.wait();
@@ -539,7 +553,10 @@ mod tests {
         // <open files> searches just those, even when gitignored.
         assert_eq!(run_where(&root, "<open files>", &[root.join("ignored.txt")], &q).unwrap(), ["ignored.txt"]);
         assert!(run_where(&root, "nope", &[], &q).unwrap_err().contains("No such folder"));
-        assert!(Scope::parse("", None, &[]).is_err());
+        assert!(Scope::parse("", &[], &[]).is_err());
+        // No folder: the open files, like Sublime.
+        let open = [root.join("src/a.rs")];
+        assert_eq!(Scope::parse("", &[], &open).unwrap().files, open);
         fs::remove_dir_all(root).ok();
     }
 

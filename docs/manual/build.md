@@ -27,7 +27,7 @@ Tools ▸ Save All on Build is on by default: before each build, Strata saves ev
 Each build system says which files it fits:
 
 - by syntax or file extension, such as Rust files or `.py` files, and/or
-- by a marker file, such as `Cargo.toml` or `Makefile`, in the file's folder or one of the folders above it. Strata looks up to the folder open in the side bar, and never treats your home folder or the top of the disk as a project.
+- by a marker file, such as `Cargo.toml` or `Makefile`, in the file's folder or one of the folders above it. Strata looks up to the side bar folder that holds the file, and never treats your home folder or the top of the disk as a project.
 
 A build system that fits gets 2 points for matching the file and 2 points for finding its marker file, plus its own `priority`. The highest score wins. On a tie, your own build systems win over the built-in ones, and built-in ones win in the order of the table below.
 
@@ -147,7 +147,7 @@ Edit it, save, and run Build With… to try it. You can rename the file; only th
 | `extensions` | File extensions without the dot, such as `"py"`. |
 | `files` | Marker file names, such as `"Cargo.toml"`. |
 
-If `syntaxes` or `extensions` is given, the current file must match one of them (either list will do). If `files` is given, one of those files must exist in the file's folder or a folder above it, up to the folder open in the side bar.
+If `syntaxes` or `extensions` is given, the current file must match one of them (either list will do). If `files` is given, one of those files must exist in the file's folder or a folder above it, up to the side bar folder that holds it.
 
 ### Variants
 
@@ -170,7 +170,7 @@ You can use these in `cmd`, `working_dir` and `env`, written `$name` or `${name}
 | `$file_name` | The file's name, such as `main.rs`. |
 | `$file_base_name` | The name without its extension, such as `main`. |
 | `$file_extension` | The extension without the dot, such as `rs`. |
-| `$folder` | The folder open in the side bar. |
+| `$folder` | The side bar folder that holds the current file; with several folders and a file outside them, the first one. |
 | `$project_path` | The folder that holds the selector's marker file; otherwise `$folder`; otherwise `$file_path`. |
 | `$project_name` | The last part of `$project_path`. |
 | `$exe` | `.exe` on Windows, nothing elsewhere. |

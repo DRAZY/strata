@@ -272,26 +272,26 @@ impl StrataApp {
     /// Goto Reference: whole-word find in the folder for the word under the cursor.
     pub(super) fn goto_reference(&mut self) {
         let Some(word) = self.word_at_cursor() else { return };
-        let Some(root) = self.sidebar.root.clone() else {
+        if self.sidebar.roots.is_empty() {
             self.find.query = crate::find::Query::literal(&word, true);
             self.open_find(false);
             return;
-        };
+        }
         self.sidebar.query = crate::find::Query::literal(&word, true);
         self.sidebar.start_find_in_files(None);
-        self.sidebar.search.start(&root, &self.sidebar.query, None);
+        let scope = crate::search::Scope::folders(self.sidebar.roots.clone());
+        self.sidebar.search.start_in(scope, "", &self.sidebar.query, None);
         self.find_result = None;
         self.status = format!("References to {word}: see the Search tab, or step with Find ▸ Find Results");
     }
 
     /// Every symbol in the folder's files (bounded), offered in the palette.
     pub(super) fn goto_symbol_in_project(&mut self, ctx: &egui::Context) {
-        let Some(root) = self.sidebar.root.clone() else {
+        let Some(walker) = self.walk_folders() else {
             return self.run(ctx, Cmd::GotoSymbol);
         };
         let mut labels = Vec::new();
         let mut spots = Vec::new();
-        let walker = ignore::WalkBuilder::new(&root).require_git(false).build();
         for entry in walker.flatten().filter(|e| e.file_type().is_some_and(|t| t.is_file())).take(5_000) {
             let p = entry.path();
             let Some(syntax) = crate::highlight::syntax_for_path(p) else { continue };
@@ -299,7 +299,7 @@ impl StrataApp {
                 continue;
             }
             let Ok(text) = std::fs::read_to_string(p) else { continue };
-            let rel = p.strip_prefix(&root).unwrap_or(p).display().to_string();
+            let rel = self.sidebar.display_path(p);
             for s in crate::symbols::symbols(&syntax, &text) {
                 labels.push(format!("{}  ·  {rel}:{}", s.name, s.line + 1));
                 spots.push((p.to_owned(), s.line));
@@ -410,7 +410,7 @@ impl StrataApp {
     }
 
     pub(super) fn close_project(&mut self) {
-        self.sidebar = crate::sidebar::Sidebar::new();
+        self.sidebar.close_folders();
         self.project_path = None;
     }
 
@@ -484,6 +484,7 @@ struct Credit {
     name: &'static str,
     license: &'static str,
     /// The Cargo.toml dependencies it covers (a test checks every one has a credit).
+    #[cfg_attr(not(test), allow(dead_code))]
     crates: &'static [&'static str],
 }
 
@@ -640,10 +641,11 @@ mod tests {
         for line in toml.lines().map(str::trim) {
             if line.starts_with('[') {
                 in_deps = line.ends_with("dependencies]");
-            } else if in_deps && let Some((name, _)) = line.split_once('=') {
-                if !line.starts_with('#') {
-                    deps.push(name.trim().to_owned());
-                }
+            } else if in_deps
+                && !line.starts_with('#')
+                && let Some((name, _)) = line.split_once('=')
+            {
+                deps.push(name.trim().to_owned());
             }
         }
         deps

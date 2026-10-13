@@ -279,7 +279,11 @@ pub struct Session {
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq, Clone)]
 #[serde(default)]
 pub struct WindowState {
+    /// The first folder, which was the only one before Strata had several
+    /// (kept so an older Strata still opens it).
     pub folder: Option<PathBuf>,
+    /// Every folder in the sidebar, first one first.
+    pub folders: Vec<PathBuf>,
     pub sidebar_visible: bool,
     pub active: usize,
     pub tabs: Vec<TabState>,
@@ -336,7 +340,7 @@ impl Session {
         if !self.windows.is_empty() {
             return self.windows.clone();
         }
-        vec![WindowState { folder: self.folder.clone(), sidebar_visible: self.sidebar_visible, active: self.active, tabs: self.tabs.clone(), layout: self.layout.clone(), position: None, size: None }]
+        vec![WindowState { folder: self.folder.clone(), folders: Vec::new(), sidebar_visible: self.sidebar_visible, active: self.active, tabs: self.tabs.clone(), layout: self.layout.clone(), position: None, size: None }]
     }
 
     /// `Ok(None)` when there is no session yet; `Err` when one exists but can't be read.

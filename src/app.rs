@@ -10,7 +10,7 @@ use crate::panes::Layout;
 use crate::session::{Session, SessionLock, Settings, TabState, WindowState};
 use crate::sidebar::{self, Sidebar};
 use egui::{Color32, FontId, Key, Rect, Sense, Stroke, pos2, vec2};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Default)]
 struct FindBar {
@@ -165,9 +165,9 @@ impl StrataApp {
         }
         app.session_key = app.session_fingerprint();
 
-        // Dev aids (pair with STRATA_SCREENSHOT): run find-in-files on the open folder,
-        // or open find/replace with a query.
-        if let (Ok(q), true) = (std::env::var("STRATA_DEV_FIND_IN_FILES"), app.sidebar.root.is_some()) {
+        // Dev aids (pair with STRATA_SCREENSHOT): run find-in-files on the open folders
+        // (or open files), or open find/replace with a query.
+        if let Ok(q) = std::env::var("STRATA_DEV_FIND_IN_FILES") {
             app.dev_find_in_files(q);
         }
         if let Ok(q) = std::env::var("STRATA_DEV_FIND") {
@@ -753,8 +753,14 @@ impl StrataApp {
         }
         self.next_stamp = self.docs.iter().map(|d| d.stamp).max().unwrap_or(0) + 1;
         self.activate(session.active.min(self.docs.len().saturating_sub(1)));
-        if let Some(folder) = session.folder.clone().filter(|f| f.is_dir()) {
-            self.sidebar.open_folder(folder);
+        // Every folder (`folders`); a session from before several folders has just `folder`.
+        let folders = if session.folders.is_empty() { session.folder.iter().cloned().collect() } else { session.folders.clone() };
+        for (k, folder) in folders.into_iter().filter(|f| f.is_dir()).enumerate() {
+            if k == 0 {
+                self.sidebar.open_folder(folder);
+            } else {
+                self.sidebar.add_folder(folder);
+            }
             self.sidebar.visible = session.sidebar_visible;
         }
         unreadable
@@ -779,7 +785,7 @@ impl StrataApp {
     fn session_fingerprint(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (self.active, &self.sidebar.root, self.sidebar.visible, self.layout.cols.len(), self.layout.rows.len()).hash(&mut h);
+        (self.active, &self.sidebar.roots, self.sidebar.visible, self.layout.cols.len(), self.layout.rows.len()).hash(&mut h);
         (&self.recent_files, &self.recent_folders).hash(&mut h);
         for d in &self.docs {
             (&d.path, d.is_dirty(), d.editor.version(), d.group, d.stamp).hash(&mut h);
@@ -838,7 +844,8 @@ impl StrataApp {
             });
         }
         WindowState {
-            folder: self.sidebar.root.clone(),
+            folder: self.sidebar.roots.first().cloned(),
+            folders: self.sidebar.roots.clone(),
             sidebar_visible: self.sidebar.visible,
             active: self.active.min(tabs.len().saturating_sub(1)),
             tabs,
@@ -859,7 +866,7 @@ impl StrataApp {
             Cmd::Open => {
                 let dir = self.docs[self.active].path.as_ref().and_then(|p| p.parent()).map(|p| p.to_owned());
                 let mut dialog = rfd::FileDialog::new();
-                if let Some(dir) = dir.or_else(|| self.sidebar.root.clone()) {
+                if let Some(dir) = dir.or_else(|| self.sidebar.root().map(Path::to_owned)) {
                     dialog = dialog.set_directory(dir);
                 }
                 for p in dialog.pick_files().unwrap_or_default() {
@@ -1031,9 +1038,12 @@ impl StrataApp {
             Cmd::GotoDefinition => self.goto_definition(),
             Cmd::OpenProject => self.open_project(),
             Cmd::SaveProjectAs => self.save_project_as(),
-            Cmd::CloseFolder => {
-                self.sidebar = Sidebar::new();
+            Cmd::AddFolder => {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    self.add_folder(dir);
+                }
             }
+            Cmd::CloseFolder => self.sidebar.close_folders(),
             Cmd::RefreshFolders => self.sidebar.refresh(),
             Cmd::About => self.about_open = true,
             Cmd::InstallShellCommand => self.install_shell_command(),
@@ -1101,7 +1111,9 @@ impl StrataApp {
 
     fn build_context(&self) -> crate::build::BuildContext {
         let d = &self.docs[self.active];
-        crate::build::BuildContext { file: d.path.clone(), folder: self.sidebar.root.clone(), syntax: Some(d.highlighter.syntax_name().to_owned()) }
+        // The sidebar folder holding the file, else the first one.
+        let folder = d.path.as_deref().and_then(|p| self.sidebar.root_of(p)).or(self.sidebar.root()).map(Path::to_owned);
+        crate::build::BuildContext { file: d.path.clone(), folder, syntax: Some(d.highlighter.syntax_name().to_owned()) }
     }
 
     fn open_palette(&mut self, ctx: &egui::Context, mode: palette::Mode, prefix: &str) {
@@ -1119,7 +1131,7 @@ impl StrataApp {
             text: d.editor.text_snapshot(),
             syntax: d.highlighter.syntax_name().to_owned(),
             lines: d.editor.buffer.len_lines(),
-            root: self.sidebar.root.clone(),
+            roots: self.sidebar.roots.clone(),
             theme: self.active_theme(),
             open: self.docs.iter().filter_map(|d| d.path.clone()).collect(),
         }
@@ -1354,7 +1366,11 @@ impl StrataApp {
     fn title(&self) -> String {
         let d = &self.docs[self.active];
         let dot = if d.is_dirty() { " •" } else { "" };
-        let folder = self.sidebar.root.as_ref().and_then(|r| r.file_name()).map(|n| format!(" — {}", n.to_string_lossy())).unwrap_or_default();
+        let more = match self.sidebar.roots.len() {
+            0 | 1 => String::new(),
+            n => format!(" +{}", n - 1),
+        };
+        let folder = self.sidebar.root().and_then(|r| r.file_name()).map(|n| format!(" — {}{more}", n.to_string_lossy())).unwrap_or_default();
         format!("{}{dot}{folder} — Strata", d.name())
     }
 }
@@ -1625,7 +1641,7 @@ impl StrataApp {
         let painter = ctx.layer_painter(egui::LayerId::background());
         let hl = &self.docs[0].highlighter;
         let (fg, accent) = (hl.foreground(), hl.accent());
-        let center = rect.center() + vec2(if self.sidebar.visible && self.sidebar.root.is_some() { 130.0 } else { 0.0 }, -60.0);
+        let center = rect.center() + vec2(if self.sidebar.shown() { 130.0 } else { 0.0 }, -60.0);
         painter.text(center, egui::Align2::CENTER_CENTER, "Strata", FontId::proportional(40.0), accent.gamma_multiply(0.85));
         let rows = [
             ("Goto Anything", Cmd::GotoAnything),
@@ -2163,7 +2179,7 @@ impl eframe::App for StrataApp {
 
         self.markdown_panel(ui);
 
-        if self.sidebar.visible && self.sidebar.root.is_some() {
+        if self.sidebar.shown() {
             let current = self.docs[self.active].path.clone();
             let open = self.open_files_for_sidebar();
             let action = egui::Panel::left(self.link.id("sidebar"))
@@ -2228,6 +2244,8 @@ impl eframe::App for StrataApp {
                 "about" => self.about_open = true,
                 "theme" => self.open_palette(ctx, palette::Mode::Theme, q),
                 "licenses" => self.licenses_open = true,
+                // "fif:query": Find in Files once the launch files are open.
+                "fif" => self.dev_find_in_files(q.to_owned()),
                 "help" => self.dev_help(q, false),
                 "helpsearch" => self.dev_help(q, true),
                 "fold" => self.run_act(ctx, crate::menus::Act::Named(format!("fold_level:{}", q.parse::<usize>().unwrap_or(2)))),
@@ -2374,7 +2392,7 @@ mod tests {
         let dir = temp_dir("fif");
         std::fs::write(dir.join("x.py"), "a = 1\n    target = 2\n").unwrap();
         let mut app = StrataApp::new(Some(dir.clone()), None);
-        assert_eq!(app.sidebar.root.as_deref(), Some(dir.as_path()));
+        assert_eq!(app.sidebar.roots, std::slice::from_ref(&dir));
         app.sidebar.search.start(&dir, &Query::literal("target", false), None);
         while app.sidebar.search.running {
             app.sidebar.search.poll();
@@ -2459,6 +2477,60 @@ mod tests {
         assert!(app.status.contains("zzz"), "{}", app.status);
         app.palette_events(&ctx, vec![palette::Event::Select { line: 0, cols: 3..8, preview: false }]);
         assert_eq!(ed(&app).buffer.slice(ed(&app).primary().range()), "alpha");
+    }
+
+    #[test]
+    fn find_in_files_without_a_folder_opens_the_search_tab() {
+        let dir = temp_dir("fif-nofolder");
+        std::fs::write(dir.join("a.txt"), "needle\n").unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(None, None);
+        app.open_path(dir.join("a.txt"), false);
+        for cmd in [Cmd::FindInFiles, Cmd::ReplaceInFiles] {
+            app.sidebar.visible = false;
+            app.run(&ctx, cmd);
+            assert!(app.sidebar.shown(), "{cmd:?} shows the Search tab");
+        }
+        app.sidebar.visible = false;
+        app.run_act(&ctx, crate::menus::Act::Named("show_find_results".into()));
+        assert!(app.sidebar.shown());
+        render(&mut app, &ctx, vec![]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn every_folder_survives_a_restart() {
+        let config = temp_dir("roots-session");
+        let (a, b) = (config.join("a"), config.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let mut app = StrataApp::new(Some(a.clone()), Some(config.clone()));
+        app.add_folder(b.clone());
+        assert_eq!(app.sidebar.roots, [a.clone(), b.clone()]);
+        assert_eq!(app.recent_folders.first(), Some(&b));
+        assert!(app.save_session());
+        drop(app);
+        let back = StrataApp::new(None, Some(config.clone()));
+        assert_eq!(back.sidebar.roots, [a.clone(), b.clone()]);
+        std::fs::remove_dir_all(config).ok();
+    }
+
+    #[test]
+    fn projects_keep_every_folder() {
+        let dir = temp_dir("roots-project");
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let project = dir.join("p.strata-project");
+        std::fs::write(&project, r#"{"folders": ["a", "b"]}"#).unwrap();
+        let mut app = StrataApp::new(None, None);
+        app.open_project_path(project.clone());
+        assert_eq!(app.sidebar.roots, [a.clone(), b.clone()]);
+        let saved = dir.join("q.strata-project");
+        app.save_project_to(&saved);
+        let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&saved).unwrap()).unwrap();
+        assert_eq!(json["folders"], serde_json::json!(["a", "b"]));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

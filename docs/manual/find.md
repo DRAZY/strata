@@ -94,17 +94,16 @@ Without `.*`, the replacement text is inserted exactly as typed.
 
 ## Find in Files
 
-Find in Files searches every file in the folder open in the sidebar. Open it with {{key:find_in_files}} (Find ▸ Find in Files…, or "Find: Find in Folder…" in the Command Palette). The sidebar switches to its Search tab and puts the cursor in the Find field. A single-line selection in the editor becomes the search text.
+Find in Files searches every file in the folders open in the sidebar. Open it with {{key:find_in_files}} (Find ▸ Find in Files…, or "Find: Find in Folder…" in the Command Palette). The sidebar switches to its Search tab and puts the cursor in the Find field. A single-line selection in the editor becomes the search text. To search one folder of the tree, right-click it and choose Find in Folder…, which puts that folder in Where.
 
-> [!NOTE]
-> Find in Files lives in the sidebar, so it needs an open folder. See [Projects and Sidebar](projects.md) for opening one.
+With no folder open, Find in Files still works: like Sublime Text, it searches your open files (`<open files>`), and the sidebar shows just the Search tab (its × hides it again). If no file is open either, the summary asks you to open a folder or a file. See [Projects and Sidebar](projects.md) for opening folders.
 
 The Search tab has its own `.*`, `Aa` and `"ab"` toggles (separate from the find bar's) and three fields:
 
 | Field | What goes in it |
 |---|---|
 | Find | The text or regular expression to look for. |
-| Where | Which folders and files to search. Leave it empty to search the whole open folder. |
+| Where | Which folders and files to search. Leave it empty to search every open folder (or, with none, the open files). |
 | Replace | The replacement text, for Replace in Files. |
 
 Press Enter in any of the fields, or click Find, to search. Results stream in while the search runs; a spinner and a Stop button show while it's busy. Find ▸ Cancel Find in Files ({{key:cancel_find_in_files}}) also stops it.
@@ -115,12 +114,12 @@ Where is a comma-separated list. Each entry can be:
 
 | Entry | Meaning |
 |---|---|
-| `src`, `docs/api` | A folder, relative to the open folder. |
+| `src`, `docs/api` | A folder, relative to the open folder (with several, the first one that has it). |
 | `/abs/path`, `~/notes` | An absolute folder, or one in your home folder. |
 | `src/main.rs` | A single file. |
 | `*.rs`, `*.{ts,tsx}` | Include only files matching this pattern. |
 | `-*.min.js`, `-target/` | Exclude files or folders matching this pattern (a leading `-`). |
-| `<open folders>` | The folder open in the sidebar. `<project>` means the same. |
+| `<open folders>` | Every folder open in the sidebar. `<project>` means the same. |
 | `<open files>` | Every file open in a tab. |
 
 How patterns match:
@@ -128,7 +127,7 @@ How patterns match:
 - A pattern without a `/` matches file names, at any depth. `*.rs` finds Rust files in every folder.
 - An exclude pattern without a `/` also matches folder names, so `-node_modules` or `-target/` skips those folders entirely. A trailing `/` is ignored.
 - A pattern with a `/` matches the path relative to the folder being searched, such as `src/*.rs` or `-tests/fixtures/*`.
-- If Where contains only patterns, Strata searches the whole open folder with them applied.
+- If Where contains only patterns, Strata searches every open folder (or, with none, the open files) with them applied.
 
 For example, `src, tests, *.rs, -*_generated.rs` searches Rust files under `src` and `tests`, skipping generated ones.
 
@@ -146,11 +145,11 @@ The search stops after 10,000 matches and the summary says so. The summary line 
 
 ### Results
 
-Results appear in the Search tab, sorted by file path. Each file's path is shown in bold, followed by one row per match with its line number and the line's text, the match highlighted.
+Results appear in the Search tab, sorted by file path. Each file's path is shown in bold (relative to its folder, after the folder's name when there are several), followed by one row per match with its line number and the line's text, the match highlighted.
 
 Click a match to open the file and select it. If the file is already open in another window, that window comes forward instead.
 
-To step through results from the keyboard, use Find ▸ Find Results ▸ Next Result ({{key:next_find_result}}) and Previous Result ({{key:prev_find_result}}). They wrap around and show "Result 3 of 42" in the status bar. Find ▸ Find Results ▸ Show Panel brings the Search tab back.
+To step through results from the keyboard, use Find ▸ Find Results ▸ Next Result ({{key:next_find_result}}) and Previous Result ({{key:prev_find_result}}). They wrap around and show "Result 3 of 42" in the status bar; after a new search they start again from its first result. Find ▸ Find Results ▸ Show Panel brings the Search tab back.
 
 ## Replace in Files
 
@@ -193,7 +192,7 @@ After a replace, an **Undo Replace in Files** button appears in the Search tab. 
 
 Goto Anything ({{key:goto_anything}}, Goto ▸ Goto Anything…) opens a quick panel at the top of the window that finds files by fuzzy name. Type a few letters from anywhere in the path, in order: `srmain` finds `src/main.rs`. Separate words with spaces to match several parts in any order. Matches are ranked, with matched letters highlighted.
 
-The file list covers the open folder (skipping `.gitignore`d and hidden files, up to 500,000 files) plus any open files outside it. Without a folder it lists your open files. While a large folder is still being indexed, the panel shows "Indexing…".
+The file list covers every open folder (skipping `.gitignore`d and hidden files, up to 500,000 files) plus any open files outside it. Without a folder it lists your open files. While a large folder is still being indexed, the panel shows "Indexing…".
 
 Add a suffix to go somewhere inside a file:
 
@@ -222,7 +221,7 @@ Symbols are found by recognizing common declaration patterns line by line, so th
 
 ### Goto Symbol in Project
 
-{{key:goto_symbol_in_project}} (Goto ▸ Goto Symbol in Project…) lists symbols from every file in the open folder, shown as `name · path:line`. Pick one to open that file at the symbol. It looks at up to 5,000 files with a recognized syntax (each up to 1 MB), skipping `.gitignore`d files. With no folder open, it acts like Go to Symbol.
+{{key:goto_symbol_in_project}} (Goto ▸ Goto Symbol in Project…) lists symbols from every file in the open folders, shown as `name · path:line`. Pick one to open that file at the symbol. It looks at up to 5,000 files with a recognized syntax (each up to 1 MB), skipping `.gitignore`d files. With no folder open, it acts like Go to Symbol.
 
 ## Go to Definition
 
@@ -230,13 +229,13 @@ Symbols are found by recognizing common declaration patterns line by line, so th
 
 1. in the current file,
 2. then in the other open tabs,
-3. then in files in the open folder with the same file extension as the current file.
+3. then in files in the open folders with the same file extension as the current file.
 
 If nothing is found, the status bar says "No definition found for …".
 
 ## Go to Reference
 
-{{key:goto_reference}} (Goto ▸ Goto Reference…) searches the open folder for the word under the cursor, as a whole word and case sensitive. The results appear in the sidebar's Search tab; step through them with Next Result and Previous Result (see [Find in Files](find.md#find-in-files)). With no folder open, it opens the find bar with the word instead.
+{{key:goto_reference}} (Goto ▸ Goto Reference…) searches the open folders for the word under the cursor, as a whole word and case sensitive. The results appear in the sidebar's Search tab; step through them with Next Result and Previous Result (see [Find in Files](find.md#find-in-files)). With no folder open, it opens the find bar with the word instead.
 
 ## Jump Back and Forward
 

@@ -28,7 +28,7 @@ The panel is hidden in distraction-free mode and comes back when you leave it.
 
 A new terminal starts in:
 
-1. the folder open in the side bar, if there is one;
+1. the side bar folder that holds the current file (or the first side bar folder), if one is open;
 2. otherwise the folder of the current file;
 3. otherwise your home folder.
 

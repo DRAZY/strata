@@ -101,7 +101,7 @@ impl StrataApp {
 
     /// Reveal in Finder, Copy File Path, Reveal in Side Bar.
     fn file_items(&self, path: Option<&PathBuf>) -> Vec<Item> {
-        let in_tree = path.is_some_and(|p| self.sidebar.root.as_ref().is_some_and(|r| p.starts_with(r)));
+        let in_tree = path.is_some_and(|p| self.sidebar.root_of(p).is_some());
         vec![
             Item::new(ctxmenu::reveal_label(), named(REVEAL)).enabled(path.is_some_and(|p| p.exists())),
             Item::new("Copy File Path", named(COPY_PATH)).enabled(path.is_some()),

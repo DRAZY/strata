@@ -53,7 +53,8 @@ pub struct Context {
     pub text: Arc<String>,
     pub syntax: String,
     pub lines: usize,
-    pub root: Option<PathBuf>,
+    /// The window's folders (Goto Anything lists their files).
+    pub roots: Vec<PathBuf>,
     pub theme: String,
     /// Open files, so Goto Anything finds them without a folder.
     pub open: Vec<PathBuf>,
@@ -125,9 +126,10 @@ impl Palette {
     pub fn show_mode(&mut self, mode: Mode, prefix: &str, ctx: Context, egui_ctx: &egui::Context) {
         if mode == Mode::Files {
             // Re-list the folder each time so new files show up; it streams in quickly.
-            match &ctx.root {
-                Some(root) => self.files.start(root, Some(egui_ctx.clone())),
-                None => self.files = FileIndex::default(),
+            if ctx.roots.is_empty() {
+                self.files = FileIndex::default();
+            } else {
+                self.files.start(&ctx.roots, Some(egui_ctx.clone()));
             }
         }
         self.open = true;
@@ -174,7 +176,7 @@ impl Palette {
     /// Recompute the rows when the query, mode or file list changed.
     fn rebuild(&mut self) {
         self.files.poll();
-        let key = (self.text.clone(), self.mode, self.files.paths().len());
+        let key = (self.text.clone(), self.mode, self.files.len());
         if self.rows_key.as_ref() == Some(&key) {
             return;
         }
@@ -249,11 +251,11 @@ impl Palette {
                 None => {}
             }
         }
-        // Files under the folder, plus open files outside it.
-        let root = self.ctx.as_ref().and_then(|c| c.root.clone());
-        let mut paths: Vec<(String, PathBuf)> = self.files.paths().iter().map(|p| (p.clone(), self.files.root().join(p))).collect();
+        // Files under the folders, plus open files outside them.
+        let roots = self.ctx.as_ref().map(|c| c.roots.clone()).unwrap_or_default();
+        let mut paths: Vec<(String, PathBuf)> = self.files.entries().map(|(label, path)| (label.to_owned(), path)).collect();
         for p in self.ctx.as_ref().map(|c| c.open.clone()).unwrap_or_default() {
-            if root.as_ref().is_none_or(|r| !p.starts_with(r)) {
+            if !roots.iter().any(|r| p.starts_with(r)) {
                 paths.push((p.display().to_string(), p));
             }
         }
@@ -324,8 +326,8 @@ impl Palette {
                     if !field.has_focus() && !self.focus {
                         field.request_focus();
                     }
-                    if self.mode == Mode::Files && !self.files.is_ready() && self.ctx.as_ref().is_some_and(|c| c.root.is_some()) {
-                        ui.label(egui::RichText::new(format!("Indexing… {} files", self.files.paths().len())).small().weak());
+                    if self.mode == Mode::Files && !self.files.is_ready() && self.ctx.as_ref().is_some_and(|c| !c.roots.is_empty()) {
+                        ui.label(egui::RichText::new(format!("Indexing… {} files", self.files.len())).small().weak());
                     } else if self.mode == Mode::Files && self.files.is_truncated() {
                         ui.label(egui::RichText::new(format!("Only the first {} files are indexed", crate::files::FILE_LIMIT)).small().weak());
                     }
@@ -534,7 +536,7 @@ mod tests {
             text: Arc::new(text.into()),
             syntax: syntax.into(),
             lines: text.lines().count().max(1),
-            root: None,
+            roots: Vec::new(),
             theme: crate::highlight::DEFAULT_THEME.into(),
             open: vec![PathBuf::from("/tmp/x/main.rs"), PathBuf::from("/tmp/x/notes.md")],
         }

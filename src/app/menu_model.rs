@@ -653,7 +653,7 @@ impl StrataApp {
         let mut recent_projects: Vec<Item> = self.recent_projects.iter().map(|p| Item::new(p.display().to_string(), Act::Named(format!("project:{}", p.display())))).collect();
         recent_projects.extend(self.recent_folders.iter().map(|p| Item::new(format!("{}/", p.display()), Act::OpenRecentFolder(p.clone()))));
         recent_projects.extend([SEP(), c("Clear Items", Cmd::ClearRecent)]);
-        let folder = self.sidebar.root.is_some();
+        let folder = !self.sidebar.roots.is_empty();
         m.push((
             "Project".into(),
             vec![
@@ -665,7 +665,7 @@ impl StrataApp {
                 c("Close Project", Cmd::CloseProject).enabled(folder || self.project_path.is_some()),
                 c("Edit Project", Cmd::EditProject).enabled(self.project_path.is_some()),
                 SEP(),
-                c("Add Folder to Project…", Cmd::OpenFolder),
+                c("Add Folder to Project…", Cmd::AddFolder),
                 c("Remove all Folders from Project", Cmd::CloseFolder).enabled(folder),
                 c("Refresh Folders", Cmd::RefreshFolders).enabled(folder),
             ],
@@ -906,6 +906,18 @@ mod tests {
             _ => None,
         });
         assert_eq!(quit, Some(Some((CMD_ALT, Key::Q))));
+    }
+
+    #[test]
+    fn add_folder_to_project_adds_a_folder() {
+        let app = StrataApp::new(None, None);
+        let menus = app.menus();
+        let project = &menus.iter().find(|(n, _)| n == "Project").unwrap().1;
+        let act = project.iter().find_map(|it| match it {
+            Item::Action { label, act, .. } if label == "Add Folder to Project…" => Some(act.clone()),
+            _ => None,
+        });
+        assert_eq!(act, Some(Act::Cmd(Cmd::AddFolder)));
     }
 
     #[test]

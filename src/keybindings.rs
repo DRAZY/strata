@@ -134,7 +134,6 @@ const SUBLIME_NAMES: &[(&str, Target)] = &[
     ("prompt_open_file", Target::Cmd(Cmd::Open)),
     ("prompt_open", Target::Cmd(Cmd::Open)),
     ("prompt_open_folder", Target::Cmd(Cmd::OpenFolder)),
-    ("prompt_add_folder", Target::Cmd(Cmd::OpenFolder)),
     ("prompt_save_as", Target::Cmd(Cmd::SaveAs)),
     ("close", Target::Cmd(Cmd::CloseTab)),
     ("close_folder_list", Target::Cmd(Cmd::CloseFolder)),

@@ -73,7 +73,7 @@
 //! | `$file_name` | its name, e.g. `main.rs` |
 //! | `$file_base_name` | its name without the extension, e.g. `main` |
 //! | `$file_extension` | its extension without the dot, e.g. `rs` |
-//! | `$folder` | the open folder (sidebar root) |
+//! | `$folder` | the sidebar folder holding the file (else the first one) |
 //! | `$project_path` | the directory holding the selector's marker file, else `$folder`, else `$file_path` |
 //! | `$project_name` | the last component of `$project_path` |
 //! | `$exe` | `.exe` on Windows, empty elsewhere |
@@ -161,7 +161,7 @@ pub struct BuildSystem {
 pub struct BuildContext {
     /// The current file (None for an unsaved buffer).
     pub file: Option<PathBuf>,
-    /// The open folder (sidebar root).
+    /// The sidebar folder holding the file, else the first one.
     pub folder: Option<PathBuf>,
     /// The current syntax name, e.g. "Rust".
     pub syntax: Option<String>,
@@ -978,6 +978,7 @@ impl Build {
     }
 
     /// The system ⌘B would run now.
+    #[cfg(test)]
     pub fn next_system(&self, ctx: &BuildContext) -> Option<String> {
         if let Some(last) = &self.last
             && self.systems.get(&last.system).is_some_and(|s| s.score(ctx).is_some())

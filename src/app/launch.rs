@@ -58,7 +58,7 @@ mod tests {
         // Not on disk yet: an empty tab that will be saved there.
         assert!(app.has_open_file(&d.join("new.txt")));
         assert!(!d.join("new.txt").exists());
-        assert_eq!(app.sidebar.root.as_deref(), Some(d.join("proj").as_path()));
+        assert_eq!(app.sidebar.roots, [d.join("proj")]);
         let i = app.docs.iter().position(|doc| doc.path.as_deref() == Some(d.join("a.txt").as_path())).unwrap();
         assert_eq!(app.docs[i].editor.cursor_line_col(), (2, 3));
         let i = app.docs.iter().position(|doc| doc.path.as_deref() == Some(d.join("new.txt").as_path())).unwrap();

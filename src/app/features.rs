@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 const RECENT_MAX: usize = 15;
 const JUMPS_MAX: usize = 100;
 
-/// A `.strata-project` file: a folder plus the files and layout to reopen.
+/// A `.strata-project` file: the folders, plus the files and layout to reopen.
 #[derive(Serialize, Deserialize, Default)]
 #[serde(default)]
 struct Project {
@@ -30,9 +30,18 @@ impl StrataApp {
         push_recent(&mut self.recent_files, p);
     }
 
+    /// Make `dir` the window's only folder.
     pub(super) fn open_folder(&mut self, dir: PathBuf) {
         push_recent(&mut self.recent_folders, &dir);
         self.sidebar.open_folder(dir);
+    }
+
+    /// Project ▸ Add Folder to Project…: `dir` joins the window's folders.
+    pub(super) fn add_folder(&mut self, dir: PathBuf) {
+        push_recent(&mut self.recent_folders, &dir);
+        if !self.sidebar.add_folder(dir.clone()) {
+            self.status = format!("{} is already in the side bar", dir.display());
+        }
     }
 
     pub(super) fn clear_recent(&mut self) {
@@ -159,8 +168,7 @@ impl StrataApp {
                 return;
             }
         }
-        if let (Some(root), Some(ext)) = (self.sidebar.root.clone(), ext) {
-            let walker = ignore::WalkBuilder::new(&root).require_git(false).build();
+        if let (Some(walker), Some(ext)) = (self.walk_folders(), ext) {
             for entry in walker.flatten().take(20_000) {
                 let p = entry.path();
                 if p.extension() != Some(ext.as_os_str()) || entry.metadata().map_or(true, |m| m.len() > 2_000_000) {
@@ -198,8 +206,15 @@ impl StrataApp {
             }
         };
         let base = path.parent().unwrap_or(Path::new("."));
-        if let Some(folder) = project.folders.first() {
-            self.open_folder(base.join(folder));
+        // The project's folders replace the window's.
+        for (k, folder) in project.folders.iter().enumerate() {
+            let dir = base.join(folder);
+            let dir = if folder.as_os_str().is_empty() { base.to_owned() } else { dir };
+            if k == 0 {
+                self.open_folder(dir);
+            } else {
+                self.add_folder(dir);
+            }
         }
         if let Some(layout) = project.layout {
             self.set_layout(layout.sanitized());
@@ -215,28 +230,44 @@ impl StrataApp {
     }
 
     pub(super) fn save_project_as(&mut self) {
-        let name = self.sidebar.root.as_ref().and_then(|r| r.file_name()).map_or("project".into(), |n| n.to_string_lossy().into_owned());
+        let name = self.sidebar.root().and_then(|r| r.file_name()).map_or("project".into(), |n| n.to_string_lossy().into_owned());
         let mut dialog = rfd::FileDialog::new().add_filter("Strata Project", &["strata-project"]).set_file_name(format!("{name}.strata-project"));
-        if let Some(root) = &self.sidebar.root {
+        if let Some(root) = self.sidebar.root() {
             dialog = dialog.set_directory(root);
         }
-        let Some(path) = dialog.save_file() else { return };
+        if let Some(path) = dialog.save_file() {
+            self.save_project_to(&path);
+        }
+    }
+
+    /// Write the window's folders, files and layout as a project file.
+    pub(super) fn save_project_to(&mut self, path: &Path) {
         let base = path.parent().unwrap_or(Path::new("."));
         // Paths are stored relative to the project file when they're inside its folder.
         let rel = |p: &Path| p.strip_prefix(base).map(Path::to_owned).unwrap_or_else(|_| p.to_owned());
         let project = Project {
-            folders: self.sidebar.root.iter().map(|r| rel(r)).collect(),
+            folders: self.sidebar.roots.iter().map(|r| rel(r)).collect(),
             files: self.docs.iter().filter_map(|d| d.path.as_deref().map(rel)).collect(),
             layout: Some(self.layout.clone()),
         };
         let text = serde_json::to_string_pretty(&project).unwrap_or_default();
-        self.status = match std::fs::write(&path, text + "\n") {
+        self.status = match std::fs::write(path, text + "\n") {
             Ok(()) => {
-                self.remember_project(&path);
+                self.remember_project(path);
                 format!("Saved project {}", path.display())
             }
             Err(e) => format!("Could not save project: {e}"),
         };
+    }
+
+    /// A walk of every folder in the sidebar (respecting .gitignore); None without one.
+    pub(super) fn walk_folders(&self) -> Option<ignore::Walk> {
+        let (first, rest) = self.sidebar.roots.split_first()?;
+        let mut b = ignore::WalkBuilder::new(first);
+        for r in rest {
+            b.add(r);
+        }
+        Some(b.require_git(false).build())
     }
 
     // ---- view modes ----------------------------------------------------------------

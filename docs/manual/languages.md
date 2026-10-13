@@ -97,7 +97,7 @@ Brackets, colons and tags inside strings and comments are ignored. With `smart_i
 
 ## Goto Symbol
 
-**Goto ▸ Goto Symbol…** ({{key:goto_symbol}}) lists the functions, types and other definitions in the current file, and **Goto Symbol in Project…** ({{key:goto_symbol_in_project}}) searches the files in the open folder (skipping ignored files and files over 1 MB; without an open folder it works like Goto Symbol). Strata finds symbols by recognizing common definition patterns line by line. It understands these languages:
+**Goto ▸ Goto Symbol…** ({{key:goto_symbol}}) lists the functions, types and other definitions in the current file, and **Goto Symbol in Project…** ({{key:goto_symbol_in_project}}) searches the files in the open folders (skipping ignored files and files over 1 MB; without an open folder it works like Goto Symbol). Strata finds symbols by recognizing common definition patterns line by line. It understands these languages:
 
 | Languages | What is listed |
 |-----------|----------------|

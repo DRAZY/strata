@@ -375,7 +375,9 @@ Dev aids (all pair with `STRATA_SCREENSHOT=out.ppm`, which renders the window,
 saves a screenshot and exits): `STRATA_DEV_FIND=query` (+ `STRATA_DEV_FIND_REGEX=1`),
 `STRATA_DEV_FIND_IN_FILES=query` (+ `STRATA_DEV_WHERE`, `STRATA_DEV_REPLACE`,
 `STRATA_DEV_REPLACE_STEP=confirm|run`), `STRATA_DEV_PALETTE="p:query"`,
-`"cmd:query"`, `"theme:query"` (the color scheme picker) or `"licenses:"`, `STRATA_SCREENSHOT_TYPE='fn\t'` (types into the editor first; `\t`
+`"cmd:query"`, `"theme:query"` (the color scheme picker), `"licenses:"` or
+`"fif:query"` (Find in Files on the first frame, after files given on the
+command line are open), `STRATA_SCREENSHOT_TYPE='fn\t'` (types into the editor first; `\t`
 presses Tab). `STRATA_CONFIG_DIR=dir` uses a separate settings/session folder (and its own
 single-instance socket, so a test copy never talks to your everyday Strata;
 for the .app use `open --env STRATA_CONFIG_DIR=dir -a dist/Strata.app file`,

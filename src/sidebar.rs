@@ -1,4 +1,5 @@
-//! Left sidebar: the open folder's file tree and find-in-files results.
+//! Left sidebar: the window's folders (each a top-level tree, like
+//! Sublime's project folders) and find-in-files results.
 
 use crate::find::Query;
 use crate::replace::{DiskReplace, Job, Replacer};
@@ -69,7 +70,8 @@ struct Entry {
 }
 
 pub struct Sidebar {
-    pub root: Option<PathBuf>,
+    /// The window's folders, in the order added; empty when none is open.
+    pub roots: Vec<PathBuf>,
     pub visible: bool,
     pub tab: Tab,
     /// Directory listings, read once per folder until refreshed.
@@ -102,7 +104,7 @@ pub struct Sidebar {
 impl Sidebar {
     pub fn new() -> Self {
         Self {
-            root: None,
+            roots: Vec::new(),
             visible: true,
             tab: Tab::Files,
             listings: HashMap::new(),
@@ -123,10 +125,37 @@ impl Sidebar {
         }
     }
 
+    /// The first folder: `$folder` for builds, the window title.
+    pub fn root(&self) -> Option<&Path> {
+        self.roots.first().map(PathBuf::as_path)
+    }
+
+    /// The folder `path` is in (the innermost, if folders nest).
+    pub fn root_of(&self, path: &Path) -> Option<&Path> {
+        self.roots.iter().filter(|r| path.starts_with(r)).max_by_key(|r| r.components().count()).map(PathBuf::as_path)
+    }
+
+    /// The sidebar panel is drawn: there are folders, or the Search tab is
+    /// up (find in files works without a folder).
+    pub fn shown(&self) -> bool {
+        self.visible && (!self.roots.is_empty() || self.tab == Tab::Search)
+    }
+
+    /// `path` for display: relative to its folder, after the folder's name
+    /// when there are several, else in full.
+    pub fn display_path(&self, path: &Path) -> String {
+        let Some(root) = self.root_of(path) else { return path.display().to_string() };
+        let rel = path.strip_prefix(root).unwrap_or(path).display().to_string().replace('\\', "/");
+        match root.file_name() {
+            Some(name) if self.roots.len() > 1 => format!("{}/{rel}", name.to_string_lossy()),
+            _ => rel,
+        }
+    }
+
     /// Show `path` in the tree: open its folders, scroll to it. False if it
-    /// isn't inside the open folder.
+    /// isn't inside one of the folders.
     pub fn reveal(&mut self, path: &Path) -> bool {
-        if !self.root.as_deref().is_some_and(|r| path.starts_with(r)) {
+        if self.root_of(path).is_none() {
             return false;
         }
         self.visible = true;
@@ -136,13 +165,48 @@ impl Sidebar {
         true
     }
 
+    /// Make `root` the only folder.
     pub fn open_folder(&mut self, root: PathBuf) {
         self.search.stop();
         self.search = Search::default();
         self.listings.clear();
-        self.root = Some(root);
+        self.roots = vec![root];
         self.visible = true;
         self.tab = Tab::Files;
+    }
+
+    /// Add `root` after the other folders (Project ▸ Add Folder to
+    /// Project…). False if it's already there.
+    pub fn add_folder(&mut self, root: PathBuf) -> bool {
+        self.visible = true;
+        self.tab = Tab::Files;
+        if self.roots.contains(&root) {
+            return false;
+        }
+        self.roots.push(root);
+        true
+    }
+
+    /// Take `root` out of the sidebar (nothing on disk changes).
+    pub fn remove_folder(&mut self, root: &Path) {
+        self.roots.retain(|r| r != root);
+        self.listings.retain(|dir, _| !dir.starts_with(root) || self.roots.iter().any(|r| dir.starts_with(r)));
+        if self.roots.is_empty() {
+            self.close_folders();
+        }
+    }
+
+    /// Remove all Folders from Project: an empty sidebar.
+    pub fn close_folders(&mut self) {
+        let (visible, show_open_files) = (self.visible, self.show_open_files);
+        *self = Sidebar::new();
+        (self.visible, self.show_open_files) = (visible, show_open_files);
+    }
+
+    /// Find in Folder…: the Search tab, looking in `dir`.
+    pub fn find_in_folder(&mut self, dir: &Path) {
+        self.where_text = dir.display().to_string();
+        self.start_find_in_files(None);
     }
 
     /// Cmd+Shift+F: show the Search tab with `prefill` (if any) in the query.
@@ -165,7 +229,7 @@ impl Sidebar {
     /// Run the search for the Find, Where and option fields.
     pub fn run_search(&mut self, open: &[OpenFile], ctx: Option<egui::Context>) {
         let open_paths: Vec<PathBuf> = open.iter().filter_map(|f| f.path.clone()).collect();
-        match Scope::parse(&self.where_text, self.root.as_deref(), &open_paths) {
+        match Scope::parse(&self.where_text, &self.roots, &open_paths) {
             Ok(mut scope) => {
                 scope.buffers = open.iter().filter_map(|f| Some((f.path.clone()?, f.unsaved.clone()?))).collect();
                 self.search.start_in(scope, &self.where_text, &self.query, ctx);
@@ -266,21 +330,27 @@ impl Sidebar {
         }
         let confirmed = self.confirm_replace(ui.ctx());
         let prompted = self.prompt(ui.ctx()).or(confirmed).or(finished);
-        let Some(root) = self.root.clone() else {
-            ui.add_space(8.0);
-            ui.label(RichText::new("No folder open").weak());
-            ui.label(RichText::new("Cmd+Shift+O to open one").weak().small());
-            return None;
-        };
+        let roots = self.roots.clone();
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Files, "Files");
-            ui.selectable_value(&mut self.tab, Tab::Search, "Search");
+            if roots.is_empty() {
+                // No folder: only find in files (open files) is on offer.
+                ui.label(RichText::new("Search").strong());
+            } else {
+                ui.selectable_value(&mut self.tab, Tab::Files, "Files");
+                ui.selectable_value(&mut self.tab, Tab::Search, "Search");
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if self.tab == Tab::Files && ui.small_button("⟳").on_hover_text("Refresh").clicked() {
                     self.refresh();
                 }
+                if roots.is_empty() && ui.small_button("×").on_hover_text("Close").clicked() {
+                    self.tab = Tab::Files;
+                }
             });
         });
+        if roots.is_empty() && self.tab == Tab::Files {
+            return prompted;
+        }
         ui.separator();
         let action = match self.tab {
             Tab::Files => {
@@ -303,13 +373,16 @@ impl Sidebar {
                             }
                         });
                     }
-                    let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
-                    let mut header = egui::CollapsingHeader::new(RichText::new(name).strong()).id_salt(&root).default_open(true);
-                    if self.reveal.is_some() {
-                        header = header.open(Some(true));
+                    // Each folder is a top-level tree, like Sublime's project folders.
+                    for root in &roots {
+                        let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
+                        let mut header = egui::CollapsingHeader::new(RichText::new(name).strong()).id_salt(root).default_open(true);
+                        if self.reveal.as_ref().is_some_and(|(r, _)| r.starts_with(root)) {
+                            header = header.open(Some(true));
+                        }
+                        let header = header.show(ui, |ui| self.tree(ui, root, current, &mut action));
+                        header.header_response.on_hover_text(root.display().to_string()).context_menu(|ui| self.menu(ui, root, true, &mut action));
                     }
-                    let header = header.show(ui, |ui| self.tree(ui, &root, current, &mut action));
-                    header.header_response.context_menu(|ui| self.menu(ui, &root, true, &mut action));
                 });
                 if let Some((_, tries)) = &mut self.reveal {
                     *tries = tries.saturating_sub(1);
@@ -320,7 +393,7 @@ impl Sidebar {
                 }
                 action
             }
-            Tab::Search => self.search_tab(ui, &root, open),
+            Tab::Search => self.search_tab(ui, open),
         };
         prompted.or(action)
     }
@@ -339,7 +412,8 @@ impl Sidebar {
             ask(PromptKind::NewFolder, dir.clone(), String::new());
             ui.close();
         }
-        if Some(path) != self.root.as_deref() && ui.button("Rename…").clicked() {
+        let is_root = self.roots.iter().any(|r| r == path);
+        if !is_root && ui.button("Rename…").clicked() {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             ask(PromptKind::Rename, path.to_owned(), name);
             ui.close();
@@ -355,9 +429,16 @@ impl Sidebar {
             }
             ui.close();
         }
-        if ui.button("Find in Folder…").clicked() {
-            self.start_find_in_files(None);
+        if ui.button("Find in Folder…").on_hover_text("Find in Files, in this folder").clicked() {
+            self.find_in_folder(&dir);
             ui.close();
+        }
+        if is_root {
+            ui.separator();
+            if ui.button("Remove Folder from Project").on_hover_text("Take it out of the side bar; nothing on disk changes").clicked() {
+                self.remove_folder(path);
+                ui.close();
+            }
         }
     }
 
@@ -508,7 +589,7 @@ impl Sidebar {
         }
     }
 
-    fn search_tab(&mut self, ui: &mut Ui, root: &Path, open: &[OpenFile]) -> Option<Action> {
+    fn search_tab(&mut self, ui: &mut Ui, open: &[OpenFile]) -> Option<Action> {
         let (mut find, mut replace) = (false, false);
         let busy = self.disk.running();
         ui.horizontal(|ui| {
@@ -532,8 +613,13 @@ impl Sidebar {
             });
         };
         let (fq, fr) = (std::mem::take(&mut self.focus_query), std::mem::take(&mut self.focus_replace));
-        field(ui, "Find", &mut self.query.text, "find-in-files", "Find in folder", fq);
-        field(ui, "Where", &mut self.where_text, "find-in-files-where", "folder, *.rs, -*.min.js, <open files>", false);
+        let (find_hint, where_hint) = if self.roots.is_empty() {
+            ("Find in open files", "<open files> (no folder is open), folder, *.rs")
+        } else {
+            ("Find in folders", "folder, *.rs, -*.min.js, <open files>")
+        };
+        field(ui, "Find", &mut self.query.text, "find-in-files", find_hint, fq);
+        field(ui, "Where", &mut self.where_text, "find-in-files-where", where_hint, false);
         field(ui, "Replace", &mut self.replacement, "find-in-files-replace", "Replace with", fr);
         ui.horizontal(|ui| {
             find |= ui.add_enabled(!busy, egui::Button::new("Find")).clicked();
@@ -569,7 +655,7 @@ impl Sidebar {
                 egui::CollapsingHeader::new(RichText::new(format!("{} skipped", skipped.len())).small()).id_salt("replace-skipped").default_open(skipped.len() <= 5).show(ui, |ui| {
                     egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
                         for (path, why) in skipped {
-                            let line = if path.as_os_str().is_empty() { why.clone() } else { format!("{}: {why}", path.strip_prefix(root).unwrap_or(path).display()) };
+                            let line = if path.as_os_str().is_empty() { why.clone() } else { format!("{}: {why}", self.display_path(path)) };
                             ui.label(RichText::new(line).small().weak());
                         }
                     });
@@ -586,7 +672,7 @@ impl Sidebar {
         }
         ui.label(self.summary());
         ui.separator();
-        self.results(ui, root)
+        self.results(ui)
     }
 
     fn summary(&self) -> RichText {
@@ -603,7 +689,7 @@ impl Sidebar {
         RichText::new(format!("{hits}{more} matches in {files} files · {scanned} scanned")).small().weak()
     }
 
-    fn results(&self, ui: &mut Ui, root: &Path) -> Option<Action> {
+    fn results(&self, ui: &mut Ui) -> Option<Action> {
         // Flatten into rows so only visible ones are laid out.
         let rows: Vec<(usize, Option<usize>)> = self
             .search
@@ -621,8 +707,7 @@ impl Sidebar {
                 let file = &self.search.results[fi];
                 match hi {
                     None => {
-                        let rel = file.path.strip_prefix(root).unwrap_or(&file.path);
-                        ui.label(RichText::new(rel.display().to_string()).strong());
+                        ui.label(RichText::new(self.display_path(&file.path)).strong()).on_hover_text(file.path.display().to_string());
                     }
                     Some(hi) => {
                         let hit = &file.hits[hi];
@@ -658,4 +743,110 @@ fn hit_text(ui: &Ui, line: usize, preview: &str, cols: &Range<usize>) -> LayoutJ
     job.append(&preview[a..b], 0.0, hit);
     job.append(&preview[b..], 0.0, normal);
     job
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("strata-sidebar-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn finish(s: &mut Sidebar) {
+        while s.search.running {
+            s.search.poll();
+            std::thread::yield_now();
+        }
+    }
+
+    fn open_file(path: &Path) -> OpenFile {
+        OpenFile { name: path.file_name().unwrap().to_string_lossy().into_owned(), dirty: false, active: false, path: Some(path.to_owned()), unsaved: None }
+    }
+
+    #[test]
+    fn several_folders_are_roots_and_all_are_searched() {
+        let dir = temp_dir("roots");
+        let (a, b) = (dir.join("alpha"), dir.join("beta"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("x.txt"), "needle a\n").unwrap();
+        std::fs::write(b.join("y.txt"), "needle b\n").unwrap();
+        let mut s = Sidebar::new();
+        s.open_folder(a.clone());
+        assert!(s.add_folder(b.clone()));
+        assert!(!s.add_folder(b.clone()), "a folder is added once");
+        assert_eq!(s.roots, [a.clone(), b.clone()]);
+        s.query = Query::literal("needle", false);
+        s.run_search(&[], None);
+        finish(&mut s);
+        assert_eq!(s.search.results.len(), 2, "an empty Where searches every folder");
+        s.where_text = "<open folders>".into();
+        s.run_search(&[], None);
+        finish(&mut s);
+        assert_eq!(s.search.results.len(), 2);
+        assert_eq!(s.display_path(&b.join("y.txt")), "beta/y.txt", "results say which folder");
+        assert_eq!(s.root_of(&b.join("y.txt")), Some(b.as_path()));
+        assert!(s.reveal(&b.join("y.txt")), "files in any folder can be revealed");
+        s.remove_folder(&a);
+        assert_eq!(s.roots, std::slice::from_ref(&b));
+        assert_eq!(s.display_path(&b.join("y.txt")), "y.txt");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn without_a_folder_find_in_files_searches_open_files() {
+        let dir = temp_dir("nofolder");
+        let (open, closed) = (dir.join("open.txt"), dir.join("closed.txt"));
+        std::fs::write(&open, "a needle\n").unwrap();
+        std::fs::write(&closed, "another needle\n").unwrap();
+        let mut s = Sidebar::new();
+        s.start_find_in_files(None);
+        assert!(s.shown(), "the Search tab shows even with no folder open");
+        s.query = Query::literal("needle", false);
+        s.run_search(&[open_file(&open)], None);
+        finish(&mut s);
+        let found: Vec<&Path> = s.search.results.iter().map(|f| f.path.as_path()).collect();
+        assert_eq!(found, [open.as_path()], "like Sublime: <open files>");
+        s.run_search(&[], None);
+        let e = s.search.error.clone().unwrap_or_default();
+        assert!(e.contains("open a folder"), "{e}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn find_in_folder_searches_that_folder() {
+        let dir = temp_dir("findin");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let mut s = Sidebar::new();
+        s.open_folder(dir.clone());
+        s.find_in_folder(&dir.join("sub"));
+        assert_eq!(s.where_text, dir.join("sub").display().to_string());
+        assert!(s.tab == Tab::Search && s.shown());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn two_roots_render_headlessly() {
+        let dir = temp_dir("render");
+        let (a, b) = (dir.join("one"), dir.join("two"));
+        std::fs::create_dir_all(a.join("src")).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(b.join("f.rs"), "").unwrap();
+        let mut s = Sidebar::new();
+        s.open_folder(a);
+        s.add_folder(b);
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 400.0))), ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                s.show(ui, None, &[]);
+            });
+            out.textures_delta.clear();
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
 }
