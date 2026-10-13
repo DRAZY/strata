@@ -459,8 +459,8 @@ fn alert_label(kind: BlockQuoteKind) -> &'static str {
 // ---- HTML export ------------------------------------------------------------------
 
 const EXPORT_CSS: &str = "\
-:root{color-scheme:light dark;--fg:#1f2328;--bg:#fff;--dim:#59636e;--rule:#d1d9e0;--code:#f6f8fa;--link:#0969da}
-@media (prefers-color-scheme:dark){:root{--fg:#e6edf3;--bg:#0d1117;--dim:#9198a1;--rule:#3d444d;--code:#151b23;--link:#4493f8}}
+:root{color-scheme:light dark;--fg:#1f2328;--bg:#fff;--dim:#59636e;--rule:#d1d9e0;--code:#f6f8fa;--link:#0969da;--note:#0969da;--tip:#1a7f37;--important:#8250df;--warning:#9a6700;--caution:#d1242f}
+@media (prefers-color-scheme:dark){:root{--fg:#e6edf3;--bg:#0d1117;--dim:#9198a1;--rule:#3d444d;--code:#151b23;--link:#4493f8;--note:#4493f8;--tip:#3fb950;--important:#ab7df8;--warning:#d29922;--caution:#f85149}}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,\"Segoe UI\",Helvetica,Arial,sans-serif}
 main{max-width:860px;margin:0 auto;padding:32px 24px 64px}
 h1,h2{padding-bottom:.3em;border-bottom:1px solid var(--rule)}
@@ -474,7 +474,13 @@ th,td{border:1px solid var(--rule);padding:6px 13px}th{background:var(--code)}tr
 hr{border:0;height:1px;background:var(--rule);margin:24px 0}img{max-width:100%}
 li.task-list-item,ul:has(>li>input[type=checkbox]){list-style:none}input[type=checkbox]{margin:0 .4em 0 -1.4em}
 .footnote-definition{font-size:90%;color:var(--dim)}
-.markdown-alert{border-left-color:var(--link)}";
+blockquote[class^=markdown-alert-]{color:var(--fg)}
+blockquote[class^=markdown-alert-]::before{display:block;margin:0 0 .4em;padding-top:.5em;font-weight:600}
+.markdown-alert-note{border-left-color:var(--note)}.markdown-alert-note::before{content:\"Note\";color:var(--note)}
+.markdown-alert-tip{border-left-color:var(--tip)}.markdown-alert-tip::before{content:\"Tip\";color:var(--tip)}
+.markdown-alert-important{border-left-color:var(--important)}.markdown-alert-important::before{content:\"Important\";color:var(--important)}
+.markdown-alert-warning{border-left-color:var(--warning)}.markdown-alert-warning::before{content:\"Warning\";color:var(--warning)}
+.markdown-alert-caution{border-left-color:var(--caution)}.markdown-alert-caution::before{content:\"Caution\";color:var(--caution)}";
 
 /// Markdown `src` as HTML body markup (no page around it).
 pub fn to_html_fragment(src: &str) -> String {
@@ -781,11 +787,21 @@ fn code_block(ui: &mut Ui, d: &mut Draw, lang: &str, code: &str) {
                 None => job.append(code, 0.0, fmt(pal.fg, false)),
             }
             let galley = ui.painter().layout_job(job);
+            // The language sits in the top-right corner. When the first line
+            // reaches under it, the label gets a row of its own above the code.
+            let label = (!lang.is_empty()).then(|| ui.painter().layout_no_wrap(lang.to_owned(), FontId::proportional(d.small * 0.9), pal.dim));
+            let r = ui.max_rect();
+            if let Some(label) = &label {
+                let room = ui.available_width() + 6.0 - label.size().x - 8.0;
+                if galley.rows.first().is_some_and(|row| row.rect().right() > room) {
+                    ui.add_space(label.size().y - 4.0);
+                }
+            }
             let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
             ui.painter().galley(rect.min, galley, pal.fg);
-            if !lang.is_empty() {
-                let r = ui.max_rect();
-                ui.painter().text(pos2(r.right() + 6.0, r.top() - 4.0), egui::Align2::RIGHT_TOP, lang, FontId::proportional(d.small * 0.9), pal.dim);
+            if let Some(label) = label {
+                let at = pos2(r.right() + 6.0 - label.size().x, r.top() - 4.0);
+                ui.painter().galley(at, label, pal.dim);
             }
         });
 }
@@ -1345,6 +1361,51 @@ mod tests {
         assert!(html.contains("type=\"checkbox\""));
         assert!(html.contains("class=\"language-rust\""));
         assert!(to_html_document("plain <b>", "a & b").contains("<title>a &amp; b</title>"));
+    }
+
+    #[test]
+    fn exported_alerts_are_styled() {
+        let html = to_html_document("> [!WARNING]\n> Careful.\n\n> [!TIP]\n> Nice.\n", "x");
+        // Every class pulldown-cmark puts on an alert must have a rule in the page's CSS.
+        for kind in ["note", "tip", "important", "warning", "caution"] {
+            assert!(EXPORT_CSS.contains(&format!(".markdown-alert-{kind}")), "no style for {kind}");
+        }
+        assert!(html.contains("<blockquote class=\"markdown-alert-warning\">"), "{html}");
+        assert!(EXPORT_CSS.contains("content:\"Warning\""), "alerts get their title");
+    }
+
+    #[test]
+    fn code_language_label_never_covers_the_code() {
+        let long = "let x = [".to_owned() + &"item, ".repeat(60) + "];";
+        let src = format!("```rust\n{long}\n```\n\n```rust\nshort();\n```\n");
+        let mut doc = Document::from_buffer(Some(PathBuf::from("/tmp/label.md")), crate::buffer::Buffer::from_str(&src));
+        doc.highlighter.set_syntax("Markdown");
+        let mut preview = Preview::default();
+        let ctx = egui::Context::default();
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(500.0, 700.0))), ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                preview.show(ui, &mut doc);
+            });
+            out.textures_delta.clear();
+            shapes = out.shapes;
+        }
+        fn texts(shape: &egui::Shape, out: &mut Vec<(String, Vec<Rect>)>) {
+            match shape {
+                egui::Shape::Text(t) => out.push((t.galley.text().to_owned(), t.galley.rows.iter().map(|r| r.rect().translate(t.pos.to_vec2())).collect())),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| texts(s, out)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        shapes.iter().for_each(|c| texts(&c.shape, &mut found));
+        let labels: Vec<Rect> = found.iter().filter(|(t, _)| t == "rust").map(|(_, r)| r[0]).collect();
+        assert_eq!(labels.len(), 2, "both blocks are labeled");
+        for (code, label) in [(long.as_str(), labels[0]), ("short();", labels[1])] {
+            let rows = &found.iter().find(|(t, _)| t.starts_with(&code[..5])).unwrap().1;
+            assert!(!rows[0].intersects(label.shrink(0.5)), "label {label:?} overlaps {code:.12}… at {:?}", rows[0]);
+        }
     }
 
     #[test]

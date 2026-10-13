@@ -28,7 +28,7 @@ The preview understands GitHub-flavored Markdown:
 | Headings | Six sizes, in the scheme's heading color. Level 1 and 2 headings are underlined with a rule. |
 | Bold, italic, strikethrough | As styled text. |
 | Inline code | In the monospace font on a tinted background. |
-| Code blocks | On a tinted panel, with syntax highlighting when the opening fence names a language (for example `rust` right after the three backticks). The language name is shown in the corner. |
+| Code blocks | On a tinted panel, with syntax highlighting when the opening fence names a language (for example `rust` right after the three backticks). The language name is shown in the top-right corner, or on its own line above the code when the first line is long enough to reach it. |
 | Links | In the link color. Hover to see where a link goes. |
 | Bullet and numbered lists | Nested lists use different bullet shapes; numbered lists keep their starting number. |
 | Task lists | `- [ ]` and `- [x]` items show empty and checked boxes. The boxes are for display only; edit the text to check them. |
@@ -91,7 +91,7 @@ The exported page:
 - includes tables, task lists, strikethrough and footnotes.
 - keeps images as links to their original paths. They aren't copied into the page, so keep the HTML file where those paths still work.
 
-Code blocks are exported as plain monospace text, without syntax highlighting. Alerts are exported as ordinary quotes, without their colored label.
+Code blocks are exported as plain monospace text, without syntax highlighting. Alerts keep their label (Note, Tip, Important, Warning or Caution) and their color, in light and dark mode.
 
 ## The Setting
 
