@@ -38,6 +38,37 @@ Requires Rust (install from https://rustup.rs).
 cargo run --release -- path/to/file.rs     # or a folder, which opens in the sidebar
 ```
 
+## Command line
+
+```
+strata [options] [file[:line[:column]] | folder]...
+
+  -w, --wait       wait until the files' tabs are closed (for $EDITOR / git)
+  -h, --help       show help
+  -v, --version    show the version
+```
+
+- Files open in tabs, folders in the sidebar; `file:12` and `file:12:5` jump
+  to a line and column (a file whose name really ends in `:12` wins if it
+  exists). A path that doesn't exist yet opens as an empty tab and is created
+  when you first save it.
+- **One window.** If Strata is already running, `strata` hands the paths to it
+  (over `strata.sock` in the config folder; a localhost port plus a random
+  token in `strata.port` on Windows), brings it forward and returns at once.
+  `-n/--new-window` isn't supported. A socket left behind by a crash is
+  replaced by the next Strata to start.
+- `git config --global core.editor "strata -w"` works: `-w` blocks until the
+  tab is closed (or Strata quits).
+- **Install the command**: Strata menu ▸ Install Shell Command… (or the palette:
+  "Strata: Install Shell Command") links `/usr/local/bin/strata` to the app,
+  falling back to `~/.local/bin/strata` if `/usr/local/bin` isn't writable. By
+  hand: `ln -sf /Applications/Strata.app/Contents/MacOS/strata /usr/local/bin/strata`.
+  On Windows, add Strata's folder to `PATH`.
+- macOS: typed in a terminal, the linked command starts Strata.app through
+  Launch Services (so it gets its Dock icon and focus) and returns. Strata also
+  opens files from Finder (Open With ▸ Strata, or drop on the Dock icon) and
+  `open -a Strata file`, both when it's running and on a cold start.
+
 ## Shortcuts
 
 Cmd on macOS, Ctrl on Windows unless noted. Every command is also in the
@@ -155,7 +186,10 @@ macOS runner and a Windows x64 runner.
 Dev aids (all pair with `STRATA_SCREENSHOT=out.ppm`, which renders the window,
 saves a screenshot and exits): `STRATA_DEV_FIND=query` (+ `STRATA_DEV_FIND_REGEX=1`),
 `STRATA_DEV_FIND_IN_FILES=query`, `STRATA_DEV_PALETTE="p:query"` or
-`"cmd:query"`. `STRATA_CONFIG_DIR=dir` uses a separate settings/session folder.
+`"cmd:query"`. `STRATA_CONFIG_DIR=dir` uses a separate settings/session folder (and its own
+single-instance socket, so a test copy never talks to your everyday Strata;
+for the .app use `open --env STRATA_CONFIG_DIR=dir -a dist/Strata.app file`,
+with your installed Strata quit, since both copies share a bundle id).
 
 ## Test build for macOS (Apple silicon)
 

@@ -110,6 +110,7 @@ pub struct StrataApp {
 
 mod completion;
 mod features;
+mod launch;
 mod menu_model;
 mod more;
 mod terminal_ui;
@@ -939,6 +940,7 @@ impl StrataApp {
             }
             Cmd::RefreshFolders => self.sidebar.refresh(),
             Cmd::About => self.about_open = true,
+            Cmd::InstallShellCommand => self.install_shell_command(),
             Cmd::Documentation => self.open_documentation(),
             Cmd::ToggleWordWrap => {
                 let on = self.wraps(self.active);

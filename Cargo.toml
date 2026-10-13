@@ -20,3 +20,7 @@ pulldown-cmark = { version = "0.13.4", default-features = false, features = ["ht
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21.2", default-features = false }
+# Finder / Dock "open documents" Apple Events (same versions muda and eframe use).
+objc2 = "0.6.5"
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAppleEventDescriptor", "NSAppleEventManager", "NSNotification", "NSOperation", "NSString", "NSURL"] }
