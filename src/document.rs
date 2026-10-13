@@ -31,6 +31,9 @@ pub struct Document {
     pub group: usize,
     /// When the tab was last activated; each pane shows its most recent tab.
     pub stamp: u64,
+    /// Lines changed since the last commit (git gutter), for `git_version`.
+    pub git_changes: crate::git::Changes,
+    pub git_version: Option<u64>,
     /// Word wrap chosen for this tab; None follows the setting and syntax.
     pub wrap: Option<bool>,
     /// How the file's bytes are read and written: detected on open, changed
@@ -68,6 +71,8 @@ impl Document {
             stamp: 0,
             wrap: None,
             encoding: Encoding::UTF8,
+            git_changes: Vec::new(),
+            git_version: None,
         }
     }
 

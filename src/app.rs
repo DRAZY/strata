@@ -87,6 +87,11 @@ pub struct StrataApp {
     /// Fonts last loaded: (editor face, interface face, interface size bits).
     fonts_key: Option<(String, String, u32)>,
     window_focused: bool,
+    /// Git status for open files, computed off the UI thread.
+    git: crate::git::GitWatcher,
+    last_git_request: f64,
+    /// The watcher was made before a UI context existed (rebuilt on the first frame).
+    git_ctx_missing: bool,
     /// Text removed by Delete to Mark, for Yank.
     yank: String,
     /// Encoding chosen in the status bar: (reopen?, encoding), applied after drawing.
@@ -158,6 +163,9 @@ impl StrataApp {
             yank: String::new(),
             fonts_key: None,
             window_focused: true,
+            git: crate::git::GitWatcher::new(None),
+            last_git_request: 0.0,
+            git_ctx_missing: true,
         };
         app.build = crate::build::Build::new(app.config.clone());
         if let Some(dir) = app.config.clone() {
@@ -198,6 +206,34 @@ impl StrataApp {
             app.find.query.regex = std::env::var_os("STRATA_DEV_FIND_REGEX").is_some();
         }
         app
+    }
+
+    /// Ask for fresh git changes for the visible tabs when they've been
+    /// edited (or every few seconds, to notice commits), and collect results.
+    fn update_git(&mut self, ctx: &egui::Context, now: f64) {
+        if self.git_ctx_missing {
+            self.git = crate::git::GitWatcher::new(Some(ctx.clone()));
+            self.git_ctx_missing = false;
+        }
+        while let Some((path, version, changes)) = self.git.poll() {
+            for d in self.docs.iter_mut().filter(|d| d.path.as_ref() == Some(&path) && d.editor.version() == version) {
+                d.git_changes = changes.clone();
+            }
+        }
+        let periodic = now - self.last_git_request > 3.0;
+        for g in 0..self.layout.groups() {
+            let Some(i) = self.group_active(g) else { continue };
+            let d = &mut self.docs[i];
+            let Some(path) = d.path.clone() else { continue };
+            let v = d.editor.version();
+            if d.git_version != Some(v) || periodic {
+                d.git_version = Some(v);
+                self.git.request(&path, d.editor.text_snapshot(), v);
+            }
+        }
+        if periodic {
+            self.last_git_request = now;
+        }
     }
 
     /// Is word wrap on for tab `i`?
@@ -434,6 +470,8 @@ impl StrataApp {
         self.before_save(i);
         match self.docs[i].write_to(path.clone()) {
             Ok(()) => {
+                self.git.invalidate(&path);
+                self.docs[i].git_version = None;
                 self.status = format!("Saved {}", path.display());
                 self.sidebar.refresh();
                 if self.config.as_deref().map(Settings::path).as_ref() == Some(&path) {
@@ -786,6 +824,17 @@ impl StrataApp {
             Cmd::Licenses => self.licenses_open = true,
             Cmd::SelectEditorFont => self.pick_font(ctx, true),
             Cmd::SelectUiFont => self.pick_font(ctx, false),
+            Cmd::NextModification | Cmd::PrevModification => {
+                let d = &self.docs[self.active];
+                let line = d.editor.buffer.line_of(d.editor.primary().head);
+                match crate::git::next_change(&d.git_changes, line, cmd == Cmd::NextModification) {
+                    Some(l) => {
+                        self.push_jump();
+                        self.goto_line(l);
+                    }
+                    None => self.status = "No changes since the last commit".into(),
+                }
+            }
             Cmd::UiLarger | Cmd::UiSmaller => {
                 let step = if cmd == Cmd::UiLarger { 1.0 } else { -1.0 };
                 self.settings.ui_font_size = (self.settings.ui_font_size + step).clamp(9.0, 24.0);
@@ -1654,6 +1703,10 @@ impl StrataApp {
                         self.status = format!("Could not reload: {e}");
                     }
             }
+            if let Some(branch) = self.docs[self.active].path.as_deref().and_then(|p| self.git.repo(p)).map(|r| r.branch) {
+                ui.separator();
+                ui.label(format!("⎇ {branch}"));
+            }
             if let Some(words) = self.word_count() {
                 ui.separator();
                 ui.label(words);
@@ -1818,6 +1871,7 @@ impl eframe::App for StrataApp {
             painter.rect_stroke(r, 10.0, Stroke::new(2.0, accent), egui::StrokeKind::Inside);
             painter.text(r.center(), egui::Align2::CENTER_CENTER, "Drop to open", FontId::proportional(22.0), accent);
         }
+        self.update_git(ctx, now);
         // Save on focus lost (a setting, off by default like Sublime's).
         let focused = ctx.input(|i| i.focused);
         if self.window_focused && !focused && self.settings.save_on_focus_lost {

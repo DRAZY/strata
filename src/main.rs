@@ -15,7 +15,6 @@ mod find;
 mod fold;
 mod fonts;
 mod fuzzy;
-#[allow(dead_code)] // wired into the app separately
 mod git;
 mod devshot;
 mod highlight;

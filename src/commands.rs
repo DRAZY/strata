@@ -102,6 +102,8 @@ pub enum Cmd {
     SelectUiFont,
     UiLarger,
     UiSmaller,
+    NextModification,
+    PrevModification,
 }
 
 impl Cmd {
@@ -209,6 +211,8 @@ impl Cmd {
         Cmd::SelectUiFont,
         Cmd::UiLarger,
         Cmd::UiSmaller,
+        Cmd::NextModification,
+        Cmd::PrevModification,
     ];
 
     pub fn name(self) -> &'static str {
@@ -316,6 +320,9 @@ impl Cmd {
             Cmd::SelectUiFont => "Preferences: Interface Font…",
             Cmd::UiLarger => "Preferences: Interface Text Larger",
             Cmd::UiSmaller => "Preferences: Interface Text Smaller",
+            Cmd::NextModification => "Goto: Next Modification",
+            Cmd::PrevModification => "Goto: Previous Modification",
+
 
 
 
@@ -421,6 +428,9 @@ impl Cmd {
             Cmd::SelectUiFont => &[],
             Cmd::UiLarger => &[],
             Cmd::UiSmaller => &[],
+            Cmd::NextModification => if MAC { &[(CTRL, Key::Period)] } else { &[] },
+            // Off macOS, Ctrl+, is Settings.
+            Cmd::PrevModification => if MAC { &[(CTRL, Key::Comma)] } else { &[] },
             Cmd::ToggleWordWrap => if MAC { &[(CMD_ALT, Key::W)] } else { &[(ALT_SHIFT, Key::W)] },
             // Sublime's layout keys: Alt+Cmd+N on macOS, Alt+Shift+N elsewhere.
             Cmd::LayoutSingle => if MAC { &[(CMD_ALT, Key::Num1)] } else { &[(ALT_SHIFT, Key::Num1)] },
