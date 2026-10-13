@@ -20,6 +20,7 @@ mod fuzzy;
 mod git;
 mod devshot;
 mod highlight;
+mod indent;
 mod keys;
 mod menus;
 mod lang;

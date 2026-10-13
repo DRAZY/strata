@@ -5,6 +5,7 @@
 
 use crate::buffer::Buffer;
 use crate::find::{self, Query};
+use crate::indent;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -81,6 +82,12 @@ pub struct Editor {
     pub tab_width: usize,
     /// Indent with `tab_width` spaces rather than a tab character.
     pub use_spaces: bool,
+    /// Enter copies the current line's indentation (Sublime's `auto_indent`).
+    pub auto_indent: bool,
+    /// Language rules adjust it: deeper after `{` or `:`, shallower for
+    /// closers (Sublime's `smart_indent`).
+    pub smart_indent: bool,
+    pub indent_rules: indent::Rules,
     /// Sorted char positions; they move with edits.
     bookmarks: Vec<usize>,
     /// Emacs-style marks, one per cursor at the time they were set; they
@@ -393,6 +400,9 @@ impl Editor {
             next_whole_word: false,
             tab_width: 4,
             use_spaces: true,
+            auto_indent: true,
+            smart_indent: true,
+            indent_rules: indent::Rules::default(),
             bookmarks: Vec::new(),
             marks: Vec::new(),
             mark_primary: 0,
@@ -751,12 +761,13 @@ impl Editor {
         let (Some(c), None) = (chars.next(), chars.next()) else {
             return self.insert_text(text);
         };
-        #[derive(Clone, Copy)]
         enum Act {
             Plain,
             Skip,
             Pair(char),
             Wrap(char),
+            /// Re-indent the line while typing (see `typed_dedent`).
+            Dedent(Range<usize>, String),
         }
         let acts: Vec<Act> = self
             .sels
@@ -767,7 +778,12 @@ impl Editor {
                 if s.is_empty() && is_closer(c) && next == Some(c) {
                     return Act::Skip;
                 }
-                let Some(close) = auto_closer(c) else { return Act::Plain };
+                let Some(close) = auto_closer(c) else {
+                    return match s.is_empty().then(|| self.typed_dedent(s.head, c)).flatten() {
+                        Some((r, t)) => Act::Dedent(r, t),
+                        None => Act::Plain,
+                    };
+                };
                 if !s.is_empty() {
                     return Act::Wrap(close);
                 }
@@ -787,6 +803,7 @@ impl Editor {
                 Act::Plain => edits.push((s.range(), c.to_string())),
                 Act::Skip => {}
                 Act::Pair(close) => edits.push((s.head..s.head, format!("{c}{close}"))),
+                Act::Dedent(ref r, ref t) => edits.push((r.clone(), t.clone())),
                 Act::Wrap(close) => {
                     edits.push((s.start()..s.start(), c.to_string()));
                     edits.push((s.end()..s.end(), close.to_string()));
@@ -798,7 +815,7 @@ impl Editor {
             .iter()
             .zip(&acts)
             .map(|(s, act)| match act {
-                Act::Plain => Selection::cursor(map_pos(&edits, s.start(), true)),
+                Act::Plain | Act::Dedent(..) => Selection::cursor(map_pos(&edits, s.start(), true)),
                 Act::Skip | Act::Pair(_) => Selection::cursor(map_pos(&edits, s.head, false) + 1),
                 Act::Wrap(_) => span(map_pos(&edits, s.start(), true), map_pos(&edits, s.end(), false), s.head >= s.anchor),
             })
@@ -815,21 +832,172 @@ impl Editor {
             && auto_closer(self.buffer.char(pos - 1)) == Some(self.buffer.char(pos))
     }
 
-    /// Newline that keeps the current line's indentation.
+    /// Enter. With `auto_indent` the new line keeps this line's indentation;
+    /// `smart_indent` goes a level deeper after an opener (`{`, Python's `:`,
+    /// `<div>`…), shallower after `return` & co. or before a closer, and
+    /// re-indents a line that ends a block (`end`, `fi`, `</div>`). Between a
+    /// pair (`{|}`, `<a>|</a>`) the closer moves down and the caret lands on
+    /// an indented line between. A whitespace-only line left behind is
+    /// emptied. One undo step for every cursor.
     pub fn newline(&mut self) {
         let ending = self.buffer.line_ending().as_str();
-        let edits = self
-            .sels
-            .iter()
-            .map(|s| {
-                let line = self.buffer.line_of(s.start());
-                let before_cursor = self.buffer.slice(self.buffer.line_start(line)..s.start());
-                let indent: String =
-                    before_cursor.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
-                (s.range(), format!("{ending}{indent}"))
-            })
-            .collect();
-        self.apply(edits, None);
+        if !self.auto_indent {
+            let edits = self.sels.iter().map(|s| (s.range(), ending.to_owned())).collect();
+            return self.apply(edits, None);
+        }
+        let smart = self.smart_indent;
+        let rules = self.indent_rules;
+        let mut edits = Vec::with_capacity(self.sels.len());
+        let mut sels = Vec::with_capacity(self.sels.len());
+        let (mut primary_head, mut prev_end, mut delta) = (0, 0, 0isize);
+        for (i, s) in self.sels.iter().enumerate() {
+            let line = self.buffer.line_of(s.start());
+            let ls = self.buffer.line_start(line);
+            let before = self.buffer.slice(ls..s.start());
+            let line_end = self.buffer.line_end(self.buffer.line_of(s.end()));
+            let limit = self.sels.get(i + 1).map_or(line_end, |n| n.start().min(line_end)).max(s.end());
+            let after = self.buffer.slice(s.end()..limit);
+            let ws_after = after.chars().take_while(|&c| is_indent(c)).count();
+            let rest: String = after.chars().skip(ws_after).collect();
+            let mut indent: String = before.chars().take_while(|&c| is_indent(c)).collect();
+            // Indent chars are ASCII, so byte and char counts agree.
+            let body = &before[indent.len()..];
+
+            // New text for the line up to the caret, when it changes.
+            let mut prefix = None;
+            if ls >= prev_end {
+                if body.is_empty() && !indent.is_empty() {
+                    prefix = Some(String::new());
+                } else if smart
+                    && rules.is_dedent_line(body)
+                    && let Some(t) = self.dedent_target(line, &indent)
+                {
+                    prefix = Some(format!("{t}{body}"));
+                    indent = t;
+                }
+            }
+
+            let info = rules.analyze(&before);
+            let split = info.open_bracket.and_then(auto_closer).is_some_and(|c| rest.starts_with(c))
+                || (info.open_tag && rest.starts_with("</"));
+            let shallower =
+                |e: &Self, ind: &str| e.indent_string(e.indent_width(ind).saturating_sub(e.tab_width), e.use_spaces);
+            let inner = if split || (smart && info.increase) {
+                indent.clone() + &self.indent_unit()
+            } else if smart && info.dedent_next {
+                shallower(self, &indent)
+            } else if smart && rest.starts_with([')', ']', '}']) {
+                // The text moving down starts with a closer: line it up with its opener.
+                let opener = rest.chars().next().and_then(|c| self.unmatched_opener(s.start(), c));
+                opener.map_or_else(|| indent.clone(), |o| self.indent_of(self.buffer.line_of(o)))
+            } else if smart && !rest.is_empty() && rules.is_dedent_line(&rest) {
+                shallower(self, &indent)
+            } else {
+                indent.clone()
+            };
+
+            let start = if prefix.is_some() { ls } else { s.start() };
+            let end = s.end() + ws_after;
+            let mut text = prefix.unwrap_or_default();
+            text.push_str(ending);
+            text.push_str(&inner);
+            let caret = text.chars().count();
+            if split {
+                text.push_str(ending);
+                text.push_str(&indent);
+            }
+            let head = (start as isize + delta) as usize + caret;
+            if i == self.primary {
+                primary_head = head;
+            }
+            sels.push(Selection::cursor(head));
+            delta += text.chars().count() as isize - (end - start) as isize;
+            prev_end = end;
+            edits.push((start..end, text));
+        }
+        self.apply_then(edits, None, sels, primary_head);
+    }
+
+    /// Indentation for line `line` that ends a block (`end`, `fi`, `</div>`):
+    /// the previous line's when that opened the block, else one level
+    /// shallower. None unless it is shallower than `current`.
+    fn dedent_target(&self, line: usize, current: &str) -> Option<String> {
+        let p = (0..line).rev().find(|&p| !self.is_blank(p))?;
+        let prev = self.indent_of(p);
+        let target = if self.indent_rules.analyze(&self.buffer.line_text(p)).increase {
+            prev
+        } else {
+            self.indent_string(self.indent_width(&prev).saturating_sub(self.tab_width), self.use_spaces)
+        };
+        (self.indent_width(&target) < self.indent_width(current)).then_some(target)
+    }
+
+    /// Python `else:`/`elif`/`except`/`finally` lines up with the nearest
+    /// shallower header it can close (`if`, `try`…), unless a header at the
+    /// same depth already pairs with it.
+    fn python_header_indent(&self, line: usize, current: &str, headers: &[&str]) -> Option<String> {
+        let w = self.indent_width(current);
+        for p in (0..line).rev().take(10_000) {
+            let t = self.buffer.line_text(p);
+            if t.trim().is_empty() {
+                continue;
+            }
+            let pw = self.indent_width(&t);
+            let header = headers.contains(&indent::first_word(t.trim_start()));
+            if pw == w && header {
+                return None;
+            }
+            if pw < w {
+                return header.then(|| self.indent_of(p));
+            }
+        }
+        None
+    }
+
+    /// The opener `closer` would close if typed at `pos`.
+    fn unmatched_opener(&self, pos: usize, closer: char) -> Option<usize> {
+        let (o, c) = BRACKETS[bracket_kind(closer)?.0];
+        let text = self.buffer.slice(pos.saturating_sub(BRACKET_SCAN)..pos);
+        let mut depth = 0usize;
+        for (i, ch) in text.chars().rev().enumerate() {
+            if ch == c {
+                depth += 1;
+            } else if ch == o {
+                if depth == 0 {
+                    return Some(pos - 1 - i);
+                }
+                depth -= 1;
+            }
+        }
+        None
+    }
+
+    /// Typing `c` at `pos` completes a line that belongs shallower: a closing
+    /// bracket alone on its line lines up with its opener, Python's `else:`
+    /// & co. with their header, `</` with the block it closes. The edit
+    /// rewrites the line up to the caret, `c` included.
+    fn typed_dedent(&self, pos: usize, c: char) -> Option<(Range<usize>, String)> {
+        if !(self.auto_indent && self.smart_indent) {
+            return None;
+        }
+        let line = self.buffer.line_of(pos);
+        let ls = self.buffer.line_start(line);
+        let before = self.buffer.slice(ls..pos);
+        let indent: String = before.chars().take_while(|&c| is_indent(c)).collect();
+        let body = &before[indent.len()..];
+        let target = match c {
+            ')' | ']' | '}' if body.is_empty() => {
+                let o = self.unmatched_opener(pos, c)?;
+                self.indent_of(self.buffer.line_of(o))
+            }
+            ':' => {
+                let headers = self.indent_rules.python_partner(body)?;
+                self.python_header_indent(line, &indent, headers)?
+            }
+            '/' if body == "<" && self.indent_rules.kind == indent::Kind::Markup => self.dedent_target(line, &indent)?,
+            _ => return None,
+        };
+        (target != indent).then(|| (ls..pos, format!("{target}{body}{c}")))
     }
 
     /// Soft tab (spaces up to the next tab stop), or '\t' without `use_spaces`.
@@ -860,6 +1028,8 @@ impl Editor {
                     self.word_left(s.head)..s.head
                 } else if self.inside_pair(s.head) {
                     s.head - 1..s.head + 1
+                } else if let Some(stop) = self.tab_stop_before(s.head) {
+                    stop..s.head
                 } else {
                     self.left(s.head)..s.head
                 };
@@ -867,6 +1037,18 @@ impl Editor {
             })
             .collect();
         self.apply(edits, Some(EditKind::Deleting));
+    }
+
+    /// With `use_spaces`, Backspace in leading spaces goes back to the
+    /// previous tab stop.
+    fn tab_stop_before(&self, pos: usize) -> Option<usize> {
+        let start = self.buffer.line_start(self.buffer.line_of(pos));
+        let n = pos - start;
+        let spaces = n > 1
+            && self.use_spaces
+            && self.tab_width > 1
+            && self.buffer.slice(start..pos).chars().all(|c| c == ' ');
+        spaces.then(|| pos - ((n - 1) % self.tab_width + 1))
     }
 
     pub fn delete_forward(&mut self, word: bool) {
@@ -4044,5 +4226,309 @@ mod tests {
         e.delete_word_backward();
         assert_eq!(text(&e), " baz");
         assert_eq!(ranges(&e), vec![0..0]);
+    }
+}
+
+#[cfg(test)]
+mod indent_tests {
+    use super::*;
+
+    const CARET: char = '‸';
+
+    /// An editor for `syntax` with a cursor at every `‸`.
+    fn ed(syntax: &str, marked: &str) -> Editor {
+        let mut cursors = Vec::new();
+        let mut plain = String::new();
+        for c in marked.chars() {
+            if c == CARET {
+                cursors.push(plain.chars().count());
+            } else {
+                plain.push(c);
+            }
+        }
+        let mut e = Editor::new(Buffer::from_str(&plain));
+        e.indent_rules = indent::rules_for(syntax);
+        e.click(cursors[0], false);
+        for &c in &cursors[1..] {
+            e.add_cursor(c);
+        }
+        e
+    }
+
+    /// Text with a `‸` at every cursor.
+    fn shown(e: &Editor) -> String {
+        let mut out = String::new();
+        let heads: Vec<usize> = e.selections().iter().map(|s| s.head).collect();
+        for (i, c) in e.buffer.slice(0..e.buffer.len_chars()).chars().enumerate() {
+            if heads.contains(&i) {
+                out.push(CARET);
+            }
+            out.push(c);
+        }
+        if heads.contains(&e.buffer.len_chars()) {
+            out.push(CARET);
+        }
+        out
+    }
+
+    fn enter(syntax: &str, marked: &str) -> String {
+        let mut e = ed(syntax, marked);
+        e.newline();
+        shown(&e)
+    }
+
+    fn typed(syntax: &str, marked: &str, s: &str) -> String {
+        let mut e = ed(syntax, marked);
+        for c in s.chars() {
+            e.type_char(&c.to_string());
+        }
+        shown(&e)
+    }
+
+    #[test]
+    fn enter_after_opener_indents() {
+        assert_eq!(enter("Rust", "fn main() {‸\n"), "fn main() {\n    ‸\n");
+        assert_eq!(enter("JavaScript", "  foo(a,‸\n"), "  foo(a,\n      ‸\n");
+        assert_eq!(enter("JSON", "\"a\": [‸\n"), "\"a\": [\n    ‸\n");
+        assert_eq!(enter("CSS", "a { color: red; }‸\n"), "a { color: red; }\n‸\n");
+        assert_eq!(enter("Plain Text", "x {‸\n"), "x {\n    ‸\n");
+        // Brackets in strings and comments don't count.
+        assert_eq!(enter("Rust", "let s = \"{\";‸\n"), "let s = \"{\";\n‸\n");
+        assert_eq!(enter("C", "f(); // (‸\n"), "f(); // (\n‸\n");
+        // Only the text before the caret counts, and spaces after it go.
+        assert_eq!(enter("Rust", "if x {‸   y\n"), "if x {\n    ‸y\n");
+    }
+
+    #[test]
+    fn enter_between_pair_splits_into_three_lines() {
+        assert_eq!(enter("Rust", "fn main() {‸}\n"), "fn main() {\n    ‸\n}\n");
+        assert_eq!(enter("Python", "    f(‸)\n"), "    f(\n        ‸\n    )\n");
+        assert_eq!(enter("JavaScript", "x = [‸];\n"), "x = [\n    ‸\n];\n");
+        assert_eq!(enter("Go", "a {‸  }\n"), "a {\n    ‸\n}\n");
+        assert_eq!(enter("HTML", "  <div class=\"a\">‸</div>\n"), "  <div class=\"a\">\n      ‸\n  </div>\n");
+        // Mismatched pair: no split.
+        assert_eq!(enter("Rust", "(‸]\n"), "(\n    ‸]\n");
+    }
+
+    #[test]
+    fn split_is_one_undo_step_with_multiple_cursors() {
+        let mut e = ed("Rust", "a {‸}\n  b(‸)\nc\n");
+        e.newline();
+        assert_eq!(shown(&e), "a {\n    ‸\n}\n  b(\n      ‸\n  )\nc\n");
+        e.insert_text("x");
+        assert_eq!(shown(&e), "a {\n    x‸\n}\n  b(\n      x‸\n  )\nc\n");
+        e.undo();
+        e.undo();
+        assert_eq!(shown(&e), "a {‸}\n  b(‸)\nc\n");
+        e.redo();
+        assert_eq!(shown(&e), "a {\n    ‸\n}\n  b(\n      ‸\n  )\nc\n");
+    }
+
+    #[test]
+    fn multiple_cursors_on_one_line() {
+        assert_eq!(enter("Rust", "    a‸b‸c\n"), "    a\n    ‸b\n    ‸c\n");
+        // Two cursors inside the same leading whitespace.
+        assert_eq!(enter("Rust", "  ‸  ‸x\n"), "\n  ‸\n    ‸x\n");
+    }
+
+    #[test]
+    fn enter_on_whitespace_only_line_empties_it() {
+        assert_eq!(enter("Rust", "    foo\n    ‸\n"), "    foo\n\n    ‸\n");
+        assert_eq!(enter("Rust", "    ‸foo\n"), "\n    ‸foo\n");
+    }
+
+    #[test]
+    fn enter_before_closer_lines_it_up_with_its_opener() {
+        assert_eq!(enter("Rust", "fn f() {\n    x();‸}\n"), "fn f() {\n    x();\n‸}\n");
+        assert_eq!(enter("Rust", "foo(\n        a,‸)\n"), "foo(\n        a,\n‸)\n");
+    }
+
+    #[test]
+    fn python_rules() {
+        assert_eq!(enter("Python", "def f(x):‸\n"), "def f(x):\n    ‸\n");
+        assert_eq!(enter("Python", "    if x:  # yes‸\n"), "    if x:  # yes\n        ‸\n");
+        assert_eq!(enter("Python", "x = {'a:': 1}‸\n"), "x = {'a:': 1}\n‸\n");
+        for kw in ["return x", "pass", "break", "continue", "raise E"] {
+            assert_eq!(enter("Python", &format!("    if y:\n        {kw}‸\n")), format!("    if y:\n        {kw}\n    ‸\n"));
+        }
+        assert_eq!(enter("Python", "        return f(‸\n"), "        return f(\n            ‸\n");
+    }
+
+    #[test]
+    fn python_block_keywords_dedent_when_typed() {
+        let src = "if a:\n    if b:\n        foo()\n        else‸\n";
+        assert_eq!(typed("Python", src, ":"), "if a:\n    if b:\n        foo()\n    else:‸\n");
+        // Already lined up with `if b`: left alone.
+        let src = "if a:\n    if b:\n        foo()\n    else‸\n";
+        assert_eq!(typed("Python", src, ":"), "if a:\n    if b:\n        foo()\n    else:‸\n");
+        let src = "try:\n    x()\n    except ValueError‸\n";
+        assert_eq!(typed("Python", src, ":"), "try:\n    x()\nexcept ValueError:‸\n");
+        let src = "if a:\n    x()\n    elif b‸\n";
+        assert_eq!(typed("Python", src, ":"), "if a:\n    x()\nelif b:‸\n");
+        let src = "try:\n    x()\nexcept E:\n    y()\n    finally‸\n";
+        assert_eq!(typed("Python", src, ":"), "try:\n    x()\nexcept E:\n    y()\nfinally:‸\n");
+        // `else` with nothing to pair with stays.
+        let src = "def f():\n    x()\n    else‸\n";
+        assert_eq!(typed("Python", src, ":"), "def f():\n    x()\n    else:‸\n");
+        // Other languages don't do this.
+        let src = "if a:\n    x()\n    else‸\n";
+        assert_eq!(typed("Rust", src, ":"), "if a:\n    x()\n    else:‸\n");
+    }
+
+    #[test]
+    fn yaml_rules() {
+        let mut e = ed("YAML", "root:‸\n");
+        e.tab_width = 2;
+        e.newline();
+        assert_eq!(shown(&e), "root:\n  ‸\n");
+        e.insert_text("- name:");
+        e.newline();
+        assert_eq!(shown(&e), "root:\n  - name:\n    ‸\n");
+        assert_eq!(enter("YAML", "a: b‸\n"), "a: b\n‸\n");
+        assert_eq!(enter("YAML", "run: |‸\n"), "run: |\n    ‸\n");
+    }
+
+    #[test]
+    fn ruby_lua_shell_blocks() {
+        assert_eq!(enter("Ruby", "def f‸\n"), "def f\n    ‸\n");
+        assert_eq!(enter("Ruby", "xs.each do |x|‸\n"), "xs.each do |x|\n    ‸\n");
+        // A block end re-indents its own line on Enter.
+        assert_eq!(enter("Ruby", "def f\n    x\n    end‸\n"), "def f\n    x\nend\n‸\n");
+        assert_eq!(enter("Ruby", "if a\n    x\n    else‸\n"), "if a\n    x\nelse\n    ‸\n");
+        assert_eq!(enter("Lua", "function f()‸\n"), "function f()\n    ‸\n");
+        assert_eq!(enter("Lua", "if x then\n    end‸\n"), "if x then\nend\n‸\n");
+        let sh = "Bourne Again Shell (bash)";
+        assert_eq!(enter(sh, "if [ -f x ]; then‸\n"), "if [ -f x ]; then\n    ‸\n");
+        assert_eq!(enter(sh, "for f in *; do\n    echo $f\n    done‸\n"), "for f in *; do\n    echo $f\ndone\n‸\n");
+        // Already at the right depth: unchanged.
+        assert_eq!(enter(sh, "if x; then\n    y\nfi‸\n"), "if x; then\n    y\nfi\n‸\n");
+        // Only whole keywords count.
+        assert_eq!(enter(sh, "if x; then\n    y\n    find .‸\n"), "if x; then\n    y\n    find .\n    ‸\n");
+        // The text moving down starts with `end`: one level up.
+        assert_eq!(enter("Ruby", "def f\n    x‸end\n"), "def f\n    x\n‸end\n");
+    }
+
+    #[test]
+    fn markup_tags() {
+        assert_eq!(enter("HTML", "<ul>‸\n"), "<ul>\n    ‸\n");
+        assert_eq!(enter("HTML", "<p>hi</p>‸\n"), "<p>hi</p>\n‸\n");
+        assert_eq!(enter("HTML", "<br>‸\n"), "<br>\n‸\n");
+        assert_eq!(enter("XML", "<a><b/>‸</a>\n"), "<a><b/>\n    ‸\n</a>\n");
+        let src = "<div>\n    <p>a</p>\n    <‸\n";
+        assert_eq!(typed("HTML", src, "/"), "<div>\n    <p>a</p>\n</‸\n");
+        let src = "<div>\n    <‸\n";
+        assert_eq!(typed("HTML", src, "/"), "<div>\n</‸\n");
+        // `/` elsewhere is just a slash.
+        assert_eq!(typed("HTML", "<div>\n    a <‸\n", "/"), "<div>\n    a </‸\n");
+        assert_eq!(typed("Rust", "{\n    <‸\n", "/"), "{\n    </‸\n");
+    }
+
+    #[test]
+    fn typed_closer_dedents_to_its_opener() {
+        assert_eq!(typed("Rust", "fn f() {\n    x();\n    ‸\n", "}"), "fn f() {\n    x();\n}‸\n");
+        assert_eq!(typed("Rust", "  foo(\n        a,\n        ‸\n", ")"), "  foo(\n        a,\n  )‸\n");
+        assert_eq!(typed("Rust", "{\n    [\n        1,\n        ‸\n", "]"), "{\n    [\n        1,\n    ]‸\n");
+        // Text before it on the line: no change.
+        assert_eq!(typed("Rust", "{\n    x‸\n", "}"), "{\n    x}‸\n");
+        // No opener: no change.
+        assert_eq!(typed("Rust", "    ‸\n", "}"), "    }‸\n");
+        // A closer already there is typed over.
+        assert_eq!(typed("Rust", "{\n    ‸}\n", "}"), "{\n    }‸\n");
+        // Undo puts the indentation back.
+        let mut e = ed("Rust", "{\n    ‸\n");
+        e.type_char("}");
+        e.undo();
+        assert_eq!(shown(&e), "{\n    ‸\n");
+    }
+
+    #[test]
+    fn typed_closer_with_multiple_cursors() {
+        let src = "{\n    ‸\n}\n(\n        ‸\n";
+        assert_eq!(typed("Rust", src, ")"), "{\n    )‸\n}\n(\n)‸\n");
+    }
+
+    #[test]
+    fn tabs_mode() {
+        let mut e = ed("Rust", "\tif x {‸}\n");
+        e.use_spaces = false;
+        e.newline();
+        assert_eq!(shown(&e), "\tif x {\n\t\t‸\n\t}\n");
+        let mut e = ed("Python", "\t\tif y:\n\t\t\treturn‸\n");
+        e.use_spaces = false;
+        e.newline();
+        assert_eq!(shown(&e), "\t\tif y:\n\t\t\treturn\n\t\t‸\n");
+        // Backspace removes one tab character.
+        e.backspace(false);
+        assert_eq!(shown(&e), "\t\tif y:\n\t\t\treturn\n\t‸\n");
+    }
+
+    #[test]
+    fn crlf_buffer() {
+        assert_eq!(enter("Rust", "if x {‸}\r\n"), "if x {\r\n    ‸\r\n}\r\n");
+        assert_eq!(enter("Rust", "  a\r\n  ‸\r\n"), "  a\r\n\r\n  ‸\r\n");
+        let mut e = ed("Rust", "{\r\n    ‸\r\n");
+        e.type_char("}");
+        assert_eq!(shown(&e), "{\r\n}‸\r\n");
+    }
+
+    #[test]
+    fn settings_switch_behavior_off() {
+        let mut e = ed("Rust", "    if x {‸}\n");
+        e.auto_indent = false;
+        e.newline();
+        assert_eq!(shown(&e), "    if x {\n‸}\n");
+
+        // smart_indent off: indentation is copied; a pair still splits.
+        let mut e = ed("Python", "    def f():‸\n");
+        e.smart_indent = false;
+        e.newline();
+        assert_eq!(shown(&e), "    def f():\n    ‸\n");
+        let mut e = ed("Rust", "  {‸}\n");
+        e.smart_indent = false;
+        e.newline();
+        assert_eq!(shown(&e), "  {\n      ‸\n  }\n");
+        let mut e = ed("Rust", "{\n    ‸\n");
+        e.smart_indent = false;
+        e.type_char("}");
+        assert_eq!(shown(&e), "{\n    }‸\n");
+    }
+
+    #[test]
+    fn backspace_goes_to_previous_tab_stop() {
+        let mut e = ed("Rust", "      ‸x\n");
+        e.backspace(false);
+        assert_eq!(shown(&e), "    ‸x\n");
+        e.backspace(false);
+        assert_eq!(shown(&e), "‸x\n");
+        // Consecutive tab-stop deletions undo together.
+        e.undo();
+        assert_eq!(shown(&e), "      ‸x\n");
+
+        let mut e = ed("Rust", "        ‸\n");
+        e.tab_width = 2;
+        e.backspace(false);
+        assert_eq!(shown(&e), "      ‸\n");
+
+        // Outside leading indentation: one char.
+        let mut e = ed("Rust", "a       ‸b\n");
+        e.backspace(false);
+        assert_eq!(shown(&e), "a      ‸b\n");
+        // Mixed tabs and spaces: one char.
+        let mut e = ed("Rust", "\t    ‸x\n");
+        e.backspace(false);
+        assert_eq!(shown(&e), "\t   ‸x\n");
+        // A single space.
+        let mut e = ed("Rust", " ‸x\n");
+        e.backspace(false);
+        assert_eq!(shown(&e), "‸x\n");
+        // Multiple cursors.
+        let mut e = ed("Rust", "    ‸a\n     ‸b\n");
+        e.backspace(false);
+        assert_eq!(shown(&e), "‸a\n    ‸b\n");
+        // Tabs mode is untouched.
+        let mut e = ed("Rust", "        ‸x\n");
+        e.use_spaces = false;
+        e.backspace(false);
+        assert_eq!(shown(&e), "       ‸x\n");
     }
 }
