@@ -98,6 +98,10 @@ pub enum Cmd {
     CloseProject,
     EditProject,
     Licenses,
+    SelectEditorFont,
+    SelectUiFont,
+    UiLarger,
+    UiSmaller,
 }
 
 impl Cmd {
@@ -201,6 +205,10 @@ impl Cmd {
         Cmd::CloseProject,
         Cmd::EditProject,
         Cmd::Licenses,
+        Cmd::SelectEditorFont,
+        Cmd::SelectUiFont,
+        Cmd::UiLarger,
+        Cmd::UiSmaller,
     ];
 
     pub fn name(self) -> &'static str {
@@ -304,6 +312,11 @@ impl Cmd {
             Cmd::CloseProject => "Project: Close Project",
             Cmd::EditProject => "Project: Edit Project",
             Cmd::Licenses => "Help: Licenses and Attribution…",
+            Cmd::SelectEditorFont => "Preferences: Editor Font…",
+            Cmd::SelectUiFont => "Preferences: Interface Font…",
+            Cmd::UiLarger => "Preferences: Interface Text Larger",
+            Cmd::UiSmaller => "Preferences: Interface Text Smaller",
+
 
 
 
@@ -404,6 +417,10 @@ impl Cmd {
             Cmd::CloseProject => &[],
             Cmd::EditProject => &[],
             Cmd::Licenses => &[],
+            Cmd::SelectEditorFont => &[],
+            Cmd::SelectUiFont => &[],
+            Cmd::UiLarger => &[],
+            Cmd::UiSmaller => &[],
             Cmd::ToggleWordWrap => if MAC { &[(CMD_ALT, Key::W)] } else { &[(ALT_SHIFT, Key::W)] },
             // Sublime's layout keys: Alt+Cmd+N on macOS, Alt+Shift+N elsewhere.
             Cmd::LayoutSingle => if MAC { &[(CMD_ALT, Key::Num1)] } else { &[(ALT_SHIFT, Key::Num1)] },

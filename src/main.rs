@@ -37,6 +37,8 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 720.0])
             .with_title("Strata")
+            // Lets View ▸ Window Opacity see through to the desktop.
+            .with_transparent(true)
             // Otherwise eframe shows its own logo in the Dock and taskbar.
             .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-app.png")).expect("bundled icon")),
         ..Default::default()
@@ -45,7 +47,6 @@ fn main() -> eframe::Result {
         "Strata",
         options,
         Box::new(|cc| {
-            fonts::install_symbol_fallback(&cc.egui_ctx);
             #[allow(unused_mut)]
             let mut app = app::StrataApp::new(path, session::config_dir());
             #[cfg(target_os = "macos")]

@@ -48,7 +48,14 @@ pub struct EditorView {
     /// Caret blink restarts whenever the text or cursor changes.
     blink_epoch: f64,
     blink_key: (u64, usize, usize),
-    caret_on: bool,
+    /// How visible the caret is right now (blinking or fading), 0..1.
+    caret_alpha: f32,
+    pub caret_shape: CaretShape,
+    pub caret_blink: CaretBlink,
+    /// Line caret width in points.
+    pub caret_width: f32,
+    /// Editor background opacity, 0..1 (window transparency).
+    pub opacity: f32,
     /// Soft wrap at the window edge (inactive on huge buffers, see `wrap_active`).
     pub wrap: bool,
     wrap_index: WrapIndex,
@@ -127,7 +134,11 @@ impl EditorView {
             scrollbar_hot: false,
             blink_epoch: 0.0,
             blink_key: (0, 0, 0),
-            caret_on: true,
+            caret_alpha: 1.0,
+            caret_shape: CaretShape::Line,
+            caret_blink: CaretBlink::Blink,
+            caret_width: 2.0,
+            opacity: 1.0,
             wrap: false,
             wrap_index: WrapIndex::default(),
             last_wrap: None,
@@ -899,7 +910,7 @@ impl EditorView {
     fn paint(&mut self, ui: &Ui, ed: &Editor, hl: &mut Highlighter, m: &Metrics, focused: bool, matches: &[Range<usize>]) {
         let painter = ui.painter();
         let text_painter = ui.painter_at(m.text);
-        painter.rect_filled(m.full, 0.0, hl.background());
+        painter.rect_filled(m.full, 0.0, hl.background().gamma_multiply(self.opacity));
 
         let total = self.total_rows(ed, m);
         let first_row = ((self.scroll.y / m.row_h).floor() as usize).min(total - 1);
@@ -1077,13 +1088,19 @@ impl EditorView {
                         continue;
                     }
                     let x = x_at(s.head);
-                    let caret = Rect::from_min_size(pos2(x - 1.0, y), vec2(2.0, m.row_h));
+                    let caret = Rect::from_min_size(pos2(x - self.caret_width / 2.0, y), vec2(self.caret_width, m.row_h));
                     if s.head == primary_head {
                         self.caret_rect = Some(caret);
                     }
                     if focused {
-                        if self.caret_on {
-                            text_painter.rect_filled(caret, 0.0, caret_color);
+                        if self.caret_alpha > 0.0 {
+                            let cw = if s.head < line_end { (x_at(s.head + 1) - x).max(m.char_w * 0.5) } else { m.char_w };
+                            let color = caret_color.gamma_multiply(self.caret_alpha);
+                            match self.caret_shape {
+                                CaretShape::Line => text_painter.rect_filled(caret, 0.0, color),
+                                CaretShape::Block => text_painter.rect_filled(Rect::from_min_size(pos2(x, y), vec2(cw, m.row_h)), 1.0, color.gamma_multiply(0.55)),
+                                CaretShape::Underline => text_painter.rect_filled(Rect::from_min_size(pos2(x, y + m.row_h - 2.5), vec2(cw, 2.5)), 0.0, color),
+                            };
                         }
                     } else {
                         text_painter.rect_stroke(caret, 0.0, Stroke::new(1.0, caret_color.gamma_multiply(0.4)), egui::StrokeKind::Inside);
@@ -1136,11 +1153,18 @@ impl EditorView {
             self.blink_epoch = now;
         }
         let t = now - self.blink_epoch;
-        if !focused || t > BLINK_FOR {
-            self.caret_on = true;
+        if !focused || t > BLINK_FOR || self.caret_blink == CaretBlink::Solid {
+            self.caret_alpha = 1.0;
             return;
         }
-        self.caret_on = ((t / BLINK) as u64).is_multiple_of(2);
+        if self.caret_blink == CaretBlink::Smooth {
+            // Hold, then fade out and back in, ~30 frames a second while fading.
+            let phase = (t % (2.0 * BLINK)) / (2.0 * BLINK);
+            self.caret_alpha = if phase < 0.4 { 1.0 } else { (0.5 + 0.5 * ((phase - 0.4) / 0.6 * std::f64::consts::TAU).cos()) as f32 };
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(if phase < 0.4 { ((0.4 - phase) * 2.0 * BLINK * 1000.0) as u64 + 5 } else { 33 }));
+            return;
+        }
+        self.caret_alpha = if ((t / BLINK) as u64).is_multiple_of(2) { 1.0 } else { 0.0 };
         ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(BLINK - t % BLINK + 0.005));
     }
 
@@ -1171,7 +1195,7 @@ impl EditorView {
         let Some(mm) = m.minimap else { return };
         let painter = ui.painter_at(mm);
         let fg = hl.foreground();
-        painter.rect_filled(mm, 0.0, hl.background());
+        painter.rect_filled(mm, 0.0, hl.background().gamma_multiply(self.opacity));
         let rows = self.total_rows(ed, m);
         let first = self.minimap_first(ed, m, mm);
         let last = (first + (mm.height() / MM_ROW) as usize).min(rows - 1);
@@ -1265,6 +1289,21 @@ fn selected_text(ed: &Editor) -> Option<String> {
     }
     let t = ed.buffer.slice(p.range());
     (!t.contains('\n') && !t.trim().is_empty()).then_some(t)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CaretShape {
+    Line,
+    Block,
+    Underline,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CaretBlink {
+    Blink,
+    /// Fades in and out.
+    Smooth,
+    Solid,
 }
 
 /// Blend toward `to` by `t` (0 = `from`).

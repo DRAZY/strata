@@ -20,6 +20,8 @@ pub(super) enum Choosing {
     PasteHistory,
     Project(Vec<PathBuf>),
     Symbol(Vec<(PathBuf, usize)>),
+    /// Font picker: (editor font?, the fonts offered after "Default").
+    Font(bool, Vec<crate::fonts::InstalledFont>),
 }
 
 impl StrataApp {
@@ -96,6 +98,16 @@ impl StrataApp {
                     self.open_project_path(p);
                 }
             }
+            Choosing::Font(editor, fonts) => {
+                // Row 0 is the built-in font.
+                let name = if i == 0 { String::new() } else { fonts.get(i - 1).map(|f| f.name.clone()).unwrap_or_default() };
+                if editor {
+                    self.settings.font_face = name;
+                } else {
+                    self.settings.ui_font_face = name;
+                }
+                self.persist_settings();
+            }
             Choosing::Symbol(spots) => {
                 if let Some((p, line)) = spots.get(i).cloned() {
                     self.push_jump();
@@ -103,6 +115,36 @@ impl StrataApp {
                     self.goto_line(line);
                 }
             }
+        }
+    }
+
+    pub(super) fn pick_font(&mut self, ctx: &egui::Context, editor: bool) {
+        let fonts = crate::fonts::installed_fonts();
+        let mut labels = vec![if editor { "Default (Hack)".to_owned() } else { "Default (Ubuntu)".to_owned() }];
+        labels.extend(fonts.iter().map(|f| f.name.clone()));
+        let hint = if editor { "Editor font (monospaced fonts work best)" } else { "Interface font" };
+        self.choose(ctx, Choosing::Font(editor, fonts), hint, labels);
+    }
+
+    /// Load the configured fonts and sizes when they change.
+    pub(super) fn apply_fonts(&mut self, ctx: &egui::Context) {
+        let key = (self.settings.font_face.clone(), self.settings.ui_font_face.clone(), self.settings.ui_font_size.to_bits());
+        if self.fonts_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.fonts_key = Some(key);
+        let editor = crate::fonts::find_font(&self.settings.font_face);
+        let ui = crate::fonts::find_font(&self.settings.ui_font_face);
+        let mut errors = crate::fonts::apply(ctx, editor.as_deref(), ui.as_deref());
+        if editor.is_none() && !self.settings.font_face.is_empty() {
+            errors.push(format!("font \"{}\" not found", self.settings.font_face));
+        }
+        if ui.is_none() && !self.settings.ui_font_face.is_empty() {
+            errors.push(format!("font \"{}\" not found", self.settings.ui_font_face));
+        }
+        crate::fonts::apply_ui_size(ctx, self.settings.ui_font_size.clamp(9.0, 24.0));
+        if !errors.is_empty() {
+            self.status = format!("Fonts: {}", errors.join("; "));
         }
     }
 

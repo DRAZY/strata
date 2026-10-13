@@ -23,6 +23,18 @@ pub fn config_dir() -> Option<PathBuf> {
 #[serde(default)]
 pub struct Settings {
     pub font_size: f32,
+    /// Editor font: a name from the font picker, or a font file path. Empty = built-in.
+    pub font_face: String,
+    /// Menus, tabs, sidebar and panels.
+    pub ui_font_face: String,
+    pub ui_font_size: f32,
+    /// "line", "block" or "underline".
+    pub caret_style: String,
+    /// "blink", "smooth" (fades) or "solid".
+    pub caret_blink: String,
+    pub caret_width: f32,
+    /// 0.3 (see-through) to 1.0 (opaque).
+    pub window_opacity: f32,
     pub theme: String,
     pub tab_size: usize,
     pub translate_tabs_to_spaces: bool,
@@ -51,6 +63,13 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             font_size: 14.0,
+            font_face: String::new(),
+            ui_font_face: String::new(),
+            ui_font_size: 13.0,
+            caret_style: "line".into(),
+            caret_blink: "blink".into(),
+            caret_width: 2.0,
+            window_opacity: 1.0,
             theme: crate::highlight::DEFAULT_THEME.into(),
             tab_size: 4,
             translate_tabs_to_spaces: true,

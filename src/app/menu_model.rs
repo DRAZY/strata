@@ -136,14 +136,30 @@ fn sub(label: &str, items: Vec<Item>) -> Item {
 
 const SEP: fn() -> Item = || Item::Separator;
 
-/// The Preferences menu on Windows/Linux (macOS has these under the app menu).
-fn settings_owned() -> Vec<Item> {
+/// Settings, color scheme and fonts: under the app menu on macOS, the
+/// Preferences menu elsewhere.
+fn settings_owned(app: &StrataApp) -> Vec<Item> {
+    let s = &app.settings;
+    let face = |name: &str| if name.is_empty() { "Default".to_owned() } else { name.to_owned() };
+    let mut ui_sizes: Vec<Item> = (10..=18).map(|n| Item::new(format!("{n} pt"), Act::Named(format!("uisize:{n}"))).checked(s.ui_font_size == n as f32)).collect();
+    ui_sizes.extend([SEP(), c("Larger", Cmd::UiLarger), c("Smaller", Cmd::UiSmaller)]);
     vec![
         c("Settings", Cmd::Settings),
         SEP(),
         c("Select Color Scheme…", Cmd::SelectTheme),
         SEP(),
-        sub("Font", vec![c("Larger", Cmd::ZoomIn), c("Smaller", Cmd::ZoomOut), SEP(), c("Reset Size", Cmd::ZoomReset)]),
+        sub(
+            "Font",
+            vec![
+                Item::new(format!("Editor Font: {}…", face(&s.font_face)), Act::Cmd(Cmd::SelectEditorFont)),
+                c("Larger", Cmd::ZoomIn),
+                c("Smaller", Cmd::ZoomOut),
+                c("Reset Size", Cmd::ZoomReset),
+                SEP(),
+                Item::new(format!("Interface Font: {}…", face(&s.ui_font_face)), Act::Cmd(Cmd::SelectUiFont)),
+                sub("Interface Size", ui_sizes),
+            ],
+        ),
     ]
 }
 
@@ -155,8 +171,7 @@ impl StrataApp {
         let (cols, rows) = (self.layout.cols.len(), self.layout.rows.len());
         let mut m: Menus = Vec::new();
 
-        let font = sub("Font", vec![c("Larger", Cmd::ZoomIn), c("Smaller", Cmd::ZoomOut), SEP(), c("Reset Size", Cmd::ZoomReset)]);
-        let settings = vec![c("Settings", Cmd::Settings), SEP(), c("Select Color Scheme…", Cmd::SelectTheme), SEP(), font];
+        let settings = settings_owned(self);
         if MAC {
             m.push((
                 "Strata".into(),
@@ -449,6 +464,29 @@ impl StrataApp {
                 }),
                 SEP(),
                 sub("Color Scheme", theme),
+                sub(
+                    "Cursor",
+                    vec![
+                        Item::new("Line", Act::Named("caret:line".into())).checked(self.settings.caret_style == "line"),
+                        Item::new("Block", Act::Named("caret:block".into())).checked(self.settings.caret_style == "block"),
+                        Item::new("Underline", Act::Named("caret:underline".into())).checked(self.settings.caret_style == "underline"),
+                        SEP(),
+                        Item::new("Blink", Act::Named("blink:blink".into())).checked(self.settings.caret_blink == "blink"),
+                        Item::new("Smooth Fade", Act::Named("blink:smooth".into())).checked(self.settings.caret_blink == "smooth"),
+                        Item::new("Solid", Act::Named("blink:solid".into())).checked(self.settings.caret_blink == "solid"),
+                        SEP(),
+                        Item::new("Thin", Act::Named("caretw:1".into())).checked(self.settings.caret_width == 1.0),
+                        Item::new("Normal", Act::Named("caretw:2".into())).checked(self.settings.caret_width == 2.0),
+                        Item::new("Thick", Act::Named("caretw:3".into())).checked(self.settings.caret_width == 3.0),
+                    ],
+                ),
+                sub(
+                    "Window Opacity",
+                    [100, 95, 90, 85, 80, 70, 60]
+                        .into_iter()
+                        .map(|p| Item::new(format!("{p}%"), Act::Named(format!("opacity:{p}"))).checked((self.settings.window_opacity * 100.0).round() as i32 == p))
+                        .collect(),
+                ),
             ],
         ));
 
@@ -565,7 +603,7 @@ impl StrataApp {
         ));
 
         if !MAC {
-            m.push(("Preferences".into(), settings_owned()));
+            m.push(("Preferences".into(), settings_owned(self)));
         }
 
         // ---- Window (macOS adds its own window-management items)
@@ -644,6 +682,26 @@ impl StrataApp {
                     let level = n[11..].parse().unwrap_or(2);
                     let d = self.doc();
                     d.view.fold_level(&mut d.editor, level);
+                }
+                n if n.starts_with("caret:") => {
+                    self.settings.caret_style = n[6..].to_owned();
+                    self.persist_settings();
+                }
+                n if n.starts_with("blink:") => {
+                    self.settings.caret_blink = n[6..].to_owned();
+                    self.persist_settings();
+                }
+                n if n.starts_with("caretw:") => {
+                    self.settings.caret_width = n[7..].parse().unwrap_or(2.0);
+                    self.persist_settings();
+                }
+                n if n.starts_with("opacity:") => {
+                    self.settings.window_opacity = n[8..].parse::<f32>().unwrap_or(100.0) / 100.0;
+                    self.persist_settings();
+                }
+                n if n.starts_with("uisize:") => {
+                    self.settings.ui_font_size = n[7..].parse().unwrap_or(13.0);
+                    self.persist_settings();
                 }
                 n if n.starts_with("wrapcol:") => {
                     self.settings.wrap_column = n[8..].parse().ok();

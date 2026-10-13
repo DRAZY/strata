@@ -84,6 +84,8 @@ pub struct StrataApp {
     recent_projects: Vec<PathBuf>,
     project_path: Option<PathBuf>,
     licenses_open: bool,
+    /// Fonts last loaded: (editor face, interface face, interface size bits).
+    fonts_key: Option<(String, String, u32)>,
     /// Text removed by Delete to Mark, for Yank.
     yank: String,
     /// Encoding chosen in the status bar: (reopen?, encoding), applied after drawing.
@@ -152,6 +154,7 @@ impl StrataApp {
             project_path: None,
             licenses_open: false,
             yank: String::new(),
+            fonts_key: None,
         };
         app.build = crate::build::Build::new(app.config.clone());
         if let Some(dir) = app.config.clone() {
@@ -777,6 +780,13 @@ impl StrataApp {
             Cmd::CloseProject => self.close_project(),
             Cmd::EditProject => self.edit_project(),
             Cmd::Licenses => self.licenses_open = true,
+            Cmd::SelectEditorFont => self.pick_font(ctx, true),
+            Cmd::SelectUiFont => self.pick_font(ctx, false),
+            Cmd::UiLarger | Cmd::UiSmaller => {
+                let step = if cmd == Cmd::UiLarger { 1.0 } else { -1.0 };
+                self.settings.ui_font_size = (self.settings.ui_font_size + step).clamp(9.0, 24.0);
+                self.persist_settings();
+            }
             Cmd::CancelBuild => self.build.cancel(),
             Cmd::NextResult | Cmd::PrevResult => {
                 let r = if cmd == Cmd::NextResult { self.build.next_result() } else { self.build.prev_result() };
@@ -1337,14 +1347,17 @@ impl StrataApp {
     /// Panels, widgets and menus take their colors from the editor theme.
     fn style_chrome(&mut self, ctx: &egui::Context) {
         let hl = &self.docs[self.active].highlighter;
-        if self.chrome_theme == hl.theme_name() {
+        let opacity = self.settings.window_opacity.clamp(0.3, 1.0);
+        let key = format!("{}@{opacity}", hl.theme_name());
+        if self.chrome_theme == key {
             return;
         }
-        self.chrome_theme = hl.theme_name().to_owned();
+        self.chrome_theme = key;
         let (bg, fg, sel, light) = (hl.background(), hl.foreground(), hl.selection(), hl.is_light());
         let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
         let panel = if light { shade(bg, 0.94) } else { shade(bg, 0.82) };
-        v.panel_fill = panel;
+        // Panels share the window's see-through setting; popups stay solid.
+        v.panel_fill = panel.gamma_multiply(opacity);
         v.window_fill = mix(panel, bg, 0.5);
         v.extreme_bg_color = if light { shade(bg, 1.02) } else { shade(bg, 0.7) };
         v.faint_bg_color = mix(panel, fg, 0.04);
@@ -1404,7 +1417,7 @@ impl StrataApp {
         ui.painter().rect_filled(bar, 0.0, ui.visuals().panel_fill);
         let shown = self.group_active(group);
         let focused = group == self.focus_group;
-        let font = FontId::proportional(13.0);
+        let font = FontId::proportional(self.settings.ui_font_size.clamp(9.0, 24.0));
         let height = 32.0;
         let mut action = None;
         egui::ScrollArea::horizontal().id_salt(("tabs", group)).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
@@ -1544,7 +1557,7 @@ impl StrataApp {
                 None => {
                     let resp = ui.allocate_rect(body, Sense::click());
                     let hl = &self.docs[self.active].highlighter;
-                    ui.painter().rect_filled(body, 0.0, hl.background());
+                    ui.painter().rect_filled(body, 0.0, hl.background().gamma_multiply(self.settings.window_opacity.clamp(0.3, 1.0)));
                     let hint = format!("Empty pane · drag a tab here, or {}", Cmd::MoveToGroup(g as u8).shortcut_label().unwrap_or_default());
                     ui.painter().text(body.center(), egui::Align2::CENTER_CENTER, hint, FontId::proportional(13.0), hl.foreground().gamma_multiply(0.4));
                     if resp.clicked() {
@@ -1707,6 +1720,11 @@ impl StrataApp {
 }
 
 impl eframe::App for StrataApp {
+    /// See-through windows need a transparent clear; the panels paint the color.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
         let now = ctx.input(|i| i.time);
@@ -1733,6 +1751,7 @@ impl eframe::App for StrataApp {
             self.completion.keys(ctx, d);
         }
         self.devshot.tick(ctx);
+        self.apply_fonts(ctx);
         self.style_chrome(ctx);
 
         if ctx.input(|i| i.viewport().close_requested()) {
@@ -1788,6 +1807,18 @@ impl eframe::App for StrataApp {
             let d = &mut self.docs[i];
             d.view.wrap = wrap;
             d.view.wrap_column = self.settings.wrap_column;
+            d.view.opacity = self.settings.window_opacity.clamp(0.3, 1.0);
+            d.view.caret_width = self.settings.caret_width.clamp(1.0, 6.0);
+            d.view.caret_shape = match self.settings.caret_style.as_str() {
+                "block" => crate::view::CaretShape::Block,
+                "underline" => crate::view::CaretShape::Underline,
+                _ => crate::view::CaretShape::Line,
+            };
+            d.view.caret_blink = match self.settings.caret_blink.as_str() {
+                "smooth" => crate::view::CaretBlink::Smooth,
+                "solid" => crate::view::CaretBlink::Solid,
+                _ => crate::view::CaretBlink::Blink,
+            };
             d.view.rulers.clone_from(&self.settings.rulers);
             if d.preview && d.editor.version() > 0 {
                 d.preview = false;
