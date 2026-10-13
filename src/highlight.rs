@@ -10,13 +10,19 @@ use egui::Color32;
 use std::collections::HashMap;
 use std::ops::{Range, RangeInclusive};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 use syntect::highlighting::{
     FontStyle, HighlightIterator, HighlightState, Highlighter as ThemeHighlighter, Theme, ThemeSet,
 };
 use syntect::parsing::syntax_definition::Pattern;
 use syntect::parsing::{ParseState, Regex, ScopeStack, SyntaxDefinition, SyntaxReference, SyntaxSet};
+
+pub mod scheme;
+pub mod themes;
+
+pub use scheme::Adjustments;
+pub use themes::Kind;
 
 const CHUNK: usize = 32;
 /// Lines parsed per frame before yielding.
@@ -52,7 +58,7 @@ static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(|| {
     LOAD_ERRORS.lock().unwrap_or_else(|e| e.into_inner()).extend(errors);
     set
 });
-static THEMES: LazyLock<ThemeSet> = LazyLock::new(|| {
+static THEMES: LazyLock<Registry> = LazyLock::new(|| {
     let (set, errors) = load_themes(USER_DIR.get().map(|d| d.join("Themes")).as_deref());
     LOAD_ERRORS.lock().unwrap_or_else(|e| e.into_inner()).extend(errors);
     set
@@ -109,27 +115,223 @@ fn bad_regex(def: &SyntaxDefinition) -> Option<String> {
     })
 }
 
-/// The bundled color schemes plus every `.tmTheme` in `dir` (named after the file).
-pub fn load_themes(dir: Option<&Path>) -> (ThemeSet, Vec<String>) {
-    let mut set = ThemeSet::load_defaults();
-    for (name, src) in [
-        ("Strata Dark", include_str!("../assets/themes/Strata Dark.tmTheme")),
-        ("Strata Light", include_str!("../assets/themes/Strata Light.tmTheme")),
-    ] {
+/// One color scheme: the syntect theme plus what Strata draws beyond it.
+#[derive(Clone, Debug)]
+pub struct Scheme {
+    pub theme: Theme,
+    pub kind: Kind,
+    /// Visible whitespace marks.
+    pub whitespace: Option<syntect::highlighting::Color>,
+    /// Terminal red, green, yellow, blue, magenta, cyan.
+    pub ansi: Option<[Color32; 6]>,
+}
+
+/// How the theme menus group schemes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Group {
+    Dark,
+    Light,
+    HighContrast,
+    /// syntect's built-in schemes.
+    Classic,
+    /// From the config folder's `Themes/`.
+    User,
+}
+
+impl Group {
+    pub fn label(self) -> &'static str {
+        match self {
+            Group::Dark => "Dark",
+            Group::Light => "Light",
+            Group::HighContrast => "High Contrast",
+            Group::Classic => "Classic",
+            Group::User => "Your Themes",
+        }
+    }
+}
+
+struct Entry {
+    name: String,
+    group: Group,
+    kind: Kind,
+    /// Curated palettes are built the first time they're shown.
+    spec: Option<&'static themes::Spec>,
+    built: OnceLock<Arc<Scheme>>,
+}
+
+impl Entry {
+    fn scheme(&self) -> &Arc<Scheme> {
+        self.built.get_or_init(|| Arc::new(themes::build(self.spec.expect("unbuilt entries have a palette"))))
+    }
+}
+
+/// Every color scheme, in menu order.
+pub struct Registry {
+    entries: Vec<Entry>,
+}
+
+impl Registry {
+    fn get(&self, name: &str) -> Option<&Entry> {
+        let name = match name {
+            // syntect's Solarized builds are replaced by the curated ones.
+            "Solarized (dark)" => "Solarized Dark",
+            "Solarized (light)" => "Solarized Light",
+            n => n,
+        };
+        self.entries.iter().find(|e| e.name == name).or_else(|| self.entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)))
+    }
+
+    #[cfg(test)]
+    pub fn contains(&self, name: &str) -> bool {
+        self.get(name).is_some()
+    }
+
+    fn insert(&mut self, name: String, group: Group, scheme: Scheme) {
+        let entry = Entry { name, group, kind: scheme.kind, spec: None, built: OnceLock::from(Arc::new(scheme)) };
+        match self.entries.iter_mut().find(|e| e.name == entry.name) {
+            // A user scheme with a bundled name replaces it.
+            Some(e) => *e = entry,
+            None => self.entries.push(entry),
+        }
+    }
+
+    fn insert_spec(&mut self, group: Group, spec: &'static themes::Spec) {
+        self.entries.push(Entry { name: spec.name.into(), group, kind: spec.kind, spec: Some(spec), built: OnceLock::new() });
+    }
+}
+
+pub fn rgb_color(c: Color32) -> syntect::highlighting::Color {
+    let [r, g, b, a] = c.to_srgba_unmultiplied();
+    syntect::highlighting::Color { r, g, b, a }
+}
+
+/// The bundled color schemes plus every `.tmTheme` and `.sublime-color-scheme`
+/// in `dir` (named after the file).
+pub fn load_themes(dir: Option<&Path>) -> (Registry, Vec<String>) {
+    let mut reg = Registry { entries: Vec::new() };
+    let strata = |src: &str| {
         let theme = ThemeSet::load_from_reader(&mut std::io::Cursor::new(src)).expect("bundled theme parses");
-        set.themes.insert(name.into(), theme);
+        let kind = scheme::kind_of(&theme);
+        Scheme { theme, kind, whitespace: None, ansi: None }
+    };
+    reg.insert("Strata Dark".into(), Group::Dark, strata(include_str!("../assets/themes/Strata Dark.tmTheme")));
+    for spec in themes::SPECS.iter().filter(|s| s.kind == Kind::Dark) {
+        reg.insert_spec(Group::Dark, spec);
+    }
+    reg.insert("Strata Light".into(), Group::Light, strata(include_str!("../assets/themes/Strata Light.tmTheme")));
+    for spec in themes::SPECS.iter().filter(|s| s.kind == Kind::Light) {
+        reg.insert_spec(Group::Light, spec);
+    }
+    for spec in themes::SPECS.iter().filter(|s| s.kind.is_high_contrast()) {
+        reg.insert_spec(Group::HighContrast, spec);
+    }
+    let mut classic: Vec<(String, Theme)> = ThemeSet::load_defaults().themes.into_iter().filter(|(n, _)| !n.starts_with("Solarized")).collect();
+    classic.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, theme) in classic {
+        let kind = scheme::kind_of(&theme);
+        reg.insert(name, Group::Classic, Scheme { theme, kind, whitespace: None, ansi: None });
     }
     let mut errors = Vec::new();
-    for path in dir.map(|d| files_with_extension(d, "tmTheme")).unwrap_or_default() {
+    let Some(dir) = dir else { return (reg, errors) };
+    let mut files = files_with_extension(dir, "tmTheme");
+    files.extend(files_with_extension(dir, "sublime-color-scheme"));
+    files.sort();
+    for path in files {
         let Some(name) = path.file_stem().and_then(|s| s.to_str()) else { continue };
-        match ThemeSet::get_theme(&path) {
-            Ok(theme) => {
-                set.themes.insert(name.to_owned(), theme);
-            }
+        let scheme = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("tmTheme")) {
+            ThemeSet::get_theme(&path).map_err(|e| e.to_string()).map(|theme| {
+                let kind = scheme::kind_of(&theme);
+                Scheme { theme, kind, whitespace: None, ansi: None }
+            })
+        } else {
+            std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|text| scheme::import_sublime_color_scheme(&text, name)).map(|(s, warnings)| {
+                if let Some(first) = warnings.first() {
+                    let more = if warnings.len() > 1 { format!(" (+{} more)", warnings.len() - 1) } else { String::new() };
+                    errors.push(format!("Theme {name}: {first}{more}"));
+                }
+                s
+            })
+        };
+        match scheme {
+            Ok(s) => reg.insert(name.to_owned(), Group::User, s),
             Err(e) => errors.push(format!("Theme {name}: {e}")),
         }
     }
-    (set, errors)
+    (reg, errors)
+}
+
+/// User customizations (settings `theme_overrides`, `font_options`) and a
+/// generation number bumped whenever they change.
+static ADJUST: LazyLock<RwLock<(u64, Adjustments)>> = LazyLock::new(|| RwLock::new((0, Adjustments::default())));
+/// Schemes with the current adjustments applied, by name, with the
+/// generation they were built for.
+type AdjustedCache = HashMap<String, (u64, Arc<Scheme>)>;
+static ADJUSTED: LazyLock<Mutex<AdjustedCache>> = LazyLock::new(Default::default);
+
+/// Replace the user's customizations. Returns true if they changed (every
+/// highlighter then picks up the new colors on its next `set_theme`).
+pub fn set_adjustments(adj: Adjustments) -> bool {
+    let mut cur = ADJUST.write().unwrap_or_else(|e| e.into_inner());
+    if cur.1 == adj {
+        return false;
+    }
+    cur.0 += 1;
+    cur.1 = adj;
+    true
+}
+
+fn generation() -> u64 {
+    ADJUST.read().unwrap_or_else(|e| e.into_inner()).0
+}
+
+/// The scheme called `name` with the user's adjustments, if it exists.
+pub fn scheme(name: &str) -> Option<Arc<Scheme>> {
+    let entry = THEMES.get(name)?;
+    let guard = ADJUST.read().unwrap_or_else(|e| e.into_inner());
+    let (generation, adj) = &*guard;
+    if adj.is_empty() {
+        return Some(entry.scheme().clone());
+    }
+    let mut cache = ADJUSTED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((g, s)) = cache.get(&entry.name)
+        && g == generation
+    {
+        return Some(s.clone());
+    }
+    let s = Arc::new(scheme::adjusted(entry.scheme(), &entry.name, adj));
+    cache.insert(entry.name.clone(), (*generation, s.clone()));
+    Some(s)
+}
+
+fn scheme_or_default(name: &str) -> Arc<Scheme> {
+    scheme(name).or_else(|| scheme(DEFAULT_THEME)).expect("the default scheme exists")
+}
+
+/// The canonical name for a scheme setting (case and old names forgiven).
+pub fn theme_canonical_name(name: &str) -> Option<&'static str> {
+    THEMES.get(name).map(|e| e.name.as_str())
+}
+
+/// Light, dark or high contrast, if the scheme exists.
+pub fn theme_kind(name: &str) -> Option<Kind> {
+    THEMES.get(name).map(|e| e.kind)
+}
+
+/// Scheme names by menu group, in menu order.
+pub fn theme_groups() -> Vec<(Group, Vec<&'static str>)> {
+    let mut out: Vec<(Group, Vec<&'static str>)> = Vec::new();
+    for group in [Group::Dark, Group::Light, Group::HighContrast, Group::User, Group::Classic] {
+        let names: Vec<&'static str> = THEMES.entries.iter().filter(|e| e.group == group).map(|e| e.name.as_str()).collect();
+        if !names.is_empty() {
+            out.push((group, names));
+        }
+    }
+    out
+}
+
+/// The menu group of a scheme.
+pub fn theme_group(name: &str) -> Option<Group> {
+    THEMES.get(name).map(|e| e.group)
 }
 
 /// Files directly in `dir` ending in `.ext`, sorted. Empty if `dir` is missing.
@@ -145,26 +347,27 @@ fn files_with_extension(dir: &Path, ext: &str) -> Vec<PathBuf> {
 
 pub const DEFAULT_THEME: &str = "Strata Dark";
 
-/// Every bundled theme name, sorted.
+/// Every color scheme name, in menu order (dark, light, high contrast,
+/// yours, classic).
 pub fn theme_names() -> Vec<&'static str> {
-    THEMES.themes.keys().map(String::as_str).collect()
+    theme_groups().into_iter().flat_map(|(_, names)| names).collect()
 }
 
 /// Syntax-highlighted HTML (inline styles) for `text`, for Copy as HTML.
 pub fn to_html(text: &str, syntax: &str, theme: &str) -> String {
     let syntax = SYNTAXES.find_syntax_by_name(syntax).unwrap_or_else(|| SYNTAXES.find_syntax_plain_text());
-    let theme = THEMES.themes.get(theme).unwrap_or(&THEMES.themes[DEFAULT_THEME]);
-    syntect::html::highlighted_html_for_string(text, &SYNTAXES, syntax, theme).unwrap_or_else(|_| format!("<pre>{text}</pre>"))
+    let scheme = scheme_or_default(theme);
+    syntect::html::highlighted_html_for_string(text, &SYNTAXES, syntax, &scheme.theme).unwrap_or_else(|_| format!("<pre>{text}</pre>"))
 }
 
 /// The theme's foreground for a scope like "markup.heading", if it sets one
 /// (Markdown preview colors).
 pub fn scope_color(theme: &str, scope: &str) -> Option<Color32> {
-    let theme = THEMES.themes.get(theme)?;
+    let scheme = scheme(theme)?;
     let stack = <ScopeStack as std::str::FromStr>::from_str(scope).ok()?;
-    let hl = ThemeHighlighter::new(theme);
+    let hl = ThemeHighlighter::new(&scheme.theme);
     let style = hl.style_for_stack(stack.as_slice());
-    let fg = theme.settings.foreground?;
+    let fg = scheme.theme.settings.foreground?;
     (style.foreground != fg).then(|| to_color(style.foreground))
 }
 
@@ -177,8 +380,8 @@ pub fn highlight_snippet(code: &str, lang: &str, theme: &str) -> Option<Vec<Span
         return None;
     }
     let syntax = syntax_for_fence(lang)?;
-    let theme = THEMES.themes.get(theme).unwrap_or(&THEMES.themes[DEFAULT_THEME]);
-    let mut h = syntect::easy::HighlightLines::new(syntax, theme);
+    let scheme = scheme_or_default(theme);
+    let mut h = syntect::easy::HighlightLines::new(syntax, &scheme.theme);
     let mut spans = Vec::new();
     let mut offset = 0;
     for (n, line) in syntect::util::LinesWithEndings::from(code).enumerate() {
@@ -275,8 +478,10 @@ pub fn syntax_names() -> Vec<&'static str> {
 }
 
 pub struct Highlighter {
-    theme: &'static Theme,
+    scheme: Arc<Scheme>,
     theme_name: String,
+    /// The adjustments generation `scheme` was built with.
+    generation: u64,
     syntax_name: String,
     /// `checkpoints[k]` = state at the start of line `k * CHUNK`.
     checkpoints: Vec<(ParseState, HighlightState)>,
@@ -308,8 +513,9 @@ impl Highlighter {
 
     pub fn new() -> Self {
         Self {
-            theme: &THEMES.themes[DEFAULT_THEME],
+            scheme: scheme_or_default(DEFAULT_THEME),
             theme_name: DEFAULT_THEME.into(),
+            generation: generation(),
             syntax_name: "Plain Text".into(),
             checkpoints: Vec::new(),
             lines: HashMap::new(),
@@ -356,7 +562,7 @@ impl Highlighter {
     }
 
     pub fn background(&self) -> Color32 {
-        self.theme
+        self.scheme.theme
             .settings
             .background
             .map(to_color)
@@ -364,7 +570,7 @@ impl Highlighter {
     }
 
     pub fn foreground(&self) -> Color32 {
-        self.theme
+        self.scheme.theme
             .settings
             .foreground
             .map(to_color)
@@ -372,7 +578,7 @@ impl Highlighter {
     }
 
     pub fn selection(&self) -> Color32 {
-        self.theme
+        self.scheme.theme
             .settings
             .selection
             .map(to_color)
@@ -381,20 +587,20 @@ impl Highlighter {
 
     /// Background of the line(s) holding a cursor.
     pub fn line_highlight(&self) -> Color32 {
-        self.theme.settings.line_highlight.map(to_color).unwrap_or(Color32::from_white_alpha(8))
+        self.scheme.theme.settings.line_highlight.map(to_color).unwrap_or(Color32::from_white_alpha(8))
     }
 
     pub fn gutter_foreground(&self) -> Option<Color32> {
-        self.theme.settings.gutter_foreground.map(to_color)
+        self.scheme.theme.settings.gutter_foreground.map(to_color)
     }
 
     /// Indent guides.
     pub fn guide(&self) -> Color32 {
-        self.theme.settings.guide.map(to_color).unwrap_or_else(|| self.foreground().gamma_multiply(0.12))
+        self.scheme.theme.settings.guide.map(to_color).unwrap_or_else(|| self.foreground().gamma_multiply(0.12))
     }
 
     pub fn caret(&self) -> Color32 {
-        self.theme
+        self.scheme.theme
             .settings
             .caret
             .map(to_color)
@@ -405,14 +611,62 @@ impl Highlighter {
         &self.theme_name
     }
 
-    /// Switch color scheme; unknown names are ignored.
+    /// Switch color scheme (or pick up changed customizations); unknown
+    /// names are ignored, and setting the current one again costs nothing.
     pub fn set_theme(&mut self, name: &str) {
-        if let Some(theme) = THEMES.themes.get(name) {
-            self.theme = theme;
-            self.theme_name = name.into();
+        let generation = generation();
+        let Some(canonical) = theme_canonical_name(name) else { return };
+        if canonical == self.theme_name && generation == self.generation {
+            return;
+        }
+        if let Some(s) = scheme(canonical) {
+            self.scheme = s;
+            self.theme_name = canonical.into();
+            self.generation = generation;
             self.invalidate_from(0);
         }
     }
+
+    /// Changes whenever the colors do: the scheme or the user's customizations.
+    pub fn theme_key(&self) -> String {
+        format!("{}#{}", self.theme_name, self.generation)
+    }
+
+    /// Whether this highlighter shows `name` with the current customizations.
+    pub fn is_showing(&self, name: &str) -> bool {
+        theme_canonical_name(name).is_some_and(|n| n == self.theme_name) && self.generation == generation()
+    }
+
+    /// Find-match highlight, if the scheme sets one.
+    pub fn find_highlight(&self) -> Option<Color32> {
+        self.scheme.theme.settings.find_highlight.map(to_color)
+    }
+
+    /// Dark, light or high contrast.
+    pub fn kind(&self) -> Kind {
+        self.scheme.kind
+    }
+
+    /// Highlights in the chrome (scrollbar, active tab): the scheme's accent, else its caret.
+    pub fn accent(&self) -> Color32 {
+        self.scheme.theme.settings.accent.map(to_color).unwrap_or_else(|| self.caret())
+    }
+
+    /// The bracket pair around the caret.
+    pub fn bracket(&self) -> Color32 {
+        self.scheme.theme.settings.brackets_foreground.map(to_color).unwrap_or_else(|| self.caret())
+    }
+
+    /// Visible whitespace marks.
+    pub fn whitespace(&self) -> Color32 {
+        self.scheme.whitespace.map(to_color).unwrap_or_else(|| self.foreground().gamma_multiply(0.35))
+    }
+
+    /// Terminal hues (red, green, yellow, blue, magenta, cyan), if the scheme has them.
+    pub fn ansi(&self) -> Option<[Color32; 6]> {
+        self.scheme.ansi
+    }
+
 
     /// Force a syntax by name (from the syntax picker); unknown names are ignored.
     pub fn set_syntax(&mut self, name: &str) {
@@ -424,8 +678,7 @@ impl Highlighter {
 
     /// True for themes with a light background (the UI chrome follows).
     pub fn is_light(&self) -> bool {
-        let bg = self.background();
-        (bg.r() as u32 + bg.g() as u32 + bg.b() as u32) > 3 * 140
+        self.scheme.kind.is_light()
     }
 
     pub fn syntax_name(&self) -> &str {
@@ -481,7 +734,8 @@ impl Highlighter {
         if self.lines.len() > 8_192 {
             self.lines.retain(|&l, _| l + 2_000 >= first && l <= last + 2_000);
         }
-        let hl = ThemeHighlighter::new(self.theme);
+        let scheme = self.scheme.clone();
+        let hl = ThemeHighlighter::new(&scheme.theme);
         if self.checkpoints.is_empty() {
             let parse = ParseState::new(self.syntax());
             let high = HighlightState::new(&hl, ScopeStack::new());
@@ -640,7 +894,12 @@ mod tests {
         assert!(!h.is_light());
         h.set_theme("Strata Light");
         assert!(h.is_light());
-        assert!(theme_names().contains(&"Solarized (dark)"));
+        assert!(theme_names().contains(&"Solarized Dark"));
+        // The old syntect name still works.
+        h.set_theme("Solarized (dark)");
+        assert_eq!(h.theme_name(), "Solarized Dark");
+        h.set_theme("nord");
+        assert_eq!(h.theme_name(), "Nord", "names are case-insensitive");
     }
 
     #[test]
@@ -838,11 +1097,21 @@ mod tests {
         let dangling = set.find_syntax_by_name("Dangling").unwrap();
         let _ = ParseState::new(dangling).parse_line("x y\n", &set);
 
-        let (themes, errors) = load_themes(Some(&themes));
-        assert!(themes.themes.contains_key("Mine"));
-        assert!(themes.themes.contains_key("Strata Dark"));
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].contains("Junk"));
+        std::fs::write(
+            themes.join("Sub.sublime-color-scheme"),
+            r##"{ "variables": { "ink": "#202020" }, "globals": { "background": "#fdfdfd", "foreground": "var(ink)" },
+                "rules": [ { "scope": "comment", "foreground": "#777777", "font_style": "italic" }, ], }"##,
+        )
+        .unwrap();
+        std::fs::write(themes.join("Broken.sublime-color-scheme"), "{ nope").unwrap();
+        let (reg, errors) = load_themes(Some(&themes));
+        assert!(reg.contains("Mine"));
+        assert!(reg.contains("Strata Dark"));
+        assert!(reg.contains("Sub"), ".sublime-color-scheme files import");
+        assert_eq!(reg.get("Sub").map(|e| (e.group, e.kind)), Some((Group::User, Kind::Light)));
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors.iter().any(|e| e.contains("Junk")));
+        assert!(errors.iter().any(|e| e.contains("Broken")));
 
         // No folder: just the bundled set, no errors.
         let (_, errors) = load_syntaxes(Some(&dir.join("missing")));
@@ -896,5 +1165,47 @@ mod tests {
         }
         assert!(frames >= 3);
         assert!(h.line(end).is_some());
+    }
+
+    /// Every scheme Strata ships defines the editor colors the view paints,
+    /// and the curated ones keep text and every syntax role legible.
+    #[test]
+    fn bundled_schemes_are_complete_and_legible() {
+        use themes::{RULES, Role, contrast};
+        let (reg, errors) = load_themes(None);
+        assert!(errors.is_empty());
+        let groups = theme_groups();
+        for g in [Group::Dark, Group::Light, Group::HighContrast] {
+            assert!(groups.iter().any(|(group, names)| *group == g && !names.is_empty()), "{g:?}");
+        }
+        for e in &reg.entries {
+            let s = e.scheme();
+            let st = &s.theme.settings;
+            let (bg, fg) = (to_color(st.background.expect("background")), to_color(st.foreground.expect("foreground")));
+            if e.group == Group::Classic {
+                continue;
+            }
+            for (key, c) in [("caret", st.caret), ("selection", st.selection), ("line_highlight", st.line_highlight), ("gutter_foreground", st.gutter_foreground), ("find_highlight", st.find_highlight), ("guide", st.guide)] {
+                assert!(c.is_some(), "{}: no {key}", e.name);
+            }
+            let text = contrast(fg, bg);
+            assert!(text >= 4.5, "{}: text contrast {text:.2}", e.name);
+            let Some(spec) = e.spec else { continue };
+            assert!(st.brackets_foreground.is_some() && s.whitespace.is_some() && s.ansi.is_some() && st.accent.is_some(), "{}", e.name);
+            let (text_min, syntax_min) = themes::minimums(spec.kind);
+            assert!(text >= text_min, "{}: text contrast {text:.2}", e.name);
+            let hl = ThemeHighlighter::new(&s.theme);
+            for (role, selectors) in RULES {
+                // The role's first selector, as a scope inside a source file.
+                let scope = format!("source.x {}", selectors.split(',').next().unwrap().trim());
+                let stack = <ScopeStack as std::str::FromStr>::from_str(&scope).unwrap();
+                let color = to_color(hl.style_for_stack(stack.as_slice()).foreground);
+                let c = contrast(color, bg);
+                assert!(c >= syntax_min, "{}: {role:?} contrast {c:.2}", e.name);
+                if matches!(role, Role::Keyword | Role::String | Role::Comment | Role::Function | Role::Number) {
+                    assert_ne!(color, fg, "{}: {role:?} isn't colored", e.name);
+                }
+            }
+        }
     }
 }

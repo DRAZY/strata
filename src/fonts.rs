@@ -1,6 +1,8 @@
-//! CJK fallback fonts. egui's built-in fonts have no CJK glyphs, so the first
-//! time CJK text appears we add system fonts as fallbacks (loaded lazily:
-//! they're tens of MB and most files never need them).
+//! Fonts: the coding fonts bundled with Strata, installed system fonts, the
+//! editor and interface font settings, and CJK fallbacks. egui's built-in
+//! fonts have no CJK glyphs, so the first time CJK text appears we add system
+//! fonts as fallbacks (loaded lazily: they're tens of MB and most files never
+//! need them).
 
 use egui::epaint::text::{FontData, FontInsert, FontPriority, InsertFontFamily};
 use egui::{Context, FontFamily, Id};
@@ -120,44 +122,144 @@ pub fn installed_fonts() -> Vec<InstalledFont> {
     out
 }
 
-/// Resolve a font setting (a name from `installed_fonts`, or a file path).
-pub fn find_font(setting: &str) -> Option<std::path::PathBuf> {
+/// A font that ships inside Strata. All are under the SIL Open Font License
+/// 1.1; the texts are in `assets/fonts` and Help ▸ Licenses. Only the regular
+/// weight ships: egui draws one weight (italics are slanted by the renderer).
+pub struct BundledFont {
+    pub name: &'static str,
+    pub data: &'static [u8],
+    /// Monospaced (offered first for the editor).
+    pub mono: bool,
+    pub license: &'static str,
+    /// Shown beside the name in the font picker.
+    pub note: &'static str,
+}
+
+pub static BUNDLED: &[BundledFont] = &[
+    BundledFont {
+        name: "JetBrains Mono",
+        data: include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
+        mono: true,
+        license: include_str!("../assets/fonts/JetBrainsMono-OFL.txt"),
+        // egui shapes text, so the coding ligatures (=> != ===) draw, one cell per character.
+        note: "bundled · ligatures",
+    },
+    BundledFont {
+        name: "Fira Code",
+        data: include_bytes!("../assets/fonts/FiraCode-Regular.ttf"),
+        mono: true,
+        license: include_str!("../assets/fonts/FiraCode-OFL.txt"),
+        note: "bundled · ligatures",
+    },
+    BundledFont {
+        name: "IBM Plex Mono",
+        data: include_bytes!("../assets/fonts/IBMPlexMono-Regular.ttf"),
+        mono: true,
+        license: include_str!("../assets/fonts/IBMPlexMono-OFL.txt"),
+        note: "bundled",
+    },
+    BundledFont {
+        name: "Source Code Pro",
+        data: include_bytes!("../assets/fonts/SourceCodePro-Regular.ttf"),
+        mono: true,
+        license: include_str!("../assets/fonts/SourceCodePro-OFL.txt"),
+        note: "bundled",
+    },
+    BundledFont {
+        name: "Inter",
+        data: include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+        mono: false,
+        license: include_str!("../assets/fonts/Inter-OFL.txt"),
+        note: "bundled",
+    },
+];
+
+/// Where a font comes from.
+#[derive(Clone, Debug)]
+pub enum FontSource {
+    Bundled(&'static BundledFont),
+    File(std::path::PathBuf),
+}
+
+impl std::fmt::Debug for BundledFont {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name)
+    }
+}
+
+/// A row in the font pickers.
+#[derive(Clone, Debug)]
+pub struct FontChoice {
+    /// What the setting stores.
+    pub name: String,
+    pub note: &'static str,
+}
+
+/// What the font pickers offer after "Default": the bundled fonts first
+/// (monospaced ones first for the editor, Inter first for the interface),
+/// then every installed font.
+pub fn font_choices(editor: bool) -> Vec<FontChoice> {
+    let mut bundled: Vec<&BundledFont> = BUNDLED.iter().collect();
+    bundled.sort_by_key(|f| f.mono != editor);
+    let mut out: Vec<FontChoice> = bundled.into_iter().map(|f| FontChoice { name: f.name.to_owned(), note: f.note }).collect();
+    out.extend(installed_fonts().into_iter().map(|f| FontChoice { name: f.name, note: "" }));
+    out
+}
+
+/// Resolve a font setting: a bundled font's name, a font file path, or a
+/// name from `installed_fonts`.
+pub fn find_font(setting: &str) -> Option<FontSource> {
+    let setting = setting.trim();
     if setting.is_empty() {
         return None;
     }
+    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace() && *c != '-' && *c != '_').collect::<String>().to_lowercase();
+    if let Some(f) = BUNDLED.iter().find(|f| squash(f.name) == squash(setting)) {
+        return Some(FontSource::Bundled(f));
+    }
     let p = std::path::Path::new(setting);
     if p.is_file() {
-        return Some(p.to_owned());
+        return Some(FontSource::File(p.to_owned()));
     }
-    installed_fonts().into_iter().find(|f| f.name.eq_ignore_ascii_case(setting)).map(|f| f.path)
+    installed_fonts().into_iter().find(|f| f.name.eq_ignore_ascii_case(setting)).map(|f| FontSource::File(f.path))
 }
 
 /// Rebuild the font set: the chosen editor font leads the monospace family,
 /// the chosen interface font leads the proportional one, egui's fonts stay
-/// as fallbacks. Returns a message for each font that couldn't be loaded.
-pub fn apply(ctx: &Context, editor: Option<&std::path::Path>, ui: Option<&std::path::Path>) -> Vec<String> {
-    use egui::FontDefinitions;
+/// as fallbacks (for glyphs the chosen font lacks). Returns a message for
+/// each font that couldn't be loaded.
+pub fn apply(ctx: &Context, editor: Option<&FontSource>, ui: Option<&FontSource>) -> Vec<String> {
+    let (defs, errors) = definitions(editor, ui);
+    ctx.set_fonts(defs);
+    // CJK fallbacks were part of the old set; load them again when needed.
+    ctx.data_mut(|d| d.remove::<bool>(Id::new("strata-cjk-fonts")));
+    errors
+}
+
+fn definitions(editor: Option<&FontSource>, ui: Option<&FontSource>) -> (egui::FontDefinitions, Vec<String>) {
     use std::sync::Arc;
-    let mut defs = FontDefinitions::default();
+    let mut defs = egui::FontDefinitions::default();
     let mut errors = Vec::new();
-    for (key, path, family) in [("strata-editor", editor, FontFamily::Monospace), ("strata-ui", ui, FontFamily::Proportional)] {
-        let Some(path) = path else { continue };
-        match std::fs::read(path) {
-            Ok(bytes) => {
-                defs.font_data.insert(key.to_owned(), Arc::new(FontData::from_owned(bytes)));
-                defs.families.entry(family).or_default().insert(0, key.to_owned());
-            }
-            Err(e) => errors.push(format!("{}: {e}", path.display())),
-        }
+    for (key, source, family) in [("strata-editor", editor, FontFamily::Monospace), ("strata-ui", ui, FontFamily::Proportional)] {
+        let data = match source {
+            None => continue,
+            Some(FontSource::Bundled(f)) => FontData::from_static(f.data),
+            Some(FontSource::File(path)) => match std::fs::read(path) {
+                Ok(bytes) => FontData::from_owned(bytes),
+                Err(e) => {
+                    errors.push(format!("{}: {e}", path.display()));
+                    continue;
+                }
+            },
+        };
+        defs.font_data.insert(key.to_owned(), Arc::new(data));
+        defs.families.entry(family).or_default().insert(0, key.to_owned());
     }
     if let Some(bytes) = symbol_fallback() {
         defs.font_data.insert("macos-symbols".to_owned(), Arc::new(FontData::from_owned(bytes)));
         defs.families.entry(FontFamily::Proportional).or_default().push("macos-symbols".to_owned());
     }
-    ctx.set_fonts(defs);
-    // CJK fallbacks were part of the old set; load them again when needed.
-    ctx.data_mut(|d| d.remove::<bool>(Id::new("strata-cjk-fonts")));
-    errors
+    (defs, errors)
 }
 
 /// Interface text sizes, scaled from one base size.
@@ -172,4 +274,77 @@ pub fn apply_ui_size(ctx: &Context, size: f32) {
             };
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Color32, FontId, RawInput};
+
+    fn context_with(editor: Option<&FontSource>) -> Context {
+        let ctx = Context::default();
+        assert!(apply(&ctx, editor, None).is_empty());
+        // No GPU here: discard font-atlas uploads instead of applying them.
+        ctx.run_ui(RawInput::default(), |_| {}).textures_delta.clear();
+        ctx
+    }
+
+    fn metrics(ctx: &Context) -> (f32, f32) {
+        let font = FontId::monospace(14.0);
+        ctx.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)))
+    }
+
+    #[test]
+    fn bundled_fonts_are_offered_first_and_found_by_name() {
+        let editor = font_choices(true);
+        let mono = BUNDLED.iter().filter(|f| f.mono).count();
+        assert!(mono >= 4);
+        assert!(editor[..mono].iter().all(|c| BUNDLED.iter().any(|b| b.mono && b.name == c.name)), "monospaced bundled fonts lead the editor list");
+        assert_eq!(font_choices(false)[0].name, "Inter", "Inter leads the interface list");
+        assert!(matches!(find_font("JetBrains Mono"), Some(FontSource::Bundled(f)) if f.name == "JetBrains Mono"));
+        assert!(matches!(find_font("jetbrainsmono"), Some(FontSource::Bundled(_))), "spacing and case are forgiven");
+        assert!(matches!(find_font(" fira-code "), Some(FontSource::Bundled(f)) if f.name == "Fira Code"));
+        assert!(find_font("").is_none());
+        assert!(find_font("No Such Font 123").is_none());
+        for f in BUNDLED {
+            assert!(f.license.contains("SIL Open Font License"), "{}", f.name);
+        }
+    }
+
+    /// Every bundled font loads and actually changes the editor's metrics.
+    #[test]
+    fn bundled_fonts_change_rendering() {
+        let default = metrics(&context_with(None));
+        for f in BUNDLED.iter().filter(|f| f.mono) {
+            let m = metrics(&context_with(Some(&FontSource::Bundled(f))));
+            assert!(m.0 > 4.0 && m.1 > 10.0, "{}: {m:?}", f.name);
+            assert_ne!(m, default, "{} renders differently from Hack", f.name);
+        }
+    }
+
+    /// Coding ligatures (=> != ===) are drawn by egui's shaper, but every
+    /// character keeps its own cell, so carets and selections stay on the grid.
+    #[test]
+    fn ligature_fonts_keep_one_cell_per_character() {
+        for name in ["Fira Code", "JetBrains Mono"] {
+            let ctx = context_with(find_font(name).as_ref());
+            // The same length without anything that could form a ligature.
+            let (text, plain) = ("a => b != c === d <= e", "a xx b xx c xxx d xx e");
+            let font = FontId::monospace(14.0);
+            let layout = |t: &str| ctx.fonts_mut(|f| f.layout_no_wrap(t.into(), font.clone(), Color32::WHITE));
+            let (lig, reference) = (layout(text), layout(plain));
+            for i in 0..=text.len() {
+                let x = |g: &egui::Galley| g.pos_from_cursor(egui::text::CCursor::new(i)).min.x;
+                assert!((x(&lig) - x(&reference)).abs() < 0.5, "{name}: char {i} at {} instead of {}", x(&lig), x(&reference));
+            }
+        }
+    }
+
+    #[test]
+    fn a_missing_font_file_is_reported_and_skipped() {
+        let missing = FontSource::File("/no/such/font.ttf".into());
+        let (defs, errors) = definitions(Some(&missing), None);
+        assert_eq!(errors.len(), 1);
+        assert!(!defs.font_data.contains_key("strata-editor"), "egui's own font stays in charge");
+    }
 }

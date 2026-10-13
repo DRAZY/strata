@@ -127,6 +127,7 @@ mod preview;
 mod replace_files;
 mod snippets_ui;
 mod textutil;
+mod theme_ui;
 mod windows;
 
 pub use windows::Windows;
@@ -296,7 +297,7 @@ impl StrataApp {
     /// Style a new tab with the current settings and add it to the focused
     /// pane, after that pane's current tab.
     fn push_doc(&mut self, mut doc: Document) {
-        doc.highlighter.set_theme(&self.settings.theme);
+        doc.highlighter.set_theme(&self.active_theme());
         doc.editor.tab_width = self.settings.tab_size;
         doc.editor.use_spaces = self.settings.translate_tabs_to_spaces;
         doc.group = self.focus_group;
@@ -407,7 +408,7 @@ impl StrataApp {
         let reuse = if preview { self.docs.iter().position(|d| d.preview && d.group == g) } else { None }
             .or_else(|| shown.filter(|&i| self.docs[i].is_blank()));
         if let Some(i) = reuse {
-            doc.highlighter.set_theme(&self.settings.theme);
+            doc.highlighter.set_theme(&self.active_theme());
             doc.editor.tab_width = self.settings.tab_size;
             doc.editor.use_spaces = self.settings.translate_tabs_to_spaces;
             doc.group = g;
@@ -616,8 +617,9 @@ impl StrataApp {
 
     /// Theme changes; each file keeps its own indentation.
     fn apply_settings(&mut self) {
+        let theme = self.active_theme();
         for d in &mut self.docs {
-            d.highlighter.set_theme(&self.settings.theme);
+            d.highlighter.set_theme(&theme);
         }
     }
 
@@ -1073,7 +1075,7 @@ impl StrataApp {
             syntax: d.highlighter.syntax_name().to_owned(),
             lines: d.editor.buffer.len_lines(),
             root: self.sidebar.root.clone(),
-            theme: self.settings.theme.clone(),
+            theme: self.active_theme(),
             open: self.docs.iter().filter_map(|d| d.path.clone()).collect(),
         }
     }
@@ -1117,8 +1119,7 @@ impl StrataApp {
                     if preview {
                         continue;
                     }
-                    self.settings.theme = name;
-                    self.persist_settings();
+                    self.pick_theme(name);
                 }
                 Event::Syntax(s) => self.doc().highlighter.set_syntax(&s),
                 Event::Chose(i) => self.chose(i),
@@ -1529,26 +1530,34 @@ impl StrataApp {
     fn style_chrome(&mut self, ctx: &egui::Context) {
         let hl = &self.docs[self.active].highlighter;
         let opacity = self.settings.window_opacity.clamp(0.3, 1.0);
-        let key = format!("{}@{opacity}", hl.theme_name());
+        let key = format!("{}@{opacity}", hl.theme_key());
         if self.chrome_theme == key {
             return;
         }
         self.chrome_theme = key;
         let (bg, fg, sel, light) = (hl.background(), hl.foreground(), hl.selection(), hl.is_light());
+        let high_contrast = hl.kind().is_high_contrast();
         let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
-        let panel = if light { shade(bg, 0.94) } else { shade(bg, 0.82) };
+        // High contrast keeps the scheme's pure background and full-strength text and borders.
+        let panel = if high_contrast { bg } else if light { shade(bg, 0.94) } else { shade(bg, 0.82) };
         // Chrome (tabs, sidebar, status bar, menus) stays solid; only the text areas see through.
         v.panel_fill = panel;
         v.window_fill = mix(panel, bg, 0.5);
         v.extreme_bg_color = if light { shade(bg, 1.02) } else { shade(bg, 0.7) };
         v.faint_bg_color = mix(panel, fg, 0.04);
         v.selection.bg_fill = sel;
-        v.override_text_color = Some(mix(fg, panel, 0.12));
-        v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, mix(panel, fg, 0.10));
+        v.override_text_color = Some(if high_contrast { fg } else { mix(fg, panel, 0.12) });
+        // Selected rows (sidebar, menus) keep the text color on the selection.
+        v.selection.stroke = Stroke::new(1.0, fg);
+        v.hyperlink_color = hl.accent();
+        v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, mix(panel, fg, if high_contrast { 0.5 } else { 0.10 }));
+        v.window_stroke = Stroke::new(1.0, mix(panel, fg, if high_contrast { 0.6 } else { 0.16 }));
         v.widgets.inactive.weak_bg_fill = mix(panel, fg, 0.06);
         v.widgets.hovered.weak_bg_fill = mix(panel, fg, 0.12);
         v.widgets.active.weak_bg_fill = mix(panel, fg, 0.18);
-        ctx.set_visuals(v);
+        // Both of egui's styles, so a system light/dark switch keeps these colors.
+        ctx.set_visuals_of(egui::Theme::Dark, v.clone());
+        ctx.set_visuals_of(egui::Theme::Light, v);
     }
 
     /// Hints over an empty window.
@@ -1557,7 +1566,7 @@ impl StrataApp {
         // The background layer: above the editor, below windows like About.
         let painter = ctx.layer_painter(egui::LayerId::background());
         let hl = &self.docs[0].highlighter;
-        let (fg, accent) = (hl.foreground(), hl.caret());
+        let (fg, accent) = (hl.foreground(), hl.accent());
         let center = rect.center() + vec2(if self.sidebar.visible && self.sidebar.root.is_some() { 130.0 } else { 0.0 }, -60.0);
         painter.text(center, egui::Align2::CENTER_CENTER, "Strata", FontId::proportional(40.0), accent.gamma_multiply(0.85));
         let rows = [
@@ -1620,8 +1629,8 @@ impl StrataApp {
                     let fill = if active { bg } else if resp.hovered() { mix(ui.visuals().panel_fill, bg, 0.5) } else { ui.visuals().panel_fill };
                     ui.painter().rect_filled(rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, fill);
                     if accented {
-                        // Accent line on the active tab, in the theme's caret color.
-                        let accent = self.docs[i].highlighter.caret();
+                        // Accent line on the active tab, in the theme's accent color.
+                        let accent = self.docs[i].highlighter.accent();
                         ui.painter().line_segment([rect.left_top() + vec2(6.0, 0.5), rect.right_top() + vec2(-6.0, 0.5)], Stroke::new(2.0, accent));
                     }
                     let text_color = if active { fg } else { fg.gamma_multiply(0.6) };
@@ -1763,7 +1772,7 @@ impl StrataApp {
             self.layout.dividers(ui, area, color);
             // A thin accent marks the focused pane.
             if let Some(cell) = cells.get(self.focus_group) {
-                let accent = self.docs[self.active].highlighter.caret().gamma_multiply(0.5);
+                let accent = self.docs[self.active].highlighter.accent().gamma_multiply(0.5);
                 ui.painter().hline(cell.x_range(), cell.top() + 0.5, Stroke::new(1.0, accent));
             }
         }
@@ -1890,20 +1899,7 @@ impl StrataApp {
                     e.use_spaces = spaces;
                 }
                 ui.separator();
-                let theme = self.docs[self.active].highlighter.theme_name().to_owned();
-                ui.menu_button("Theme", |ui| {
-                    ui.label(egui::RichText::new("Color scheme").weak());
-                    for name in crate::highlight::theme_names() {
-                        if ui.selectable_label(theme == name, name).clicked() {
-                            self.settings.theme = name.to_owned();
-                            self.apply_settings();
-                            self.persist_settings();
-                            ui.close();
-                        }
-                    }
-                })
-                .response
-                .on_hover_text("Color scheme");
+                self.theme_menu_ui(ui);
                 // The message takes whatever room is left, cut short with … rather than overlapping.
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add(egui::Label::new(&self.status).truncate()).on_hover_text(&self.status);
@@ -1953,6 +1949,7 @@ impl eframe::App for StrataApp {
         let typed = self.devshot.tick(ctx);
         self.pending_events.extend(typed);
         self.apply_fonts(ctx);
+        self.sync_appearance(ctx);
         self.style_chrome(ctx);
 
         if self.link.managed {
@@ -2062,6 +2059,7 @@ impl eframe::App for StrataApp {
                 d.preview = false;
             }
             d.view.font_size = self.settings.font_size;
+            d.view.line_spacing = (self.settings.line_height, self.settings.line_padding_top, self.settings.line_padding_bottom);
             d.view.minimap = self.settings.minimap;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
@@ -2163,6 +2161,8 @@ impl eframe::App for StrataApp {
                 "split" => self.move_to_pane(q.parse::<usize>().unwrap_or(2).saturating_sub(1)),
                 "p" => self.open_palette(ctx, palette::Mode::Files, q),
                 "about" => self.about_open = true,
+                "theme" => self.open_palette(ctx, palette::Mode::Theme, q),
+                "licenses" => self.licenses_open = true,
                 "fold" => self.run_act(ctx, crate::menus::Act::Named(format!("fold_level:{}", q.parse::<usize>().unwrap_or(2)))),
                 // "run:key_bindings" runs a command by its keybindings.json id.
                 "run" => self.run_command_id(ctx, q),

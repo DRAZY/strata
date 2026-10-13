@@ -1088,9 +1088,9 @@ impl Preview {
         if !self.refresh(doc, now) {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(DEBOUNCE));
         }
-        if self.code_theme != doc.highlighter.theme_name() {
+        if self.code_theme != doc.highlighter.theme_key() {
             self.code.clear();
-            self.code_theme = doc.highlighter.theme_name().to_owned();
+            self.code_theme = doc.highlighter.theme_key();
             self.heights.clear();
         }
         let (family, variable) = body_font(&ctx, &mut self.font_attempt);
