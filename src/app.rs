@@ -1197,6 +1197,27 @@ impl StrataApp {
         d.view.reveal();
     }
 
+    /// macOS title bar: content runs under the system title bar, which would be
+    /// see-through with the transparent window. Paint a solid strip with the title,
+    /// drag to move, double-click to zoom. Hidden in full screen, where macOS hides it too.
+    fn title_bar(&mut self, ui: &mut egui::Ui) {
+        if !cfg!(target_os = "macos") || ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+            return;
+        }
+        let title = self.title();
+        egui::Panel::top("titlebar").exact_size(28.0).frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
+            let rect = ui.max_rect();
+            let resp = ui.interact(rect, egui::Id::new("titlebar"), Sense::click_and_drag());
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, title, FontId::proportional(13.0), ui.visuals().text_color().gamma_multiply(0.85));
+            if resp.double_clicked() {
+                let zoomed = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!zoomed));
+            } else if resp.drag_started() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+        });
+    }
+
     fn title(&self) -> String {
         let d = &self.docs[self.active];
         let dot = if d.is_dirty() { " •" } else { "" };
@@ -1970,6 +1991,7 @@ impl eframe::App for StrataApp {
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
 
+        self.title_bar(ui);
         if !cfg!(target_os = "macos") && self.distraction.is_none() {
             let menus = self.menus();
             if let Some(act) = egui::Panel::top("menubar").show(ui, |ui| crate::menus::menu_bar(ui, &menus)).inner {

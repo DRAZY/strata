@@ -44,6 +44,11 @@ fn main() -> eframe::Result {
             .with_title("Strata")
             // Lets View ▸ Window Opacity see through to the desktop.
             .with_transparent(true)
+            // macOS: the window is see-through, so Strata paints its own solid title bar
+            // under the traffic lights (see `title_bar`) instead of the system one.
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false)
             // Otherwise eframe shows its own logo in the Dock and taskbar.
             .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-app.png")).expect("bundled icon")),
         ..Default::default()
