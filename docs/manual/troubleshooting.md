@@ -49,7 +49,7 @@ Rename or delete `keybindings.json`, or delete everything in it and save. Strata
 
 ## Unsaved work and hot exit
 
-Strata doesn't ask you to save when you quit, or when you close its last window. It remembers everything instead, and reopens it next time: every window, its tabs and panes, the open folder, cursor positions, and the text of tabs you haven't saved. This is called hot exit.
+Strata doesn't ask you to save when you quit, or when you close its last window. It remembers everything instead, and reopens it next time: every window, its tabs and panes, the open folders, every cursor and selection (multiple cursors included), and the text of tabs you haven't saved. This is called hot exit.
 
 Closing one window while others stay open is different: that window won't come back, so Strata asks about its unsaved tabs.
 

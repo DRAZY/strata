@@ -293,7 +293,12 @@ pub struct TabState {
     pub path: Option<PathBuf>,
     /// File in `backups/` holding unsaved text, if the tab was dirty.
     pub backup: Option<String>,
+    /// The primary cursor (all a session written before `selections` has).
     pub cursor: usize,
+    /// Every selection as (anchor, head) in chars; empty in older sessions.
+    pub selections: Vec<(usize, usize)>,
+    /// Which of `selections` is the primary one.
+    pub primary: usize,
     pub syntax: Option<String>,
     /// The file's modification time when the tab last matched it, to spot
     /// changes made while Strata was closed.

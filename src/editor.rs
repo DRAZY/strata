@@ -1922,6 +1922,18 @@ impl Editor {
 
     // ---- find / Cmd+D -------------------------------------------------
 
+    /// Replace the selections with `(anchor, head)` pairs (direction kept),
+    /// clamped to the text; `primary` indexes into them.
+    pub fn set_selection_pairs(&mut self, sels: &[(usize, usize)], primary: usize) {
+        if sels.is_empty() {
+            return;
+        }
+        let len = self.buffer.len_chars();
+        let list = sels.iter().map(|&(a, h)| Selection { anchor: a.min(len), head: h.min(len), goal: None }).collect();
+        self.set_selections(list, sels[primary.min(sels.len() - 1)].1.min(len));
+        self.can_coalesce = false;
+    }
+
     /// Replace the selections with `ranges`; `primary` indexes into them.
     pub fn select_ranges(&mut self, ranges: &[Range<usize>], primary: usize) {
         if ranges.is_empty() {

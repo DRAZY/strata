@@ -714,8 +714,13 @@ impl StrataApp {
             if let Some(s) = &tab.syntax {
                 doc.highlighter.set_syntax(s);
             }
-            let at = tab.cursor.min(doc.editor.buffer.len_chars());
-            doc.editor.select_ranges(&[at..at], 0);
+            if tab.selections.is_empty() {
+                // A session from before every selection was kept.
+                let at = tab.cursor.min(doc.editor.buffer.len_chars());
+                doc.editor.select_ranges(&[at..at], 0);
+            } else {
+                doc.editor.set_selection_pairs(&tab.selections, tab.primary);
+            }
             doc.view.reveal_centered();
             self.focus_group = tab.group.min(self.layout.groups() - 1);
             let n = self.docs.len();
@@ -756,7 +761,10 @@ impl StrataApp {
         (self.active, &self.sidebar.root, self.sidebar.visible, self.layout.cols.len(), self.layout.rows.len()).hash(&mut h);
         (&self.recent_files, &self.recent_folders).hash(&mut h);
         for d in &self.docs {
-            (&d.path, d.is_dirty(), d.editor.version(), d.editor.primary().head, d.group, d.stamp).hash(&mut h);
+            (&d.path, d.is_dirty(), d.editor.version(), d.group, d.stamp).hash(&mut h);
+            for s in d.editor.selections() {
+                (s.anchor, s.head).hash(&mut h);
+            }
         }
         h.finish()
     }
@@ -797,6 +805,8 @@ impl StrataApp {
                 path: d.path.clone(),
                 backup,
                 cursor: d.editor.primary().head,
+                selections: d.editor.selections().iter().map(|s| (s.anchor, s.head)).collect(),
+                primary: d.editor.selections().iter().position(|s| *s == d.editor.primary()).unwrap_or(0),
                 syntax: Some(d.highlighter.syntax_name().to_owned()),
                 disk_mtime: d.disk_mtime,
                 conflict: d.conflict,
@@ -2451,6 +2461,32 @@ mod tests {
         assert_eq!(ed(&back).primary().head, 16);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "saved\n", "disk untouched until you save");
         std::fs::remove_dir_all(config).ok();
+    }
+
+    #[test]
+    fn hot_exit_keeps_every_cursor_and_selection() {
+        let config = temp_dir("session-sels");
+        let file = config.join("multi.txt");
+        std::fs::write(&file, "alpha beta gamma delta\n").unwrap();
+        let mut app = StrataApp::new(Some(file.clone()), Some(config.clone()));
+        app.doc().editor.select_ranges(&[0..5, 6..10, 17..17], 1);
+        // A backwards selection (head before anchor) keeps its direction.
+        app.doc().editor.set_selection_pairs(&[(0, 5), (10, 6), (17, 17)], 1);
+        let before: Vec<(usize, usize)> = ed(&app).selections().iter().map(|s| (s.anchor, s.head)).collect();
+        let primary = ed(&app).primary();
+        assert!(app.save_session());
+        drop(app);
+        let back = StrataApp::new(None, Some(config.clone()));
+        let after: Vec<(usize, usize)> = ed(&back).selections().iter().map(|s| (s.anchor, s.head)).collect();
+        assert_eq!(after, before);
+        assert_eq!(ed(&back).primary(), primary);
+        std::fs::remove_dir_all(config).ok();
+    }
+
+    #[test]
+    fn old_sessions_without_selections_restore_the_cursor() {
+        let tab: TabState = serde_json::from_str(r#"{"path": null, "cursor": 3}"#).unwrap();
+        assert_eq!((tab.cursor, tab.selections.len()), (3, 0));
     }
 
     #[test]
