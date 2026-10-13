@@ -1,6 +1,8 @@
 //! The editor widget: paints only visible lines, owns scrolling, and turns
 //! keyboard/mouse input into `Editor` commands.
 
+use crate::brackets::Brackets;
+use crate::decor;
 use crate::editor::Editor;
 use crate::fold::{self, Folds};
 use crate::highlight::{Highlighter, Span};
@@ -22,6 +24,13 @@ const MM_COL: f32 = 1.0;
 /// Caret blink half-period, and how long it blinks after the last activity.
 const BLINK: f64 = 0.53;
 const BLINK_FOR: f64 = 15.0;
+/// Programmatic scroll jumps animate over this long, in seconds.
+const SCROLL_TIME: f64 = 0.12;
+/// Sticky scroll: most header lines pinned, and how far up to look for them.
+const MAX_STICKY: usize = 3;
+const STICKY_SCAN: usize = 5_000;
+/// Overview ticks are drawn one per item up to this many, then per pixel.
+const TICKS_DIRECT: usize = 2_000;
 
 pub struct EditorView {
     /// Distinct per view, so several editors can share a window (split panes).
@@ -80,6 +89,57 @@ pub struct EditorView {
     /// "…" pills painted last frame, with their header lines.
     pills: Vec<(Rect, usize)>,
     gutter_hover: bool,
+    /// Faint dots for spaces and arrows for tabs.
+    pub show_whitespace: Whitespace,
+    /// Tint trailing spaces and tabs (not while the caret sits in them).
+    pub highlight_trailing_whitespace: bool,
+    /// Color bracket pairs by nesting depth.
+    pub bracket_colors: bool,
+    /// A bar in the color under CSS-style color literals.
+    pub color_swatches: bool,
+    /// Pin the headers of the scopes the top line is in.
+    pub sticky_scroll: bool,
+    /// Changed lines (e.g. against version control), sorted 0-based line
+    /// ranges; `Deleted` is an empty range at the line where text was removed.
+    pub line_marks: Vec<(Range<usize>, LineMark)>,
+    /// Animate programmatic scroll jumps; wheel and trackpad stay direct.
+    pub smooth_scroll: bool,
+    brackets: Brackets,
+    /// Bracket colors for the theme they were picked from.
+    palette: Option<(String, Vec<Color32>)>,
+    /// Sticky header rows painted last frame: (rect, line, slot).
+    sticky: Vec<(Rect, usize, usize)>,
+    anim: Option<ScrollAnim>,
+    /// This frame's scroll change is a jump worth animating.
+    jump: bool,
+}
+
+/// What `show_whitespace` marks.
+#[allow(dead_code)] // chosen by the app
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Whitespace {
+    None,
+    /// Only inside selections, like Sublime.
+    #[default]
+    Selection,
+    All,
+}
+
+/// How a line differs from the version it's compared with.
+#[allow(dead_code)] // set by the app
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LineMark {
+    Added,
+    Modified,
+    Deleted,
+}
+
+/// A scroll jump in flight: the shown y eases from `from` to `to`.
+#[derive(Clone, Copy)]
+struct ScrollAnim {
+    from: f32,
+    to: f32,
+    start: f64,
 }
 
 /// Visual rows hidden by folds, per fold (in `Folds::list` order).
@@ -153,6 +213,18 @@ impl EditorView {
             center_always: false,
             pills: Vec::new(),
             gutter_hover: false,
+            show_whitespace: Whitespace::Selection,
+            highlight_trailing_whitespace: true,
+            bracket_colors: true,
+            color_swatches: true,
+            sticky_scroll: true,
+            line_marks: Vec::new(),
+            smooth_scroll: true,
+            brackets: Brackets::default(),
+            palette: None,
+            sticky: Vec::new(),
+            anim: None,
+            jump: false,
         }
     }
 
@@ -355,6 +427,63 @@ impl EditorView {
         self.fold_rows = FoldRows { pos, cum };
     }
 
+    /// Tell the line caches about edits since the last call.
+    fn flush_changes(&mut self, hl: &mut Highlighter) {
+        if let Some(line) = self.changed_from.take() {
+            hl.invalidate_from(line);
+            self.brackets.invalidate_from(line);
+        }
+    }
+
+    /// Start, advance or drop the scroll animation. `shown` is the y painted
+    /// last frame and `target` where input started this frame.
+    fn animate(&mut self, ui: &Ui, shown: f32, target: f32, row_h: f32) {
+        let jump = std::mem::take(&mut self.jump);
+        let now = ui.input(|i| i.time);
+        if self.scroll.y != target {
+            let far = (self.scroll.y - shown).abs() > row_h * 1.5;
+            self.anim = (jump && far).then_some(ScrollAnim { from: shown, to: self.scroll.y, start: now });
+        }
+        if !self.smooth_scroll {
+            self.anim = None;
+        }
+        let Some(a) = self.anim else { return };
+        let t = ((now - a.start) / SCROLL_TIME) as f32;
+        if t >= 1.0 {
+            self.anim = None;
+            self.scroll.y = a.to;
+        } else {
+            self.scroll.y = a.from + (a.to - a.from) * ease_out(t.max(0.0));
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// Header lines to pin at the top, outermost first: the scopes holding the
+    /// line just below them, each scrolled off above it.
+    fn sticky_lines(&self, ed: &Editor, m: &Metrics) -> Vec<usize> {
+        if !self.sticky_scroll || m.text.height() < m.row_h * 8.0 {
+            return Vec::new();
+        }
+        let total = self.total_rows(ed, m);
+        let first_row = (self.scroll.y / m.row_h).floor() as usize;
+        let mut heads = Vec::new();
+        // The pinned rows cover lines; move on to the scopes of the line below
+        // them unless that shrinks the set (a scope ending under them).
+        for _ in 0..MAX_STICKY {
+            let line = self.row_line(ed, m, (first_row + heads.len()).min(total - 1)).0;
+            let mut next = fold::scope_headers(&ed.buffer, line, ed.tab_width, STICKY_SCAN);
+            next.truncate(MAX_STICKY);
+            next.reverse();
+            let n = next.len();
+            next.retain(|&h| self.line_row(ed, m, h) < first_row + n);
+            if next == heads || next.len() < heads.len() {
+                break;
+            }
+            heads = next;
+        }
+        heads
+    }
+
     /// `matches`: sorted find results to outline (empty when find is closed).
     pub fn show(&mut self, ui: &mut Ui, ed: &mut Editor, hl: &mut Highlighter, matches: &[Range<usize>]) {
         let id = self.id;
@@ -375,25 +504,35 @@ impl EditorView {
         }
 
         let mut m = self.metrics(ui, ed, rect);
+        // Input works on where a scroll jump is headed; painting shows where it is.
+        let shown = self.scroll.y;
+        if let Some(a) = self.anim {
+            self.scroll.y = a.to;
+        }
+        let target = self.scroll.y;
         self.sync(ed, &m);
         if resp.has_focus() {
             self.handle_keys(ui, ed, &m, lang::comment_tokens(hl.syntax_name()));
         }
         self.sync(ed, &m);
-        if let Some(line) = self.changed_from.take() {
-            hl.invalidate_from(line);
-        }
+        self.flush_changes(hl);
         self.keep_top_line(ed, &m);
         self.handle_mouse(ui, ed, &resp, &m);
         self.sync(ed, &m);
         self.keep_top_line(ed, &m);
-        if resp.hovered() {
-            self.scroll -= ui.input(|i| i.smooth_scroll_delta);
+        let wheel = ui.input(|i| i.smooth_scroll_delta);
+        if resp.hovered() && wheel != Vec2::ZERO {
+            // The wheel takes over from wherever an animation got to.
+            if self.anim.take().is_some() {
+                self.scroll.y = shown;
+            }
+            self.scroll -= wheel;
         }
         self.scroll.y += std::mem::take(&mut self.pending_scroll) as f32 * m.row_h;
         let hover = ui.input(|i| i.pointer.hover_pos()).filter(|_| resp.hovered());
         self.gutter_hover = hover.is_some_and(|p| m.gutter.contains(p));
-        if hover.is_some_and(|p| self.pills.iter().any(|(r, _)| r.contains(p))) {
+        let on_sticky = hover.is_some_and(|p| self.sticky.iter().any(|(r, ..)| r.contains(p)));
+        if on_sticky || hover.is_some_and(|p| self.pills.iter().any(|(r, _)| r.contains(p))) {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         } else if hover.is_some_and(|p| m.text.contains(p)) {
             ui.ctx().set_cursor_icon(CursorIcon::Text);
@@ -404,13 +543,15 @@ impl EditorView {
             self.reveal_cursor(ui, ed, &m, hl);
         }
         self.clamp_scroll(ed, &m);
+        self.animate(ui, shown, target, m.row_h);
         m.origin_x = m.text.left() + m.char_w - self.scroll.x;
         self.top_line = self.row_line(ed, &m, (self.scroll.y / m.row_h) as usize).0;
         self.blink(ui, ed, resp.has_focus());
 
+        self.flush_changes(hl);
         self.paint(ui, ed, hl, &m, resp.has_focus(), matches);
         self.paint_minimap(ui, ed, hl, &m);
-        self.paint_scrollbar(ui, ed, hl, &m);
+        self.paint_scrollbar(ui, ed, hl, &m, matches);
 
         if resp.has_focus() {
             // Enables the OS input method and positions its candidate window.
@@ -656,6 +797,7 @@ impl EditorView {
                 let n = Self::page_lines(m) * if key == Key::PageUp { -1 } else { 1 };
                 self.move_rows(ed, m, n, shift);
                 self.scroll.y += n as f32 * m.row_h;
+                self.jump = true;
             }
             Key::Enter if mods.command && shift => ed.insert_line_before(),
             Key::Enter if mods.command => ed.insert_line_after(),
@@ -713,6 +855,17 @@ impl EditorView {
         if pressed && let Some(&(_, line)) = self.pills.iter().find(|(r, _)| r.contains(pointer)) {
             self.toggle_fold_at(ed, line);
             return;
+        }
+        // A sticky header jumps to its line, placed just below the headers above it.
+        if let Some(&(_, line, slot)) = self.sticky.iter().find(|(r, ..)| r.contains(pointer)) {
+            if pressed {
+                ed.click(ed.buffer.line_start(line), false);
+                self.scroll.y = self.line_row(ed, m, line).saturating_sub(slot) as f32 * m.row_h;
+                self.jump = true;
+            }
+            if pressed || resp.double_clicked() || resp.triple_clicked() {
+                return;
+            }
         }
         // The fold arrow sits between the line numbers and the text.
         if pressed && pointer.x >= m.gutter.right() - m.char_w * 1.5 && pointer.x < m.text.left() {
@@ -790,7 +943,7 @@ impl EditorView {
         let sub = sub.min(lr.rows() - 1);
         let r = lr.range(sub);
         let bytes = byte_offsets(&text, &[r.start, r.end]);
-        let style = Styled { text: &text, spans: None, font: &m.font, fg: Color32::WHITE, tab: ed.tab_width };
+        let style = Styled { text: &text, spans: None, font: &m.font, fg: Color32::WHITE, tab: ed.tab_width, colors: &[] };
         let galley = layout_segment(ui, &style, bytes[0]..bytes[1], lr.dcols[r.start], None);
         (line, lr, sub, galley)
     }
@@ -839,10 +992,13 @@ impl EditorView {
         let top = self.pos_row(ed, m, head) as f32 * m.row_h;
         let off_screen = top < self.scroll.y || top + m.row_h > self.scroll.y + m.text.height();
         let center = std::mem::take(&mut self.center_cursor) && off_screen;
+        // Rows under the sticky headers don't count as visible.
+        let pinned = self.sticky.len() as f32 * m.row_h;
+        self.jump = true;
         if std::mem::take(&mut self.center_always) || center {
             self.scroll.y = top - (m.text.height() - m.row_h) / 2.0;
-        } else if top < self.scroll.y {
-            self.scroll.y = top;
+        } else if top < self.scroll.y + pinned {
+            self.scroll.y = (top - pinned).max(0.0);
         } else if top + m.row_h > self.scroll.y + m.text.height() {
             self.scroll.y = top + m.row_h - m.text.height();
         }
@@ -871,6 +1027,7 @@ impl EditorView {
         let thumb_h = (h * h / content).max(24.0);
         let resp = ui.interact(track, id.with("vscroll"), Sense::click_and_drag());
         if let Some(p) = resp.interact_pointer_pos() {
+            self.jump = ui.input(|i| i.pointer.primary_pressed());
             let t = ((p.y - track.top() - thumb_h / 2.0) / (h - thumb_h)).clamp(0.0, 1.0);
             self.scroll.y = t * (content - h);
         }
@@ -879,7 +1036,7 @@ impl EditorView {
 
     /// The scrollbar, drawn last: a tinted track, a thumb shaded from the
     /// theme's caret color into its selection color, and a tick at the cursor.
-    fn paint_scrollbar(&self, ui: &Ui, ed: &Editor, hl: &Highlighter, m: &Metrics) {
+    fn paint_scrollbar(&self, ui: &Ui, ed: &Editor, hl: &Highlighter, m: &Metrics, matches: &[Range<usize>]) {
         let track = Rect::from_min_max(pos2(m.full.right() - SCROLLBAR_W, m.text.top()), pos2(m.full.right(), m.text.bottom()));
         let content = self.content_height(ed, m);
         let h = m.text.height();
@@ -890,6 +1047,7 @@ impl EditorView {
         let (bg, fg, accent, sel) = (hl.background(), hl.foreground(), hl.caret(), hl.selection());
         painter.rect_filled(track, 0.0, blend(bg, fg, 0.04));
         painter.vline(track.left() + 0.5, track.y_range(), Stroke::new(1.0, blend(bg, fg, 0.08)));
+        self.paint_overview(painter, ed, hl, m, track, content, matches);
 
         let thumb_h = (h * h / content).max(40.0);
         let t = (self.scroll.y / (content - h)).clamp(0.0, 1.0);
@@ -903,6 +1061,62 @@ impl EditorView {
         let row = self.pos_row(ed, m, ed.primary().head) as f32;
         let y = track.top() + (row * m.row_h / content).clamp(0.0, 1.0) * h;
         painter.hline(track.left() + 2.0..=track.right() - 2.0, y.round() + 0.5, Stroke::new(2.0, accent));
+    }
+
+    /// Ticks on the scrollbar track, under the thumb: changed lines at the
+    /// left, find matches across, other cursors at the right.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_overview(&self, painter: &egui::Painter, ed: &Editor, hl: &Highlighter, m: &Metrics, track: Rect, content: f32, matches: &[Range<usize>]) {
+        let (bg, fg, light) = (hl.background(), hl.foreground(), hl.is_light());
+        let h = track.height();
+        let y_of = |row: usize| track.top() + (row as f32 * m.row_h / content).clamp(0.0, 1.0) * h;
+        let row_of_line = |line: usize| self.line_row(ed, m, line.min(ed.buffer.len_lines() - 1));
+        let tick = |y0: f32, y1: f32, x: std::ops::RangeInclusive<f32>, color: Color32| {
+            let r = Rect::from_x_y_ranges(x, y0.round()..=(y1.round()).max(y0.round() + 2.0));
+            painter.rect_filled(r, 0.0, color);
+        };
+
+        let step = (self.line_marks.len() / TICKS_DIRECT).max(1);
+        for (r, kind) in self.line_marks.iter().step_by(step) {
+            let color = mark_color(*kind, bg, light);
+            let y0 = y_of(row_of_line(r.start));
+            let y1 = if r.is_empty() { y0 } else { y_of(self.line_row(ed, m, r.end.min(ed.buffer.len_lines()))) };
+            tick(y0, y1, track.left() + 1.5..=track.left() + 4.0, color);
+        }
+
+        let match_color = blend(bg, fg, 0.55);
+        let x = track.left() + 4.0..=track.right() - 3.0;
+        if matches.len() <= TICKS_DIRECT {
+            for r in matches {
+                let y = y_of(row_of_line(ed.buffer.line_of(r.start)));
+                tick(y, y, x.clone(), match_color);
+            }
+        } else {
+            // One tick per 2px band that holds a match.
+            let len = ed.buffer.len_chars();
+            let total = self.total_rows(ed, m);
+            let mut y = 0.0;
+            while y < h {
+                let row = |y: f32| ((y / h * content / m.row_h) as usize).min(total);
+                let char_at = |row: usize| if row >= total { len } else { ed.buffer.line_start(self.row_line(ed, m, row).0) };
+                let (a, b) = (char_at(row(y)), char_at(row(y + 2.0).max(row(y) + 1)));
+                let i = matches.partition_point(|r| r.end <= a);
+                if matches.get(i).is_some_and(|r| r.start < b.max(a + 1)) {
+                    tick(track.top() + y, track.top() + y, x.clone(), match_color);
+                }
+                y += 2.0;
+            }
+        }
+
+        let sels = ed.selections();
+        if sels.len() > 1 {
+            let color = hl.caret().gamma_multiply(0.7);
+            let step = (sels.len() / TICKS_DIRECT).max(1);
+            for s in sels.iter().step_by(step) {
+                let y = y_of(row_of_line(ed.buffer.line_of(s.head)));
+                tick(y, y, track.right() - 5.0..=track.right() - 1.5, color);
+            }
+        }
     }
 
     // ---- painting --------------------------------------------------------
@@ -920,8 +1134,26 @@ impl EditorView {
         if !hl.prepare(&ed.buffer, first..=last) {
             ui.ctx().request_repaint();
         }
+        let sticky = self.sticky_lines(ed, m);
+        let palette = if self.bracket_colors { self.bracket_palette(hl) } else { Vec::new() };
+        if self.bracket_colors {
+            let (syntax, tokens) = (hl.syntax_name(), lang::comment_tokens(hl.syntax_name()));
+            let (buf, version) = (&ed.buffer, ed.version());
+            let mut ready = self.brackets.prepare(buf, version, syntax, tokens, first..=last);
+            for &h in &sticky {
+                ready &= self.brackets.prepare(buf, version, syntax, tokens, h..=h);
+            }
+            if !ready {
+                ui.ctx().request_repaint();
+            }
+        }
 
+        let bg = hl.background();
+        let light = hl.is_light();
         let fg = hl.foreground();
+        let ws_color = fg.gamma_multiply(0.35);
+        let trail_color = trailing_color(bg, light);
+        let bracket_err = error_color(light);
         let sel_color = hl.selection();
         let caret_color = hl.caret();
         let first_char = ed.buffer.line_start(first);
@@ -953,13 +1185,39 @@ impl EditorView {
             let text = ed.buffer.line_text(line);
             crate::fonts::ensure_cjk(ui.ctx(), &text);
             let spans = hl.line(line);
-            let style = Styled { text: &text, spans: spans.as_deref().map(|v| v.as_slice()), font: &m.font, fg, tab };
+            let colors = bracket_colors(&self.brackets, line, &palette, bracket_err);
+            let style = Styled { text: &text, spans: spans.as_deref().map(|v| v.as_slice()), font: &m.font, fg, tab, colors: &colors };
             let lr = LineRows::new(text.chars(), m.wrap, tab);
             let mut bytes = byte_offsets(&text, &lr.starts);
             bytes.push(text.len());
             let line_start = ed.buffer.line_start(line);
             let line_end = line_start + lr.len();
             let on_caret_line = caret_lines.contains(&line);
+            let fold_end = self.folds.at_header(line).map_or(line, |i| self.folds.list()[i].end);
+            let mark = line_mark(&self.line_marks, line..=fold_end);
+
+            // Trailing whitespace, unless a caret is in it (typing).
+            let trail = decor::trailing_ws(&text).filter(|&t| {
+                self.highlight_trailing_whitespace
+                    && !ed.selections().iter().zip(&caret_lines).any(|(s, &l)| l == line && s.head >= line_start + t)
+            });
+            // Color literals, as line char ranges.
+            let swatches: Vec<(Range<usize>, Color32)> = if self.color_swatches && text.len() <= 50_000 {
+                let chars = |b: usize| text[..b].chars().count();
+                decor::find_colors(&text).into_iter().map(|(r, c)| (chars(r.start)..chars(r.end), c)).collect()
+            } else {
+                Vec::new()
+            };
+            // Chars to look through for whitespace marks.
+            let ws_chars: Option<Vec<char>> = match self.show_whitespace {
+                Whitespace::None => None,
+                Whitespace::All => Some(text.chars().collect()),
+                Whitespace::Selection => ed
+                    .selections()
+                    .iter()
+                    .any(|s| !s.is_empty() && s.start() < line_end && s.end() > line_start)
+                    .then(|| text.chars().collect()),
+            };
 
             // Indent guides at each tab stop inside the leading whitespace.
             let indent = if text.trim().is_empty() {
@@ -1022,6 +1280,12 @@ impl EditorView {
                     let dcol = lr.dcols[pos.saturating_sub(line_start).min(lr.len())] - dcol0 + shift;
                     m.origin_x + galley.pos_from_cursor(CCursor::new(dcol)).min.x
                 };
+                if let Some(t) = trail {
+                    let (a, b) = ((line_start + t).max(row_start), row_end);
+                    if b > a {
+                        text_painter.rect_filled(Rect::from_min_max(pos2(x_at(a), y), pos2(x_at(b), y + m.row_h)), 0.0, trail_color);
+                    }
+                }
                 for s in ed.selections() {
                     if s.is_empty() || s.end() < row_start || s.start() > row_end {
                         continue;
@@ -1072,7 +1336,50 @@ impl EditorView {
                     }
                 }
 
+                // Each color literal gets a bar of its color underneath.
+                for (cr, color) in &swatches {
+                    let (a, b) = ((line_start + cr.start).max(row_start), (line_start + cr.end).min(row_end));
+                    if b > a {
+                        let bar = Rect::from_min_max(pos2(x_at(a), y + m.row_h - 3.5), pos2(x_at(b), y + m.row_h - 0.5));
+                        text_painter.rect_filled(bar, 1.5, blend(bg, color.to_opaque(), color.a() as f32 / 255.0));
+                        text_painter.rect_stroke(bar, 1.5, Stroke::new(0.5, fg.gamma_multiply(0.25)), egui::StrokeKind::Outside);
+                    }
+                }
+
                 text_painter.galley(pos2(m.origin_x, y), galley.clone(), fg);
+
+                if let Some(chars) = &ws_chars {
+                    let spans: Vec<Range<usize>> = match self.show_whitespace {
+                        Whitespace::All => vec![r.clone()],
+                        _ => ed
+                            .selections()
+                            .iter()
+                            .filter(|s| !s.is_empty() && s.start() < row_end && s.end() > row_start)
+                            .map(|s| s.start().max(row_start) - line_start..s.end().min(row_end) - line_start)
+                            .collect(),
+                    };
+                    for k in spans.into_iter().flatten() {
+                        let c = chars[k];
+                        if c != ' ' && c != '\t' {
+                            continue;
+                        }
+                        let (x0, x1) = (x_at(line_start + k), x_at(line_start + k + 1));
+                        if x1 < m.text.left() || x0 > m.text.right() {
+                            continue;
+                        }
+                        let mid = y + m.row_h / 2.0;
+                        if c == ' ' {
+                            text_painter.circle_filled(pos2((x0 + x1) / 2.0, mid), (m.char_w * 0.09).max(1.0), ws_color);
+                        } else {
+                            let (a, b) = (x0 + m.char_w * 0.25, (x1 - m.char_w * 0.25).max(x0 + m.char_w * 0.5));
+                            let h = (m.row_h * 0.15).max(2.0);
+                            let stroke = Stroke::new(1.0, ws_color);
+                            text_painter.line_segment([pos2(a, mid), pos2(b, mid)], stroke);
+                            text_painter.line_segment([pos2(b - h, mid - h), pos2(b, mid)], stroke);
+                            text_painter.line_segment([pos2(b - h, mid + h), pos2(b, mid)], stroke);
+                        }
+                    }
+                }
 
                 // A folded header ends in a "…" pill; clicking it unfolds.
                 if last_sub && self.folds.at_header(line).is_some() {
@@ -1107,6 +1414,22 @@ impl EditorView {
                     }
                 }
 
+                // Changed lines: a bar at the gutter's left edge, a notch where lines went.
+                if let Some(kind) = mark {
+                    let bar = Rect::from_min_size(pos2(m.gutter.left() + 1.0, y), vec2(3.0, m.row_h));
+                    painter.rect_filled(bar, 1.0, mark_color(kind, bg, light));
+                }
+                let notch = |at: f32| {
+                    let r = (m.row_h * 0.22).max(3.0);
+                    let points = vec![pos2(m.gutter.left(), at - r), pos2(m.gutter.left() + r * 1.2, at), pos2(m.gutter.left(), at + r)];
+                    painter.add(egui::Shape::convex_polygon(points, mark_color(LineMark::Deleted, bg, light), Stroke::NONE));
+                };
+                if sub == 0 && deleted_at(&self.line_marks, line) {
+                    notch(y);
+                }
+                if last_sub && line + 1 == ed.buffer.len_lines() && deleted_at(&self.line_marks, line + 1) {
+                    notch(y + m.row_h);
+                }
                 if sub == 0 {
                     // Bookmarked lines get a marker at the left of the gutter.
                     let marks = ed.bookmarks();
@@ -1141,6 +1464,60 @@ impl EditorView {
             sub0 = 0;
             line = self.next_line(line);
         }
+        self.paint_sticky(ui, ed, hl, m, &sticky, &palette);
+    }
+
+    /// Theme-derived bracket colors, picked once per theme.
+    fn bracket_palette(&mut self, hl: &Highlighter) -> Vec<Color32> {
+        if self.palette.as_ref().is_none_or(|(name, _)| name != hl.theme_name()) {
+            self.palette = Some((hl.theme_name().into(), decor::bracket_palette(hl.theme_name())));
+        }
+        self.palette.as_ref().map(|(_, p)| p.clone()).unwrap_or_default()
+    }
+
+    /// Pinned scope headers over the top rows, with their line numbers and a
+    /// soft shadow below; clicking one jumps to it (see `handle_mouse`).
+    fn paint_sticky(&mut self, ui: &Ui, ed: &Editor, hl: &mut Highlighter, m: &Metrics, heads: &[usize], palette: &[Color32]) {
+        self.sticky.clear();
+        if heads.is_empty() {
+            return;
+        }
+        let painter = ui.painter_at(Rect::from_min_max(m.gutter.min, m.text.max));
+        let text_painter = ui.painter_at(m.text);
+        let (bg, fg, light) = (hl.background(), hl.foreground(), hl.is_light());
+        let gutter_fg = hl.gutter_foreground().unwrap_or_else(|| fg.gamma_multiply(0.35));
+        let tab = ed.tab_width.max(1);
+        for (slot, &line) in heads.iter().enumerate() {
+            let y = m.text.top() + slot as f32 * m.row_h;
+            let row = Rect::from_min_max(pos2(m.gutter.left(), y), pos2(m.text.right(), y + m.row_h));
+            painter.rect_filled(row, 0.0, bg);
+            if !hl.prepare(&ed.buffer, line..=line) {
+                ui.ctx().request_repaint();
+            }
+            let text = ed.buffer.line_text(line);
+            crate::fonts::ensure_cjk(ui.ctx(), &text);
+            let spans = hl.line(line);
+            let colors = bracket_colors(&self.brackets, line, palette, error_color(light));
+            let style = Styled { text: &text, spans: spans.as_deref().map(|v| v.as_slice()), font: &m.font, fg, tab, colors: &colors };
+            // Only the first row of a wrapped header.
+            let lr = LineRows::new(text.chars(), m.wrap, tab);
+            let end = byte_offsets(&text, &[lr.range(0).end])[0];
+            let galley = layout_segment(ui, &style, 0..end, 0, None);
+            text_painter.galley(pos2(m.origin_x, y), galley, fg);
+            painter.text(pos2(m.gutter.right() - m.char_w * 1.5, y), Align2::RIGHT_TOP, (line + 1).to_string(), m.font.clone(), gutter_fg);
+            self.sticky.push((row, line, slot));
+        }
+        let bottom = m.text.top() + heads.len() as f32 * m.row_h;
+        painter.hline(m.gutter.left()..=m.text.right(), bottom - 0.5, Stroke::new(1.0, blend(bg, fg, 0.12)));
+        let shadow = Rect::from_min_max(pos2(m.gutter.left(), bottom), pos2(m.text.right(), bottom + 6.0));
+        let dark = Color32::from_black_alpha(if light { 28 } else { 70 });
+        let mut mesh = egui::Mesh::default();
+        for (p, c) in [(shadow.left_top(), dark), (shadow.right_top(), dark), (shadow.right_bottom(), Color32::TRANSPARENT), (shadow.left_bottom(), Color32::TRANSPARENT)] {
+            mesh.colored_vertex(p, c);
+        }
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        painter.add(mesh);
     }
 }
 
@@ -1184,6 +1561,8 @@ impl EditorView {
         let Some(mm) = m.minimap else { return };
         let resp = ui.interact(mm, id.with("minimap"), Sense::click_and_drag());
         if let Some(p) = resp.interact_pointer_pos() {
+            // A click glides there; a drag follows the pointer.
+            self.jump = ui.input(|i| i.pointer.primary_pressed());
             let first = self.minimap_first(ed, m, mm);
             let row = first as f32 + (p.y - mm.top()) / MM_ROW;
             let visible = m.text.height() / m.row_h;
@@ -1212,6 +1591,16 @@ impl EditorView {
             let top = mm.top() + (self.scroll.y / m.row_h - first as f32) * MM_ROW;
             let view = Rect::from_min_size(pos2(mm.left(), top), vec2(mm.width(), m.text.height() / m.row_h * MM_ROW));
             painter.rect_filled(view, 0.0, fg.gamma_multiply(0.07));
+        }
+
+        // Changed lines down the minimap's left edge.
+        let i = self.line_marks.partition_point(|(r, _)| r.end <= first_line);
+        for (r, kind) in self.line_marks[i..].iter().take_while(|(r, _)| r.start <= last_line) {
+            let y_of = |line: usize| mm.top() + (self.line_row(ed, m, line) as f32 - first as f32) * MM_ROW;
+            let y0 = y_of(r.start.max(first_line).min(ed.buffer.len_lines() - 1));
+            let y1 = if r.is_empty() { y0 + MM_ROW } else { y_of(r.end.min(ed.buffer.len_lines())).max(y0 + MM_ROW) };
+            let bar = Rect::from_min_max(pos2(mm.left(), y0), pos2(mm.left() + 2.0, y1));
+            painter.rect_filled(bar, 0.0, mark_color(*kind, hl.background(), hl.is_light()));
         }
 
         let max_cols = ((mm.width() - 8.0) / MM_COL) as usize;
@@ -1328,6 +1717,82 @@ fn gradient_pill(painter: &egui::Painter, r: Rect, top: Color32, bottom: Color32
     painter.circle_filled(pos2(r.center().x, body.bottom()), radius, bottom);
 }
 
+/// Split `segments` so each byte in `colors` gets its own color.
+fn recolor(segments: Vec<(Range<usize>, TextFormat)>, colors: &[(usize, Color32)]) -> Vec<(Range<usize>, TextFormat)> {
+    let mut out = Vec::with_capacity(segments.len() + colors.len() * 2);
+    let mut k = 0;
+    for (r, fmt) in segments {
+        let mut start = r.start;
+        while let Some(&(byte, color)) = colors.get(k).filter(|c| c.0 < r.end) {
+            if byte >= start {
+                if byte > start {
+                    out.push((start..byte, fmt.clone()));
+                }
+                out.push((byte..byte + 1, TextFormat { color, ..fmt.clone() }));
+                start = byte + 1;
+            }
+            k += 1;
+        }
+        if start < r.end {
+            out.push((start..r.end, fmt));
+        }
+    }
+    out
+}
+
+/// Bracket colors for `line` by depth, if they're ready.
+fn bracket_colors(brackets: &Brackets, line: usize, palette: &[Color32], err: Color32) -> Vec<(usize, Color32)> {
+    if palette.is_empty() {
+        return Vec::new();
+    }
+    let color = |d: Option<usize>| d.map_or(err, |d| palette[d % palette.len()]);
+    brackets.line(line).map_or_else(Vec::new, |marks| marks.iter().map(|mk| (mk.byte, color(mk.depth))).collect())
+}
+
+/// Trailing whitespace: a faint red over the background.
+fn trailing_color(bg: Color32, light: bool) -> Color32 {
+    blend(bg, Color32::from_rgb(0xE0, 0x40, 0x40), if light { 0.16 } else { 0.22 })
+}
+
+/// Unmatched brackets.
+fn error_color(light: bool) -> Color32 {
+    if light { Color32::from_rgb(0xD0, 0x20, 0x20) } else { Color32::from_rgb(0xFF, 0x55, 0x55) }
+}
+
+/// Green, blue and red, toned to sit on the theme background.
+fn mark_color(kind: LineMark, bg: Color32, light: bool) -> Color32 {
+    let base = match (kind, light) {
+        (LineMark::Added, false) => Color32::from_rgb(0x6A, 0xC2, 0x6E),
+        (LineMark::Modified, false) => Color32::from_rgb(0x5C, 0x9C, 0xF5),
+        (LineMark::Deleted, false) => Color32::from_rgb(0xEE, 0x5D, 0x5D),
+        (LineMark::Added, true) => Color32::from_rgb(0x2D, 0x9A, 0x3E),
+        (LineMark::Modified, true) => Color32::from_rgb(0x1F, 0x6F, 0xD8),
+        (LineMark::Deleted, true) => Color32::from_rgb(0xD0, 0x30, 0x30),
+    };
+    blend(base, bg, 0.12)
+}
+
+/// The kind of the first changed (not deleted) range touching `lines`.
+fn line_mark(marks: &[(Range<usize>, LineMark)], lines: std::ops::RangeInclusive<usize>) -> Option<LineMark> {
+    let i = marks.partition_point(|(r, _)| r.end <= *lines.start());
+    marks[i..]
+        .iter()
+        .take_while(|(r, _)| r.start <= *lines.end())
+        .find(|(r, k)| !r.is_empty() && *k != LineMark::Deleted)
+        .map(|(_, k)| *k)
+}
+
+/// Lines were deleted just before `line`.
+fn deleted_at(marks: &[(Range<usize>, LineMark)], line: usize) -> bool {
+    let i = marks.partition_point(|(r, _)| r.start < line);
+    marks[i..].iter().take_while(|(r, _)| r.start == line).any(|(_, k)| *k == LineMark::Deleted)
+}
+
+/// Cubic ease-out over 0..1.
+fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t.min(1.0)).powi(3)
+}
+
 /// Text spliced into a line for display only (IME composition).
 struct Insert<'a> {
     byte: usize,
@@ -1341,11 +1806,13 @@ struct Styled<'a> {
     font: &'a FontId,
     fg: Color32,
     tab: usize,
+    /// Single-byte chars recolored (brackets), sorted by line byte.
+    colors: &'a [(usize, Color32)],
 }
 
 /// Lay out one line with tabs expanded, colored by `spans` when available.
 fn layout_line(ui: &Ui, text: &str, spans: Option<&[Span]>, font: &FontId, fg: Color32, tab: usize) -> Arc<Galley> {
-    let style = Styled { text, spans, font, fg, tab };
+    let style = Styled { text, spans, font, fg, tab, colors: &[] };
     layout_segment(ui, &style, 0..text.len(), 0, None)
 }
 
@@ -1370,6 +1837,9 @@ fn layout_segment(ui: &Ui, s: &Styled, range: Range<usize>, col: usize, insert: 
             .collect(),
         None => vec![(range.clone(), TextFormat::simple(font.clone(), fg))],
     };
+    if !s.colors.is_empty() {
+        segments = recolor(segments, s.colors);
+    }
     let ime = || {
         let mut ime = TextFormat::simple(font.clone(), fg);
         ime.underline = Stroke::new(1.0, fg);
@@ -1439,9 +1909,16 @@ mod tests {
                 ed: Editor::new(Buffer::from_str(text)),
                 hl: Highlighter::new(),
             };
+            // Scroll assertions read the final position right away.
+            h.view.smooth_scroll = false;
             h.frame(vec![]); // takes focus
             h.frame(vec![]);
             h
+        }
+
+        /// Shapes painted by one frame.
+        fn shapes(&mut self) -> Vec<egui::Shape> {
+            self.frame_out(vec![], Modifiers::NONE).shapes.into_iter().map(|c| c.shape).collect()
         }
 
         fn frame(&mut self, events: Vec<Event>) {
@@ -1945,6 +2422,197 @@ mod tests {
         let after = h.view.caret_rect.expect("caret").center().y;
         assert!(before > 500.0, "reveal leaves it at the bottom: {before}");
         assert!((after - 300.0).abs() < 2.0 * h.row_h(), "{after}");
+    }
+
+    fn count(shapes: &[egui::Shape], f: impl Fn(&egui::Shape) -> bool) -> usize {
+        shapes.iter().filter(|s| f(s)).count()
+    }
+
+    #[test]
+    fn whitespace_marks_and_trailing_tint() {
+        let mut h = Harness::new("a  b\nb\t\nc ");
+        let ws = h.hl.foreground().gamma_multiply(0.35);
+        let tint = trailing_color(h.hl.background(), h.hl.is_light());
+        let dots = |h: &mut Harness| count(&h.shapes(), |s| matches!(s, egui::Shape::Circle(c) if c.fill == ws));
+        let tints = |h: &mut Harness| count(&h.shapes(), |s| matches!(s, egui::Shape::Rect(r) if r.fill == tint));
+        assert_eq!(dots(&mut h), 0, "nothing selected");
+        h.ed.select_ranges(&[1..3], 0);
+        assert_eq!(dots(&mut h), 2, "the selected spaces");
+        h.view.show_whitespace = Whitespace::All;
+        h.ed.click(0, false);
+        assert_eq!(dots(&mut h), 3);
+        h.view.show_whitespace = Whitespace::None;
+        assert_eq!(dots(&mut h), 0);
+        assert_eq!(tints(&mut h), 2, "the tab and the last space");
+        // Typing at the end of a line doesn't flag the space just typed.
+        h.ed.click(h.ed.buffer.len_chars(), false);
+        assert_eq!(tints(&mut h), 1);
+        h.view.highlight_trailing_whitespace = false;
+        assert_eq!(tints(&mut h), 0);
+    }
+
+    #[test]
+    fn bracket_colors_follow_edits() {
+        let mut h = Harness::new("fn a() {\n    x\n}\n");
+        h.hl.detect(Some(std::path::Path::new("a.rs")), "");
+        h.frame(vec![]);
+        let depth = |h: &Harness, line| h.view.brackets.line(line).map(|v| v.iter().map(|m| m.depth).collect::<Vec<_>>());
+        assert_eq!(depth(&h, 2), Some(vec![Some(0)]));
+        h.ed.click(h.ed.buffer.line_end(1), false);
+        h.frame(vec![Event::Paste("[".into())]);
+        assert_eq!(depth(&h, 1), Some(vec![Some(1)]));
+        assert_eq!(depth(&h, 2), Some(vec![None]), "the closing brace now meets an open `[`");
+        // The galley shows the error color on that brace.
+        let err = error_color(h.hl.is_light());
+        let shapes = h.shapes();
+        let colored = shapes.iter().any(|s| match s {
+            egui::Shape::Text(t) => t.galley.job.sections.iter().any(|sec| sec.format.color == err),
+            _ => false,
+        });
+        assert!(colored);
+        h.view.bracket_colors = false;
+        let shapes = h.shapes();
+        assert!(!shapes.iter().any(|s| matches!(s, egui::Shape::Text(t) if t.galley.job.sections.iter().any(|sec| sec.format.color == err))));
+    }
+
+    #[test]
+    fn color_swatches_draw_a_bar() {
+        let mut h = Harness::new("a { color: #ff0000; background: rgb(0, 0, 255); }");
+        let red = blend(h.hl.background(), Color32::from_rgb(255, 0, 0), 1.0);
+        let bars = |h: &mut Harness| count(&h.shapes(), |s| matches!(s, egui::Shape::Rect(r) if r.fill == red));
+        assert_eq!(bars(&mut h), 1);
+        h.view.color_swatches = false;
+        assert_eq!(bars(&mut h), 0);
+    }
+
+    fn nested_python() -> String {
+        let body: String = (0..200).map(|i| format!("        x{i} = {i}\n")).collect();
+        let tail: String = (0..20).map(|i| format!("        y{i} = {i}\n")).collect();
+        format!("class A:\n    def f(self):\n{body}    def g(self):\n{tail}")
+    }
+
+    fn sticky_lines(h: &Harness) -> Vec<usize> {
+        h.view.sticky.iter().map(|&(_, line, _)| line).collect()
+    }
+
+    #[test]
+    fn sticky_headers_for_nested_scopes() {
+        let mut h = Harness::new(&nested_python());
+        assert!(sticky_lines(&h).is_empty(), "nothing above the top");
+        h.view.scroll_lines(50);
+        h.frame(vec![]);
+        h.frame(vec![]);
+        assert_eq!(sticky_lines(&h), [0, 1]);
+        // In the next method, it replaces the first.
+        h.view.scroll_lines(160);
+        h.frame(vec![]);
+        h.frame(vec![]);
+        assert_eq!(sticky_lines(&h), [0, 202]);
+
+        let body: String = (0..200).map(|_| "            y();\n").collect();
+        let rust = format!("fn main() {{\n    if x {{\n        loop {{\n{body}        }}\n    }}\n}}\n");
+        let mut h = Harness::new(&rust);
+        h.view.scroll_lines(100);
+        h.frame(vec![]);
+        h.frame(vec![]);
+        assert_eq!(sticky_lines(&h), [0, 1, 2]);
+        // Clicking a header jumps there, just below its own sticky parents.
+        let (rect, line, slot) = h.view.sticky[1];
+        assert_eq!((line, slot), (1, 1));
+        click(&mut h, rect.center(), Modifiers::NONE);
+        assert_eq!(h.ed.primary().head, h.ed.buffer.line_start(1));
+        assert_eq!(h.view.scroll.y, 0.0);
+        h.view.sticky_scroll = false;
+        h.view.scroll_lines(100);
+        h.frame(vec![]);
+        assert!(sticky_lines(&h).is_empty());
+    }
+
+    #[test]
+    fn line_marks_with_wrap_and_folds() {
+        let text = format!("fn a() {{\n    {}\n    {}\n}}\ntail\n", long_line(60), long_line(60));
+        let (mut h, _) = wrapped(&text);
+        let lines = h.ed.buffer.len_lines();
+        h.view.line_marks = vec![
+            (0..0, LineMark::Deleted),
+            (1..2, LineMark::Modified),
+            (2..4, LineMark::Added),
+            (lines..lines, LineMark::Deleted),
+            (lines + 5..lines + 9, LineMark::Added),
+        ];
+        let bg = h.hl.background();
+        let light = h.hl.is_light();
+        let has = |shapes: &[egui::Shape], kind| {
+            let c = mark_color(kind, bg, light);
+            count(shapes, |s| match s {
+                egui::Shape::Rect(r) => r.fill == c,
+                egui::Shape::Path(p) => p.fill == c,
+                _ => false,
+            })
+        };
+        let shapes = h.shapes();
+        assert!(has(&shapes, LineMark::Modified) >= 3, "every row of a wrapped line, plus overview ticks");
+        assert!(has(&shapes, LineMark::Deleted) >= 2);
+        h.view.fold(&mut h.ed);
+        let shapes = h.shapes();
+        assert!(has(&shapes, LineMark::Modified) >= 1, "a folded header shows changes inside it");
+        h.view.line_marks.clear();
+        let shapes = h.shapes();
+        assert_eq!(has(&shapes, LineMark::Added), 0);
+    }
+
+    #[test]
+    fn overview_ticks_for_matches_and_cursors() {
+        let text: String = (0..5_000).map(|i| format!("line {i}\n")).collect();
+        let mut h = Harness::new(&text);
+        let fg = h.hl.foreground();
+        let tick = blend(h.hl.background(), fg, 0.55);
+        // Many matches go through the per-pixel path.
+        let matches: Vec<Range<usize>> = (0..4_000).map(|l| h.ed.buffer.line_start(l)..h.ed.buffer.line_start(l) + 4).collect();
+        let (view, ed, hl) = (&mut h.view, &mut h.ed, &mut h.hl);
+        let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))), ..Default::default() };
+        let mut out = h.ctx.run_ui(raw, |ui| {
+            CentralPanel::default().show(ui, |ui| view.show(ui, ed, hl, &matches));
+        });
+        out.textures_delta.clear();
+        let ticks = out.shapes.iter().filter(|c| matches!(&c.shape, egui::Shape::Rect(r) if r.fill == tick)).count();
+        assert!(ticks > 100, "{ticks}");
+        let caret = h.hl.caret().gamma_multiply(0.7);
+        h.ed.select_ranges(&[0..0, 10_000..10_000, 30_000..30_000], 0);
+        let shapes = h.shapes();
+        assert_eq!(count(&shapes, |s| matches!(s, egui::Shape::Rect(r) if r.fill == caret)), 3);
+    }
+
+    #[test]
+    fn smooth_scroll_converges() {
+        let text: String = (0..2_000).map(|i| format!("line {i}\n")).collect();
+        let mut direct = Harness::new(&text);
+        direct.ed.click(direct.ed.buffer.line_start(1_000), false);
+        direct.view.reveal_centered();
+        direct.frame(vec![]);
+        let target = direct.view.scroll.y;
+        assert!(target > 1_000.0);
+
+        let mut h = Harness::new(&text);
+        h.view.smooth_scroll = true;
+        h.ed.click(h.ed.buffer.line_start(1_000), false);
+        h.view.reveal_centered();
+        h.frame(vec![]);
+        let mut last = h.view.scroll.y;
+        assert!(last < target, "the first frame is on its way: {last}");
+        let mut frames = 1;
+        while h.view.anim.is_some() {
+            h.frame(vec![]);
+            assert!(h.view.scroll.y >= last, "moves one way");
+            last = h.view.scroll.y;
+            frames += 1;
+            assert!(frames < 30, "converges");
+        }
+        assert_eq!(h.view.scroll.y, target);
+        // Small moves (typing at the bottom) don't animate.
+        h.view.scroll_lines(1);
+        h.frame(vec![]);
+        assert!(h.view.anim.is_none());
     }
 
     #[test]

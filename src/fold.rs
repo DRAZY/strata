@@ -162,6 +162,28 @@ pub fn enclosing(buf: &Buffer, line: usize, tab: usize) -> Option<(usize, usize)
     None
 }
 
+/// Headers of the indentation scopes holding `line`, innermost first: each is
+/// the nearest non-blank line above that is indented less than the scope
+/// below it. A blank `line` takes the indent of the next non-blank line.
+/// Looks back at most `limit` lines, so it stays cheap in huge blocks.
+pub fn scope_headers(buf: &Buffer, line: usize, tab: usize, limit: usize) -> Vec<usize> {
+    let Some(mut cur) = buf.lines_from(line).take(BLANK_SCAN).map(|l| info(l, tab)).find(|i| !i.blank).map(|i| i.indent) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (k, l) in buf.lines_before(line).take(limit).enumerate() {
+        if cur == 0 {
+            break;
+        }
+        let li = info(l, tab);
+        if !li.blank && li.indent < cur {
+            out.push(line - 1 - k);
+            cur = li.indent;
+        }
+    }
+    out
+}
+
 /// A fold region and how many regions enclose it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Region {
@@ -408,6 +430,19 @@ mod tests {
         assert_eq!(enclosing(&buf, 1, 4), Some((0, 5)));
         assert_eq!(enclosing(&buf, 3, 4), Some((0, 5)), "a blank line inside the class");
         assert_eq!(enclosing(&buf, 7, 4), None);
+    }
+
+    #[test]
+    fn scope_headers_walk_out() {
+        let buf = Buffer::from_str(PY);
+        assert_eq!(scope_headers(&buf, 2, 4, 100), [1, 0]);
+        assert_eq!(scope_headers(&buf, 3, 4, 100), [0], "a blank line takes the next line's indent");
+        assert_eq!(scope_headers(&buf, 7, 4, 100), Vec::<usize>::new());
+        let buf = Buffer::from_str(RUST);
+        assert_eq!(scope_headers(&buf, 4, 4, 100), [3, 0]);
+        assert_eq!(scope_headers(&buf, 5, 4, 100), [0], "the inner closer is back in `main`");
+        assert_eq!(scope_headers(&buf, 6, 4, 100), Vec::<usize>::new());
+        assert_eq!(scope_headers(&buf, 4, 4, 1), [3], "the scan stops at the limit");
     }
 
     #[test]
