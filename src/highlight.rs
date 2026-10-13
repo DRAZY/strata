@@ -2,16 +2,20 @@
 //!
 //! Parser state is checkpointed every `CHUNK` lines. Highlighting a visible
 //! line resumes from the nearest checkpoint, and an edit only discards state
-//! from the edited line down. Work per frame is capped so a huge file never
-//! freezes the UI: unfinished lines render plain and fill in on later frames.
+//! from the edited line down. Work per frame is capped (lines and time) so a
+//! huge file never freezes the UI: unfinished lines render plain and fill in
+//! on later frames. Lines far past the last checkpoint (a jump into the
+//! middle of a big file) are drawn at once from a guessed state while a
+//! worker thread parses up to them; its checkpoints then replace the guess.
 
 use crate::buffer::Buffer;
 use egui::Color32;
 use std::collections::HashMap;
 use std::ops::{Range, RangeInclusive};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use syntect::highlighting::{
     FontStyle, HighlightIterator, HighlightState, Highlighter as ThemeHighlighter, Theme, ThemeSet,
 };
@@ -25,8 +29,33 @@ pub use scheme::Adjustments;
 pub use themes::Kind;
 
 const CHUNK: usize = 32;
-/// Lines parsed per frame before yielding.
+/// Lines parsed per frame at most before yielding…
 const BUDGET: usize = 4_000;
+/// …or once this much time has gone (`prepare`; see `prepare_within`), but
+/// never fewer than `MIN_LINES`. Some grammars take a millisecond a line, so
+/// a screenful may fill in over a few frames rather than stall one.
+pub const TIME_BUDGET: Duration = Duration::from_millis(5);
+const MIN_LINES: usize = 2;
+/// Visible lines further than this past the last checkpoint are guessed
+/// (and parsed for real on a worker) rather than parsed up to on the UI thread.
+const FAR: usize = 256;
+/// Unit tests check results, not timing: per-frame time budgets don't apply
+/// to them (a slow debug build would otherwise yield early). The benchmark
+/// turns this off to measure what users get.
+#[cfg(test)]
+pub static UNTIMED: AtomicBool = AtomicBool::new(true);
+
+/// `budget`, or (in unit tests) no limit; see `UNTIMED`.
+pub fn time_budget(budget: Duration) -> Duration {
+    #[cfg(test)]
+    if UNTIMED.load(Ordering::Relaxed) {
+        return Duration::from_secs(3600);
+    }
+    budget
+}
+
+/// How far above the first visible line a guess looks for an unindented line to start at.
+const GUESS_BACK: usize = 40;
 /// Lines longer than this render plain (minified files would stall the parser).
 const MAX_LINE: usize = 20_000;
 
@@ -484,10 +513,95 @@ pub struct Highlighter {
     generation: u64,
     syntax_name: String,
     /// `checkpoints[k]` = state at the start of line `k * CHUNK`.
-    checkpoints: Vec<(ParseState, HighlightState)>,
+    checkpoints: Vec<Checkpoint>,
     lines: HashMap<usize, LineSpans>,
+    /// Lines highlighted from a guessed state, until the real parse gets there.
+    guessed: HashMap<usize, LineSpans>,
+    /// Parses ahead of the checkpoints on a worker thread.
+    indexer: Option<Indexer>,
+    /// The last `prepare` showed guesses and is waiting for the worker.
+    waiting: bool,
+    /// Where a `prepare` that ran out of time stopped: the next one goes on
+    /// from there instead of re-parsing from the checkpoint.
+    resume: Option<(usize, Checkpoint)>,
     /// Compile a grammar's regexes off the UI thread the first time it is used.
     warm_up: bool,
+}
+
+/// Parser state and scope stack at the start of a line. The highlight state
+/// is rebuilt from the stack, so checkpoints don't depend on the theme.
+type Checkpoint = (ParseState, ScopeStack);
+
+/// A worker parsing the text from one checkpoint to the end, publishing a
+/// checkpoint every `CHUNK` lines. Dropping it stops the thread.
+struct Indexer {
+    cancel: Arc<AtomicBool>,
+    out: Arc<Mutex<Indexed>>,
+    /// Its checkpoints up to this index still hold: later ones parsed text
+    /// that has been edited since.
+    valid: usize,
+}
+
+#[derive(Default)]
+struct Indexed {
+    /// Index (in `Highlighter::checkpoints`) of `states[0]`.
+    from: usize,
+    states: Vec<Checkpoint>,
+    done: bool,
+}
+
+impl Drop for Indexer {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Indexer {
+    /// Parse `rope` from checkpoint `k` (state `start`) on.
+    fn spawn(rope: ropey::Rope, k: usize, start: Checkpoint) -> Self {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let out = Arc::new(Mutex::new(Indexed { from: k + 1, ..Default::default() }));
+        let (stop, sink) = (cancel.clone(), out.clone());
+        std::thread::spawn(move || {
+            let (mut parse, mut stack) = start;
+            let total = rope.len_lines();
+            let publish = |batch: &mut Vec<Checkpoint>, done: bool| {
+                let mut out = sink.lock().unwrap_or_else(|e| e.into_inner());
+                out.states.append(batch);
+                out.done = done;
+            };
+            let mut batch = Vec::new();
+            let mut text = String::new();
+            let mut line = k * CHUNK;
+            while line + CHUNK < total {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                for l in line..line + CHUNK {
+                    text.clear();
+                    rope.line(l).chunks().for_each(|c| text.push_str(c));
+                    // As `Buffer::line_text` + `highlight_line`: no line break, then the '\n' grammars expect.
+                    text.truncate(text.trim_end_matches(['\n', '\r']).len());
+                    if text.len() > MAX_LINE {
+                        continue;
+                    }
+                    text.push('\n');
+                    if let Ok(ops) = parse.parse_line(&text, &SYNTAXES) {
+                        for (_, op) in &ops {
+                            let _ = stack.apply(op);
+                        }
+                    }
+                }
+                line += CHUNK;
+                batch.push((parse.clone(), stack.clone()));
+                if batch.len() >= 64 {
+                    publish(&mut batch, false);
+                }
+            }
+            publish(&mut batch, true);
+        });
+        Self { cancel, out, valid: usize::MAX }
+    }
 }
 
 /// One grammar's first-use regex compilation, run on a worker thread.
@@ -519,6 +633,10 @@ impl Highlighter {
             syntax_name: "Plain Text".into(),
             checkpoints: Vec::new(),
             lines: HashMap::new(),
+            guessed: HashMap::new(),
+            indexer: None,
+            waiting: false,
+            resume: None,
             warm_up: false,
         }
     }
@@ -712,21 +830,70 @@ impl Highlighter {
             self.checkpoints.clear();
         }
         self.lines.retain(|&l, _| l < line);
+        self.guessed.retain(|&l, _| l < line);
+        // A state at line `at` depends on the lines above it only (and on the syntax).
+        if line == 0 || self.resume.as_ref().is_some_and(|(at, _)| *at > line) {
+            self.resume = None;
+        }
+        // Its work above the edit still holds (typing while it catches up
+        // mustn't restart it on every key); past that it's out of date.
+        if let Some(ix) = &mut self.indexer {
+            ix.valid = ix.valid.min(line / CHUNK);
+        }
+        self.absorb();
     }
 
     /// Highlighted spans for a line, if ready. Call `prepare` first each frame.
     pub fn line(&self, line: usize) -> Option<LineSpans> {
-        self.lines.get(&line).cloned()
+        self.lines.get(&line).or_else(|| self.guessed.get(&line)).cloned()
     }
 
-    /// Highlight `visible` lines. Returns false if the budget ran out
-    /// (caller should repaint so highlighting continues next frame).
+    /// True while visible lines show guessed colors and a worker parses up
+    /// to them: repaint now and then rather than every frame.
+    pub fn waiting(&self) -> bool {
+        self.waiting
+    }
+
+    /// Take the checkpoints the worker published since the last call.
+    fn absorb(&mut self) {
+        let Some(ix) = &self.indexer else { return };
+        let finished = {
+            let mut out = ix.out.lock().unwrap_or_else(|e| e.into_inner());
+            let have = self.checkpoints.len();
+            if out.from <= have {
+                // states[i] is checkpoint `out.from + i`: skip ones already
+                // known, keep the valid rest.
+                let usable = ix.valid.saturating_add(1).saturating_sub(out.from).min(out.states.len());
+                let skip = (have - out.from).min(usable);
+                self.checkpoints.extend(out.states.drain(..usable).skip(skip));
+                out.from += usable;
+            }
+            out.from > ix.valid || (out.done && out.states.is_empty())
+        };
+        if finished {
+            self.indexer = None;
+        }
+    }
+
+    /// Highlight `visible` lines. Returns false if the budget ran out or
+    /// some lines are guesses (the caller should repaint so highlighting
+    /// continues; see `waiting`).
     pub fn prepare(&mut self, buffer: &Buffer, visible: RangeInclusive<usize>) -> bool {
+        self.prepare_within(buffer, visible, TIME_BUDGET)
+    }
+
+    /// `prepare`, parsing for at most about `budget`.
+    pub fn prepare_within(&mut self, buffer: &Buffer, visible: RangeInclusive<usize>, budget: Duration) -> bool {
+        self.prepare_for(buffer, visible, time_budget(budget))
+    }
+
+    fn prepare_for(&mut self, buffer: &Buffer, visible: RangeInclusive<usize>, budget: Duration) -> bool {
         let last = (*visible.end()).min(buffer.len_lines().saturating_sub(1));
         let first = (*visible.start()).min(last);
-        if (first..=last).all(|l| self.lines.contains_key(&l)) {
-            return true;
-        }
+        self.waiting = false;
+        self.absorb();
+        // Lines done on earlier calls (a range bigger than one call's budget) aren't redone.
+        let Some(first) = (first..=last).find(|l| !self.lines.contains_key(l)) else { return true };
         if self.warm_up && !self.warmed_up(buffer, first.saturating_sub(CHUNK)..=last) {
             return false;
         }
@@ -734,33 +901,78 @@ impl Highlighter {
         if self.lines.len() > 8_192 {
             self.lines.retain(|&l, _| l + 2_000 >= first && l <= last + 2_000);
         }
+        if self.guessed.len() > 2_048 {
+            self.guessed.retain(|&l, _| l + 500 >= first && l <= last + 500);
+        }
         let scheme = self.scheme.clone();
         let hl = ThemeHighlighter::new(&scheme.theme);
         if self.checkpoints.is_empty() {
-            let parse = ParseState::new(self.syntax());
-            let high = HighlightState::new(&hl, ScopeStack::new());
-            self.checkpoints.push((parse, high));
+            self.checkpoints.push((ParseState::new(self.syntax()), ScopeStack::new()));
         }
 
         // Resume from the nearest known checkpoint at or before `first`.
         let k = (first / CHUNK).min(self.checkpoints.len() - 1);
-        let (mut parse, mut high) = self.checkpoints[k].clone();
-        let mut budget = BUDGET;
-        let mut line = k * CHUNK;
+        if first - k * CHUNK > FAR {
+            if self.indexer.is_none() {
+                self.indexer = Some(Indexer::spawn(buffer.snapshot(), k, self.checkpoints[k].clone()));
+            }
+            // Guesses done: wait for the worker (not every frame); else guess more next frame.
+            self.waiting = self.guess(buffer, &hl, first, last, budget);
+            return false;
+        }
+        // Where the last call ran out of time, if that's nearer than the checkpoint.
+        let (mut line, (mut parse, stack)) = match self.resume.take() {
+            Some((at, state)) if at >= k * CHUNK && at <= first => (at, state),
+            _ => (k * CHUNK, self.checkpoints[k].clone()),
+        };
+        let mut high = HighlightState::new(&hl, stack);
+        let started = Instant::now();
+        let mut done = 0;
         while line <= last {
-            if budget == 0 {
+            // Only new lines count, so every call makes progress (the walk from the
+            // checkpoint to `first` is under `CHUNK` lines).
+            if done >= MIN_LINES && (done >= BUDGET || started.elapsed() > budget) {
+                self.resume = Some((line, (parse, high.path)));
                 return false;
             }
-            budget -= 1;
+            done += usize::from(line >= first);
             if line.is_multiple_of(CHUNK) && line / CHUNK == self.checkpoints.len() {
-                self.checkpoints.push((parse.clone(), high.clone()));
+                self.checkpoints.push((parse.clone(), high.path.clone()));
             }
             let text = buffer.line_text(line);
             let spans = self.highlight_line(&hl, &mut parse, &mut high, &text);
             if line >= first {
                 self.lines.insert(line, spans);
+                self.guessed.remove(&line);
             }
             line += 1;
+        }
+        true
+    }
+
+    /// Highlight `first..=last` from a fresh parser state, started at the
+    /// nearest unindented line a little above (top-level code, where a fresh
+    /// state is most likely right). Within `budget` like `prepare`; returns
+    /// true when every line has (at least) a guess.
+    fn guess(&mut self, buffer: &Buffer, hl: &ThemeHighlighter, first: usize, last: usize, budget: Duration) -> bool {
+        let known = |h: &Self, l: &usize| h.lines.contains_key(l) || h.guessed.contains_key(l);
+        let Some(first) = (first..=last).find(|l| !known(self, l)) else { return true };
+        let floor = first.saturating_sub(GUESS_BACK);
+        let start = (floor..=first).rev().find(|&l| buffer.line_chars(l).next().is_some_and(|c| !c.is_whitespace())).unwrap_or(first);
+        let mut parse = ParseState::new(self.syntax());
+        let mut high = HighlightState::new(hl, ScopeStack::new());
+        let started = Instant::now();
+        let mut done = 0;
+        for line in start..=last {
+            if done >= MIN_LINES && done % 4 == 0 && started.elapsed() > budget {
+                return false;
+            }
+            let text = buffer.line_text(line);
+            let spans = self.highlight_line(hl, &mut parse, &mut high, &text);
+            if line >= first && !self.lines.contains_key(&line) {
+                done += 1;
+                self.guessed.insert(line, spans);
+            }
         }
         true
     }
@@ -778,11 +990,11 @@ impl Highlighter {
             0 => (ParseState::new(syntax), ScopeStack::new(), 0),
             len => {
                 let k = (line / CHUNK).min(len - 1);
-                let (p, h) = &self.checkpoints[k];
-                (p.clone(), h.path.clone(), k * CHUNK)
+                let (p, stack) = &self.checkpoints[k];
+                (p.clone(), stack.clone(), k * CHUNK)
             }
         };
-        if line - from > 2 * BUDGET {
+        if line - from > 2 * FAR {
             return base;
         }
         let upto = buffer.char_to_byte(pos) - buffer.char_to_byte(buffer.line_start(line));
@@ -860,7 +1072,7 @@ mod tests {
         let buf = Buffer::from_str(&text);
         let mut h = Highlighter::new();
         h.detect(Some(Path::new("a.rs")), "");
-        assert!(h.prepare(&buf, 150..=170));
+        while !h.prepare(&buf, 150..=170) {}
         assert!(h.line(160).is_some());
         assert!(h.line(10).is_none(), "only visible lines are kept");
         h.invalidate_from(100);
@@ -1157,14 +1369,88 @@ mod tests {
         let buf = Buffer::from_str(&text);
         let mut h = Highlighter::new();
         h.detect(Some(Path::new("a.py")), "");
-        let end = buf.len_lines() - 1;
-        assert!(!h.prepare(&buf, end..=end));
+        // Near the top: parsed on the spot, a capped amount per call.
+        let mid = FAR / 2;
         let mut frames = 1;
-        while !h.prepare(&buf, end..=end) {
+        while !h.prepare(&buf, mid..=mid + 60) {
             frames += 1;
         }
-        assert!(frames >= 3);
-        assert!(h.line(end).is_some());
+        assert!(frames < 10 && h.lines.contains_key(&(mid + 60)));
+        // Out of time: a few lines per call, and calls don't redo done lines.
+        let mut calls = 1;
+        while !h.prepare_for(&buf, 0..=20 * MIN_LINES, Duration::ZERO) {
+            calls += 1;
+            assert!(calls < 40, "{calls} calls");
+        }
+        assert!(calls >= 10);
+        // Far down: guessed at once, exact once the worker gets there.
+        let end = buf.len_lines() - 1;
+        assert!(!h.prepare(&buf, end - 40..=end));
+        assert!(h.waiting());
+        assert!(h.line(end).is_some(), "guessed right away");
+        let start = Instant::now();
+        while !h.prepare(&buf, end - 40..=end) {
+            assert!(start.elapsed() < Duration::from_secs(30), "the worker catches up");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(!h.waiting() && h.lines.contains_key(&end) && h.guessed.is_empty());
+    }
+
+    #[test]
+    fn edits_below_the_workers_reach_dont_restart_it() {
+        let text = "let x = 1;\n".repeat(20_000);
+        let mut buf = Buffer::from_str(&text);
+        let mut h = Highlighter::new();
+        h.detect(Some(Path::new("a.rs")), "");
+        let end = buf.len_lines() - 1;
+        assert!(!h.prepare(&buf, end - 20..=end));
+        // Typing far down: the worker keeps going (its work above the edit holds).
+        let start = Instant::now();
+        loop {
+            buf.insert(buf.line_start(end - 10), "y");
+            h.invalidate_from(end - 10);
+            if h.prepare(&buf, end - 20..=end) {
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(60), "never caught up");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // An edit above what it has done stops it.
+        h.invalidate_from(100);
+        assert!(h.indexer.is_none() && h.checkpoints.len() == 100 / CHUNK + 1);
+    }
+
+    #[test]
+    fn worker_checkpoints_match_parsing_on_the_spot() {
+        // A block comment across the jump: a guess from inside it would be
+        // wrong; the worker's states must give exactly the colors parsing
+        // straight through does.
+        let mut text = String::from("fn a() {}\n/*\n");
+        for i in 0..2_000 {
+            text.push_str(&format!("    let x{i} = \"{i}\";\n"));
+        }
+        text.push_str("*/\nfn b() { let s = \"x\"; }\n");
+        let buf = Buffer::from_str(&text);
+        let end = buf.len_lines() - 1;
+        let mut far = Highlighter::new();
+        far.detect(Some(Path::new("a.rs")), "");
+        let start = Instant::now();
+        while !far.prepare(&buf, end - 10..=end) {
+            assert!(start.elapsed() < Duration::from_secs(60));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let mut near = Highlighter::new();
+        near.detect(Some(Path::new("a.rs")), "");
+        for l in (0..=end).step_by(50) {
+            while !near.prepare(&buf, l..=(l + 49).min(end)) {}
+        }
+        let colors = |h: &Highlighter, l: usize| h.line(l).unwrap().iter().map(|s| (s.range.clone(), s.color)).collect::<Vec<_>>();
+        for l in end - 10..=end {
+            assert_eq!(colors(&far, l), colors(&near, l), "line {l}");
+        }
+        // Inside the comment every line is one color.
+        let inside = colors(&near, end - 5);
+        assert!(inside.iter().all(|(_, c)| *c == inside[0].1));
     }
 
     /// Every scheme Strata ships defines the editor colors the view paints,

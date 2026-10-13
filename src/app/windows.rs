@@ -699,14 +699,41 @@ impl Windows {
         let now = ctx.input(|i| i.time);
         if now - self.last_session_save > 5.0 {
             self.last_session_save = now;
-            if self.hot_exit() && self.fingerprint() != self.session_key {
-                self.save_session();
+            if let Some(e) = super::autosave::take_error() {
+                let i = self.focused_index();
+                self.slots[i].app.status = format!("Could not save session: {e}");
+                self.session_key = 0;
+            }
+            let key = self.fingerprint();
+            if self.hot_exit() && key != self.session_key
+                && let Some((dir, session, backups)) = self.session_to_save()
+                && super::autosave::start(session, dir, backups)
+            {
+                self.session_key = key;
             }
         }
     }
 
+    /// Write the session now (quitting): waits for an autosave in progress.
     fn save_session(&mut self) -> bool {
-        let Some(dir) = self.config.clone().filter(|_| self.lock.is_some()) else { return false };
+        let Some((dir, session, backups)) = self.session_to_save() else { return false };
+        super::autosave::wait();
+        match session.save(&dir, &backups) {
+            Ok(()) => {
+                self.session_key = self.fingerprint();
+                true
+            }
+            Err(e) => {
+                let i = self.focused_index();
+                self.slots[i].app.status = format!("Could not save session: {e}");
+                false
+            }
+        }
+    }
+
+    /// Every window's session, ready to write; None when it isn't ours to save.
+    fn session_to_save(&self) -> Option<(std::path::PathBuf, Session, super::autosave::Backups)> {
+        let dir = self.config.clone().filter(|_| self.lock.is_some())?;
         let mut backups = Vec::new();
         let windows = self
             .slots
@@ -722,17 +749,7 @@ impl Windows {
         session.recent_files.clone_from(&self.shared.recent_files);
         session.recent_folders.clone_from(&self.shared.recent_folders);
         session.recent_projects.clone_from(&self.shared.recent_projects);
-        match session.save(&dir, &backups) {
-            Ok(()) => {
-                self.session_key = self.fingerprint();
-                true
-            }
-            Err(e) => {
-                let i = self.focused_index();
-                self.slots[i].app.status = format!("Could not save session: {e}");
-                false
-            }
-        }
+        Some((dir, session, backups))
     }
 }
 

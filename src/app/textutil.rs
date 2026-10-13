@@ -229,25 +229,81 @@ impl StrataApp {
         }
     }
 
-    /// "N words" for the selection (or the file, when small enough to count every frame).
-    pub(super) fn word_count(&self) -> Option<String> {
-        let e = &self.docs[self.active].editor;
-        let selected: Vec<String> = e.selections().iter().filter(|s| !s.is_empty()).map(|s| e.buffer.slice(s.range())).collect();
-        let (text, what) = if !selected.is_empty() {
-            (selected.join(" "), " selected")
-        } else if e.buffer.len_chars() < 200_000 {
-            (e.buffer.slice(0..e.buffer.len_chars()), "")
-        } else {
-            return None;
-        };
-        let n = text.split_whitespace().count();
-        Some(format!("{n} word{}{what}", if n == 1 { "" } else { "s" }))
+    /// "N words" for the selection, or the whole file when nothing is
+    /// selected. Counted once per change of text or selection; none when
+    /// there is too much text to count without stalling (see `WORD_COUNT_*`).
+    pub(super) fn word_count(&mut self) -> Option<String> {
+        use std::hash::{Hash, Hasher};
+        let d = &mut self.docs[self.active];
+        let e = &d.editor;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        e.version().hash(&mut h);
+        e.selections().iter().for_each(|s| s.range().hash(&mut h));
+        let key = h.finish();
+        if let Some((k, label)) = &d.word_count
+            && *k == key
+        {
+            return label.clone();
+        }
+        let label = word_count_label(e);
+        d.word_count = Some((key, label.clone()));
+        label
     }
+}
+
+/// Most chars of a selection counted for the status bar (once per selection change).
+const WORD_COUNT_SELECTION: usize = 4_000_000;
+/// Most chars of a whole file counted (once per edit, so smaller).
+const WORD_COUNT_FILE: usize = 1_000_000;
+
+fn word_count_label(e: &crate::editor::Editor) -> Option<String> {
+    let selected: Vec<std::ops::Range<usize>> = e.selections().iter().filter(|s| !s.is_empty()).map(|s| s.range()).collect();
+    let (ranges, what) = if !selected.is_empty() {
+        (selected, " selected")
+    } else {
+        (vec![0..e.buffer.len_chars()], "")
+    };
+    let chars: usize = ranges.iter().map(|r| r.len()).sum();
+    if chars > if what.is_empty() { WORD_COUNT_FILE } else { WORD_COUNT_SELECTION } {
+        return None;
+    }
+    let n: usize = ranges.into_iter().map(|r| count_words(e.buffer.chunks_in(r))).sum();
+    Some(format!("{n} word{}{what}", if n == 1 { "" } else { "s" }))
+}
+
+/// Runs of non-whitespace (as `split_whitespace` counts them) across chunks.
+fn count_words<'a>(chunks: impl Iterator<Item = &'a str>) -> usize {
+    let (mut n, mut in_word) = (0, false);
+    for c in chunks.flat_map(str::chars) {
+        let word = !c.is_whitespace();
+        n += usize::from(word && !in_word);
+        in_word = word;
+    }
+    n
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn words_are_counted_across_chunks_and_cached() {
+        let b = crate::buffer::Buffer::from_str("one two\n  three\tfour ");
+        assert_eq!(count_words(b.chunks_in(0..b.len_chars())), 4);
+        assert_eq!(count_words(["on", "e tw", "o"].into_iter()), 2);
+        assert_eq!(count_words(std::iter::empty()), 0);
+
+        let mut app = StrataApp::new(None, None);
+        app.docs[0].editor = crate::editor::Editor::new(b);
+        assert_eq!(app.word_count().as_deref(), Some("4 words"));
+        app.docs[0].editor.select_ranges(&[0..3, 4..7], 0);
+        assert_eq!(app.word_count().as_deref(), Some("2 words selected"));
+        // Too much to count on every keystroke: nothing rather than a stall.
+        app.docs[0].editor = crate::editor::Editor::new(crate::buffer::Buffer::from_str(&"w ".repeat(WORD_COUNT_FILE)));
+        assert_eq!(app.word_count(), None);
+        app.docs[0].editor.select_ranges(&[0..20], 0);
+        assert_eq!(app.word_count().as_deref(), Some("10 words selected"));
+    }
 
     #[test]
     fn json_round_trips_and_errors() {

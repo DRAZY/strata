@@ -41,6 +41,39 @@ pub struct Document {
     pub encoding: Encoding,
     /// Tab name for a generated, pathless tab (e.g. "Default Key Bindings").
     pub title: Option<String>,
+    /// Status bar word count and the text/selection state it was counted for.
+    pub word_count: Option<(u64, Option<String>)>,
+    /// Opened in large-file mode (see `LargeFile`).
+    pub large: Option<LargeFile>,
+}
+
+/// A file opened in large-file mode, like Sublime's and VS Code's: it shows
+/// as Plain Text, and the minimap, word wrap, bracket colors and sticky
+/// scroll are off for it. Choosing a syntax in the status bar still
+/// highlights it (in the background, a screenful at a time).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LargeFile {
+    /// The syntax it would have had.
+    pub syntax: String,
+    /// Why: a line longer than `LONG_LINE_BYTES` (rather than the size).
+    pub long_lines: bool,
+    /// Bytes in its longest line when opened.
+    pub longest_line: usize,
+}
+
+/// Word wrap stays off for files with a line longer than this (bytes): each
+/// edit would re-wrap the whole line.
+pub const MAX_WRAP_LINE: usize = 200_000;
+
+/// Files bigger than this open in large-file mode unless told otherwise
+/// (the `large_file_mb` setting).
+pub const LARGE_FILE_BYTES: u64 = 20 << 20;
+/// A line longer than this (minified code, one-line JSON) also means large-file mode.
+pub const LONG_LINE_BYTES: usize = 10_000;
+
+/// Length in bytes of the longest line (fast: a byte scan).
+fn longest_line(bytes: &[u8]) -> usize {
+    bytes.split(|&b| b == b'\n').map(<[u8]>::len).max().unwrap_or(0)
 }
 
 pub fn mtime(path: &Path) -> Option<SystemTime> {
@@ -76,15 +109,33 @@ impl Document {
             git_changes: Vec::new(),
             git_version: None,
             title: None,
+            word_count: None,
+            large: None,
         }
     }
 
     /// A path that doesn't exist yet opens as a new, empty UTF-8 file.
     /// Otherwise the encoding is detected (see `Buffer::decode`).
+    #[cfg(test)]
     pub fn open(path: PathBuf) -> std::io::Result<Self> {
-        let (buffer, encoding) = if path.exists() { Buffer::decode(&std::fs::read(&path)?) } else { (Buffer::from_str(""), Encoding::UTF8) };
+        Self::open_with(path, LARGE_FILE_BYTES)
+    }
+
+    /// `open`, in large-file mode if the file has more than `large_bytes`
+    /// bytes or a line longer than `LONG_LINE_BYTES`.
+    pub fn open_with(path: PathBuf, large_bytes: u64) -> std::io::Result<Self> {
+        let bytes = if path.exists() { std::fs::read(&path)? } else { Vec::new() };
+        let longest = longest_line(&bytes);
+        let long_lines = longest > LONG_LINE_BYTES;
+        let large = long_lines || bytes.len() as u64 > large_bytes;
+        let (buffer, encoding) = if bytes.is_empty() { (Buffer::from_str(""), Encoding::UTF8) } else { Buffer::decode(&bytes) };
+        drop(bytes);
         let mut doc = Self::from_buffer(Some(path), buffer);
         doc.encoding = encoding;
+        if large {
+            doc.large = Some(LargeFile { syntax: doc.highlighter.syntax_name().to_owned(), long_lines, longest_line: longest });
+            doc.highlighter.set_syntax("Plain Text");
+        }
         Ok(doc)
     }
 
@@ -134,6 +185,11 @@ impl Document {
         }
     }
 
+    /// False for a file with a line too long to wrap (see `MAX_WRAP_LINE`).
+    pub fn can_wrap(&self) -> bool {
+        self.large.as_ref().is_none_or(|l| l.longest_line <= MAX_WRAP_LINE)
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.restored_dirty || self.editor.is_dirty()
     }
@@ -175,6 +231,11 @@ impl Document {
         self.disk_mtime = mtime(&path);
         if self.path.as_ref() != Some(&path) {
             self.highlighter.detect(Some(&path), &self.editor.buffer.line_text(0));
+            // Still large: note the new name's syntax, keep showing it plain.
+            if let Some(large) = &mut self.large {
+                large.syntax = self.highlighter.syntax_name().to_owned();
+                self.highlighter.set_syntax("Plain Text");
+            }
         }
         self.path = Some(path);
         self.preview = false;

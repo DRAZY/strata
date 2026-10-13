@@ -17,14 +17,21 @@ use std::ops::RangeInclusive;
 
 /// Lines between checkpoints.
 const STEP: usize = 256;
-/// Bytes scanned per frame before yielding.
+/// Bytes scanned per frame before yielding…
 const BUDGET: usize = 4 << 20;
+/// …or time spent: a jump to the end of a 50 MB file catches up over a
+/// second of frames rather than stalling them.
+const TIME_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
 /// Longer lines are skipped (no marks, state unchanged), like the highlighter.
 const MAX_LINE: usize = 20_000;
 /// Deeper nesting than this forgets its outermost brackets.
 const MAX_STACK: usize = 4_096;
 /// Cached lines kept while scrolling.
 const KEEP: usize = 8_192;
+/// Visible lines further than this past the last checkpoint start from a
+/// guess (see `prepare`); `GUESS_BACK` is how far up it looks for a start.
+const FAR: usize = 2_000;
+const GUESS_BACK: usize = 200;
 
 /// A bracket at `byte` in its line; `depth` is `None` for a closer without a
 /// matching opener.
@@ -227,11 +234,38 @@ impl Brackets {
         }
         let k = (first / STEP).min(self.checkpoints.len() - 1);
         let mut st = self.checkpoints[k].clone();
+        if first - k * STEP > FAR {
+            // Far past what's been scanned (a jump into a big file): start
+            // fresh at an unindented line just above, where code is usually
+            // at depth 0, instead of scanning everything before it.
+            let floor = first.saturating_sub(GUESS_BACK);
+            let start = (floor..=first).rev().find(|&l| buf.line_chars(l).next().is_some_and(|c| !c.is_whitespace())).unwrap_or(first);
+            let mut st = State::default();
+            let mut text = Vec::new();
+            for (line, chunks) in (start..=last).zip(buf.lines_from(start)) {
+                text.clear();
+                chunks.for_each(|c| text.extend_from_slice(c.as_bytes()));
+                let mut marks = Vec::new();
+                if text.len() <= MAX_LINE {
+                    self.lexer.scan(&text, &mut st, (line >= first).then_some(&mut marks));
+                }
+                if line >= first {
+                    self.lines.insert(line, marks);
+                }
+            }
+            return true;
+        }
         let mut budget = BUDGET;
+        let started = std::time::Instant::now();
+        let time = crate::highlight::time_budget(TIME_BUDGET);
         let mut text: Vec<u8> = Vec::new();
         for (line, chunks) in (k * STEP..).zip(buf.lines_from(k * STEP)) {
             if line > last {
                 break;
+            }
+            // Past the first checkpoint made here, so every call keeps some progress.
+            if line % 64 == 0 && line > (k + 1) * STEP && started.elapsed() > time {
+                return false;
             }
             if line.is_multiple_of(STEP) && line / STEP == self.checkpoints.len() {
                 self.checkpoints.push(st.clone());
@@ -332,7 +366,8 @@ mod tests {
             frames += 1;
         }
         let took = start.elapsed();
-        assert!(frames <= 4, "{frames} frames");
+        // Far past any checkpoint: started fresh at the `fn` line above, at once.
+        assert_eq!(frames, 1);
         assert!(took.as_secs_f64() < 2.0, "{took:?}");
         assert_eq!(depths(&b, end), [Some(0)]);
         // Scrolling back to the middle resumes from a checkpoint.

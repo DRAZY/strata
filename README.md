@@ -22,7 +22,11 @@ appears on the shortcuts page.
 
 ## Goals
 
-- Opens instantly; stays smooth on huge files (100 MB+).
+- Opens instantly; stays smooth on huge files (100 MB+) and minified one-line
+  files: highlighting runs a screenful at a time with a background parser,
+  long lines are laid out only where visible, and big files open in a
+  large-file mode (plain text, no minimap or wrap) like Sublime and VS Code.
+  `scripts/bench-large-files.sh` measures it.
 - Multiple cursors, Goto Anything, command palette, split panes, minimap.
 - Reads existing `.sublime-syntax` / `.tmTheme` grammars and color schemes so the
   ecosystem's community grammars work on day one.
