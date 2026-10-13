@@ -192,6 +192,21 @@ keymap, comments and trailing commas allowed:
   permissions, and refuse text the chosen encoding can't hold.
 - **Tabs and split panes**: preview tabs, drag to reorder or into another pane;
   1–4 columns, 2 rows or a 2×2 grid (Alt+Cmd+1…5), draggable dividers.
+- **Several views of one file** (File ▸ New View into File, or a tab's Split
+  View): each view has its own cursors, scroll and folds; text, undo history,
+  saving and unsaved state are shared, and edits in one view move the others'
+  selections and bookmarks along. Hot exit keeps every view (the text once).
+- **Compare** (File ▸ Compare ▸ Compare with…, a tab's or the sidebar's
+  Compare with…, or Git: Compare with HEAD): two texts side by side with
+  aligned lines and filler rows, changed lines and words marked, one scroll
+  position, F7 / Shift+F7 for the next / previous difference, swap sides and
+  ignore whitespace. The right side is the real file, editable and saveable;
+  the diff (patience + linear-space Myers) follows your edits and handles
+  50k-line files in milliseconds.
+- **Printing** (File ▸ Print…, Export ▸ PDF… / HTML…): syntax-colored pages on
+  white with line numbers, a header and page numbers, optionally just the
+  selection, in black and white, on Letter or A4; Markdown prints as rendered.
+  Print opens the PDF (fonts embedded, text searchable) in the system viewer.
 - **Hot exit**: quitting never asks. Tabs, panes, cursors and unsaved text come
   back next launch; the session is also saved every few seconds.
 - **Navigation**: command palette, Goto Anything (`file:line`, `@symbol`), go to

@@ -35,6 +35,8 @@ pub static PAGES: &[Page] = &[
     page!("Using Strata", "snippets.md"),
     page!("Using Strata", "projects.md"),
     page!("Using Strata", "panes.md"),
+    page!("Using Strata", "compare.md"),
+    page!("Using Strata", "printing.md"),
     page!("Using Strata", "terminal.md"),
     page!("Using Strata", "markdown.md"),
     page!("Using Strata", "build.md"),
@@ -393,7 +395,7 @@ mod tests {
 
     #[test]
     fn every_page_parses_with_a_title_and_known_shortcuts() {
-        assert_eq!(PAGES.len(), 19);
+        assert_eq!(PAGES.len(), 21);
         for p in PAGES {
             if let Some(src) = p.source {
                 let (_, unknown) = expand_keys(src);

@@ -67,6 +67,8 @@ Right-click a tab for:
 | Close Tabs to the Right | Close the tabs after this one in this pane. |
 | Close Unmodified Tabs | Close the tabs in this pane that have no unsaved changes. |
 | Move to New Window | Move this tab into a new window of its own. Available when the window has more than one tab. |
+| Split View | Open another view of this file in the next pane, adding a second column if there's only one pane (see below). |
+| Compare with… | Compare this file side by side with another tab, a file, or its Git `HEAD` version. See [Comparing Files](compare.md). |
 | New File | Open an untitled tab in this pane. |
 | Open File… | Open files into this pane. |
 | Copy File Path | Copy the file's full path. |
@@ -74,6 +76,28 @@ Right-click a tab for:
 | Reveal in Finder | Show the file in your file manager (Show in Explorer on Windows, Open Containing Folder on Linux). |
 
 When closing several tabs, Strata asks about each one with unsaved changes and stops if you choose Cancel.
+
+## Several Views of One File
+
+A file can be open in more than one tab at a time, for example to look at the top of a long file while you edit the bottom, or to keep two distant parts of it side by side.
+
+| Command | Shortcut | What it does |
+|---|---|---|
+| File ▸ New View into File | {{key:clone_file}} | Open another tab on the current file, in the same pane. |
+| Split View | | From a tab's right-click menu: open another view in the next pane, adding a second column if there's only one pane. |
+
+Views of one file share its text: an edit in one shows up in the others at once, and their cursors, selections, bookmarks and folds move along with the text. Each view keeps its own cursors and selections, scroll position, folds and word wrap.
+
+They are one file in every other way too:
+
+- There's one undo history. Undo and redo work from any view, and step back through edits made in all of them, newest first.
+- Saving any view saves the file, and every view shows the same unsaved dot. Save As, Reopen with Encoding, line endings and Revert apply to every view.
+- Closing a view never asks about unsaved changes while another view of the file is still open; the last one asks as usual.
+- Opening the file again (from the sidebar, Goto Anything or a search result) uses the view you're in, or the one you used last.
+- Find in Files and Replace in Files count and change the file once.
+- With hot exit on, every view comes back next time, with its own cursors and pane, and unsaved text is kept once.
+
+Moving a view to another window with Move to New Window gives it its own copy of the text there: views stay in step only within a window.
 
 ## Layouts
 

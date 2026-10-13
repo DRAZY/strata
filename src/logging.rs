@@ -23,7 +23,9 @@ pub const MAX_BYTES: u64 = 1024 * 1024;
 /// strata.log plus this many older ones (strata.1.log, strata.2.log).
 pub const KEEP_OLD: usize = 2;
 /// Lines kept in memory for crash reports.
-pub const TAIL_LINES: usize = 200;
+// Tests share one logger across threads: keep enough that one test's lines
+// aren't pushed out by the others before it reads them.
+pub const TAIL_LINES: usize = if cfg!(test) { 20_000 } else { 200 };
 
 /// Where log files go.
 pub fn log_dir(config: &Path) -> PathBuf {

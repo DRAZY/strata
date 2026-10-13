@@ -45,6 +45,8 @@ const CLOSE_OTHERS: &str = "ctx:close_others";
 const CLOSE_RIGHT: &str = "ctx:close_right";
 const CLOSE_UNMODIFIED: &str = "ctx:close_unmodified";
 const NEW_WINDOW: &str = "ctx:new_window";
+const SPLIT_VIEW: &str = "ctx:split_view";
+const COMPARE: &str = "ctx:compare";
 const TERM_CLEAR: &str = "ctx:term_clear";
 const TERM_CLOSE: &str = "ctx:term_close";
 const TERM_CLOSE_OTHERS: &str = "ctx:term_close_others";
@@ -283,6 +285,8 @@ impl StrataApp {
             Item::new("Close Unmodified Tabs", named(CLOSE_UNMODIFIED)).enabled(tabs.iter().any(|&t| !self.docs[t].is_dirty())),
             Item::Separator,
             Item::new("Move to New Window", named(NEW_WINDOW)).enabled(self.docs.len() > 1),
+            Item::new("Split View", named(SPLIT_VIEW)).enabled(self.docs[i].compare.is_none()),
+            Item::new("Compare with…", named(COMPARE)).bound(Bound::Cmd(Cmd::CompareWith)),
             Item::Separator,
             Item::cmd("New File", Cmd::NewTab),
             Item::cmd("Open File…", Cmd::Open),
@@ -335,6 +339,8 @@ impl StrataApp {
                 self.close_tabs(clean);
             }
             Act::Named(n) if n == NEW_WINDOW => self.link.requests.move_tab = Some(me),
+            Act::Named(n) if n == SPLIT_VIEW => self.split_view(i),
+            Act::Named(n) if n == COMPARE => self.compare_with(ctx, i),
             Act::Cmd(Cmd::NewTab | Cmd::Open) => {
                 // New tabs open in the pane whose tab bar was clicked.
                 self.focus_group = group;

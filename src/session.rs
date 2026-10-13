@@ -342,6 +342,10 @@ pub struct TabState {
     pub encoding: Option<String>,
     /// Tabs shown in each pane: the highest stamp per group.
     pub stamp: u64,
+    /// Another view of the buffer of tab `n` (earlier in `tabs`), which holds
+    /// the path and any backup (File ▸ New View into File).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clone_of: Option<usize>,
 }
 
 impl Session {

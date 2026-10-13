@@ -34,6 +34,8 @@ pub enum Action {
     /// The user confirmed Replace in Files: edit open tabs, then call
     /// [`Sidebar::start_disk_replace`] with the rest.
     ReplaceInFiles,
+    /// Compare this file with an open tab (or another file).
+    Compare(PathBuf),
 }
 
 /// A tab as the Open Files list shows it.
@@ -228,7 +230,10 @@ impl Sidebar {
 
     /// Run the search for the Find, Where and option fields.
     pub fn run_search(&mut self, open: &[OpenFile], ctx: Option<egui::Context>) {
-        let open_paths: Vec<PathBuf> = open.iter().filter_map(|f| f.path.clone()).collect();
+        let mut open_paths: Vec<PathBuf> = open.iter().filter_map(|f| f.path.clone()).collect();
+        // Several tabs can show one file (New View into File): search it once.
+        let mut seen = std::collections::HashSet::new();
+        open_paths.retain(|p| seen.insert(p.clone()));
         match Scope::parse(&self.where_text, &self.roots, &open_paths) {
             Ok(mut scope) => {
                 scope.buffers = open.iter().filter_map(|f| Some((f.path.clone()?, f.unsaved.clone()?))).collect();
@@ -431,6 +436,10 @@ impl Sidebar {
         }
         if ui.button("Find in Folder…").on_hover_text("Find in Files, in this folder").clicked() {
             self.find_in_folder(&dir);
+            ui.close();
+        }
+        if !is_dir && ui.button("Compare with Open File…").on_hover_text("Side by side with an open tab, the git HEAD version, or another file").clicked() {
+            *action = Some(Action::Compare(path.to_owned()));
             ui.close();
         }
         if is_root {

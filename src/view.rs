@@ -367,6 +367,11 @@ impl EditorView {
         self.wants_focus = false;
     }
 
+    /// Take a pending `focus()` (for a widget drawn in this view's place, like Compare).
+    pub fn take_focus_request(&mut self) -> bool {
+        std::mem::take(&mut self.wants_focus)
+    }
+
     /// First buffer line in view (Markdown preview scroll sync).
     #[allow(dead_code)]
     pub fn top_line(&self) -> usize {

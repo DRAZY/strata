@@ -232,12 +232,31 @@ impl StrataApp {
             c("Open Folder…", Cmd::OpenFolder),
             sub("Open Recent", recent),
             encodings(true),
+            c("New View into File", Cmd::CloneFile),
             c("Save", Cmd::Save),
             encodings(false),
             c("Save As…", Cmd::SaveAs),
             c("Save All", Cmd::SaveAll),
+            c("Print…", Cmd::Print),
             SEP(),
-            sub("Export", vec![c("Markdown as HTML…", Cmd::ExportMarkdownHtml).enabled(crate::markdown::is_markdown(d.path.as_deref(), d.highlighter.syntax_name()))]),
+            sub("Export", vec![
+                c("HTML…", Cmd::ExportHtml),
+                c("PDF…", Cmd::ExportPdf),
+                SEP(),
+                c("Markdown as HTML…", Cmd::ExportMarkdownHtml).enabled(crate::markdown::is_markdown(d.path.as_deref(), d.highlighter.syntax_name())),
+            ]),
+            sub("Compare", {
+                let comparing = d.compare.as_ref();
+                vec![
+                    c("Compare with…", Cmd::CompareWith),
+                    c("Compare with HEAD", Cmd::CompareWithHead).enabled(d.path.as_deref().is_some_and(|p| self.git.repo(p).is_some())),
+                    SEP(),
+                    c("Next Difference", Cmd::NextDifference),
+                    c("Previous Difference", Cmd::PrevDifference),
+                    c("Swap Sides", Cmd::CompareSwap).enabled(comparing.is_some()),
+                    c("Ignore Whitespace", Cmd::CompareIgnoreWhitespace).enabled(comparing.is_some()).checked(comparing.is_some_and(|c| c.ignore_ws)),
+                ]
+            }),
             SEP(),
             c("Close Window", Cmd::CloseWindow),
             SEP(),
