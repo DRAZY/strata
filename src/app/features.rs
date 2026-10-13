@@ -38,6 +38,7 @@ impl StrataApp {
     pub(super) fn clear_recent(&mut self) {
         self.recent_files.clear();
         self.recent_folders.clear();
+        self.recent_projects.clear();
         self.closed.clear();
     }
 
@@ -76,10 +77,13 @@ impl StrataApp {
 
     /// "Save with Encoding": convert and save now.
     pub(super) fn save_with_encoding(&mut self, enc: crate::encoding::Encoding) {
-        let previous = self.docs[self.active].encoding;
+        let d = &self.docs[self.active];
+        let previous = (d.encoding, d.restored_dirty);
         self.doc().set_encoding(enc);
         if !self.save(self.active, false) {
-            self.doc().encoding = previous;
+            // Cancelled or failed: the tab is exactly as it was, clean if it was.
+            let d = self.doc();
+            (d.encoding, d.restored_dirty) = previous;
         }
     }
 
@@ -240,19 +244,22 @@ impl StrataApp {
     /// Full screen with only the text: no sidebar, tabs, status bar or minimap.
     pub(super) fn toggle_distraction_free(&mut self, ctx: &egui::Context) {
         match self.distraction.take() {
-            Some((sidebar, minimap)) => {
+            Some(sidebar) => {
                 self.sidebar.visible = sidebar;
-                self.settings.minimap = minimap;
                 self.fullscreen = false;
             }
             None => {
-                self.distraction = Some((self.sidebar.visible, self.settings.minimap));
+                self.distraction = Some(self.sidebar.visible);
                 self.sidebar.visible = false;
-                self.settings.minimap = false;
                 self.fullscreen = true;
             }
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+    }
+
+    /// The minimap is drawn (the setting, unless distraction-free hides it).
+    pub(super) fn minimap_shown(&self) -> bool {
+        self.settings.minimap && self.distraction.is_none()
     }
 
     pub(super) fn about_window(&mut self, ctx: &egui::Context) {
@@ -311,6 +318,41 @@ mod tests {
         assert_eq!(app.active, 0);
         app.jump(true);
         assert_eq!(app.active, 1, "jump back returns to the call");
+    }
+
+    #[test]
+    fn clear_items_forgets_recent_projects_too() {
+        let mut app = StrataApp::new(None, None);
+        app.remember_project(Path::new("/p/a.strata-project"));
+        app.remember_file(Path::new("/f.txt"));
+        app.recent_folders.push(PathBuf::from("/d"));
+        app.run(&egui::Context::default(), crate::commands::Cmd::ClearRecent);
+        assert!(app.recent_projects.is_empty(), "{:?}", app.recent_projects);
+        assert!(app.recent_files.is_empty() && app.recent_folders.is_empty());
+    }
+
+    #[test]
+    fn failed_save_with_encoding_leaves_the_tab_clean() {
+        // The folder doesn't exist, so the save fails (as a cancelled one would).
+        let path = std::env::temp_dir().join(format!("strata-no-such-dir-{}", std::process::id())).join("x.txt");
+        let mut app = StrataApp::new(None, None);
+        app.docs[0] = Document::from_buffer(Some(path), Buffer::from_str("abc"));
+        assert!(!app.doc().is_dirty());
+        app.save_with_encoding(crate::encoding::Encoding::UTF16LE);
+        assert!(!app.doc().is_dirty(), "the tab must not be left marked modified");
+        assert_eq!(app.doc().encoding, crate::encoding::Encoding::UTF8);
+    }
+
+    #[test]
+    fn distraction_free_hides_the_minimap_without_touching_settings() {
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(None, None);
+        assert!(app.settings.minimap);
+        app.toggle_distraction_free(&ctx);
+        assert!(app.settings.minimap, "a view override, never a setting (it would persist and reach other windows)");
+        assert!(!app.minimap_shown());
+        app.toggle_distraction_free(&ctx);
+        assert!(app.settings.minimap && app.minimap_shown());
     }
 
     #[test]

@@ -113,20 +113,6 @@ fn short_error(e: &regex::Error) -> String {
     e.to_string().lines().last().unwrap_or("invalid regex").trim().to_owned()
 }
 
-/// Replacement text for one match: `$1`/`${name}` expand in regex mode.
-pub fn expand(q: &Query, re: &Regex, text: &str, byte_start: usize, replacement: &str) -> Option<String> {
-    let caps = re.captures_at(text, byte_start)?;
-    if caps.get(0)?.start() != byte_start {
-        return None;
-    }
-    if !q.regex {
-        return Some(replacement.to_owned());
-    }
-    let mut out = String::new();
-    caps.expand(replacement, &mut out);
-    Some(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,13 +144,6 @@ mod tests {
         let (m, truncated) = find_all(&re, "aaaa", 3);
         assert_eq!(m.len(), 3);
         assert!(truncated);
-    }
-
-    #[test]
-    fn regex_replacement_expands_groups() {
-        let q = Query { text: r"(\w+)@(\w+)".into(), regex: true, case_sensitive: true, ..Default::default() };
-        let re = q.build().unwrap();
-        assert_eq!(expand(&q, &re, "x a@b", 2, "$2 at $1").as_deref(), Some("b at a"));
     }
 
     #[test]

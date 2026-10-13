@@ -35,6 +35,23 @@ impl Replacer {
         Ok(Replacer { re, template, expand: q.regex })
     }
 
+    /// The search regex.
+    pub fn regex(&self) -> &Regex {
+        &self.re
+    }
+
+    /// The replacement for one match. In a regex replacement `\1`, `$1` and
+    /// `${name}` are groups, `\t` a tab and `\n` becomes `eol` (the file's
+    /// line ending); a literal replacement is used as written.
+    pub fn expand(&self, caps: &regex::Captures, eol: &str) -> String {
+        if !self.expand {
+            return self.template.clone();
+        }
+        let mut s = String::new();
+        caps.expand(&self.template, &mut s);
+        s.replace('\n', eol)
+    }
+
     /// Replacements in `text` as (byte range, new text), line by line like
     /// the search: matches never span a line break, empty matches are
     /// skipped. `eol` is what `\n` in a regex replacement becomes.
@@ -46,14 +63,7 @@ impl Replacer {
                 if m.start() == m.end() {
                     continue;
                 }
-                let new = if self.expand {
-                    let mut s = String::new();
-                    caps.expand(&self.template, &mut s);
-                    s.replace('\n', eol)
-                } else {
-                    self.template.clone()
-                };
-                out.push((offset + m.start()..offset + m.end(), new));
+                out.push((offset + m.start()..offset + m.end(), self.expand(&caps, eol)));
             }
         }
         out

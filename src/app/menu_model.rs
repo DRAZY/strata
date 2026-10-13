@@ -91,7 +91,7 @@ pub const EDITOR_COMMANDS: &[EdCmd] = &[
     ed("title_case", "Edit: Convert Case: Title Case", &[]),
     ed("swap_case", "Edit: Convert Case: Swap Case", &[]),
     ed("shuffle", "Edit: Permute Lines: Shuffle", &[]),
-    ed("sel_sort", "Edit: Permute Selections: Sort", &[]),
+    ed("sel_sort", "Edit: Permute Selections: Sort (Case Sensitive)", &[]),
     ed("sel_reverse", "Edit: Permute Selections: Reverse", &[]),
     ed("sel_unique", "Edit: Permute Selections: Unique", &[]),
     ed("sel_shuffle", "Edit: Permute Selections: Shuffle", &[]),
@@ -99,7 +99,8 @@ pub const EDITOR_COMMANDS: &[EdCmd] = &[
     ed("expand_word", "Selection: Expand Selection to Word", &[]),
     ed("expand_paragraph", "Selection: Expand Selection to Paragraph", &[]),
     ed("expand_indentation", "Selection: Expand Selection to Indentation", &[(CMD_SHIFT, Key::J)]),
-    ed("wrap_paragraph", "Edit: Wrap Paragraph at Ruler", if MAC { &[(CMD_ALT, Key::Q)] } else { &[(ALT, Key::Q)] }),
+    // No default on macOS: Sublime's app menu gives ⌥⌘Q to Quit and Keep Windows.
+    ed("wrap_paragraph", "Edit: Wrap Paragraph at Ruler", if MAC { &[] } else { &[(ALT, Key::Q)] }),
     ed("reindent", "Edit: Line: Reindent", &[]),
     ed("to_spaces", "View: Indentation: Convert Indentation to Spaces", &[]),
     ed("to_tabs", "View: Indentation: Convert Indentation to Tabs", &[]),
@@ -840,7 +841,11 @@ impl StrataApp {
                     d.editor.select_ranges(&[pos..pos], 0);
                     d.view.reveal_centered();
                 }
-                n if n.starts_with("bs:") => self.build_system = Some(n[3..].to_owned()).filter(|s| !s.is_empty()),
+                n if n.starts_with("bs:") => {
+                    self.build_system = Some(n[3..].to_owned()).filter(|s| !s.is_empty());
+                    // An explicit pick (Automatic included) replaces any earlier Build With… choice.
+                    self.build.forget_last();
+                }
                 n if n.starts_with("project:") => self.open_project_path(std::path::PathBuf::from(&n[8..])),
                 n if n.starts_with("window:") => self.link.requests.focus_window = n[7..].parse().ok(),
                 "crlf" => self.doc().set_line_ending(crate::buffer::LineEnding::CrLf),
@@ -877,6 +882,30 @@ mod tests {
             walk(items, &mut n);
         }
         assert!(n > 100, "{n} items");
+    }
+
+    #[test]
+    fn palette_names_are_unique() {
+        let mut names: Vec<String> = Cmd::ALL.iter().map(|c| c.name().to_owned()).collect();
+        names.extend(EDITOR_COMMANDS.iter().map(|c| c.name.to_owned()));
+        names.extend(crate::highlight::syntax_names().into_iter().map(|s| format!("Set Syntax: {s}")));
+        let mut seen = std::collections::HashSet::new();
+        let dupes: Vec<&String> = names.iter().filter(|n| !seen.insert(n.as_str())).collect();
+        assert!(dupes.is_empty(), "palette names used twice: {dupes:?}");
+    }
+
+    #[test]
+    fn quit_and_keep_windows_keeps_its_sublime_key() {
+        if !MAC {
+            return;
+        }
+        let app = StrataApp::new(None, None);
+        let menus = app.menus();
+        let quit = menus[0].1.iter().find_map(|it| match it {
+            Item::Action { label, keys, .. } if label == "Quit and Keep Windows" => Some(*keys),
+            _ => None,
+        });
+        assert_eq!(quit, Some(Some((CMD_ALT, Key::Q))));
     }
 
     #[test]

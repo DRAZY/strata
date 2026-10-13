@@ -170,13 +170,15 @@ impl StrataApp {
             return;
         }
         let n = hits.len();
-        let i = match self.find_result {
-            Some(i) if forward => (i + 1) % n,
-            Some(i) => (i + n - 1) % n,
+        // A new search starts again from its first (or last) result.
+        let generation = self.sidebar.search.generation;
+        let i = match self.find_result.filter(|(g, _)| *g == generation) {
+            Some((_, i)) if forward => (i + 1) % n,
+            Some((_, i)) => (i + n - 1) % n,
             None if forward => 0,
             None => n - 1,
         };
-        self.find_result = Some(i);
+        self.find_result = Some((generation, i));
         let (p, line, cols) = hits[i].clone();
         self.open_at(p, line, cols);
         self.status = format!("Result {} of {n}", i + 1);
@@ -323,7 +325,8 @@ impl StrataApp {
         let bctx = self.build_context();
         let chosen = self.build_system.clone().and_then(|name| self.build.choices(&bctx).into_iter().find(|c| c.system == name && c.variant.is_none()));
         let result = match chosen {
-            Some(c) => self.build.build_with(&c, &bctx),
+            // Pinned: run it, but don't make it the "last choice" Automatic would reuse.
+            Some(c) => self.build.run_choice(&c, &bctx),
             None => self.build.build(&bctx),
         };
         if let Err(e) = result {
@@ -541,6 +544,50 @@ mod tests {
         assert_eq!(app.docs[app.active].path, Some(dir.join("x.cpp")));
         app.switch_header();
         assert_eq!(app.docs[app.active].path, Some(dir.join("x.h")));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_new_search_restarts_find_results() {
+        let dir = std::env::temp_dir().join(format!("strata-fr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\ntwo one\nthree\n").unwrap();
+        let mut app = StrataApp::new(Some(dir.clone()), None);
+        let search = |app: &mut StrataApp, q: &str| {
+            app.sidebar.search.start(&dir, &crate::find::Query::literal(q, false), None);
+            while app.sidebar.search.running {
+                app.sidebar.search.poll();
+            }
+        };
+        search(&mut app, "one");
+        app.step_find_result(true);
+        app.step_find_result(true);
+        assert_eq!(app.status, "Result 2 of 2");
+        search(&mut app, "e");
+        app.step_find_result(true);
+        assert_eq!(app.status, "Result 1 of 4", "a new search starts at its first result");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn automatic_build_forgets_a_pinned_system() {
+        let ctx = egui::Context::default();
+        let dir = std::env::temp_dir().join(format!("strata-pin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "").unwrap();
+        std::fs::write(dir.join("x.rs"), "fn main() {}").unwrap();
+        let mut app = StrataApp::new(Some(dir.clone()), None);
+        app.open_path(dir.join("x.rs"), false);
+        app.settings.save_all_on_build = false;
+        let bctx = app.build_context();
+        let auto = app.build.systems.automatic(&bctx).unwrap().name.clone();
+        let other = app.build.systems.applicable(&bctx).iter().map(|s| s.name.clone()).find(|n| *n != auto).expect("two systems apply");
+        // Pin the other one and build with it, then go back to Automatic.
+        app.run_act(&ctx, crate::menus::Act::Named(format!("bs:{other}")));
+        app.run_build();
+        app.build.cancel();
+        app.run_act(&ctx, crate::menus::Act::Named("bs:".into()));
+        assert_eq!(app.build.next_system(&bctx).as_deref(), Some(auto.as_str()), "Automatic means the best system for the file again");
         std::fs::remove_dir_all(dir).ok();
     }
 

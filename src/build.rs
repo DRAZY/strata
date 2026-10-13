@@ -935,6 +935,22 @@ impl Build {
         self.systems.choices(ctx)
     }
 
+    /// The system ⌘B would run now.
+    pub fn next_system(&self, ctx: &BuildContext) -> Option<String> {
+        if let Some(last) = &self.last
+            && self.systems.get(&last.system).is_some_and(|s| s.score(ctx).is_some())
+        {
+            return Some(last.system.clone());
+        }
+        self.systems.automatic(ctx).map(|s| s.name.clone())
+    }
+
+    /// Forget the last "Build With…" choice (a build system was picked in
+    /// Tools ▸ Build System, Automatic included).
+    pub fn forget_last(&mut self) {
+        self.last = None;
+    }
+
     /// ⌘B: rerun the last "Build With…" choice if it still applies, else Automatic.
     pub fn build(&mut self, ctx: &BuildContext) -> Result<(), String> {
         if let Some(last) = self.last.clone()
@@ -952,7 +968,8 @@ impl Build {
         self.run_choice(choice, ctx)
     }
 
-    fn run_choice(&mut self, choice: &BuildChoice, ctx: &BuildContext) -> Result<(), String> {
+    /// Run `choice` without remembering it (a system pinned in Tools ▸ Build System).
+    pub fn run_choice(&mut self, choice: &BuildChoice, ctx: &BuildContext) -> Result<(), String> {
         let sys = self.systems.get(&choice.system).cloned().ok_or_else(|| format!("No build system \"{}\"", choice.system))?;
         self.start(&sys, choice.variant.as_deref(), ctx)
     }

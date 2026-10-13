@@ -37,7 +37,7 @@ If nothing fits, the status bar says "No build system for this file".
 
 ### Choosing One Yourself
 
-Tools ▸ Build System lists Automatic and every build system by name. Pick one to pin it: Build then always runs that system's main command, as long as it fits the current file; otherwise Build falls back to the usual choice. Pick Automatic to unpin.
+Tools ▸ Build System lists Automatic and every build system by name. Pick one to pin it: Build then always runs that system's main command, as long as it fits the current file; otherwise Build falls back to the usual choice. Pick Automatic to unpin. Picking an entry here (Automatic included) also forgets the last Build With… choice, so Automatic really means "the best fit for this file".
 
 The pinned choice applies to the current window and isn't kept when you quit.
 

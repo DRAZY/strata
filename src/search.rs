@@ -266,6 +266,9 @@ pub struct Search {
     pub error: Option<String>,
     /// The query and "Where" text the current results are for.
     pub searched: Option<(Query, String)>,
+    /// Bumped by every new search (or failed one), so stepping through
+    /// results can tell they were replaced.
+    pub generation: u64,
     files_scanned: Arc<AtomicUsize>,
     rx: Option<Receiver<Msg>>,
     cancel: Arc<AtomicBool>,
@@ -280,6 +283,7 @@ impl Search {
     /// Search `scope`; `spec` is the "Where" text it came from.
     pub fn start_in(&mut self, scope: Scope, spec: &str, q: &Query, ctx: Option<egui::Context>) {
         self.stop();
+        self.generation += 1;
         self.results.clear();
         self.truncated = false;
         self.error = None;
@@ -308,6 +312,7 @@ impl Search {
     /// Show `msg` instead of results.
     pub fn fail(&mut self, msg: String) {
         self.stop();
+        self.generation += 1;
         self.results.clear();
         self.searched = None;
         self.error = Some(msg);

@@ -201,9 +201,9 @@ The selection commands rearrange the texts of two or more selections among thems
 
 ## Wrap paragraph
 
-**Edit ▸ Wrap ▸ Wrap Paragraph at Ruler** ({{key:wrap_lines}}) reflows the paragraph around the cursor so no line is longer than 80 characters. A paragraph is a run of non-blank lines. The first line's indentation is kept, and so is a comment marker that every line shares, such as `//` or `#`, so wrapping a comment block keeps it a comment.
+**Edit ▸ Wrap ▸ Wrap Paragraph at Ruler** ({{key:wrap_lines}}) reflows the paragraph around the cursor so no line is longer than the first ruler (80 characters if there are no rulers). A paragraph is a run of non-blank lines. The first line's indentation is kept, and so is a comment marker that every line shares, such as `//` or `#`, so wrapping a comment block keeps it a comment.
 
-The width comes from the `wrap_width` setting (80 by default). Edit ▸ Wrap also has fixed widths: 70, 72, 78, 80, 100 and 120 characters.
+Like Sublime Text, the width is the first column in the `rulers` setting (View ▸ Ruler); with no rulers it is the `wrap_width` setting (80 by default). On macOS this command has no shortcut by default, because Sublime gives ⌥⌘Q to Quit and Keep Windows; bind `wrap_lines` in your key bindings to add one. Edit ▸ Wrap also has fixed widths: 70, 72, 78, 80, 100 and 120 characters.
 
 This changes the text itself by adding line breaks. To wrap long lines on screen only, use [word wrap](#word-wrap).
 

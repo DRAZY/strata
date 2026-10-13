@@ -4,7 +4,7 @@ use crate::buffer::{Buffer, LineEnding};
 use crate::commands::Cmd;
 use crate::devshot::DevShot;
 use crate::document::Document;
-use crate::find::{self, Query};
+use crate::find::Query;
 use crate::palette::{self, Palette};
 use crate::panes::Layout;
 use crate::session::{Session, SessionLock, Settings, TabState, WindowState};
@@ -63,8 +63,10 @@ pub struct StrataApp {
     /// Cursor history for Jump Back / Jump Forward: (view id, position).
     jumps_back: Vec<(egui::Id, usize)>,
     jumps_forward: Vec<(egui::Id, usize)>,
-    /// What distraction-free mode hid, to restore on exit.
-    distraction: Option<(bool, bool)>,
+    /// Distraction-free mode is on: whether the sidebar was visible before.
+    /// The minimap is hidden as a view override (see `minimap_shown`), so
+    /// the setting is never changed, saved, or passed to other windows.
+    distraction: Option<bool>,
     about_open: bool,
     markdown: crate::markdown::Preview,
     #[cfg(target_os = "macos")]
@@ -77,8 +79,9 @@ pub struct StrataApp {
     choosing: more::Choosing,
     /// Text copied from Strata, newest first (Paste from History).
     clip_history: Vec<String>,
-    /// Position in find-in-folder results for Next/Previous Result.
-    find_result: Option<usize>,
+    /// Position in find-in-files results for Next/Previous Result, and the
+    /// search (`Search::generation`) it is a position in.
+    find_result: Option<(u64, usize)>,
     /// Ctrl+Tab walk: tab ids by recency, position, time of the last press.
     stack_walk: Option<(Vec<egui::Id>, usize, f64)>,
     /// Build system picked in Tools ▸ Build System (None = automatic).
@@ -142,8 +145,7 @@ impl StrataApp {
     pub fn new(path: Option<PathBuf>, config: Option<PathBuf>) -> Self {
         let asset_errors = crate::highlight::load_user_assets(config.as_deref());
         let (settings, settings_error) = config.as_deref().map(Settings::load).unwrap_or_default();
-        let settings_error = settings_error.or_else(|| (!asset_errors.is_empty()).then(|| asset_errors.join("; ")));
-        let mut app = Self::with_settings(config, settings, settings_error.unwrap_or_default());
+        let mut app = Self::with_settings(config, settings, startup_status(settings_error, asset_errors));
         if let Some(dir) = app.config.clone() {
             app.session_lock = SessionLock::acquire(&dir);
             if app.session_lock.is_none() {
@@ -1256,7 +1258,7 @@ impl StrataApp {
             "expand_word" => e.expand_to_word(),
             "expand_paragraph" => e.expand_to_paragraph(),
             "expand_indentation" => e.expand_to_indentation(),
-            "wrap_paragraph" => e.wrap_paragraph(self.settings.wrap_width),
+            "wrap_paragraph" => e.wrap_paragraph(wrap_paragraph_width(&self.settings)),
             "reindent" => e.reindent(),
             "to_spaces" => e.convert_indentation(true),
             "to_tabs" => e.convert_indentation(false),
@@ -1320,7 +1322,7 @@ impl StrataApp {
             self.find.query.text = if self.find.query.regex { regex::escape(&selected) } else { selected };
         }
         self.find.open = true;
-        self.find.replace |= replace;
+        self.find.replace = replace;
         self.find.focus_query = true;
         self.find.origin = p.start();
     }
@@ -1340,7 +1342,7 @@ impl StrataApp {
     /// Cmd+G / Shift+Cmd+G (F3 / Shift+F3): next or previous match.
     fn find_step(&mut self, forward: bool) {
         if self.find.query.text.is_empty() {
-            return self.open_find(false);
+            return self.open_find(self.find.open && self.find.replace);
         }
         self.refresh_matches();
         let d = &self.docs[self.active];
@@ -1377,10 +1379,12 @@ impl StrataApp {
         let d = self.doc();
         let p = d.editor.primary();
         if d.finder.index_of(&p.range()).is_some() {
-            let Ok(re) = q.build() else { return };
+            let Ok(r) = crate::replace::Replacer::new(&q, &rep) else { return };
             let text = d.editor.text_snapshot();
             let byte = d.editor.buffer.char_to_byte(p.start());
-            if let Some(rep) = find::expand(&q, &re, &text, byte, &rep) {
+            let eol = d.editor.buffer.line_ending().as_str();
+            if let Some(caps) = r.regex().captures_at(&text, byte).filter(|c| c.get(0).is_some_and(|m| m.start() == byte)) {
+                let rep = r.expand(&caps, eol);
                 d.editor.replace_ranges(vec![(p.range(), rep)]);
                 self.refresh_matches();
             }
@@ -1389,26 +1393,20 @@ impl StrataApp {
     }
 
     fn replace_all(&mut self) {
-        let Ok(re) = self.find.query.build() else { return };
-        let (regex, replacement) = (self.find.query.regex, self.find.replacement.clone());
+        // The same replacement syntax as Replace in Files (`\1`, `$1`, `${name}`, `\n`, `\t`).
+        let Ok(r) = crate::replace::Replacer::new(&self.find.query, &self.find.replacement) else { return };
         let d = self.doc();
         let text = d.editor.text_snapshot();
+        let eol = d.editor.buffer.line_ending().as_str();
         let mut edits = Vec::new();
         let (mut byte, mut chr) = (0, 0);
-        for caps in re.captures_iter(&text) {
+        for caps in r.regex().captures_iter(&text) {
             let m = caps.get(0).expect("group 0");
             chr += text[byte..m.start()].chars().count();
             let start = chr;
             chr += m.as_str().chars().count();
             byte = m.end();
-            let rep = if regex {
-                let mut out = String::new();
-                caps.expand(&replacement, &mut out);
-                out
-            } else {
-                replacement.clone()
-            };
-            edits.push((start..chr, rep));
+            edits.push((start..chr, r.expand(&caps, eol)));
         }
         let n = edits.len();
         d.editor.replace_ranges(edits);
@@ -1467,7 +1465,7 @@ impl StrataApp {
                 ui.label("");
                 let regex = self.find.query.regex;
                 let id = egui::Id::new("replace-text");
-                let hint = if regex { "Replace ($1 for groups)" } else { "Replace" };
+                let hint = if regex { "Replace (\\1 or $1 for groups, \\n, \\t)" } else { "Replace" };
                 let field = crate::ctxmenu::text_field(ui, id, &mut self.find.replacement, |ui, text| {
                     ui.add_sized([320.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text(hint).font(egui::TextStyle::Monospace))
                 });
@@ -2026,6 +2024,7 @@ impl eframe::App for StrataApp {
             }
             ctx.request_repaint_after(std::time::Duration::from_secs(2));
         }
+        let minimap = self.minimap_shown();
         for i in 0..self.docs.len() {
             let wrap = self.wraps(i);
             let d = &mut self.docs[i];
@@ -2075,7 +2074,7 @@ impl eframe::App for StrataApp {
             }
             d.view.font_size = self.settings.font_size;
             d.view.line_spacing = (self.settings.line_height, self.settings.line_padding_top, self.settings.line_padding_bottom);
-            d.view.minimap = self.settings.minimap;
+            d.view.minimap = minimap;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
 
@@ -2196,6 +2195,18 @@ impl eframe::App for StrataApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.dev_context_input(ctx, raw_input);
     }
+}
+
+/// Wrap Paragraph at Ruler's column: the first ruler, like Sublime, else
+/// `wrap_width` (80 when that is 0).
+fn wrap_paragraph_width(s: &Settings) -> usize {
+    s.rulers.first().copied().filter(|&r| r > 0).unwrap_or(if s.wrap_width > 0 { s.wrap_width } else { 80 })
+}
+
+/// The status line after startup: problems with settings.json and with user
+/// themes and syntaxes.
+fn startup_status(settings_error: Option<String>, asset_errors: Vec<String>) -> String {
+    settings_error.into_iter().chain(asset_errors).collect::<Vec<_>>().join("; ")
 }
 
 #[cfg(test)]
@@ -2325,6 +2336,53 @@ mod tests {
         });
         out.textures_delta.clear();
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn wrap_paragraph_uses_the_first_ruler() {
+        let mut app = app_with("aaa bbb ccc ddd eee\n");
+        app.settings.rulers = vec![8, 40];
+        app.run_editor("wrap_paragraph");
+        assert_eq!(text(&app), "aaa bbb\nccc ddd\neee\n");
+        // No rulers: wrap_width.
+        let mut app = app_with("aaa bbb ccc ddd eee\n");
+        app.settings.wrap_width = 12;
+        app.run_editor("wrap_paragraph");
+        assert_eq!(text(&app), "aaa bbb ccc\nddd eee\n");
+    }
+
+    #[test]
+    fn startup_reports_settings_and_asset_errors_together() {
+        let s = startup_status(Some("settings.json: bad".into()), vec!["Theme x.tmTheme: broken".into(), "Syntax y: broken".into()]);
+        assert!(s.contains("settings.json: bad") && s.contains("x.tmTheme") && s.contains("Syntax y"), "{s}");
+        assert_eq!(startup_status(None, vec![]), "");
+        assert_eq!(startup_status(None, vec!["a".into()]), "a");
+    }
+
+    #[test]
+    fn find_and_replace_toggle_the_replace_row() {
+        let mut app = app_with("x");
+        app.open_find(true);
+        assert!(app.find.replace);
+        app.open_find(false);
+        assert!(!app.find.replace, "Find shows the find row only");
+        app.open_find(true);
+        assert!(app.find.replace);
+    }
+
+    #[test]
+    fn find_bar_replace_understands_sublime_escapes() {
+        let mut app = app_with("a=1\r\nb=22\r\n");
+        query(&mut app, r"(?P<k>\w)=(\d+)", true);
+        app.find.replacement = r"\2\t${k}\n$1".into();
+        app.replace_all();
+        assert_eq!(text(&app), "1\ta\r\na\r\n22\tb\r\nb\r\n", "\\n becomes the file's line ending");
+        let mut app = app_with("a=1 b=2");
+        query(&mut app, r"(\w)=(\d)", true);
+        app.find.replacement = r"\2\1".into();
+        app.replace_one();
+        app.replace_one();
+        assert_eq!(text(&app), "1a b=2");
     }
 
     #[test]

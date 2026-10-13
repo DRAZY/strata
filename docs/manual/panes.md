@@ -151,7 +151,7 @@ Closing the last window quits Strata, on every platform, including macOS. Quitti
 - With **hot exit** on (the default), Strata saves every window, its tabs and any unsaved text, without asking. Next time you start Strata, all of your windows come back where they were.
 - With hot exit off, Strata asks about each unsaved tab, and quitting stops if you choose Cancel.
 
-On macOS, Strata ▸ Quit and Keep Windows does the same as Quit. Hot exit is controlled by the `hot_exit` setting; see [Settings](settings.md).
+On macOS, Strata ▸ Quit and Keep Windows (⌥⌘Q, as in Sublime Text) does the same as Quit. Hot exit is controlled by the `hot_exit` setting; see [Settings](settings.md).
 
 ## Full Screen and Distraction Free
 

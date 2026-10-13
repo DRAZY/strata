@@ -320,6 +320,6 @@ All of these are on by default, with whitespace shown in selections only.
 
 ## Distraction free mode
 
-**View ▸ Toggle Distraction Free** ({{key:toggle_distraction_free}}) goes full screen and shows only your text: the side bar, tabs, status bar, minimap, Markdown preview and build results are hidden, and on Windows and Linux the menu bar too. Run it again to return; the side bar and minimap come back as they were.
+**View ▸ Toggle Distraction Free** ({{key:toggle_distraction_free}}) goes full screen and shows only your text: the side bar, tabs, status bar, minimap, Markdown preview and build results are hidden, and on Windows and Linux the menu bar too. Run it again to return; the side bar and minimap come back as they were. Hiding the minimap here only affects this window and doesn't change your `minimap` setting.
 
 **View ▸ Toggle Full Screen** ({{key:toggle_full_screen}}) goes full screen without hiding anything.

@@ -4,7 +4,7 @@ Strata can search the current file, a whole folder, and your project's file name
 
 ## The Find Bar
 
-Open the find bar with {{key:show_find}} (Find ▸ Find…). It appears at the bottom of the window with a Find field, the match count and Previous, Next and Find All buttons. If you have text selected on a single line when you open it, that text becomes the search.
+Open the find bar with {{key:show_find}} (Find ▸ Find…). It appears at the bottom of the window with a Find field, the match count and Previous, Next and Find All buttons. Find always shows just the Find row, even if the bar was showing Replace. If you have text selected on a single line when you open it, that text becomes the search.
 
 Find is always incremental: as you type, Strata selects the first match after the spot where your cursor was when the bar opened, and highlights every match in the file. Find ▸ Incremental Find ({{key:incremental_find}}) opens the same bar.
 
@@ -35,7 +35,7 @@ Outside the bar, {{key:find_next}} and {{key:find_prev}} (Find ▸ Find Next and
 
 ### Replace
 
-Open the find bar with its Replace field using {{key:show_replace}} (Find ▸ Replace…).
+Open the find bar with its Replace field using {{key:show_replace}} (Find ▸ Replace…). Find ({{key:show_find}}) hides the Replace row again.
 
 | Key or button | What it does |
 |---|---|
@@ -72,7 +72,7 @@ In the find bar a pattern can match across lines (for example `\n` matches a lin
 
 ### Replacement syntax
 
-In the Replace field, refer to captured groups like this:
+The find bar and Replace in Files read the replacement the same way. Refer to captured groups like this:
 
 | Write | To insert |
 |---|---|
@@ -81,17 +81,14 @@ In the Replace field, refer to captured groups like this:
 | `${1}x` | Group 1 followed by `x` (use braces when letters or digits follow the group number). |
 | `$$` | A literal dollar sign. |
 
-Replace in Files also understands the Sublime Text forms:
+The Sublime Text forms work too:
 
 | Write | To insert |
 |---|---|
 | `\1` … `\9` | A numbered group. |
-| `\n`, `\t` | A line break or a tab. |
+| `\n`, `\t` | A line break or a tab. A line break is the file's own line ending (`\r\n` in a Windows-style file). |
 | `\\` | A backslash. |
 | `\$` | A dollar sign. |
-
-> [!NOTE]
-> The `\1`, `\n` and `\t` forms only work in Replace in Files. In the find bar's Replace field, use `$1` for groups.
 
 Without `.*`, the replacement text is inserted exactly as typed.
 
