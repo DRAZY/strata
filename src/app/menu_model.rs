@@ -524,6 +524,13 @@ impl StrataApp {
             ],
         ));
 
+        // Spell check goes after Ruler, as in Sublime (see `spelling`).
+        if let Some((_, view)) = m.last_mut()
+            && let Some(at) = view.iter().position(|it| matches!(it, Item::Sub(label, _) if label == "Ruler"))
+        {
+            view.splice(at + 1..at + 1, std::iter::once(SEP()).chain(self.spelling_menu()));
+        }
+
         // ---- Goto
         let mut bookmarks = vec![
             e("Toggle Bookmark", "bookmark_toggle"),
@@ -849,6 +856,7 @@ impl StrataApp {
                 n if n.starts_with("project:") => self.open_project_path(std::path::PathBuf::from(&n[8..])),
                 n if n.starts_with("window:") => self.link.requests.focus_window = n[7..].parse().ok(),
                 "crlf" => self.doc().set_line_ending(crate::buffer::LineEnding::CrLf),
+                n if n.starts_with("spell:") => self.spell_act(n),
                 _ => {}
             },
         }

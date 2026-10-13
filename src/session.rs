@@ -100,6 +100,16 @@ pub struct Settings {
     pub terminal_height: f32,
     /// Let programs in the terminal read the clipboard (OSC 52). Writing is always allowed.
     pub terminal_allow_clipboard_read: bool,
+    /// Opening the find bar with a multi-line selection turns on In Selection.
+    pub auto_find_in_selection: bool,
+    /// Underline misspelled words in prose: comments, strings, Markdown, plain text.
+    pub spell_check: bool,
+    /// "en_US" or "en_GB".
+    pub dictionary: String,
+    /// Words spell check accepts (Add Word to Dictionary adds here).
+    pub added_words: Vec<String>,
+    /// Scopes spell check looks at (a Sublime scope selector).
+    pub spelling_selector: String,
 }
 
 impl Default for Settings {
@@ -152,6 +162,11 @@ impl Default for Settings {
             terminal_visible: false,
             terminal_height: 240.0,
             terminal_allow_clipboard_read: false,
+            auto_find_in_selection: false,
+            spell_check: false,
+            dictionary: crate::spell::DEFAULT_DICTIONARY.into(),
+            added_words: Vec::new(),
+            spelling_selector: crate::spell::DEFAULT_SELECTOR.into(),
         }
     }
 }
@@ -292,6 +307,8 @@ pub struct WindowState {
     pub position: Option<[f32; 2]>,
     /// Size of the content area, in points.
     pub size: Option<[f32; 2]>,
+    /// The find bar's options and last search.
+    pub find: crate::find::FindOptions,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq, Clone)]
@@ -340,7 +357,7 @@ impl Session {
         if !self.windows.is_empty() {
             return self.windows.clone();
         }
-        vec![WindowState { folder: self.folder.clone(), folders: Vec::new(), sidebar_visible: self.sidebar_visible, active: self.active, tabs: self.tabs.clone(), layout: self.layout.clone(), position: None, size: None }]
+        vec![WindowState { folder: self.folder.clone(), folders: Vec::new(), sidebar_visible: self.sidebar_visible, active: self.active, tabs: self.tabs.clone(), layout: self.layout.clone(), position: None, size: None, find: Default::default() }]
     }
 
     /// `Ok(None)` when there is no session yet; `Err` when one exists but can't be read.

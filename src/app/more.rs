@@ -468,6 +468,12 @@ impl StrataApp {
                     }
                 });
             });
+            egui::CollapsingHeader::new("Spelling dictionaries").show(ui, |ui| {
+                ui.label(egui::RichText::new("The en_US and en_GB dictionaries are Kevin Atkinson's SCOWL Hunspell dictionaries (2020.12.07), as packaged by wooorm/dictionaries. en_GB is the en_GB-ise build of the same release, under the same terms. Their license, reproduced as it asks:").small().weak());
+                egui::ScrollArea::vertical().id_salt("dictionary-license").max_height(260.0).show(ui, |ui| {
+                    ui.label(egui::RichText::new(crate::spell::LICENSE).small().monospace());
+                });
+            });
             egui::CollapsingHeader::new("Syntax definition licenses").show(ui, |ui| {
                 egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                     ui.label(egui::RichText::new(crate::highlight::SYNTAX_LICENSES).small().monospace());
@@ -507,6 +513,8 @@ const LICENSES: &[Credit] = &[
     credit("alacritty_terminal", "Apache-2.0", &["alacritty_terminal"]),
     credit("vte", "Apache-2.0 or MIT", &[]),
     credit("pulldown-cmark", "MIT", &["pulldown-cmark"]),
+    credit("spellbook (Helix)", "MPL-2.0", &["spellbook"]),
+    credit("SCOWL en_US / en_GB dictionaries", "MIT-like and BSD (see Spelling dictionaries)", &[]),
     credit("rfd", "MIT", &["rfd"]),
     credit("muda", "Apache-2.0 or MIT", &["muda"]),
     credit("objc2 / block2 / objc2-foundation", "MIT", &["objc2", "block2", "objc2-foundation"]),

@@ -12,7 +12,7 @@ use crate::sidebar::{self, Sidebar};
 use egui::{Color32, FontId, Key, Rect, Sense, Stroke, pos2, vec2};
 use std::path::{Path, PathBuf};
 
-#[derive(Default)]
+/// The find bar (its options live in `find_options`, which also has `Default`).
 struct FindBar {
     open: bool,
     replace: bool,
@@ -22,6 +22,10 @@ struct FindBar {
     /// Where incremental search starts: the cursor when the bar opened.
     origin: usize,
     last_query: Query,
+    in_selection: bool,
+    wrap: bool,
+    preserve_case: bool,
+    highlight: bool,
 }
 
 pub struct StrataApp {
@@ -123,6 +127,7 @@ pub struct StrataApp {
 mod completion;
 mod context_menus;
 mod features;
+mod find_options;
 mod help_ui;
 mod keymap_ui;
 mod launch;
@@ -132,6 +137,7 @@ mod terminal_ui;
 mod preview;
 mod replace_files;
 mod snippets_ui;
+mod spelling;
 mod textutil;
 mod theme_ui;
 mod windows;
@@ -170,6 +176,7 @@ impl StrataApp {
         if let Ok(q) = std::env::var("STRATA_DEV_FIND_IN_FILES") {
             app.dev_find_in_files(q);
         }
+        app.dev_select();
         if let Ok(q) = std::env::var("STRATA_DEV_FIND") {
             app.open_find(true);
             app.find.query.text = q;
@@ -751,6 +758,7 @@ impl StrataApp {
             self.docs.push(d);
             self.docs[n].stamp = tab.stamp;
         }
+        self.set_find_options(&session.find);
         self.next_stamp = self.docs.iter().map(|d| d.stamp).max().unwrap_or(0) + 1;
         self.activate(session.active.min(self.docs.len().saturating_sub(1)));
         // Every folder (`folders`); a session from before several folders has just `folder`.
@@ -786,7 +794,7 @@ impl StrataApp {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (self.active, &self.sidebar.roots, self.sidebar.visible, self.layout.cols.len(), self.layout.rows.len()).hash(&mut h);
-        (&self.recent_files, &self.recent_folders).hash(&mut h);
+        (&self.recent_files, &self.recent_folders, self.find_options()).hash(&mut h);
         for d in &self.docs {
             (&d.path, d.is_dirty(), d.editor.version(), d.group, d.stamp).hash(&mut h);
             for s in d.editor.selections() {
@@ -852,6 +860,7 @@ impl StrataApp {
             layout: Some(self.layout.clone()),
             position: None,
             size: None,
+            find: self.find_options(),
         }
     }
 
@@ -925,6 +934,8 @@ impl StrataApp {
                 self.choose(ctx, more::Choosing::Build, "Build with…", labels);
             }
             Cmd::ReplaceNext => self.replace_one(),
+            Cmd::ToggleFindRegex | Cmd::ToggleFindCase | Cmd::ToggleFindWholeWord | Cmd::ToggleFindInSelection | Cmd::ToggleFindWrap | Cmd::ToggleFindPreserveCase | Cmd::ToggleFindHighlight => self.toggle_find_option(cmd),
+            Cmd::ToggleSpellCheck | Cmd::NextMisspelling | Cmd::PrevMisspelling => self.run_spelling(cmd),
             Cmd::NextFindResult => self.step_find_result(true),
             Cmd::PrevFindResult => self.step_find_result(false),
             Cmd::CancelFindInFiles => self.sidebar.search.stop(),
@@ -1389,11 +1400,13 @@ impl StrataApp {
         self.find.replace = replace;
         self.find.focus_query = true;
         self.find.origin = p.start();
+        self.find_opening();
     }
 
     fn refresh_matches(&mut self) {
+        let scope = self.find_scope();
         let d = &mut self.docs[self.active];
-        d.finder.update(&mut d.editor, &self.find.query);
+        d.finder.update(&mut d.editor, &self.find.query, scope.as_deref());
     }
 
     fn select_match(&mut self, i: usize) {
@@ -1412,13 +1425,18 @@ impl StrataApp {
         let d = &self.docs[self.active];
         let p = d.editor.primary();
         let on_match = d.finder.index_of(&p.range()).is_some();
+        let wrap = self.find.wrap;
         let i = if forward {
-            d.finder.next_from(if on_match { p.end() } else { p.start() })
+            d.finder.next(if on_match { p.end() } else { p.start() }, wrap)
         } else {
-            d.finder.prev_before(p.start())
+            d.finder.prev(p.start(), wrap)
         };
-        if let Some(i) = i {
-            self.select_match(i);
+        match i {
+            Some(i) => self.select_match(i),
+            None if !d.finder.matches.is_empty() => {
+                self.status = format!("No more matches {} (Wrap is off)", if forward { "below" } else { "above" });
+            }
+            None => {}
         }
     }
 
@@ -1445,11 +1463,12 @@ impl StrataApp {
         if d.finder.index_of(&p.range()).is_some() {
             let Ok(r) = crate::replace::Replacer::new(&q, &rep) else { return };
             let text = d.editor.text_snapshot();
-            let byte = d.editor.buffer.char_to_byte(p.start());
+            let (byte, end) = (d.editor.buffer.char_to_byte(p.start()), d.editor.buffer.char_to_byte(p.end()));
             let eol = d.editor.buffer.line_ending().as_str();
-            if let Some(caps) = r.regex().captures_at(&text, byte).filter(|c| c.get(0).is_some_and(|m| m.start() == byte)) {
-                let rep = r.expand(&caps, eol);
-                d.editor.replace_ranges(vec![(p.range(), rep)]);
+            // Only the selected match: the text past it is cut off (as In Selection's scope may be).
+            if let Some(caps) = r.regex().captures_at(&text[..end], byte).filter(|c| c.get(0).is_some_and(|m| m.range() == (byte..end))) {
+                let rep = self.replacement_for(&r, &caps, eol);
+                self.doc().editor.replace_ranges(vec![(p.range(), rep)]);
                 self.refresh_matches();
             }
         }
@@ -1459,23 +1478,13 @@ impl StrataApp {
     fn replace_all(&mut self) {
         // The same replacement syntax as Replace in Files (`\1`, `$1`, `${name}`, `\n`, `\t`).
         let Ok(r) = crate::replace::Replacer::new(&self.find.query, &self.find.replacement) else { return };
-        let d = self.doc();
-        let text = d.editor.text_snapshot();
-        let eol = d.editor.buffer.line_ending().as_str();
-        let mut edits = Vec::new();
-        let (mut byte, mut chr) = (0, 0);
-        for caps in r.regex().captures_iter(&text) {
-            let m = caps.get(0).expect("group 0");
-            chr += text[byte..m.start()].chars().count();
-            let start = chr;
-            chr += m.as_str().chars().count();
-            byte = m.end();
-            edits.push((start..chr, r.expand(&caps, eol)));
-        }
+        let edits = self.replace_all_edits(&r);
         let n = edits.len();
+        let d = self.doc();
         d.editor.replace_ranges(edits);
         d.view.reveal();
-        self.status = format!("Replaced {n} occurrence{}", if n == 1 { "" } else { "s" });
+        let within = if self.find.in_selection { " in the selection" } else { "" };
+        self.status = format!("Replaced {n} occurrence{}{within}", if n == 1 { "" } else { "s" });
     }
 
     fn find_bar(&mut self, ui: &mut egui::Ui) {
@@ -1483,7 +1492,7 @@ impl StrataApp {
         // Typing in the query jumps to the first match after where search began.
         if self.find.query != self.find.last_query {
             self.find.last_query = self.find.query.clone();
-            if let Some(i) = self.docs[self.active].finder.next_from(self.find.origin) {
+            if let Some(i) = self.docs[self.active].finder.next(self.find.origin, self.find.wrap) {
                 self.select_match(i);
             }
         }
@@ -1492,14 +1501,11 @@ impl StrataApp {
         let mods = ui.input(|i| i.modifiers);
         let label = self.match_label();
         let mut action = None;
+        let mut toggled = None;
         // A grid keeps the Find and Replace fields in one column.
         egui::Grid::new("find-grid").num_columns(3).show(ui, |ui| {
+            toggled = find_options::search_toggles(ui, &self.find);
             let q = &mut self.find.query;
-            ui.horizontal(|ui| {
-                ui.toggle_value(&mut q.regex, ".*").on_hover_text("Regular expression");
-                ui.toggle_value(&mut q.case_sensitive, "Aa").on_hover_text("Case sensitive");
-                ui.toggle_value(&mut q.whole_word, "\"ab\"").on_hover_text("Whole word");
-            });
             let id = egui::Id::new("find-query");
             let field = crate::ctxmenu::text_field(ui, id, &mut q.text, |ui, text| {
                 ui.add_sized([320.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text("Find").font(egui::TextStyle::Monospace))
@@ -1526,7 +1532,7 @@ impl StrataApp {
             ui.end_row();
 
             if self.find.replace {
-                ui.label("");
+                toggled = toggled.or(find_options::replace_toggles(ui, &self.find));
                 let regex = self.find.query.regex;
                 let id = egui::Id::new("replace-text");
                 let hint = if regex { "Replace (\\1 or $1 for groups, \\n, \\t)" } else { "Replace" };
@@ -1549,6 +1555,9 @@ impl StrataApp {
                 ui.end_row();
             }
         });
+        if let Some(cmd) = toggled {
+            self.toggle_find_option(cmd);
+        }
         match action {
             Some("prev") => self.find_step(false),
             Some("next") => self.find_step(true),
@@ -1570,6 +1579,7 @@ impl StrataApp {
         let n = d.finder.matches.len();
         let plus = if d.finder.truncated { "+" } else { "" };
         let text = match (n, d.finder.index_of(&d.editor.primary().range())) {
+            (0, _) if self.find.in_selection && d.editor.find_scope().is_some_and(<[_]>::is_empty) => "No selection".to_owned(),
             (0, _) => "No results".to_owned(),
             (_, Some(i)) => format!("{} of {n}{plus}", i + 1),
             _ => format!("{n}{plus} matches"),
@@ -1803,7 +1813,7 @@ impl StrataApp {
         let names = self.display_names();
         let mut tab_rects = Vec::new();
         let mut actions = Vec::new();
-        let find_open = self.find.open;
+        let find_open = self.find.open && self.find.highlight;
         let bar_h = if self.settings.show_tabs && self.distraction.is_none() { 32.0 } else { 0.0 };
         for (g, cell) in cells.iter().enumerate() {
             let bar = Rect::from_min_size(cell.min, vec2(cell.width(), bar_h));
@@ -2258,6 +2268,7 @@ impl eframe::App for StrataApp {
         self.palette_events(ctx, events);
         self.run_context_actions(ctx);
         self.track_copies(ctx);
+        self.update_spelling(ctx);
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {

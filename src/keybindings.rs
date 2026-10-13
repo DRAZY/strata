@@ -566,7 +566,8 @@ pub fn resolve(command: &str, args: &Map<String, Value>) -> Result<What, String>
         "toggle_setting" => {
             return match arg_str(args, "setting") {
                 Some("word_wrap") => run(Cmd::ToggleWordWrap),
-                other => Err(format!("toggle_setting: setting {other:?} isn't supported (word_wrap is)")),
+                Some("spell_check") => run(Cmd::ToggleSpellCheck),
+                other => Err(format!("toggle_setting: setting {other:?} isn't supported (word_wrap, spell_check are)")),
             };
         }
         "set_layout" => {
