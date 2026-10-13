@@ -86,6 +86,7 @@ pub struct StrataApp {
     licenses_open: bool,
     /// Fonts last loaded: (editor face, interface face, interface size bits).
     fonts_key: Option<(String, String, u32)>,
+    window_focused: bool,
     /// Text removed by Delete to Mark, for Yank.
     yank: String,
     /// Encoding chosen in the status bar: (reopen?, encoding), applied after drawing.
@@ -100,6 +101,7 @@ mod completion;
 mod features;
 mod menu_model;
 mod more;
+mod textutil;
 
 #[cfg(test)]
 use menu_model::EDITOR_COMMANDS;
@@ -155,6 +157,7 @@ impl StrataApp {
             licenses_open: false,
             yank: String::new(),
             fonts_key: None,
+            window_focused: true,
         };
         app.build = crate::build::Build::new(app.config.clone());
         if let Some(dir) = app.config.clone() {
@@ -428,6 +431,7 @@ impl StrataApp {
         if !self.confirm_overwrite(i, &path) {
             return false;
         }
+        self.before_save(i);
         match self.docs[i].write_to(path.clone()) {
             Ok(()) => {
                 self.status = format!("Saved {}", path.display());
@@ -995,6 +999,27 @@ impl StrataApp {
     }
 
     fn run_editor(&mut self, id: &str) {
+        use textutil::*;
+        let tool: Option<fn(&str) -> Result<String, String>> = match id {
+            "tx_json_format" => Some(json_format),
+            "tx_json_minify" => Some(json_minify),
+            "tx_json_sort" => Some(json_sort_keys),
+            "tx_b64_encode" => Some(base64_encode),
+            "tx_b64_decode" => Some(base64_decode),
+            "tx_url_encode" => Some(url_encode),
+            "tx_url_decode" => Some(url_decode),
+            "tx_html_escape" => Some(html_escape),
+            "tx_html_unescape" => Some(html_unescape),
+            _ => None,
+        };
+        if let Some(f) = tool {
+            return self.transform(f);
+        }
+        match id {
+            "tx_uuid" => return self.insert_at_cursors(&uuid_v4()),
+            "tx_date" => return self.insert_at_cursors(&now_string()),
+            _ => {}
+        }
         let d = &mut self.docs[self.active];
         let e = &mut d.editor;
         match id {
@@ -1629,6 +1654,10 @@ impl StrataApp {
                         self.status = format!("Could not reload: {e}");
                     }
             }
+            if let Some(words) = self.word_count() {
+                ui.separator();
+                ui.label(words);
+            }
             ui.separator();
             ui.label(&self.status);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1789,6 +1818,12 @@ impl eframe::App for StrataApp {
             painter.rect_stroke(r, 10.0, Stroke::new(2.0, accent), egui::StrokeKind::Inside);
             painter.text(r.center(), egui::Align2::CENTER_CENTER, "Drop to open", FontId::proportional(22.0), accent);
         }
+        // Save on focus lost (a setting, off by default like Sublime's).
+        let focused = ctx.input(|i| i.focused);
+        if self.window_focused && !focused && self.settings.save_on_focus_lost {
+            self.save_all();
+        }
+        self.window_focused = focused;
         if now - self.last_disk_check > 1.0 {
             self.last_disk_check = now;
             // Every visible tab: each pane shows one.

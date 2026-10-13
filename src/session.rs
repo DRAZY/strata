@@ -51,6 +51,10 @@ pub struct Settings {
     pub wrap_width: usize,
     /// Save every modified file before building.
     pub save_all_on_build: bool,
+    pub trim_trailing_white_space_on_save: bool,
+    pub ensure_newline_at_eof_on_save: bool,
+    /// Save modified files when the window loses focus.
+    pub save_on_focus_lost: bool,
     /// Offer word completions while typing (Ctrl+Space always works).
     pub auto_complete: bool,
     /// Detect tabs vs spaces (and the width) from each file when it opens.
@@ -83,6 +87,9 @@ impl Default for Settings {
             detect_indentation: true,
             auto_complete: true,
             save_all_on_build: true,
+            trim_trailing_white_space_on_save: false,
+            ensure_newline_at_eof_on_save: false,
+            save_on_focus_lost: false,
             hot_exit: true,
         }
     }

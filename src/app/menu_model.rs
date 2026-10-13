@@ -69,6 +69,17 @@ pub const EDITOR_COMMANDS: &[EdCmd] = &[
     ed("yank", "Edit: Mark: Yank", &[]),
     ed("soft_undo", "Edit: Undo Selection: Soft Undo", &[(CMD, Key::U)]),
     ed("soft_redo", "Edit: Undo Selection: Soft Redo", &[(CMD_SHIFT, Key::U)]),
+    ed("tx_json_format", "Tools: Text: Format JSON", &[]),
+    ed("tx_json_minify", "Tools: Text: Minify JSON", &[]),
+    ed("tx_json_sort", "Tools: Text: Sort JSON Keys", &[]),
+    ed("tx_b64_encode", "Tools: Text: Base64 Encode", &[]),
+    ed("tx_b64_decode", "Tools: Text: Base64 Decode", &[]),
+    ed("tx_url_encode", "Tools: Text: URL Encode", &[]),
+    ed("tx_url_decode", "Tools: Text: URL Decode", &[]),
+    ed("tx_html_escape", "Tools: Text: HTML Escape", &[]),
+    ed("tx_html_unescape", "Tools: Text: HTML Unescape", &[]),
+    ed("tx_uuid", "Tools: Text: Insert UUID", &[]),
+    ed("tx_date", "Tools: Text: Insert Date and Time", &[]),
     ed("delete_word_forward", "Edit: Text: Delete Word Forward", &[]),
     ed("delete_word_backward", "Edit: Text: Delete Word Backward", &[]),
     ed("paste_and_indent", "Edit: Paste and Indent", &[(CMD_SHIFT, Key::V)]),
@@ -577,6 +588,33 @@ impl StrataApp {
                 SEP(),
                 c(if self.macro_recording.is_some() { "Stop Recording Macro" } else { "Record Macro" }, Cmd::RecordMacro),
                 c("Playback Macro", Cmd::PlaybackMacro).enabled(!self.macro_last.is_empty()),
+                SEP(),
+                sub(
+                    "Text",
+                    vec![
+                        e("Format JSON", "tx_json_format"),
+                        e("Minify JSON", "tx_json_minify"),
+                        e("Sort JSON Keys", "tx_json_sort"),
+                        SEP(),
+                        e("Base64 Encode", "tx_b64_encode"),
+                        e("Base64 Decode", "tx_b64_decode"),
+                        e("URL Encode", "tx_url_encode"),
+                        e("URL Decode", "tx_url_decode"),
+                        e("HTML Escape", "tx_html_escape"),
+                        e("HTML Unescape", "tx_html_unescape"),
+                        SEP(),
+                        e("Insert UUID", "tx_uuid"),
+                        e("Insert Date and Time", "tx_date"),
+                    ],
+                ),
+                sub(
+                    "On Save",
+                    vec![
+                        Item::new("Trim Trailing Whitespace", Act::Named("opt:trim".into())).checked(self.settings.trim_trailing_white_space_on_save),
+                        Item::new("Ensure Newline at End of File", Act::Named("opt:eof".into())).checked(self.settings.ensure_newline_at_eof_on_save),
+                        Item::new("Save When Window Loses Focus", Act::Named("opt:focus".into())).checked(self.settings.save_on_focus_lost),
+                    ],
+                ),
             ],
         ));
 
@@ -682,6 +720,16 @@ impl StrataApp {
                     let level = n[11..].parse().unwrap_or(2);
                     let d = self.doc();
                     d.view.fold_level(&mut d.editor, level);
+                }
+                "opt:trim" | "opt:eof" | "opt:focus" => {
+                    let s = &mut self.settings;
+                    let flag = match n.as_str() {
+                        "opt:trim" => &mut s.trim_trailing_white_space_on_save,
+                        "opt:eof" => &mut s.ensure_newline_at_eof_on_save,
+                        _ => &mut s.save_on_focus_lost,
+                    };
+                    *flag = !*flag;
+                    self.persist_settings();
                 }
                 n if n.starts_with("caret:") => {
                     self.settings.caret_style = n[6..].to_owned();
