@@ -1000,7 +1000,7 @@ impl StrataApp {
 
     fn run_editor(&mut self, id: &str) {
         use textutil::*;
-        let tool: Option<fn(&str) -> Result<String, String>> = match id {
+        let tool: Option<TextTool> = match id {
             "tx_json_format" => Some(json_format),
             "tx_json_minify" => Some(json_minify),
             "tx_json_sort" => Some(json_sort_keys),

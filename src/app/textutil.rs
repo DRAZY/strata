@@ -4,6 +4,9 @@
 
 use super::StrataApp;
 
+/// A text transform: input text to output, or a message saying why not.
+pub type TextTool = fn(&str) -> Result<String, String>;
+
 pub fn json_format(s: &str) -> Result<String, String> {
     let v: serde_json::Value = serde_json::from_str(s).map_err(|e| format!("Not valid JSON: {e}"))?;
     serde_json::to_string_pretty(&v).map_err(|e| e.to_string())
@@ -179,7 +182,7 @@ pub fn now_string() -> String {
 
 impl StrataApp {
     /// Replace each non-empty selection (or the whole file) with `f(text)`.
-    pub(super) fn transform(&mut self, f: fn(&str) -> Result<String, String>) {
+    pub(super) fn transform(&mut self, f: TextTool) {
         let e = &mut self.docs[self.active].editor;
         let mut ranges: Vec<std::ops::Range<usize>> = e.selections().iter().filter(|s| !s.is_empty()).map(|s| s.range()).collect();
         if ranges.is_empty() {
