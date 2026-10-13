@@ -102,6 +102,17 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
   Windows): a live, theme-colored preview beside the editor with GitHub-style
   tables, task lists, footnotes, alerts and highlighted code blocks; it follows
   the editor's scroll. File ▸ Export ▸ Markdown as HTML… saves a standalone page.
+- **Languages**: about 200 grammars, chosen by file name, extension or first
+  line. Beyond syntect's defaults (C/C++, C#, Go, Java, JavaScript, Python,
+  Ruby, Rust, PHP, HTML, CSS, SQL, YAML, JSON, Markdown, shell, Makefile, Diff…)
+  it bundles bat's collection: TypeScript, TSX, JSX, TOML, Swift, Kotlin, Dart,
+  Elixir, Zig, Nix, Terraform/HCL, GraphQL, Protobuf, SCSS/Sass/Less, Vue,
+  Svelte, Dockerfile, INI/.editorconfig, .env, CMake, nginx, Fish, CSV, Lua,
+  Haskell, Julia, Groovy/Jenkinsfile and more, plus Strata's own PowerShell
+  grammar. Markdown code fences highlight their language. Add your own
+  `.sublime-syntax` files to the config folder's `Syntaxes/` and `.tmTheme`
+  color schemes to `Themes/`; broken files are skipped and named in the status
+  bar.
 - **Find**: find/replace with regex, quick find, use selection for find, and
   find in folder (parallel, respects .gitignore).
 - **Build systems** (Tools ▸ Build, ⌘B): Cargo, Rust, Python, Node, Go, C/C++,
@@ -141,8 +152,9 @@ Known gaps: no replace-in-files, no plugin/package system, no
 spell check, no macros, one window per app instance (no New Window), cloned
 views of one file in two panes aren't supported, and Finder "Open With" isn't
 wired up (drag the file onto the window or use ⌘O). Word wrap turns off for
-files over 8 MB. The bundled grammars come from syntect's defaults; their
-licensing must be verified before a public release.
+files over 8 MB. The bundled grammars come from syntect's defaults and the bat
+project (via the `two-face` crate, MIT/Apache-2.0); each grammar's own license
+text ships in Help ▸ Licenses.
 
 ## Development
 

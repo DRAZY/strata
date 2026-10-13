@@ -1,0 +1,11 @@
+%YAML 1.2
+---
+# Written for Strata (MIT). JavaScript with JSX: reuses the bundled
+# TypeScriptReact grammar, which parses plain JavaScript + JSX as well.
+name: JavaScript (JSX)
+file_extensions:
+  - jsx
+scope: source.jsx
+contexts:
+  main:
+    - include: scope:source.tsx

@@ -1,0 +1,118 @@
+%YAML 1.2
+---
+# Written for Strata (MIT). A compact PowerShell grammar: comments, strings
+# with interpolation, here-strings, variables, keywords, operators, cmdlets,
+# types and numbers. (bat's upstream grammar needs Oniguruma-only regex.)
+name: PowerShell
+file_extensions:
+  - ps1
+  - psm1
+  - psd1
+  - ps1xml
+  - pssc
+  - psrc
+first_line_match: ^#!.*\bpwsh\b
+scope: source.powershell
+
+variables:
+  ident: '[A-Za-z_][A-Za-z0-9_]*'
+
+contexts:
+  main:
+    - include: comments
+    - include: strings
+    - include: variables
+    - include: types
+    - include: numbers
+    - match: (?i)\b(begin|break|catch|class|continue|data|define|do|dynamicparam|else|elseif|end|enum|exit|filter|finally|for|foreach|from|function|hidden|if|in|inlinescript|parallel|param|process|return|sequence|static|switch|throw|trap|try|until|using|var|while|workflow)\b
+      scope: keyword.control.powershell
+    - match: (?i)-(and|or|xor|not|band|bor|bxor|bnot|shl|shr|[ci]?(eq|ne|gt|ge|lt|le|like|notlike|match|notmatch|contains|notcontains|in|notin|replace|split)|join|is|isnot|as|f)\b
+      scope: keyword.operator.powershell
+    - match: '\b[A-Za-z]+-[A-Za-z][A-Za-z0-9]*\b'
+      scope: support.function.powershell
+    - match: '(?<=\s)-{{ident}}'
+      scope: variable.parameter.powershell
+    - match: '[|&;=+*/%!<>-]'
+      scope: keyword.operator.powershell
+    - match: '@\{|@\('
+      scope: punctuation.section.powershell
+
+  comments:
+    - match: '<#'
+      scope: punctuation.definition.comment.begin.powershell
+      push:
+        - meta_scope: comment.block.powershell
+        - match: '#>'
+          scope: punctuation.definition.comment.end.powershell
+          pop: true
+    - match: '#'
+      scope: punctuation.definition.comment.powershell
+      push:
+        - meta_scope: comment.line.number-sign.powershell
+        - match: \n
+          pop: true
+
+  variables:
+    - match: '\$\{[^}]*\}'
+      scope: variable.other.readwrite.powershell
+    - match: '(?i)\$(true|false|null)\b'
+      scope: constant.language.powershell
+    - match: '(?i)(\$)(?:(global|local|private|script|using|env):)?({{ident}}|\$|\^|\?|_)'
+      scope: variable.other.readwrite.powershell
+    - match: '@{{ident}}'
+      scope: variable.other.readwrite.powershell
+
+  types:
+    - match: '\[(?=[A-Za-z])[A-Za-z0-9_.,\[\] ]*\]'
+      scope: storage.type.powershell
+
+  numbers:
+    - match: '(?i)\b0x[0-9a-f]+\b|\b\d+(\.\d+)?(e[+-]?\d+)?(kb|mb|gb|tb|pb)?\b'
+      scope: constant.numeric.powershell
+
+  strings:
+    - match: '@"\s*$'
+      scope: punctuation.definition.string.begin.powershell
+      push:
+        - meta_scope: string.quoted.double.heredoc.powershell
+        - match: '^"@'
+          scope: punctuation.definition.string.end.powershell
+          pop: true
+        - include: interpolation
+    - match: "@'\\s*$"
+      scope: punctuation.definition.string.begin.powershell
+      push:
+        - meta_scope: string.quoted.single.heredoc.powershell
+        - match: "^'@"
+          scope: punctuation.definition.string.end.powershell
+          pop: true
+    - match: '"'
+      scope: punctuation.definition.string.begin.powershell
+      push:
+        - meta_scope: string.quoted.double.powershell
+        - match: '"'
+          scope: punctuation.definition.string.end.powershell
+          pop: true
+        - include: interpolation
+    - match: "'"
+      scope: punctuation.definition.string.begin.powershell
+      push:
+        - meta_scope: string.quoted.single.powershell
+        - match: "''"
+          scope: constant.character.escape.powershell
+        - match: "'"
+          scope: punctuation.definition.string.end.powershell
+          pop: true
+
+  interpolation:
+    - match: '`.'
+      scope: constant.character.escape.powershell
+    - match: '\$\('
+      scope: punctuation.section.embedded.begin.powershell
+      push:
+        - meta_scope: meta.embedded.powershell
+        - match: '\)'
+          scope: punctuation.section.embedded.end.powershell
+          pop: true
+        - include: main
+    - include: variables
