@@ -427,14 +427,26 @@ impl StrataApp {
             ui.label("Strata is MIT licensed. It is built on these open-source projects:");
             ui.add_space(6.0);
             egui::Grid::new("licenses").striped(true).show(ui, |ui| {
-                for (name, license) in LICENSES {
-                    ui.label(*name);
-                    ui.label(egui::RichText::new(*license).weak());
+                for c in LICENSES {
+                    ui.label(c.name);
+                    ui.label(egui::RichText::new(c.license).weak());
                     ui.end_row();
                 }
             });
             ui.add_space(6.0);
             ui.label(egui::RichText::new("Syntax definitions come from syntect, the bat project (via two-face) and Sublime Text community packages, each under its own license. Strata's own PowerShell and JSX grammars are MIT.").small().weak());
+            egui::CollapsingHeader::new(format!("All Rust crates ({})", all_crates().count())).show(ui, |ui| {
+                ui.label(egui::RichText::new("Every crate compiled into Strata, with its version and license.").small().weak());
+                egui::ScrollArea::vertical().id_salt("crate-licenses").max_height(260.0).show(ui, |ui| {
+                    egui::Grid::new("all-crates").striped(true).show(ui, |ui| {
+                        for (name, version, license) in all_crates() {
+                            ui.label(egui::RichText::new(format!("{name} {version}")).small());
+                            ui.label(egui::RichText::new(license).small().weak());
+                            ui.end_row();
+                        }
+                    });
+                });
+            });
             egui::CollapsingHeader::new("Color schemes").show(ui, |ui| {
                 ui.label(egui::RichText::new("Strata's schemes are palettes transcribed from each project's published colors and mapped onto Strata's own scope rules. The Classic schemes come with syntect (MIT).").small().weak());
                 egui::Grid::new("scheme-credits").striped(true).show(ui, |ui| {
@@ -466,20 +478,49 @@ impl StrataApp {
     }
 }
 
-const LICENSES: &[(&str, &str)] = &[
-    ("egui / eframe", "MIT or Apache-2.0"),
-    ("wgpu", "MIT or Apache-2.0"),
-    ("ropey", "MIT"),
-    ("syntect", "MIT"),
-    ("two-face (bat's syntax collection)", "MIT or Apache-2.0"),
-    ("regex", "MIT or Apache-2.0"),
-    ("ignore", "MIT or Unlicense"),
-    ("encoding_rs", "Apache-2.0 or MIT (data: BSD-3-Clause)"),
-    ("rfd", "MIT"),
-    ("muda", "Apache-2.0 or MIT"),
-    ("arboard", "MIT or Apache-2.0"),
-    ("serde / serde_json", "MIT or Apache-2.0"),
+/// A credit in Licenses and Attribution.
+struct Credit {
+    /// What the window shows.
+    name: &'static str,
+    license: &'static str,
+    /// The Cargo.toml dependencies it covers (a test checks every one has a credit).
+    crates: &'static [&'static str],
+}
+
+const fn credit(name: &'static str, license: &'static str, crates: &'static [&'static str]) -> Credit {
+    Credit { name, license, crates }
+}
+
+const LICENSES: &[Credit] = &[
+    credit("egui / eframe", "MIT or Apache-2.0", &["egui", "eframe"]),
+    credit("wgpu", "MIT or Apache-2.0", &[]),
+    credit("winit", "Apache-2.0", &[]),
+    credit("AccessKit", "MIT or Apache-2.0", &[]),
+    credit("ropey", "MIT", &["ropey"]),
+    credit("syntect", "MIT", &["syntect"]),
+    credit("fancy-regex", "MIT", &[]),
+    credit("two-face (bat's syntax collection)", "MIT or Apache-2.0", &["two-face"]),
+    credit("regex", "MIT or Apache-2.0", &["regex"]),
+    credit("ignore / globset", "MIT or Unlicense", &["ignore", "globset"]),
+    credit("encoding_rs", "Apache-2.0 or MIT (data: BSD-3-Clause)", &["encoding_rs"]),
+    credit("alacritty_terminal", "Apache-2.0", &["alacritty_terminal"]),
+    credit("vte", "Apache-2.0 or MIT", &[]),
+    credit("pulldown-cmark", "MIT", &["pulldown-cmark"]),
+    credit("rfd", "MIT", &["rfd"]),
+    credit("muda", "Apache-2.0 or MIT", &["muda"]),
+    credit("objc2 / block2 / objc2-foundation", "MIT", &["objc2", "block2", "objc2-foundation"]),
+    credit("arboard", "MIT or Apache-2.0", &["arboard"]),
+    credit("serde / serde_json", "MIT or Apache-2.0", &["serde", "serde_json"]),
 ];
+
+/// Every crate in the build: (name, version, license), from
+/// assets/third-party-licenses.tsv (scripts/third-party-licenses.sh writes it).
+fn all_crates() -> impl Iterator<Item = (&'static str, &'static str, &'static str)> {
+    include_str!("../../assets/third-party-licenses.tsv").lines().filter(|l| !l.starts_with('#')).filter_map(|l| {
+        let mut f = l.split('\t');
+        Some((f.next()?, f.next()?, f.next()?))
+    })
+}
 
 /// First line of `text`, shortened for a one-line list.
 fn one_line(text: &str, max: usize) -> String {
@@ -589,6 +630,59 @@ mod tests {
         app.run_act(&ctx, crate::menus::Act::Named("bs:".into()));
         assert_eq!(app.build.next_system(&bctx).as_deref(), Some(auto.as_str()), "Automatic means the best system for the file again");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Names of the crates in every dependency table of Cargo.toml.
+    fn direct_dependencies() -> Vec<String> {
+        let toml = include_str!("../../Cargo.toml");
+        let mut deps = Vec::new();
+        let mut in_deps = false;
+        for line in toml.lines().map(str::trim) {
+            if line.starts_with('[') {
+                in_deps = line.ends_with("dependencies]");
+            } else if in_deps && let Some((name, _)) = line.split_once('=') {
+                if !line.starts_with('#') {
+                    deps.push(name.trim().to_owned());
+                }
+            }
+        }
+        deps
+    }
+
+    #[test]
+    fn every_dependency_is_credited() {
+        let deps = direct_dependencies();
+        assert!(deps.contains(&"alacritty_terminal".to_owned()) && deps.contains(&"two-face".to_owned()), "{deps:?}");
+        let credited: Vec<&str> = LICENSES.iter().flat_map(|l| l.crates.iter().copied()).collect();
+        let missing: Vec<&String> = deps.iter().filter(|d| !credited.contains(&d.as_str())).collect();
+        assert!(missing.is_empty(), "add these to LICENSES: {missing:?}");
+    }
+
+    #[test]
+    fn the_full_crate_list_matches_cargo_lock() {
+        let listed: std::collections::HashSet<(&str, &str)> = all_crates().map(|(n, v, _)| (n, v)).collect();
+        let lock = include_str!("../../Cargo.lock");
+        let mut missing = Vec::new();
+        let mut name = None;
+        for line in lock.lines() {
+            if let Some(n) = line.strip_prefix("name = ") {
+                name = Some(n.trim_matches('"'));
+            } else if let (Some(v), Some(n)) = (line.strip_prefix("version = "), name.take())
+                && n != "strata"
+                && !listed.contains(&(n, v.trim_matches('"')))
+            {
+                missing.push(format!("{n} {v}"));
+            }
+        }
+        assert!(missing.is_empty(), "run scripts/third-party-licenses.sh; not listed: {missing:?}");
+        assert!(all_crates().all(|(_, _, l)| !l.is_empty()));
+    }
+
+    #[test]
+    fn strata_itself_is_mit_licensed() {
+        let license = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/LICENSE")).expect("LICENSE file");
+        assert!(license.starts_with("MIT License") && license.contains("Copyright (c) 2026 Strata contributors"));
+        assert!(include_str!("../../Cargo.toml").contains("license = \"MIT\""));
     }
 
     #[test]

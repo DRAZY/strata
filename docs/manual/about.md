@@ -11,7 +11,7 @@ To see which version you have:
 
 ## License
 
-Strata is free and open source under the MIT license.
+Strata is free and open source under the MIT license. The full text is in the `LICENSE` file that comes with the source code.
 
 ## Clean-room development
 
@@ -21,7 +21,8 @@ Strata is not derived from Sublime Text. It isn't based on Sublime Text's code o
 
 Strata is built on open-source projects, and it ships fonts, color schemes and syntax definitions made by others. To see them all, choose **Help ▸ Licenses and Attribution…**, or run **Help: Licenses and Attribution…** from the command palette. The window lists:
 
-- **Open-source libraries** Strata is built on, with their licenses (mostly MIT or Apache-2.0).
+- **Open-source libraries** Strata is built on, with their licenses (mostly MIT or Apache-2.0), including the terminal emulator (alacritty_terminal, Apache-2.0) and the Markdown parser (pulldown-cmark, MIT).
+- **All Rust crates**: every crate compiled into Strata, with its version and license.
 - **Syntax definitions**, which come from syntect, the bat project, and Sublime Text community packages, each under its own license. License texts that the bundled grammars ask to be reproduced are included. Strata's own PowerShell and JSX grammars are MIT licensed.
 - **Color schemes**, with the project, author and license each palette comes from. Strata's schemes are those projects' published colors applied to Strata's own highlighting rules. The Classic schemes come with syntect (MIT).
 - **Fonts**: JetBrains Mono, Fira Code, IBM Plex Mono, Source Code Pro and Inter are bundled under the SIL Open Font License 1.1, and the full license text of each is included. The built-in fallback fonts, Hack and Ubuntu, come with the interface toolkit Strata is built on.
