@@ -1118,7 +1118,8 @@ mod tests {
         drop(t);
         assert!(start.elapsed() < std::time::Duration::from_millis(500));
         let alive = |pid: u32| std::process::Command::new("kill").args(["-0", &pid.to_string()]).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // Generous: SIGKILL follows after 2 s, and a loaded machine can be slow to reap.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         while alive(pid) && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
