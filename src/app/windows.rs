@@ -705,6 +705,35 @@ impl Windows {
         }
     }
 
+    /// After a crash: keep every unsaved tab. With hot exit the session is
+    /// saved as on quit (it all reopens next launch); otherwise, or if that
+    /// fails, the unsaved texts go in a `backups.recovered-<time>` folder.
+    pub fn emergency_save(&mut self) -> crate::crash::Rescue {
+        use crate::crash::Rescue;
+        let tabs = self.unsaved().count();
+        if self.hot_exit() && crate::crash::rescue(|| if self.save_session() { Rescue::Session { tabs } } else { Rescue::Nothing }) != Rescue::Nothing {
+            return Rescue::Session { tabs };
+        }
+        if tabs == 0 {
+            return Rescue::Nothing;
+        }
+        let Some(dir) = self.config.clone() else { return Rescue::Failed("no settings folder".into()) };
+        let texts: Vec<(String, String)> = self.unsaved().map(|d| (d.name(), d.editor.buffer.slice(0..d.editor.buffer.len_chars()))).collect();
+        match crate::crash::write_recovered(&dir, &texts) {
+            Ok(path) => Rescue::Folder { path, tabs },
+            Err(e) => Rescue::Failed(e.to_string()),
+        }
+    }
+
+    fn unsaved(&self) -> impl Iterator<Item = &Document> {
+        self.slots.iter().flat_map(|s| &s.app.docs).filter(|d| d.is_dirty())
+    }
+
+    /// Show the "Strata quit unexpectedly" notice in the first window.
+    pub fn show_crash_notice(&mut self, crash: crate::crash::PreviousCrash) {
+        self.slots[0].app.crash_notice = Some(crash);
+    }
+
     fn save_session(&mut self) -> bool {
         let Some(dir) = self.config.clone().filter(|_| self.lock.is_some()) else { return false };
         let mut backups = Vec::new();
@@ -1030,5 +1059,40 @@ mod tests {
         w.slots[0].app.link.requests.quit = true;
         let commands = pass(&mut w, &ctx, 0, vec![], false);
         assert!(commands.contains(&ViewportCommand::Close));
+    }
+
+    #[test]
+    fn a_crash_saves_unsaved_tabs_for_the_next_launch() {
+        use crate::crash::Rescue;
+        let config = temp_dir("crash");
+        let mut w = Windows::new(Some(config.clone()));
+        w.root().doc().editor.insert_text("typed before the crash");
+        w.open_new_window(0).unwrap();
+        w.slots[1].app.doc().editor.insert_text("second window");
+        assert_eq!(w.emergency_save(), Rescue::Session { tabs: 2 });
+        let backups: Vec<String> = std::fs::read_dir(Session::backups(&config)).unwrap().map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap()).collect();
+        assert!(backups.contains(&"typed before the crash".to_owned()) && backups.contains(&"second window".to_owned()), "{backups:?}");
+        // No quit: dropping only releases the session lock, as the process ending does.
+        drop(w);
+        let mut back = Windows::new(Some(config.clone()));
+        assert_eq!(back.slots.len(), 2);
+        assert_eq!(text(back.root()), "typed before the crash");
+        std::fs::remove_dir_all(config).ok();
+    }
+
+    #[test]
+    fn without_hot_exit_a_crash_writes_unsaved_tabs_to_a_folder() {
+        use crate::crash::Rescue;
+        let config = temp_dir("crash-no-hot-exit");
+        std::fs::write(Settings::path(&config), r#"{ "hot_exit": false }"#).unwrap();
+        let mut w = Windows::new(Some(config.clone()));
+        w.root().doc().editor.insert_text("only copy");
+        let Rescue::Folder { path, tabs: 1 } = w.emergency_save() else { panic!("not saved to a folder") };
+        assert!(path.starts_with(&config));
+        let files: Vec<_> = std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()).collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), "only copy");
+        assert_eq!(Windows::new(None).emergency_save(), Rescue::Nothing, "nothing unsaved");
+        std::fs::remove_dir_all(config).ok();
     }
 }

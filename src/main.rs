@@ -9,6 +9,7 @@ mod build;
 mod buffer;
 mod cli;
 mod commands;
+mod crash;
 mod ctxmenu;
 mod decor;
 mod document;
@@ -29,6 +30,7 @@ mod keybindings;
 mod keys;
 mod menus;
 mod lang;
+mod logging;
 #[cfg(target_os = "macos")]
 mod mac_open;
 mod markdown;
@@ -166,6 +168,9 @@ fn launch_bundle(bundle: &Path, config: Option<&Path>, targets: &[Target], wait:
 }
 
 fn run(targets: Vec<Target>, new_window: bool, config: Option<PathBuf>) -> ExitCode {
+    logging::init(config.as_deref());
+    crash::install(config.as_deref());
+    log::info!("{} starting on {}, settings in {}", crash::version_line(), crash::system_line(), config.as_deref().map_or("(none)".into(), |d| d.display().to_string()));
     #[cfg(target_os = "macos")]
     mac_open::install();
     // Every window is built the same way (see `app::windows::builder`).
@@ -183,20 +188,27 @@ fn run(targets: Vec<Target>, new_window: bool, config: Option<PathBuf>) -> ExitC
                 windows.install_native_menu(&cc.egui_ctx);
                 mac_open::set_context(&cc.egui_ctx);
             }
-            // Only the process that owns the session answers other `strata`s.
-            let server = config.filter(|_| windows.owns_session()).and_then(|dir| {
+            // Only the process that owns the session answers other `strata`s,
+            // and offers the report of a crash.
+            let owner = config.filter(|_| windows.owns_session());
+            if let Some(previous) = owner.as_deref().and_then(crash::check_previous) {
+                log::warn!("Strata quit unexpectedly last time; report: {}", previous.report.display());
+                windows.show_crash_notice(previous);
+            }
+            let server = owner.and_then(|dir| {
                 let ctx = cc.egui_ctx.clone();
-                ipc::Server::start(&dir, move || ctx.request_repaint())
-                    .inspect_err(|e| eprintln!("strata: can't listen for other instances: {e}"))
-                    .ok()
+                ipc::Server::start(&dir, move || ctx.request_repaint()).inspect_err(|e| log::warn!("can't listen for other instances: {e}")).ok()
             });
-            Ok(Box::new(Shell { windows, server, waiters: Vec::new() }))
+            Ok(Box::new(Shell { windows, server, waiters: Vec::new(), dev_panic: crash::DevPanic::from_env(), rescued: false }))
         }),
     );
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            log::info!("quit");
+            ExitCode::SUCCESS
+        }
         Err(e) => {
-            eprintln!("strata: {e}");
+            log::error!("couldn't start: {e}");
             ExitCode::FAILURE
         }
     }
@@ -209,9 +221,35 @@ struct Shell {
     server: Option<ipc::Server>,
     /// `strata --wait` callers and the files they wait on.
     waiters: Vec<(Vec<PathBuf>, ipc::Waiter)>,
+    /// STRATA_DEV_PANIC (dev aid; inert unless set).
+    dev_panic: crash::DevPanic,
+    /// Unsaved work was saved after a crash.
+    rescued: bool,
 }
 
 impl Shell {
+    /// Run one of eframe's calls into the app. A panic in it is a crash
+    /// (the hook has written the report): save unsaved work and exit.
+    fn guarded<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self))) {
+            Ok(r) => r,
+            Err(_) => {
+                self.rescue();
+                // Remove the socket now: exit skips destructors.
+                self.server = None;
+                std::process::exit(101)
+            }
+        }
+    }
+
+    fn rescue(&mut self) {
+        if !std::mem::replace(&mut self.rescued, true) {
+            let windows = &mut self.windows;
+            let rescue = crash::rescue(|| windows.emergency_save());
+            crash::finish(&rescue);
+        }
+    }
+
     fn take_requests(&mut self, ctx: &egui::Context) {
         let requests = self.server.as_ref().map(ipc::Server::poll).unwrap_or_default();
         if !requests.is_empty() {
@@ -244,27 +282,42 @@ impl Shell {
     }
 }
 
+/// A crash outside the calls `guarded` wraps (in eframe itself) unwinds
+/// through here: save what can be saved.
+impl Drop for Shell {
+    fn drop(&mut self) {
+        if std::thread::panicking() || crash::crashed() {
+            self.rescue();
+        }
+    }
+}
+
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        self.take_requests(ctx);
-        self.windows.root().logic(ctx, frame);
+        self.guarded(|s| {
+            s.take_requests(ctx);
+            s.windows.root().logic(ctx, frame);
+        });
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        self.windows.ui(ui, frame);
-        // Release `--wait` callers whose files are all closed.
-        let windows = &self.windows;
-        let (done, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waiters).into_iter().partition(|(paths, _)| !paths.iter().any(|p| windows.has_open_file(p)));
-        self.waiters = keep;
-        done.into_iter().for_each(|(_, w)| w.done());
+        self.guarded(|s| {
+            s.dev_panic.tick(ui.ctx());
+            s.windows.ui(ui, frame);
+            // Release `--wait` callers whose files are all closed.
+            let windows = &s.windows;
+            let (done, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut s.waiters).into_iter().partition(|(paths, _)| !paths.iter().any(|p| windows.has_open_file(p)));
+            s.waiters = keep;
+            done.into_iter().for_each(|(_, w)| w.done());
+        });
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        self.windows.root().save(storage);
+        self.guarded(|s| s.windows.root().save(storage));
     }
 
     fn on_exit(&mut self) {
-        self.windows.root().on_exit();
+        self.guarded(|s| s.windows.root().on_exit());
     }
 
     /// See-through windows need a transparent clear; the panels paint the color.
@@ -273,6 +326,6 @@ impl eframe::App for Shell {
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        self.windows.root().raw_input_hook(ctx, raw_input);
+        self.guarded(|s| s.windows.root().raw_input_hook(ctx, raw_input));
     }
 }

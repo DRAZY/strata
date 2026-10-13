@@ -27,7 +27,10 @@ impl StrataApp {
                 self.set_terminal_visible(true);
                 self.terminal.focus();
             }
-            Err(e) => self.status = e,
+            Err(e) => {
+                log::warn!("couldn't start a terminal in {}: {e}", dir.display());
+                self.status = e;
+            }
         }
     }
 

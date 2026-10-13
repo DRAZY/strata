@@ -41,6 +41,7 @@ impl KeymapState {
 impl StrataApp {
     pub(super) fn keymap_startup_status(&mut self) {
         if let Some(msg) = self.keymap.startup.take() {
+            log::info!("{msg}");
             self.status = if self.status.is_empty() { msg } else { format!("{}; {msg}", self.status) };
         }
     }

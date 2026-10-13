@@ -371,6 +371,23 @@ the real widget and the whole window with simulated keys and clicks.
 CI (`.github/workflows/build.yml`) builds release binaries on an Apple silicon
 macOS runner and a Windows x64 runner.
 
+**Logs and crash reports** (nothing is ever uploaded):
+
+- The log is `Logs/strata.log` in the config folder (rotated at 1 MB, three
+  files kept): startup, settings/keymap/theme/syntax errors, open and save
+  failures, session restore problems, IPC, terminal and build launch errors,
+  panics. Paths and errors only, never file contents or the clipboard.
+  `STRATA_LOG=debug` (or `debug,wgpu_core=info`) raises the level. When stderr
+  is a terminal the lines are copied there too.
+- A panic on the UI thread writes `Crashes/strata-crash-<UTC time>.txt`
+  (version, commit from `build.rs`, OS, panic, backtrace, last 200 log lines),
+  then saves every unsaved tab (with the session under hot exit, else into
+  `backups.recovered-<time>/`) and exits. The next launch offers the report in
+  a notice. Panics on other threads are logged and don't take the app down.
+  See `src/logging.rs` and `src/crash.rs`.
+- Help ▸ Report a Problem… opens a pre-filled issue in a tab to review and
+  copy. The issues URL is `crash::ISSUES_URL`.
+
 Dev aids (all pair with `STRATA_SCREENSHOT=out.ppm`, which renders the window,
 saves a screenshot and exits): `STRATA_DEV_FIND=query` (+ `STRATA_DEV_FIND_REGEX=1`),
 `STRATA_DEV_FIND_IN_FILES=query` (+ `STRATA_DEV_WHERE`, `STRATA_DEV_REPLACE`,
@@ -378,7 +395,10 @@ saves a screenshot and exits): `STRATA_DEV_FIND=query` (+ `STRATA_DEV_FIND_REGEX
 `"cmd:query"`, `"theme:query"` (the color scheme picker), `"licenses:"` or
 `"fif:query"` (Find in Files on the first frame, after files given on the
 command line are open), `STRATA_SCREENSHOT_TYPE='fn\t'` (types into the editor first; `\t`
-presses Tab). `STRATA_CONFIG_DIR=dir` uses a separate settings/session folder (and its own
+presses Tab). `STRATA_DEV_PANIC=40` crashes on purpose at frame 40 (try it
+with `STRATA_SCREENSHOT_TYPE` and `STRATA_SCREENSHOT_DELAY=60` to have unsaved
+text when it does); `STRATA_DEV_PANIC=thread:40` panics a background thread
+instead. `STRATA_CONFIG_DIR=dir` uses a separate settings/session folder (and its own
 single-instance socket, so a test copy never talks to your everyday Strata;
 for the .app use `open --env STRATA_CONFIG_DIR=dir -a dist/Strata.app file`,
 with your installed Strata quit, since both copies share a bundle id).

@@ -26,6 +26,8 @@ Strata creates most of these only when it needs them.
 | `backups/` | The text of unsaved tabs, one `.txt` file per tab |
 | `backups.recovered-<time>/` | Backups set aside because a session couldn't be restored. `<time>` is when it happened, in seconds since 1970 |
 | `session.lock` | Marks which running Strata owns the session |
+| `Logs/` | The log: `strata.log`, plus `strata.1.log` and `strata.2.log` before it. See [Logs](#logs) |
+| `Crashes/` | A report for each time Strata crashed. See [If Strata crashes](#if-strata-crashes) |
 | `strata.sock` (macOS, Linux) or `strata.port` (Windows) | How the `strata` command finds the running app. See [Command Line](cli.md) |
 | `Snippets/` | Your snippets. See [Snippets](snippets.md) |
 | `Syntaxes/` | Your `.sublime-syntax` grammars. See [Languages](languages.md) |
@@ -53,7 +55,7 @@ Strata doesn't ask you to save when you quit, or when you close its last window.
 
 Closing one window while others stay open is different: that window won't come back, so Strata asks about its unsaved tabs.
 
-- The session is saved every few seconds while you work, and again when you quit. A crash loses at most a few seconds of typing.
+- The session is saved every few seconds while you work, and again when you quit. If Strata crashes, it saves your unsaved tabs before it closes. See [If Strata crashes](#if-strata-crashes).
 - Unsaved text goes in the `backups/` folder as plain `.txt` files, so you can always open them yourself.
 - If a file changed on disk while Strata was closed, its restored tab is marked **Changed on disk**. If the file was deleted, the status bar says **Deleted on disk (save to recreate)**.
 
@@ -84,15 +86,61 @@ The second copy works normally, with two differences: it doesn't reopen or save 
 
 ## Messages and logs
 
-Strata doesn't write a log file. Problems show up in the status bar at the bottom of the window.
+Problems show up in the status bar at the bottom of the window. Strata also writes them to a log file, with the time each one happened.
 
-A few messages, such as the full list of problems in `keybindings.json`, are also printed as text output. To see them, quit Strata and start it from a terminal so the output stays there. On macOS, run the program inside the app with its input redirected, so it stays attached to the terminal instead of starting as a separate app:
+### Logs
+
+The log is `strata.log` in the `Logs` folder inside Strata's folder (see [Where Strata keeps its files](#where-strata-keeps-its-files)):
+
+| System | Log file |
+|---|---|
+| macOS | `~/Library/Application Support/Strata/Logs/strata.log` |
+| Windows | `%APPDATA%\Strata\Logs\strata.log` |
+| Linux | `~/.config/strata/Logs/strata.log` (or under `$XDG_CONFIG_HOME/strata`) |
+
+- **Help ▸ Show Latest Log** opens it in a tab. **Help ▸ Open Log Folder** shows the folder in Finder, Explorer or your file manager. Both are in the command palette too.
+- The log records when Strata starts (its version and your system), problems loading settings, key bindings, color schemes and syntaxes, files that couldn't be opened or saved, sessions that couldn't be restored, terminals and builds that couldn't start, and crashes.
+- It holds file paths and error messages, never the text of your files or what's on the clipboard.
+- When `strata.log` reaches 1 MB it becomes `strata.1.log`, the previous one becomes `strata.2.log`, and the oldest is deleted. The log never takes more than about 3 MB.
+- Times are in UTC.
+
+To log more detail, set the `STRATA_LOG` environment variable to `debug` before starting Strata. `STRATA_LOG=debug,wgpu_core=info` also shows messages from one of the libraries Strata uses.
+
+The same lines also appear as text output when Strata runs in a terminal. On macOS, start the program inside the app with its input redirected, so it stays attached to the terminal instead of starting as a separate app:
 
 ```sh
 /Applications/Strata.app/Contents/MacOS/strata < /dev/null
 ```
 
-On Linux, run `strata` from a terminal. On Windows, Strata is a windowed program and these messages aren't shown.
+On Linux, run `strata` from a terminal.
+
+### If Strata crashes
+
+If Strata quits unexpectedly, it first saves your unsaved tabs and writes a crash report.
+
+- **With hot exit on** (the default), unsaved tabs are saved with the session, the same way as when you quit, and reopen next time.
+- **With hot exit off**, unsaved text goes in a new `backups.recovered-<time>/` folder, one `.txt` file per tab.
+- If even that fails, the session Strata saves every few seconds still has your work up to a few seconds before the crash.
+
+The crash report is a text file in the `Crashes` folder, named `strata-crash-<date>-<time>.txt` (UTC). It contains Strata's version, your system, where in Strata's code the crash happened, and the last 200 lines of the log. Like the log, it doesn't contain the text of your files.
+
+The next time Strata starts, a notice in the corner says that it quit unexpectedly and what happened to your unsaved work:
+
+- **Show Report** opens the report in a tab.
+- **Copy Report** copies it to the clipboard.
+- **Report on GitHub…** opens the page for a new issue in your browser.
+- **Dismiss** closes the notice.
+
+If something goes wrong in the background, such as a search or a build, Strata logs it and keeps running. A build that stops this way says so in the build panel.
+
+### Report a problem
+
+Strata never sends anything by itself. To report a problem:
+
+1. Choose **Help ▸ Report a Problem…**. A new tab opens with a template, your Strata version and system, and the end of the log. Your home folder is shown as `~`.
+2. Fill in what happened and how to make it happen again.
+3. Read it through and remove anything you'd rather not share, such as file names.
+4. Copy it into a new issue at <https://github.com/strata-editor/strata/issues/new>. If it's about a crash, attach the crash report too.
 
 ## Fonts not found
 

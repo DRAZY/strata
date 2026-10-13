@@ -399,7 +399,7 @@ impl GitWatcher {
 
     /// Queue a diff of `text` (the document at `version`) against HEAD.
     pub fn request(&self, path: &Path, text: Arc<String>, version: u64) {
-        let mut st = self.shared.state.lock().unwrap();
+        let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let req = Request { path: path.to_owned(), text, version };
         match st.pending.iter_mut().find(|r| r.path == path) {
             Some(r) => *r = req,
@@ -411,7 +411,7 @@ impl GitWatcher {
     /// Forget cached HEAD text and repo info for `path` (call after saving);
     /// takes effect with the next request.
     pub fn invalidate(&self, path: &Path) {
-        self.shared.state.lock().unwrap().stale.push(path.to_owned());
+        self.shared.state.lock().unwrap_or_else(|e| e.into_inner()).stale.push(path.to_owned());
     }
 
     /// The next finished diff, if any, oldest first. Call until None each frame.
@@ -423,13 +423,13 @@ impl GitWatcher {
     /// there has been processed, or outside a repo.
     pub fn repo(&self, path: &Path) -> Option<RepoInfo> {
         let dir = path.parent()?;
-        self.shared.repos.lock().unwrap().get(dir).cloned().flatten()
+        self.shared.repos.lock().unwrap_or_else(|e| e.into_inner()).get(dir).cloned().flatten()
     }
 }
 
 impl Drop for GitWatcher {
     fn drop(&mut self) {
-        self.shared.state.lock().unwrap().quit = true;
+        self.shared.state.lock().unwrap_or_else(|e| e.into_inner()).quit = true;
         self.shared.wake.notify_one();
     }
 }
@@ -449,13 +449,13 @@ fn work(shared: &Shared, tx: &Sender<DiffResult>, ctx: Option<&egui::Context>) {
     let mut repo_read: HashMap<PathBuf, Instant> = HashMap::new();
     loop {
         let (reqs, stale) = {
-            let mut st = shared.state.lock().unwrap();
+            let mut st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
             while st.pending.is_empty() && !st.quit {
-                st = shared.wake.wait(st).unwrap();
+                st = shared.wake.wait(st).unwrap_or_else(|e| e.into_inner());
             }
             // Debounce: let a burst of keystrokes settle into one request.
             while !st.quit {
-                let (next, timeout) = shared.wake.wait_timeout(st, DEBOUNCE).unwrap();
+                let (next, timeout) = shared.wake.wait_timeout(st, DEBOUNCE).unwrap_or_else(|e| e.into_inner());
                 st = next;
                 if timeout.timed_out() {
                     break;
@@ -493,10 +493,10 @@ fn diff_one(
     let now = Instant::now();
     if repo_read.get(&dir).is_none_or(|t| now.duration_since(*t) > REFRESH) {
         let info = repo_info(&req.path);
-        shared.repos.lock().unwrap().insert(dir.clone(), info);
+        shared.repos.lock().unwrap_or_else(|e| e.into_inner()).insert(dir.clone(), info);
         repo_read.insert(dir.clone(), now);
     }
-    let in_repo = shared.repos.lock().unwrap().get(&dir).is_some_and(Option::is_some);
+    let in_repo = shared.repos.lock().unwrap_or_else(|e| e.into_inner()).get(&dir).is_some_and(Option::is_some);
 
     let changes = if in_repo {
         let disk = mtime(&req.path);

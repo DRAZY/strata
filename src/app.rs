@@ -118,10 +118,13 @@ pub struct StrataApp {
     keymap: keymap_ui::KeymapState,
     /// Help ▸ Documentation (see `help_ui`).
     help: help_ui::HelpState,
+    /// "Strata quit unexpectedly last time" (see `diagnostics`).
+    crash_notice: Option<crate::crash::PreviousCrash>,
 }
 
 mod completion;
 mod context_menus;
+mod diagnostics;
 mod features;
 mod help_ui;
 mod keymap_ui;
@@ -242,6 +245,7 @@ impl StrataApp {
             context: context_menus::ContextMenus::new(),
             link: windows::Link::default(),
             help: help_ui::HelpState::default(),
+            crash_notice: None,
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -398,6 +402,7 @@ impl StrataApp {
         let mut doc = match Document::open(path.clone()) {
             Ok(d) => d,
             Err(e) => {
+                log::warn!("couldn't open {}: {e}", path.display());
                 self.status = format!("Could not open {}: {e}", path.display());
                 return;
             }
@@ -548,6 +553,7 @@ impl StrataApp {
                 true
             }
             Err(e) => {
+                log::warn!("couldn't save {}: {e}", path.display());
                 self.status = format!("Save failed: {e}");
                 false
             }
@@ -617,6 +623,7 @@ impl StrataApp {
         let path = Settings::path(&dir);
         if !path.exists()
             && let Err(e) = self.settings.save(&dir) {
+                log::warn!("couldn't write settings: {e}");
                 self.status = format!("Could not write settings: {e}");
                 return;
             }
@@ -638,7 +645,10 @@ impl StrataApp {
                     self.apply_indentation();
                 }
             }
-            Err(e) => self.status = format!("{e} (keeping current settings)"),
+            Err(e) => {
+                log::warn!("{e} (keeping current settings)");
+                self.status = format!("{e} (keeping current settings)");
+            }
         }
     }
 
@@ -671,7 +681,10 @@ impl StrataApp {
         if let Some(dir) = &self.config {
             match self.settings.save(dir) {
                 Ok(()) => self.settings_mtime = std::fs::metadata(Settings::path(dir)).and_then(|m| m.modified()).ok(),
-                Err(e) => self.status = format!("Could not write settings: {e}"),
+                Err(e) => {
+                    log::warn!("couldn't write settings: {e}");
+                    self.status = format!("Could not write settings: {e}");
+                }
             }
         }
     }
@@ -779,6 +792,7 @@ impl StrataApp {
                 format!("Couldn't restore the last session ({why}) or set its backups aside ({e}); session saving is off")
             }
         };
+        log::error!("{}", self.status);
     }
 
     /// Changes whenever saving the session would write something different.
@@ -809,6 +823,7 @@ impl StrataApp {
                 true
             }
             Err(e) => {
+                log::error!("couldn't save the session: {e}");
                 self.status = format!("Could not save session: {e}");
                 false
             }
@@ -1046,6 +1061,7 @@ impl StrataApp {
             Cmd::CloseFolder => self.sidebar.close_folders(),
             Cmd::RefreshFolders => self.sidebar.refresh(),
             Cmd::About => self.about_open = true,
+            Cmd::OpenLogFolder | Cmd::ShowLatestLog | Cmd::ReportProblem => self.diagnostics_command(cmd),
             Cmd::InstallShellCommand => self.install_shell_command(),
             Cmd::Documentation => self.open_help(None, false),
             Cmd::KeyboardShortcuts => self.open_help(Some(crate::help::SHORTCUTS), false),
@@ -2161,6 +2177,7 @@ impl eframe::App for StrataApp {
         if self.licenses_open {
             self.licenses_window(ctx);
         }
+        self.crash_notice_ui(ctx);
         if self.build.visible && self.distraction.is_none() {
             let action = egui::Panel::bottom(self.link.id("build")).resizable(true).default_size(180.0).show(ui, |ui| self.build.show(ui)).inner;
             if let Some(crate::build::BuildAction::Goto(p, line, col)) = action {
@@ -2284,7 +2301,9 @@ fn wrap_paragraph_width(s: &Settings) -> usize {
 /// The status line after startup: problems with settings.json and with user
 /// themes and syntaxes.
 fn startup_status(settings_error: Option<String>, asset_errors: Vec<String>) -> String {
-    settings_error.into_iter().chain(asset_errors).collect::<Vec<_>>().join("; ")
+    let problems: Vec<String> = settings_error.into_iter().chain(asset_errors).collect();
+    problems.iter().for_each(|p| log::warn!("{p}"));
+    problems.join("; ")
 }
 
 #[cfg(test)]

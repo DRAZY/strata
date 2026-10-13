@@ -85,18 +85,34 @@ impl Server {
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new().name("strata-ipc".into()).spawn(move || {
             for conn in listener.incoming() {
-                let Ok(mut conn) = conn else { continue };
+                let mut conn = match conn {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::warn!("ipc: accept failed: {e}");
+                        continue;
+                    }
+                };
                 let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
                 let mut line = String::new();
-                if BufReader::new(&mut conn).read_line(&mut line).is_err() {
+                if let Err(e) = BufReader::new(&mut conn).read_line(&mut line) {
+                    log::warn!("ipc: couldn't read a request: {e}");
                     continue;
                 }
-                let Ok(req) = serde_json::from_str::<Request>(&line) else { continue };
+                let req = match serde_json::from_str::<Request>(&line) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        log::warn!("ipc: ignored a malformed request: {e}");
+                        continue;
+                    }
+                };
                 if req.token != token {
+                    log::warn!("ipc: ignored a request with the wrong token");
                     continue;
                 }
+                log::debug!("ipc: open {} path(s){}", req.targets.len(), if req.wait { ", waiting" } else { "" });
                 let ack = serde_json::to_string(&Ack { ok: true }).unwrap_or_default() + "\n";
-                if conn.write_all(ack.as_bytes()).is_err() {
+                if let Err(e) = conn.write_all(ack.as_bytes()) {
+                    log::warn!("ipc: couldn't answer: {e}");
                     continue;
                 }
                 let _ = conn.set_read_timeout(None);

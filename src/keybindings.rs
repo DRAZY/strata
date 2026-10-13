@@ -1196,7 +1196,7 @@ impl KeymapFile {
             Ok((keymap, warnings)) => {
                 install(keymap);
                 for w in &warnings {
-                    eprintln!("strata: {FILE_NAME} {w}");
+                    log::warn!("{FILE_NAME} {w}");
                 }
                 match warnings.len() {
                     0 if quiet => None,

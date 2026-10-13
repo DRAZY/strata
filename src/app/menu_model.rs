@@ -698,6 +698,10 @@ impl StrataApp {
             c("Keyboard Shortcuts", Cmd::KeyboardShortcuts),
             c("Search Documentation…", Cmd::SearchDocumentation),
             SEP(),
+            c("Report a Problem…", Cmd::ReportProblem),
+            c("Show Latest Log", Cmd::ShowLatestLog),
+            c("Open Log Folder", Cmd::OpenLogFolder),
+            SEP(),
             c("Licenses and Attribution…", Cmd::Licenses),
         ];
         if !MAC {

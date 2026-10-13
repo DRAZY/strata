@@ -349,7 +349,16 @@ impl Search {
     /// Drain streamed results. Call once per frame.
     pub fn poll(&mut self) {
         let Some(rx) = &self.rx else { return };
-        while let Ok(msg) = rx.try_recv() {
+        loop {
+            let msg = match rx.try_recv() {
+                Ok(msg) => msg,
+                // The search thread ended without a word: it panicked (and logged it).
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.running = false;
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            };
             match msg {
                 Msg::File(f) => {
                     let i = self.results.partition_point(|r| r.path < f.path);

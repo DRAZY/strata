@@ -1050,6 +1050,7 @@ impl Build {
     }
 
     fn fail_early(&mut self, title: &str, e: String) -> String {
+        log::warn!("build {title:?} didn't start: {e}");
         self.title = title.to_owned();
         self.command.clear();
         self.out = Output::new(None, PathBuf::new());
@@ -1097,7 +1098,13 @@ impl Build {
     fn drain(&mut self) {
         let Some(rx) = &self.rx else { return };
         let mut done = false;
-        while let Ok(msg) = rx.try_recv() {
+        loop {
+            let msg = match rx.try_recv() {
+                Ok(msg) => msg,
+                // The build thread ended without a word: it panicked (and logged it).
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Msg::Failed("The build stopped because of an internal error; see Help ▸ Show Latest Log".into()),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            };
             match msg {
                 Msg::Text(s) => self.out.push_str(&s),
                 Msg::Failed(e) => {
@@ -1365,6 +1372,7 @@ fn repaint(ctx: &Option<egui::Context>) {
 fn run(p: Prepared, tx: Sender<Msg>, cancel: Arc<AtomicBool>, ctx: Option<egui::Context>) {
     let started = Instant::now();
     let fail = |e: String| {
+        log::warn!("build {:?} didn't start: {e}", p.title);
         let _ = tx.send(Msg::Failed(e));
         repaint(&ctx);
     };

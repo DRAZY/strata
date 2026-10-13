@@ -120,6 +120,9 @@ pub enum Cmd {
     KeyboardShortcuts,
     SearchDocumentation,
     GettingStarted,
+    OpenLogFolder,
+    ShowLatestLog,
+    ReportProblem,
 }
 
 impl Cmd {
@@ -243,6 +246,9 @@ impl Cmd {
         Cmd::KeyboardShortcuts,
         Cmd::SearchDocumentation,
         Cmd::GettingStarted,
+        Cmd::OpenLogFolder,
+        Cmd::ShowLatestLog,
+        Cmd::ReportProblem,
     ];
 
     pub fn name(self) -> &'static str {
@@ -318,6 +324,9 @@ impl Cmd {
             Cmd::KeyboardShortcuts => "Help: Keyboard Shortcuts",
             Cmd::SearchDocumentation => "Help: Search Documentation",
             Cmd::GettingStarted => "Help: Getting Started",
+            Cmd::OpenLogFolder => "Help: Open Log Folder",
+            Cmd::ShowLatestLog => "Help: Show Latest Log",
+            Cmd::ReportProblem => "Help: Report a Problem…",
             Cmd::Build => "Tools: Build",
             Cmd::BuildWith => "Tools: Build With…",
             Cmd::CancelBuild => "Tools: Cancel Build",
@@ -435,6 +444,7 @@ impl Cmd {
             // F1 everywhere (with fn on Mac keyboards); ⌘? is macOS's own Help menu search.
             Cmd::Documentation => &[(NONE, Key::F1)],
             Cmd::KeyboardShortcuts | Cmd::SearchDocumentation | Cmd::GettingStarted => &[],
+            Cmd::OpenLogFolder | Cmd::ShowLatestLog | Cmd::ReportProblem => &[],
             Cmd::Build => &[(CMD, Key::B)],
             Cmd::BuildWith => &[(CMD_SHIFT, Key::B)],
             Cmd::CancelBuild => if MAC { &[(CTRL, Key::C)] } else { &[] },
@@ -583,6 +593,9 @@ impl Cmd {
             Cmd::KeyboardShortcuts => "keyboard_shortcuts",
             Cmd::SearchDocumentation => "search_documentation",
             Cmd::GettingStarted => "getting_started",
+            Cmd::OpenLogFolder => "open_log_folder",
+            Cmd::ShowLatestLog => "show_latest_log",
+            Cmd::ReportProblem => "report_problem",
             Cmd::Build => "build",
             Cmd::BuildWith => "build_with",
             Cmd::CancelBuild => "cancel_build",
