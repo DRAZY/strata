@@ -1,7 +1,7 @@
-//! App-level shortcuts. egui's `consume_shortcut` ignores extra Shift/Alt
-//! (so Cmd+G would also eat Ctrl+Cmd+G); these match modifiers exactly.
+//! Shortcut modifiers and labels. egui's `consume_shortcut` ignores extra Shift/Alt
+//! (so Cmd+G would also eat Ctrl+Cmd+G); the keymap matches them exactly.
 
-use egui::{Context, Event, Key, Modifiers};
+use egui::{Key, Modifiers};
 
 pub const MAC: bool = cfg!(target_os = "macos");
 
@@ -32,23 +32,18 @@ fn norm(m: Modifiers, pattern: bool) -> (bool, bool, bool, bool) {
     }
 }
 
-pub fn exact(pressed: Modifiers, pattern: Modifiers) -> bool {
-    norm(pressed, false) == norm(pattern, true)
+/// Two shortcut patterns that mean the same keys on this platform.
+pub fn same_mods(a: Modifiers, b: Modifiers) -> bool {
+    norm(a, true) == norm(b, true)
 }
 
-/// Consume one press of `key` with exactly `mods` held.
-pub fn take(ctx: &Context, mods: Modifiers, key: Key) -> bool {
-    ctx.input_mut(|i| {
-        // Also match the physical key: Shift+1 is logically "!" and Alt+1 is "¡" on a Mac.
-        let found = i.events.iter().position(|e| {
-            matches!(e, Event::Key { key: k, physical_key, pressed: true, modifiers, .. }
-                if (*k == key || *physical_key == Some(key)) && exact(*modifiers, mods))
-        });
-        if let Some(n) = found {
-            i.events.remove(n);
-        }
-        found.is_some()
-    })
+/// (alt, shift, cmd, ctrl) of a pattern, folded like `exact` compares them.
+pub fn parts(m: Modifiers) -> (bool, bool, bool, bool) {
+    norm(m, true)
+}
+
+pub fn exact(pressed: Modifiers, pattern: Modifiers) -> bool {
+    norm(pressed, false) == norm(pattern, true)
 }
 
 /// A space after each modifier glyph, so "⇧⌘P" reads as three symbols.

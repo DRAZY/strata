@@ -1,7 +1,7 @@
 //! The editor window: tabs, sidebar, find bar, status bar, and the session.
 
 use crate::buffer::{Buffer, LineEnding};
-use crate::commands::{self, Cmd};
+use crate::commands::Cmd;
 use crate::devshot::DevShot;
 use crate::document::Document;
 use crate::find::{self, Query};
@@ -111,13 +111,16 @@ pub struct StrataApp {
     context: context_menus::ContextMenus,
     /// Ties to the other windows (see `windows`).
     link: windows::Link,
+    /// keybindings.json and a pending chord (see `keymap_ui`).
+    keymap: keymap_ui::KeymapState,
 }
 
 mod completion;
 mod context_menus;
 mod features;
+mod keymap_ui;
 mod launch;
-mod menu_model;
+pub(crate) mod menu_model;
 mod more;
 mod terminal_ui;
 mod preview;
@@ -181,6 +184,7 @@ impl StrataApp {
             find: FindBar::default(),
             sidebar: Sidebar::new(),
             settings,
+            keymap: keymap_ui::KeymapState::new(config.as_deref()),
             config,
             last_disk_check: 0.0,
             settings_mtime,
@@ -232,6 +236,7 @@ impl StrataApp {
             context: context_menus::ContextMenus::new(),
             link: windows::Link::default(),
         };
+        app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
         app.snippets = snippets_ui::SnippetState::new(app.config.as_deref());
         app
@@ -1017,6 +1022,7 @@ impl StrataApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
             }
             Cmd::Settings => self.open_settings(),
+            Cmd::KeyBindings => self.open_key_bindings(),
             Cmd::CommandPalette => self.open_palette(ctx, palette::Mode::Commands, ""),
             Cmd::GotoAnything => self.open_palette(ctx, palette::Mode::Files, ""),
             Cmd::GotoLine => self.open_palette(ctx, palette::Mode::Files, ":"),
@@ -1027,28 +1033,10 @@ impl StrataApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        // After Cmd/Ctrl+K the next key finishes the editor's chord (⌘K ⌘1 folds all, …).
-        if self.docs[self.active].view.chord_pending() {
+        // Window and editor commands, from the keymap (see `keymap_ui`).
+        self.dispatch_keys(ctx);
+        if self.terminal_has_keys(ctx) {
             return;
-        }
-        // A focused terminal keeps plain, Ctrl and Alt keys for the shell.
-        let in_terminal = self.terminal_has_keys(ctx);
-        for cmd in if in_terminal { crate::terminal::pressed(ctx) } else { commands::pressed(ctx) } {
-            self.run(ctx, cmd);
-        }
-        if in_terminal {
-            return;
-        }
-        // Cmd+1…9 picks a tab (Alt on Windows/Linux, like Sublime); 9 is always the last.
-        let mods = if crate::keys::MAC { crate::keys::CMD } else { crate::keys::ALT };
-        let digits = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
-        for (n, key) in digits.into_iter().enumerate() {
-            if crate::keys::take(ctx, mods, key) {
-                let tabs = self.group_tabs(self.focus_group);
-                if let Some(&i) = if n == 8 { tabs.last() } else { tabs.get(n) } {
-                    self.activate(i);
-                }
-            }
         }
         if self.find.open && !self.palette.open && ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.find.open = false;
@@ -1938,7 +1926,9 @@ impl eframe::App for StrataApp {
         #[cfg(target_os = "macos")]
         if self.native_menu.is_some() {
             let mut menus = self.menus();
-            if self.terminal_has_keys(ctx) {
+            if self.keymap.chord_pending() {
+                menus.iter_mut().for_each(|(_, items)| crate::menus::strip_keys(items));
+            } else if self.terminal_has_keys(ctx) {
                 menus.iter_mut().for_each(|(_, items)| crate::terminal::strip_menu_keys(items));
             }
             let native = self.native_menu.as_mut().expect("checked");
@@ -2012,6 +2002,7 @@ impl eframe::App for StrataApp {
         if now - self.last_disk_check > 1.0 {
             self.last_disk_check = now;
             self.watch_settings();
+            self.watch_keymap();
             // Every visible tab: each pane shows one.
             for g in 0..self.layout.groups() {
                 if let Some(i) = self.group_active(g) {
@@ -2173,6 +2164,8 @@ impl eframe::App for StrataApp {
                 "p" => self.open_palette(ctx, palette::Mode::Files, q),
                 "about" => self.about_open = true,
                 "fold" => self.run_act(ctx, crate::menus::Act::Named(format!("fold_level:{}", q.parse::<usize>().unwrap_or(2)))),
+                // "run:key_bindings" runs a command by its keybindings.json id.
+                "run" => self.run_command_id(ctx, q),
                 _ => self.open_palette(ctx, palette::Mode::Commands, q),
             }
         }

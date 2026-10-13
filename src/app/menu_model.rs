@@ -5,24 +5,26 @@
 use super::StrataApp;
 use crate::commands::Cmd;
 use crate::keys::*;
+use crate::keybindings::Target;
 use crate::menus::{Act, Item, Menus, System};
 use egui::{Key, Modifiers};
 
-/// An editor command: id (for `run_editor`), palette name, shortcuts, and a
-/// chord shown as text where a single shortcut can't express it.
+/// An editor command: id (for `run_editor`), palette name, and default
+/// shortcuts: single keys and/or a two-key chord. The keys in effect come from
+/// the keymap (see `keybindings`), which starts from these.
 pub struct EdCmd {
     pub id: &'static str,
     pub name: &'static str,
     pub keys: &'static [(Modifiers, Key)],
-    pub chord: Option<&'static str>,
+    pub chord: Option<[(Modifiers, Key); 2]>,
 }
 
 const fn ed(id: &'static str, name: &'static str, keys: &'static [(Modifiers, Key)]) -> EdCmd {
     EdCmd { id, name, keys, chord: None }
 }
 
-const fn chord(id: &'static str, name: &'static str, chord: &'static str) -> EdCmd {
-    EdCmd { id, name, keys: &[], chord: Some(chord) }
+const fn chord(id: &'static str, name: &'static str, first: (Modifiers, Key), then: (Modifiers, Key)) -> EdCmd {
+    EdCmd { id, name, keys: &[], chord: Some([first, then]) }
 }
 
 pub const EDITOR_COMMANDS: &[EdCmd] = &[
@@ -36,8 +38,8 @@ pub const EDITOR_COMMANDS: &[EdCmd] = &[
     ed("join", "Edit: Join Lines", &[(CMD, Key::J)]),
     ed("line_after", "Edit: Insert Line After", &[(CMD, Key::Enter)]),
     ed("line_before", "Edit: Insert Line Before", &[(CMD_SHIFT, Key::Enter)]),
-    chord("upper", "Edit: Convert Case: Upper Case", if MAC { "⌘K ⌘U" } else { "Ctrl+K Ctrl+U" }),
-    chord("lower", "Edit: Convert Case: Lower Case", if MAC { "⌘K ⌘L" } else { "Ctrl+K Ctrl+L" }),
+    chord("upper", "Edit: Convert Case: Upper Case", (CMD, Key::K), (CMD, Key::U)),
+    chord("lower", "Edit: Convert Case: Lower Case", (CMD, Key::K), (CMD, Key::L)),
     ed("sort", "Edit: Sort Lines", if MAC { &[(NONE, Key::F5)] } else { &[(NONE, Key::F9)] }),
     ed("sort_case", "Edit: Sort Lines (Case Sensitive)", if MAC { &[(CTRL, Key::F5)] } else { &[(CTRL, Key::F9)] }),
     ed("reverse", "Edit: Permute Lines: Reverse", &[]),
@@ -109,32 +111,27 @@ pub const EDITOR_COMMANDS: &[EdCmd] = &[
     ed("bookmark_select", "Goto: Bookmarks: Select All Bookmarks", &[(ALT, Key::F2)]),
     ed("select_all", "Selection: Select All", &[(CMD, Key::A)]),
     ed("undo", "Edit: Undo", &[(CMD, Key::Z)]),
-    ed("redo", "Edit: Redo", if MAC { &[(CMD_SHIFT, Key::Z)] } else { &[(CMD, Key::Y)] }),
+    ed("redo", "Edit: Redo", if MAC { &[(CMD_SHIFT, Key::Z)] } else { &[(CMD, Key::Y), (CMD_SHIFT, Key::Z)] }),
 ];
 
 fn find(id: &str) -> &'static EdCmd {
     EDITOR_COMMANDS.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("unknown editor command {id}"))
 }
 
-/// (id, name, shortcut label) for the command palette.
-pub fn palette_editor_commands() -> Vec<(&'static str, &'static str, String)> {
-    EDITOR_COMMANDS
-        .iter()
-        .map(|c| {
-            let keys = c.chord.map(spaced).or_else(|| c.keys.first().map(|&(m, k)| label(m, k))).unwrap_or_default();
-            (c.id, c.name, keys)
-        })
-        .collect()
+/// (id, name) for the command palette; it looks up shortcuts in the keymap.
+pub fn palette_editor_commands() -> Vec<(&'static str, &'static str)> {
+    EDITOR_COMMANDS.iter().map(|c| (c.id, c.name)).collect()
 }
 
 /// A menu item for an editor command, labeled `label`.
 fn e(label: &str, id: &'static str) -> Item {
     let c = find(id);
-    let item = Item::new(label, Act::Editor(id)).keys(c.keys.first().copied());
-    match c.chord {
-        Some(ch) => item.hint(ch),
-        None => item,
-    }
+    Item::new(label, Act::Editor(c.id)).bound(Target::Editor(c.id))
+}
+
+/// A menu item for a folding or scrolling command (see `keybindings`).
+fn v(label: &str, target: Target, act: &str) -> Item {
+    Item::new(label, Act::Named(act.into())).bound(target)
 }
 
 fn c(label: &str, cmd: Cmd) -> Item {
@@ -156,6 +153,7 @@ fn settings_owned(app: &StrataApp) -> Vec<Item> {
     ui_sizes.extend([SEP(), c("Larger", Cmd::UiLarger), c("Smaller", Cmd::UiSmaller)]);
     vec![
         c("Settings", Cmd::Settings),
+        c("Key Bindings", Cmd::KeyBindings),
         SEP(),
         c("Select Color Scheme…", Cmd::SelectTheme),
         SEP(),
@@ -198,9 +196,9 @@ impl StrataApp {
                     Item::System(System::HideOthers),
                     Item::System(System::ShowAll),
                     SEP(),
-                    Item::new("Quit Strata", Act::Quit).key(CMD, Key::Q),
+                    Item::new("Quit Strata", Act::Quit).fixed(CMD, Key::Q),
                     // Hot exit always keeps windows (tabs and unsaved text) for next time.
-                    Item::new("Quit and Keep Windows", Act::Quit).key(CMD_ALT, Key::Q),
+                    Item::new("Quit and Keep Windows", Act::Quit).fixed(CMD_ALT, Key::Q),
                 ],
             ));
         }
@@ -252,14 +250,14 @@ impl StrataApp {
         m.push((
             "Edit".into(),
             vec![
-                Item::new("Undo", Act::Undo).key(CMD, Key::Z),
-                Item::new("Redo", Act::Redo).keys(find("redo").keys.first().copied()),
+                Item::new("Undo", Act::Undo).bound(Target::Editor("undo")),
+                Item::new("Redo", Act::Redo).bound(Target::Editor("redo")),
                 sub("Undo Selection", vec![e("Soft Undo", "soft_undo"), e("Soft Redo", "soft_redo")]),
                 SEP(),
-                Item::new("Cut", Act::Cut).key(CMD, Key::X),
-                Item::new("Copy", Act::Copy).key(CMD, Key::C),
+                Item::new("Cut", Act::Cut).fixed(CMD, Key::X),
+                Item::new("Copy", Act::Copy).fixed(CMD, Key::C),
                 c("Copy as HTML", Cmd::CopyAsHtml),
-                Item::new("Paste", Act::Paste).key(CMD, Key::V),
+                Item::new("Paste", Act::Paste).fixed(CMD, Key::V),
                 e("Paste and Indent", "paste_and_indent"),
                 c("Paste from History", Cmd::PasteFromHistory),
                 SEP(),
@@ -296,17 +294,15 @@ impl StrataApp {
                 sub(
                     "Code Folding",
                     {
-                        let mut v = vec![
-                            Item::new("Fold", Act::Named("fold".into())).key(if MAC { CMD_ALT } else { CTRL_SHIFT }, Key::OpenBracket),
-                            Item::new("Unfold", Act::Named("unfold".into())).key(if MAC { CMD_ALT } else { CTRL_SHIFT }, Key::CloseBracket),
-                            Item::new("Unfold All", Act::Named("unfold_all".into())).hint(if MAC { "⌘K ⌘J" } else { "Ctrl+K Ctrl+J" }),
+                        let mut items = vec![
+                            v("Fold", Target::View("fold"), "fold"),
+                            v("Unfold", Target::View("unfold"), "unfold"),
+                            v("Unfold All", Target::View("unfold_all"), "unfold_all"),
                             SEP(),
-                            Item::new("Fold All", Act::Named("fold_all".into())).hint(if MAC { "⌘K ⌘1" } else { "Ctrl+K Ctrl+1" }),
+                            v("Fold All", Target::View("fold_all"), "fold_all"),
                         ];
-                        v.extend((2..=9).map(|n| {
-                            Item::new(format!("Fold Level {n}"), Act::Named(format!("fold_level:{n}"))).hint(&if MAC { format!("⌘K ⌘{n}") } else { format!("Ctrl+K Ctrl+{n}") })
-                        }));
-                        v
+                        items.extend((2..=9).map(|n| Item::new(format!("Fold Level {n}"), Act::Named(format!("fold_level:{n}"))).bound(Target::FoldLevel(n))));
+                        items
                     },
                 ),
                 sub(
@@ -355,7 +351,7 @@ impl StrataApp {
                 e("Single Selection", "single_selection"),
                 e("Invert Selection", "invert_selection"),
                 SEP(),
-                Item::new("Select All", Act::SelectAll).key(CMD, Key::A),
+                Item::new("Select All", Act::SelectAll).bound(Target::Editor("select_all")),
                 e("Expand Selection", "expand_selection"),
                 e("Expand Selection to Line", "expand_line"),
                 e("Expand Selection to Line Upward", "expand_line_up"),
@@ -574,9 +570,9 @@ impl StrataApp {
                 sub(
                     "Scroll",
                     vec![
-                        Item::new("Scroll to Selection", Act::Named("scroll_sel".into())).keys(MAC.then_some((CTRL, Key::L))),
-                        Item::new("Line Up", Act::Named("scroll_up".into())).key(if MAC { CTRL_ALT } else { CTRL }, Key::ArrowUp),
-                        Item::new("Line Down", Act::Named("scroll_down".into())).key(if MAC { CTRL_ALT } else { CTRL }, Key::ArrowDown),
+                        v("Scroll to Selection", Target::View("scroll_sel"), "scroll_sel"),
+                        v("Line Up", Target::View("scroll_up"), "scroll_up"),
+                        v("Line Down", Target::View("scroll_down"), "scroll_down"),
                     ],
                 ),
                 sub("Bookmarks", bookmarks),
@@ -705,7 +701,12 @@ impl StrataApp {
         use egui::Event;
         let cmd_mods = if MAC { Modifiers::MAC_CMD.plus(Modifiers::COMMAND) } else { Modifiers::CTRL.plus(Modifiers::COMMAND) };
         let key = |key: Key, modifiers: Modifiers| Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers };
+        let editor_focused = self.docs[self.active].view.has_focus(ctx);
         match act {
+            // The editor's own commands, so they follow its key bindings; text fields get the keys.
+            Act::Undo if editor_focused => self.run_editor("undo"),
+            Act::Redo if editor_focused => self.run_editor("redo"),
+            Act::SelectAll if editor_focused => self.run_editor("select_all"),
             Act::Cmd(cmd) => self.run(ctx, cmd),
             Act::Editor(id) => self.run_editor(id),
             // These go through egui's input so the focused widget (editor or a text field) gets them.

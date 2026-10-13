@@ -87,12 +87,12 @@ pub struct Palette {
     /// Items for `Mode::Choice`, and the field's placeholder.
     choices: Vec<String>,
     choice_hint: String,
-    /// Editor commands as (id, palette name, shortcut label).
-    editor_cmds: Vec<(&'static str, &'static str, String)>,
+    /// Editor commands as (id, palette name); shortcuts come from the keymap.
+    editor_cmds: Vec<(&'static str, &'static str)>,
 }
 
 impl Palette {
-    pub fn new(editor_cmds: Vec<(&'static str, &'static str, String)>) -> Self {
+    pub fn new(editor_cmds: Vec<(&'static str, &'static str)>) -> Self {
         Self {
             open: false,
             mode: Mode::Commands,
@@ -193,7 +193,8 @@ impl Palette {
             .filter(|c| **c != Cmd::CommandPalette)
             .map(|&c| (c.name().to_owned(), c.shortcut_label().unwrap_or_default(), Pick::Cmd(c)))
             .collect();
-        items.extend(self.editor_cmds.iter().map(|(id, name, keys)| (name.to_string(), keys.clone(), Pick::Editor(id))));
+        let keymap = crate::keybindings::current();
+        items.extend(self.editor_cmds.iter().map(|&(id, name)| (name.to_string(), keymap.label(crate::keybindings::Target::Editor(id)).unwrap_or_default(), Pick::Editor(id))));
         items.extend(crate::highlight::syntax_names().into_iter().map(|s| (format!("Set Syntax: {s}"), String::new(), Pick::Syntax(s.to_owned()))));
         rank_rows(&self.text, &items, |i| &i.0, |i| i.2.clone(), |i| i.1.clone())
     }
@@ -455,7 +456,7 @@ mod tests {
     }
 
     fn palette(mode: Mode, prefix: &str, c: Context) -> Palette {
-        let mut p = Palette::new(vec![("duplicate_lines", "Edit: Duplicate Line", "⇧⌘D".into())]);
+        let mut p = Palette::new(vec![("duplicate", "Edit: Duplicate Line")]);
         p.show_mode(mode, prefix, c, &egui::Context::default());
         p.rebuild();
         p
@@ -473,6 +474,22 @@ mod tests {
         p.text = "set syntax rust".into();
         p.rebuild();
         assert!(p.rows[0].label.starts_with("Set Syntax: Rust"));
+    }
+
+    #[test]
+    fn shortcut_column_follows_the_keymap() {
+        use crate::keybindings::{Keymap, install};
+        let (k, _) = Keymap::with_user(r#"[ { "keys": ["ctrl+alt+shift+d"], "command": "duplicate_line" }, { "keys": ["primary+k", "primary+s"], "command": "save_all" } ]"#).unwrap();
+        install(k);
+        let mut p = palette(Mode::Commands, "", ctx("", "Plain Text"));
+        p.text = "dupl".into();
+        p.rebuild();
+        let mods = Modifiers::CTRL | Modifiers::ALT | Modifiers::SHIFT;
+        assert_eq!(p.rows[0].detail, crate::keys::label(mods, Key::D));
+        p.text = "save all".into();
+        p.rebuild();
+        assert_eq!(p.rows[0].detail, format!("{} {}", crate::keys::label(Modifiers::COMMAND, Key::K), crate::keys::label(Modifiers::COMMAND, Key::S)));
+        install(Keymap::defaults());
     }
 
     #[test]

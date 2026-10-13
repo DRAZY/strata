@@ -1,4 +1,6 @@
-//! Window-level commands: one table drives the shortcuts and the command palette.
+//! Window-level commands: one table drives the default shortcuts and the
+//! command palette. The keys in effect come from the keymap (`keybindings`),
+//! which starts from `default_keys` and applies the user's keybindings.json.
 
 use crate::keys::*;
 use egui::{Key, Modifiers};
@@ -113,6 +115,7 @@ pub enum Cmd {
     Snippets,
     NewSnippet,
     InstallShellCommand,
+    KeyBindings,
 }
 
 impl Cmd {
@@ -231,6 +234,7 @@ impl Cmd {
         Cmd::Snippets,
         Cmd::NewSnippet,
         Cmd::InstallShellCommand,
+        Cmd::KeyBindings,
     ];
 
     pub fn name(self) -> &'static str {
@@ -349,16 +353,12 @@ impl Cmd {
             Cmd::PrevModification => "Goto: Previous Modification",
             Cmd::ToggleTerminal => "View: Toggle Terminal",
             Cmd::NewTerminal => "Terminal: New Terminal",
-
-
-
-
-
+            Cmd::KeyBindings => "Preferences: Key Bindings",
         }
     }
 
-    /// Shortcuts, first one shown in the palette.
-    pub fn keys(self) -> &'static [(Modifiers, Key)] {
+    /// Built-in shortcuts, first one shown in menus and the palette.
+    pub fn default_keys(self) -> &'static [(Modifiers, Key)] {
         match self {
             Cmd::NewTab => &[(CMD, Key::N)],
             Cmd::Open => &[(CMD, Key::O)],
@@ -418,6 +418,7 @@ impl Cmd {
             Cmd::RefreshFolders => &[],
             Cmd::About => &[],
             Cmd::InstallShellCommand => &[],
+            Cmd::KeyBindings => &[],
             Cmd::Documentation => &[],
             Cmd::Build => &[(CMD, Key::B)],
             Cmd::BuildWith => &[(CMD_SHIFT, Key::B)],
@@ -487,22 +488,132 @@ impl Cmd {
         }
     }
 
-    pub fn shortcut_label(self) -> Option<String> {
-        self.keys().first().map(|&(m, k)| label(m, k))
+    /// Single-key shortcuts in effect (defaults plus the user's keybindings.json).
+    #[cfg(test)]
+    pub fn keys(self) -> Vec<(Modifiers, Key)> {
+        crate::keybindings::current().strokes(crate::keybindings::Target::Cmd(self))
     }
-}
 
-/// Shortcuts that never reach the editor (the editor handles its own keys).
-pub fn pressed(ctx: &egui::Context) -> Vec<Cmd> {
-    let mut out = Vec::new();
-    for &cmd in Cmd::ALL {
-        for &(mods, key) in cmd.keys() {
-            if take(ctx, mods, key) {
-                out.push(cmd);
-            }
+    /// The shortcut shown next to the command ("⇧ ⌘ P", or a chord like "⌘ K ⌘ B").
+    pub fn shortcut_label(self) -> Option<String> {
+        crate::keybindings::current().label(crate::keybindings::Target::Cmd(self))
+    }
+
+    /// Stable id for keybindings.json: Sublime's command name where one maps
+    /// 1:1. The pane commands share an id and take a 0-based `"group"` argument.
+    pub fn id(self) -> &'static str {
+        match self {
+            Cmd::NewTab => "new_file",
+            Cmd::NewWindow => "new_window",
+            Cmd::Open => "open_file",
+            Cmd::OpenFolder => "open_folder",
+            Cmd::Save => "save",
+            Cmd::SaveAs => "save_as",
+            Cmd::SaveAll => "save_all",
+            Cmd::CloseTab => "close_file",
+            Cmd::CloseAll => "close_all",
+            Cmd::ReopenClosed => "reopen_last_file",
+            Cmd::NextTab => "next_view",
+            Cmd::PrevTab => "prev_view",
+            Cmd::ToggleSidebar => "toggle_side_bar",
+            Cmd::Find => "show_find",
+            Cmd::Replace => "show_replace",
+            Cmd::FindNext => "find_next",
+            Cmd::FindPrev => "find_prev",
+            Cmd::FindInFiles => "find_in_files",
+            Cmd::ReplaceInFiles => "replace_in_files",
+            Cmd::ZoomIn => "increase_font_size",
+            Cmd::ZoomOut => "decrease_font_size",
+            Cmd::ZoomReset => "reset_font_size",
+            Cmd::ToggleMinimap => "toggle_minimap",
+            Cmd::Fullscreen => "toggle_full_screen",
+            Cmd::Settings => "edit_settings",
+            Cmd::CommandPalette => "command_palette",
+            Cmd::GotoAnything => "goto_anything",
+            Cmd::GotoLine => "goto_line",
+            Cmd::GotoSymbol => "goto_symbol",
+            Cmd::SelectTheme => "select_color_scheme",
+            Cmd::SelectSyntax => "select_syntax",
+            Cmd::LayoutSingle => "layout_single",
+            Cmd::LayoutColumns2 => "layout_columns_2",
+            Cmd::LayoutColumns3 => "layout_columns_3",
+            Cmd::LayoutColumns4 => "layout_columns_4",
+            Cmd::LayoutRows2 => "layout_rows_2",
+            Cmd::LayoutRows3 => "layout_rows_3",
+            Cmd::LayoutGrid => "layout_grid_4",
+            Cmd::SplitRight => "split_right",
+            Cmd::FocusGroup(_) => "focus_group",
+            Cmd::MoveToGroup(_) => "move_to_group",
+            Cmd::ToggleWordWrap => "toggle_word_wrap",
+            Cmd::CloseWindow => "close_window",
+            Cmd::RevertFile => "revert",
+            Cmd::ClearRecent => "clear_recent_files",
+            Cmd::ToggleStatusBar => "toggle_status_bar",
+            Cmd::ToggleTabs => "toggle_tabs",
+            Cmd::DistractionFree => "toggle_distraction_free",
+            Cmd::IncrementalFind => "incremental_find",
+            Cmd::UseSelectionForFind => "slurp_find_string",
+            Cmd::UseSelectionForReplace => "slurp_replace_string",
+            Cmd::QuickFind => "find_under",
+            Cmd::JumpBack => "jump_back",
+            Cmd::JumpForward => "jump_forward",
+            Cmd::GotoDefinition => "goto_definition",
+            Cmd::OpenProject => "open_project",
+            Cmd::SaveProjectAs => "save_project_as",
+            Cmd::CloseFolder => "close_folder",
+            Cmd::RefreshFolders => "refresh_folder_list",
+            Cmd::About => "about",
+            Cmd::Documentation => "documentation",
+            Cmd::Build => "build",
+            Cmd::BuildWith => "build_with",
+            Cmd::CancelBuild => "cancel_build",
+            Cmd::NextResult => "next_result",
+            Cmd::PrevResult => "prev_result",
+            Cmd::ToggleBuildResults => "toggle_build_results",
+            Cmd::ShowCompletions => "auto_complete",
+            Cmd::ReplaceNext => "replace_next",
+            Cmd::NextFindResult => "next_find_result",
+            Cmd::PrevFindResult => "prev_find_result",
+            Cmd::CancelFindInFiles => "cancel_find_in_files",
+            Cmd::ToggleOpenFiles => "toggle_open_files",
+            Cmd::NewGroup => "new_group",
+            Cmd::CloseGroup => "close_group",
+            Cmd::MoveToNewGroup => "move_to_new_group",
+            Cmd::FocusNextGroup => "focus_next_group",
+            Cmd::FocusPrevGroup => "focus_prev_group",
+            Cmd::MoveToNextGroup => "move_to_next_group",
+            Cmd::MoveToPrevGroup => "move_to_prev_group",
+            Cmd::NextInStack => "next_view_in_stack",
+            Cmd::PrevInStack => "prev_view_in_stack",
+            Cmd::SwitchHeader => "switch_file",
+            Cmd::GotoReference => "goto_reference",
+            Cmd::GotoSymbolInProject => "goto_symbol_in_project",
+            Cmd::CopyAsHtml => "copy_as_html",
+            Cmd::ToggleMarkdownPreview => "toggle_markdown_preview",
+            Cmd::ExportMarkdownHtml => "export_markdown_html",
+            Cmd::PasteFromHistory => "paste_from_history",
+            Cmd::NewBuildSystem => "new_build_system",
+            Cmd::ToggleSaveAllOnBuild => "toggle_save_all_on_build",
+            Cmd::RecordMacro => "toggle_record_macro",
+            Cmd::PlaybackMacro => "run_macro",
+            Cmd::SwitchProject => "switch_project",
+            Cmd::CloseProject => "close_project",
+            Cmd::EditProject => "edit_project",
+            Cmd::Licenses => "licenses",
+            Cmd::SelectEditorFont => "select_editor_font",
+            Cmd::SelectUiFont => "select_ui_font",
+            Cmd::UiLarger => "increase_ui_font_size",
+            Cmd::UiSmaller => "decrease_ui_font_size",
+            Cmd::NextModification => "next_modification",
+            Cmd::PrevModification => "prev_modification",
+            Cmd::ToggleTerminal => "toggle_terminal",
+            Cmd::NewTerminal => "new_terminal",
+            Cmd::Snippets => "snippets",
+            Cmd::NewSnippet => "new_snippet",
+            Cmd::InstallShellCommand => "install_shell_command",
+            Cmd::KeyBindings => "key_bindings",
         }
     }
-    out
 }
 
 #[cfg(test)]
@@ -513,11 +624,23 @@ mod tests {
     fn no_two_commands_share_a_shortcut() {
         let mut seen = Vec::new();
         for &cmd in Cmd::ALL {
-            for &(m, k) in cmd.keys() {
+            for &(m, k) in cmd.default_keys() {
                 let l = label(m, k);
                 assert!(!seen.contains(&l), "{l} bound twice");
                 seen.push(l);
             }
+        }
+    }
+
+    #[test]
+    fn ids_are_unique_except_pane_commands() {
+        let mut seen: Vec<&str> = Vec::new();
+        for &cmd in Cmd::ALL {
+            if matches!(cmd, Cmd::FocusGroup(1..) | Cmd::MoveToGroup(1..)) {
+                continue;
+            }
+            assert!(!seen.contains(&cmd.id()), "{} used twice", cmd.id());
+            seen.push(cmd.id());
         }
     }
 }

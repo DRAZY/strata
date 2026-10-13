@@ -6,7 +6,7 @@ use crate::decor;
 use crate::editor::Editor;
 use crate::fold::{self, Folds};
 use crate::highlight::{Highlighter, Span};
-use crate::lang::{self, CommentTokens};
+use crate::lang;
 use crate::wrap::{self, LineRows, WrapIndex};
 use egui::text::{CCursor, LayoutJob, TextFormat};
 use egui::{
@@ -52,8 +52,6 @@ pub struct EditorView {
     caret_rect: Option<Rect>,
     /// Box-selection drag origin as (line, display column).
     box_from: Option<(usize, usize)>,
-    /// Cmd/Ctrl+K pressed; the next key completes a chord.
-    chord_k: bool,
     pub minimap: bool,
     /// Pointer over (or dragging) the scrollbar: draw it brighter.
     scrollbar_hot: bool,
@@ -192,7 +190,6 @@ impl EditorView {
             preedit: String::new(),
             caret_rect: None,
             box_from: None,
-            chord_k: false,
             minimap: true,
             scrollbar_hot: false,
             blink_epoch: 0.0,
@@ -267,16 +264,10 @@ impl EditorView {
         self.wants_focus = false;
     }
 
-    /// Cmd/Ctrl+K was pressed and the view waits for the chord's second key;
-    /// app-level shortcuts on that key (Cmd+1…9, Cmd+0) should stand aside.
-    #[allow(dead_code)] // for the app's shortcut handling
     /// First buffer line in view (Markdown preview scroll sync).
+    #[allow(dead_code)]
     pub fn top_line(&self) -> usize {
         self.top_line
-    }
-
-    pub fn chord_pending(&self) -> bool {
-        self.chord_k
     }
 
     /// Scroll the view by `n` lines (negative = up), leaving the cursor alone.
@@ -522,7 +513,7 @@ impl EditorView {
         let target = self.scroll.y;
         self.sync(ed, &m);
         if resp.has_focus() {
-            self.handle_keys(ui, ed, &m, lang::comment_tokens(hl.syntax_name()));
+            self.handle_keys(ui, ed, &m);
         }
         self.sync(ed, &m);
         self.flush_changes(hl);
@@ -723,7 +714,7 @@ impl EditorView {
 
     // ---- input -----------------------------------------------------------
 
-    fn handle_keys(&mut self, ui: &Ui, ed: &mut Editor, m: &Metrics, comments: CommentTokens) {
+    fn handle_keys(&mut self, ui: &Ui, ed: &mut Editor, m: &Metrics) {
         let events = ui.input(|i| i.events.clone());
         for event in events {
             match event {
@@ -739,7 +730,7 @@ impl EditorView {
                 Event::Copy => ui.ctx().copy_text(ed.copy()),
                 Event::Cut => ui.ctx().copy_text(ed.cut()),
                 Event::Key { key, pressed: true, modifiers, .. } => {
-                    if !self.handle_key(ed, key, modifiers, m, comments) {
+                    if !self.handle_key(ed, key, modifiers, m) {
                         continue;
                     }
                 }
@@ -774,55 +765,20 @@ impl EditorView {
         }
     }
 
+    /// Typing and caret movement. Commands (comment, duplicate, swap lines,
+    /// folding, ⌘K chords…) come from the keymap before the view sees the
+    /// keys, so remapping them works; see `keybindings`.
     /// Returns true if the key did something.
-    fn handle_key(&mut self, ed: &mut Editor, key: Key, mods: Modifiers, m: &Metrics, comments: CommentTokens) -> bool {
+    fn handle_key(&mut self, ed: &mut Editor, key: Key, mods: Modifiers, m: &Metrics) -> bool {
         let mac = cfg!(target_os = "macos");
         // Word jumps: Option on macOS, Ctrl on Windows. Line jumps: Cmd on macOS.
         let word = if mac { mods.alt } else { mods.ctrl };
         let cmd = mac && mods.mac_cmd;
         let shift = mods.shift;
-        // Move lines: Ctrl+Cmd on macOS, Ctrl+Shift elsewhere.
-        let move_lines = if mac { mods.mac_cmd && mods.ctrl } else { mods.ctrl && shift };
-        // Add cursor above/below: Ctrl+Shift on macOS, Ctrl+Alt elsewhere.
-        let add_cursor = if mac { mods.ctrl && shift && !mods.mac_cmd } else { mods.ctrl && mods.alt };
-        // Sort lines: F5 on macOS, F9 elsewhere; with Ctrl, case-sensitive.
-        let sort_key = if mac { Key::F5 } else { Key::F9 };
-        // Fold/unfold: Alt+Cmd+[ ] on macOS, Ctrl+Shift+[ ] elsewhere.
-        let fold_mods = if mac { mods.command && mods.alt && !shift } else { mods.ctrl && shift && !mods.alt };
-        // Scroll a line: Ctrl+Alt+Up/Down on macOS, Ctrl+Up/Down elsewhere.
-        let scroll_line = if mac { mods.ctrl && mods.alt && !mods.command && !shift } else { mods.ctrl && !shift && !mods.alt };
         if matches!(key, Key::ArrowUp | Key::ArrowDown | Key::PageUp | Key::PageDown) {
             self.sync(ed, m);
         }
-        if std::mem::take(&mut self.chord_k) && mods.command {
-            match key {
-                Key::U => ed.swap_case_upper(),
-                Key::L => ed.swap_case_lower(),
-                Key::Num1 => self.fold_all(ed),
-                Key::J | Key::Num0 => self.unfold_all(),
-                Key::Num2 => self.fold_level(ed, 2),
-                Key::Num3 => self.fold_level(ed, 3),
-                Key::Num4 => self.fold_level(ed, 4),
-                Key::Num5 => self.fold_level(ed, 5),
-                Key::Num6 => self.fold_level(ed, 6),
-                Key::Num7 => self.fold_level(ed, 7),
-                Key::Num8 => self.fold_level(ed, 8),
-                Key::Num9 => self.fold_level(ed, 9),
-                _ => return false,
-            }
-            return true;
-        }
         match key {
-            Key::OpenBracket | Key::OpenCurlyBracket if fold_mods => self.fold(ed),
-            Key::CloseBracket | Key::CloseCurlyBracket if fold_mods => self.unfold(ed),
-            Key::ArrowUp | Key::ArrowDown if move_lines => ed.move_lines(key == Key::ArrowUp),
-            Key::ArrowUp if add_cursor => ed.add_cursor_vertical(-1),
-            Key::ArrowDown if add_cursor => ed.add_cursor_vertical(1),
-            Key::ArrowUp | Key::ArrowDown if scroll_line => {
-                // Moves the view only, so don't reveal the cursor.
-                self.scroll_lines(if key == Key::ArrowUp { -1 } else { 1 });
-                return false;
-            }
             Key::ArrowLeft if cmd => ed.move_home(shift),
             Key::ArrowRight if cmd => ed.move_end(shift),
             Key::ArrowUp if cmd => ed.move_doc_start(shift),
@@ -841,45 +797,16 @@ impl EditorView {
                 self.scroll.y += n as f32 * m.row_h;
                 self.jump = true;
             }
-            Key::Enter if mods.command && shift => ed.insert_line_before(),
-            Key::Enter if mods.command => ed.insert_line_after(),
-            Key::Enter => ed.newline(),
+            Key::Enter if !mods.command => ed.newline(),
+            Key::Tab if mods.command => return false,
             Key::Tab if shift => ed.outdent(),
             Key::Tab if ed.selections().iter().any(|s| ed.buffer.line_of(s.start()) != ed.buffer.line_of(s.end())) => {
                 ed.indent()
             }
             Key::Tab => ed.tab(),
-            Key::CloseBracket if mods.command && !shift => ed.indent(),
-            Key::OpenBracket if mods.command && !shift => ed.outdent(),
-            Key::Slash if mods.command => match comments {
-                (Some(token), _) => ed.toggle_comment(token),
-                (None, Some((open, close))) => ed.toggle_block_comment(open, close),
-                (None, None) => return false,
-            },
-            Key::D if mods.command && shift => ed.duplicate_lines(),
-            Key::K if mods.ctrl && shift => ed.delete_lines(),
-            Key::K if mods.command => {
-                self.chord_k = true;
-                return false;
-            }
-            k if k == sort_key => ed.sort_lines(mods.ctrl),
-            Key::J if mods.command => ed.join_lines(),
-            Key::L if mods.command && shift => ed.split_into_lines(),
-            Key::L if mods.command => ed.expand_to_line(),
-            Key::M if mods.ctrl && shift => ed.expand_to_brackets(),
-            Key::M if mods.ctrl => ed.jump_to_bracket(),
-            Key::Backspace if cmd => ed.delete_to_line_start(),
             Key::Backspace => ed.backspace(word),
             Key::Delete => ed.delete_forward(word),
             Key::Escape => ed.collapse_to_primary(),
-            Key::A if mods.command => ed.select_all(),
-            Key::D if mods.command => ed.select_next_occurrence(),
-            // Find all occurrences: Ctrl+Cmd+G on macOS, Alt+F3 elsewhere.
-            Key::G if mac && mods.mac_cmd && mods.ctrl => ed.select_all_occurrences(),
-            Key::F3 if !mac && mods.alt => ed.select_all_occurrences(),
-            Key::Z if mods.command && shift => ed.redo(),
-            Key::Z if mods.command => ed.undo(),
-            Key::Y if mods.command && !mac => ed.redo(),
             _ => return false,
         }
         true
@@ -2020,10 +1947,10 @@ mod tests {
         let nl = h.ed.buffer.line_ending().as_str();
         assert_eq!(h.text(), format!("fn main() {{{nl}        x"));
         // Deleting is its own undo step, separate from the typing before it.
-        h.frame(vec![key(Key::Z, Modifiers::COMMAND)]);
+        h.ed.undo();
         assert_eq!(h.text(), format!("fn main() {{{nl}        x;"));
         // The Tab indent and "x;" were typed together, so they undo together.
-        h.frame(vec![key(Key::Z, Modifiers::COMMAND)]);
+        h.ed.undo();
         assert_eq!(h.text(), format!("fn main() {{{nl}    "));
     }
 
@@ -2053,33 +1980,6 @@ mod tests {
     }
 
     #[test]
-    fn cmd_d_through_the_widget() {
-        let mut h = Harness::new("let a = a + a;");
-        h.frame(vec![key(Key::ArrowRight, Modifiers::NONE); 4]);
-        h.frame(vec![key(Key::D, Modifiers::COMMAND); 3]);
-        assert_eq!(h.ed.selections().len(), 3);
-        h.frame(vec![Event::Text("b".into())]);
-        assert_eq!(h.text(), "let b = b + b;");
-    }
-
-    #[test]
-    fn command_slash_comments_rust_line() {
-        let mut h = Harness::new("    let x = 1;\n");
-        h.hl.detect(Some(std::path::Path::new("main.rs")), "");
-        h.frame(vec![key(Key::Slash, Modifiers::COMMAND)]);
-        assert_eq!(h.text(), "    // let x = 1;\n");
-        h.frame(vec![key(Key::Slash, Modifiers::COMMAND)]);
-        assert_eq!(h.text(), "    let x = 1;\n");
-    }
-
-    #[test]
-    fn command_slash_without_comment_syntax_does_nothing() {
-        let mut h = Harness::new("plain\n");
-        h.frame(vec![key(Key::Slash, Modifiers::COMMAND)]);
-        assert_eq!(h.text(), "plain\n");
-    }
-
-    #[test]
     fn tab_indents_multiline_selection_and_shift_tab_outdents() {
         let mut h = Harness::new("a\n        b\n");
         h.frame(vec![key(Key::ArrowDown, Modifiers::SHIFT)]);
@@ -2096,20 +1996,6 @@ mod tests {
         h.frame(vec![Event::Text("f(".into()), Event::Text("x".into()), Event::Text(")".into())]);
         assert_eq!(h.text(), "f(x)");
         assert_eq!(h.ed.primary().head, 4);
-    }
-
-    #[test]
-    fn move_line_and_case_chord_keys() {
-        let mut h = Harness::new("one\ntwo");
-        let move_mods = if cfg!(target_os = "macos") {
-            Modifiers { ctrl: true, mac_cmd: true, command: true, ..Modifiers::NONE }
-        } else {
-            Modifiers::CTRL | Modifiers::SHIFT
-        };
-        h.frame(vec![key(Key::ArrowDown, move_mods)]);
-        assert_eq!(h.text(), "two\none");
-        h.frame(vec![key(Key::K, Modifiers::COMMAND), key(Key::U, Modifiers::COMMAND)]);
-        assert_eq!(h.text(), "two\nONE");
     }
 
     #[test]
@@ -2284,10 +2170,6 @@ mod tests {
     const RUST: &str = "fn main() {\n    let x = 1;\n\n    if x > 0 {\n        go();\n    }\n}\n\nfn other() {}\n";
     const PY: &str = "class A:\n    def f(self):\n        return 1\n\n    def g(self):\n        pass\n\nx = 1\n";
 
-    fn fold_mods() -> Modifiers {
-        if cfg!(target_os = "macos") { Modifiers::COMMAND | Modifiers::ALT } else { Modifiers::CTRL | Modifiers::SHIFT }
-    }
-
     fn hidden(h: &Harness) -> Vec<usize> {
         (0..h.ed.buffer.len_lines()).filter(|&l| h.view.is_folded_line(l)).collect()
     }
@@ -2299,14 +2181,16 @@ mod tests {
     #[test]
     fn fold_and_unfold_rust_block_at_cursor() {
         let mut h = Harness::new(RUST);
-        h.frame(vec![key(Key::OpenBracket, fold_mods())]);
+        h.view.fold(&mut h.ed);
+        h.frame(vec![]);
         assert_eq!(hidden(&h), [1, 2, 3, 4, 5], "the closing brace stays visible");
         assert!(h.view.is_fold_header(0));
         h.frame(vec![key(Key::ArrowDown, Modifiers::NONE)]);
         assert_eq!(head_line(&h), 6, "down from the header skips the fold");
         h.frame(vec![key(Key::ArrowUp, Modifiers::NONE)]);
         assert_eq!(head_line(&h), 0);
-        h.frame(vec![key(Key::CloseBracket, fold_mods())]);
+        h.view.unfold(&mut h.ed);
+        h.frame(vec![]);
         assert!(hidden(&h).is_empty());
     }
 
@@ -2314,11 +2198,13 @@ mod tests {
     fn fold_python_method_then_its_class() {
         let mut h = Harness::new(PY);
         h.ed.click(h.ed.buffer.line_start(2) + 9, false);
-        h.frame(vec![key(Key::OpenBracket, fold_mods())]);
+        h.view.fold(&mut h.ed);
+        h.frame(vec![]);
         assert_eq!(hidden(&h), [2]);
         assert_eq!(h.ed.primary().head, h.ed.buffer.line_end(1), "the caret parks on the header");
         // Folding again on a folded header folds the region around it.
-        h.frame(vec![key(Key::OpenBracket, fold_mods())]);
+        h.view.fold(&mut h.ed);
+        h.frame(vec![]);
         assert_eq!(hidden(&h), [1, 2, 3, 4, 5]);
         assert_eq!(head_line(&h), 0);
         h.frame(vec![key(Key::ArrowDown, Modifiers::NONE)]);
@@ -2326,13 +2212,16 @@ mod tests {
     }
 
     #[test]
-    fn fold_all_unfold_all_and_fold_level_chords() {
+    fn fold_all_unfold_all_and_fold_level() {
         let mut h = Harness::new(PY);
-        h.frame(vec![key(Key::K, Modifiers::COMMAND), key(Key::Num1, Modifiers::COMMAND)]);
+        h.view.fold_all(&mut h.ed);
+        h.frame(vec![]);
         assert_eq!(hidden(&h), [1, 2, 3, 4, 5]);
-        h.frame(vec![key(Key::K, Modifiers::COMMAND), key(Key::J, Modifiers::COMMAND)]);
+        h.view.unfold_all();
+        h.frame(vec![]);
         assert!(hidden(&h).is_empty());
-        h.frame(vec![key(Key::K, Modifiers::COMMAND), key(Key::Num2, Modifiers::COMMAND)]);
+        h.view.fold_level(&mut h.ed, 2);
+        h.frame(vec![]);
         assert_eq!(hidden(&h), [2, 5], "level 2 keeps the class open");
         h.view.unfold_all();
         h.view.fold_all(&mut h.ed);
@@ -2343,7 +2232,8 @@ mod tests {
     fn multiline_selection_folds_its_lines() {
         let mut h = Harness::new("a\nb\nc\nd\ne\n");
         h.ed.select_ranges(&[0..h.ed.buffer.line_start(3)], 0);
-        h.frame(vec![key(Key::OpenBracket, fold_mods())]);
+        h.view.fold(&mut h.ed);
+        h.frame(vec![]);
         assert_eq!(hidden(&h), [1, 2], "a selection ending at column 0 leaves that line out");
     }
 
@@ -2398,7 +2288,8 @@ mod tests {
         assert!(h.view.is_fold_header(4));
         assert_eq!(hidden(&h), [5]);
         // Deleting everything never panics and drops the fold.
-        h.frame(vec![key(Key::A, Modifiers::COMMAND), key(Key::Backspace, Modifiers::NONE)]);
+        h.ed.select_all();
+        h.frame(vec![key(Key::Backspace, Modifiers::NONE)]);
         assert!(hidden(&h).is_empty());
     }
 
@@ -2443,10 +2334,11 @@ mod tests {
         h.view.scroll_lines(5);
         h.frame(vec![]);
         assert_eq!(h.view.scroll.y, 5.0 * row);
-        let mods = if cfg!(target_os = "macos") { Modifiers::CTRL | Modifiers::ALT } else { Modifiers::CTRL };
-        h.frame(vec![key(Key::ArrowDown, mods), key(Key::ArrowDown, mods)]);
+        h.view.scroll_lines(2);
+        h.frame(vec![]);
         assert_eq!(h.view.scroll.y, 7.0 * row);
-        h.frame(vec![key(Key::ArrowUp, mods)]);
+        h.view.scroll_lines(-1);
+        h.frame(vec![]);
         assert_eq!(h.view.scroll.y, 6.0 * row);
         assert_eq!(h.ed.primary().head, 0);
     }

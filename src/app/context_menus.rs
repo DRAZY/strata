@@ -11,6 +11,7 @@
 use super::StrataApp;
 use crate::commands::Cmd;
 use crate::ctxmenu;
+use crate::keybindings::Target as Bound;
 use crate::document::Document;
 use crate::keys::*;
 use crate::menus::{Act, Item};
@@ -141,16 +142,16 @@ impl StrataApp {
         items.push(Item::cmd("Goto Definition", Cmd::GotoDefinition).enabled(symbol));
         let comments = crate::lang::comment_tokens(d.highlighter.syntax_name());
         let can_comment = writable && (comments.0.is_some() || comments.1.is_some());
-        items.push(Item::new("Toggle Comment", Act::Editor("toggle_comment")).key(CMD, Key::Slash).enabled(can_comment));
+        items.push(Item::new("Toggle Comment", Act::Editor("toggle_comment")).bound(Bound::Editor("toggle_comment")).enabled(can_comment));
         let line = d.editor.buffer.line_of(d.editor.primary().head);
         items.push(if d.view.is_fold_header(line) {
-            Item::new("Unfold", Act::Named("unfold".into())).key(if MAC { CMD_ALT } else { CTRL_SHIFT }, Key::CloseBracket)
+            Item::new("Unfold", Act::Named("unfold".into())).bound(Bound::View("unfold"))
         } else {
             let foldable = crate::fold::has_region(&d.editor.buffer, line, d.editor.tab_width) || d.editor.selections().iter().any(|s| {
                 let b = &d.editor.buffer;
                 b.line_of(s.start()) != b.line_of(s.end())
             });
-            Item::new("Fold", Act::Named("fold".into())).key(if MAC { CMD_ALT } else { CTRL_SHIFT }, Key::OpenBracket).enabled(foldable)
+            Item::new("Fold", Act::Named("fold".into())).bound(Bound::View("fold")).enabled(foldable)
         });
         items
     }
@@ -164,7 +165,7 @@ impl StrataApp {
             Item::new("Fold", named(FOLD_LINE)).enabled(crate::fold::has_region(&d.editor.buffer, line, d.editor.tab_width))
         };
         vec![
-            Item::new(if bookmarked { "Remove Bookmark" } else { "Add Bookmark" }, Act::Editor("bookmark_toggle")).key(CMD, Key::F2),
+            Item::new(if bookmarked { "Remove Bookmark" } else { "Add Bookmark" }, Act::Editor("bookmark_toggle")).bound(Bound::Editor("bookmark_toggle")),
             fold,
             Item::Separator,
             Item::new(format!("Copy Line {}", line + 1), named(COPY_LINE)),
@@ -274,7 +275,7 @@ impl StrataApp {
         let tabs = self.group_tabs(self.docs[i].group);
         let k = tabs.iter().position(|&t| t == i).unwrap_or(0);
         let mut items = vec![
-            Item::new("Close", named(CLOSE)).keys(Cmd::CloseTab.keys().first().copied()),
+            Item::new("Close", named(CLOSE)).bound(Bound::Cmd(Cmd::CloseTab)),
             Item::new("Close Other Tabs", named(CLOSE_OTHERS)).enabled(tabs.len() > 1),
             Item::new("Close Tabs to the Right", named(CLOSE_RIGHT)).enabled(k + 1 < tabs.len()),
             Item::new("Close Unmodified Tabs", named(CLOSE_UNMODIFIED)).enabled(tabs.iter().any(|&t| !self.docs[t].is_dirty())),
@@ -379,7 +380,7 @@ impl StrataApp {
             Item::Separator,
             Item::cmd("New Terminal", Cmd::NewTerminal),
             Item::new("Close Terminal", named(TERM_CLOSE)),
-            Item::new("Hide Panel", Act::Cmd(Cmd::ToggleTerminal)).keys(Cmd::ToggleTerminal.keys().first().copied()),
+            Item::new("Hide Panel", Act::Cmd(Cmd::ToggleTerminal)).bound(Bound::Cmd(Cmd::ToggleTerminal)),
         ]
     }
 

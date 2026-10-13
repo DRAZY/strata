@@ -114,6 +114,47 @@ command palette, which shows its shortcut.
 In the find bar: Enter next, Shift+Enter previous, Alt+Enter Find All (a cursor
 per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
 
+### Custom key bindings
+
+Preferences ▸ Key Bindings (macOS: Strata ▸ Settings ▸ Key Bindings, or
+"Preferences: Key Bindings" in the palette) opens Strata's defaults, read-only,
+next to your `keybindings.json` in the settings folder. It's a Sublime-style
+keymap, comments and trailing commas allowed:
+
+```jsonc
+[
+  { "keys": ["primary+shift+k"], "command": "delete_line" },          // primary = ⌘ / Ctrl
+  { "keys": ["super+k", "super+u"], "command": "upper_case" },        // a chord
+  { "keys": ["ctrl+alt+p"], "command": "show_overlay", "args": {"overlay": "command_palette"} },
+  { "keys": ["super+shift+d"], "command": "" },                      // unbind
+  { "keys": ["ctrl+`"], "command": "toggle_terminal", "context": [{"key": "terminal_focus"}] },
+]
+```
+
+- **Commands** use Strata's ids (`command_palette`, `goto_anything`,
+  `toggle_side_bar`, `split_selection_into_lines`, `focus_group` with
+  `{"group": 0}`…; the defaults pane lists them all) or Sublime's command
+  names with their args (`show_overlay`, `show_panel`, `toggle_comment`
+  `{"block": true}`, `expand_selection` `{"to": "line"}`, `select_lines`,
+  `run_macro_file` for Delete Line / Add Line, `set_layout`, `select_by_index`,
+  `fold_by_level`…), so a pasted Sublime keymap mostly just works. Unknown
+  commands are reported and skipped.
+- **Keys**: `super`/`cmd` (macOS), `ctrl`, `alt`/`option`, `shift`, `primary`;
+  letters, digits, `f1`–`f24`, arrows, `home`/`end`, `pageup`/`pagedown`,
+  `enter`, `tab`, `escape`, `space`, `backspace`, `delete`, `keypad0`–`9`, and
+  punctuation (`/`, `[`, `` ` ``, `,`, `.`, `plus`, `minus`, `equals`…).
+- **Rules**: later entries win. Binding a command replaces its default keys (in
+  the same context); `"command": ""` (or `"unbound"`) frees a key, `"noop"`
+  swallows it. Taking a key from another command, or a single key that starts
+  a chord, is reported in the status bar. Contexts: `terminal_focus`,
+  `panel_has_focus`, `panel_visible`, `overlay_visible` (`operator` equal /
+  not_equal, `operand` true / false); bindings with other contexts are skipped.
+- Saving the file applies it right away (outside edits too). A file that
+  doesn't parse keeps the last working key bindings and shows the line in the
+  status bar. Menus, native macOS accelerators, the palette and right-click
+  menus all show your keys. Cut, Copy, Paste and Quit keep their standard keys
+  unless you bind those keys to something else.
+
 ## What works
 
 - **Menus like Sublime's**: a native macOS menu bar (Strata, File, Edit,
@@ -197,7 +238,8 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
 - **Settings** in `settings.json` (⌘, opens it): font size, theme, tab size,
   spaces vs tabs, indentation detection, word wrap, wrap width, minimap,
   auto-complete, hot exit. Stored in `~/Library/Application Support/Strata`
-  (macOS) or `%APPDATA%\Strata` (Windows).
+  (macOS) or `%APPDATA%\Strata` (Windows), next to `keybindings.json` (see
+  [Custom key bindings](#custom-key-bindings)).
 
 Measured on an M-series Mac (release build): a 95 MB, 1.6M-line Python file
 opens and renders highlighted in ~0.6 s.
