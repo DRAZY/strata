@@ -202,10 +202,13 @@ Add a suffix to go somewhere inside a file:
 | `name` | Open the best-matching file. |
 | `:42` | Go to line 42 of the current file. |
 | `@name` | Go to a symbol (function, class, heading…) in the current file. |
+| `#text` | Search the current file: every line containing the text (ignoring case) is listed, and if none does, the lines that match it fuzzily (its letters in order). Pick one to select the match. |
 | `name:42` | Open the file and go to line 42. |
 | `name@` | Open the file and show its symbol list. |
+| `name@symbol` | Open the file and go to the symbol that best matches `symbol` (fuzzy, like file names). |
+| `name#text` | Open the file and select the first match of `text`. |
 
-In the panel, use the Up and Down arrows to choose, Enter or a click to pick, and Esc (or a click outside) to close. While you move through lines or symbols, the editor previews each location; Esc puts your cursor back where it was.
+In the panel, use the Up and Down arrows to choose, Enter or a click to pick, and Esc (or a click outside) to close. While you move through lines, symbols or `#` matches, the editor previews each location; Esc puts your cursor back where it was.
 
 ## Go to Line
 

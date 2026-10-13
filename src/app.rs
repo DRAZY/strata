@@ -440,12 +440,33 @@ impl StrataApp {
             self.link.select_elsewhere(&path, line, cols);
             return;
         }
-        let start = d.editor.buffer.line_start(line);
-        let end = d.editor.buffer.line_end(line);
-        let range = (start + cols.start).min(end)..(start + cols.end).min(end);
-        d.editor.select_ranges(&[range], 0);
-        d.view.reveal_centered();
+        select_on_line(d, line, cols);
         d.view.focus();
+    }
+
+    /// Goto Anything's `file@name`, once the file is open: the symbol best
+    /// matching `query`, or the symbol list when it's empty.
+    fn goto_symbol_named(&mut self, ctx: &egui::Context, query: &str) {
+        if query.is_empty() {
+            return self.run(ctx, Cmd::GotoSymbol);
+        }
+        let d = self.doc();
+        let text = d.editor.text_snapshot();
+        let symbols = crate::symbols::symbols(d.highlighter.syntax_name(), &text);
+        match crate::fuzzy::rank(query, &symbols, |s| &s.name, 1).first() {
+            Some(&(i, _, _)) => self.goto_line(symbols[i].line),
+            None => self.status = format!("No symbol matching “{query}” in {}", d.name()),
+        }
+    }
+
+    /// Goto Anything's `file#text`, once the file is open: select the first match.
+    fn find_in_file(&mut self, query: &str) {
+        let d = self.doc();
+        let text = d.editor.text_snapshot();
+        match palette::text_matches(&text, query, 1).into_iter().next() {
+            Some(m) => select_on_line(d, m.line, m.cols),
+            None => self.status = format!("“{query}” isn't in {}", d.name()),
+        }
     }
 
     /// Ask before closing a tab with unsaved changes. True if it may close.
@@ -1124,18 +1145,24 @@ impl StrataApp {
                 }
                 Event::GotoLine { line, preview } => {
                     if !preview {
-                        // Jump history records where you were before the panel opened.
-                        if let Some((i, sels, _)) = &self.palette_restore {
-                            let here = (self.docs[*i].view.id, sels.first().map_or(0, |r| r.start));
-                            self.jumps_back.push(here);
-                            self.jumps_forward.clear();
-                        }
+                        self.palette_jump();
                     }
                     self.goto_line(line);
                     if preview {
                         continue;
                     }
                 }
+                Event::Select { line, cols, preview } => {
+                    if !preview {
+                        self.palette_jump();
+                    }
+                    select_on_line(self.doc(), line, cols);
+                    if preview {
+                        continue;
+                    }
+                }
+                Event::GotoSymbolNamed(q) => self.goto_symbol_named(ctx, &q),
+                Event::FindInFile(q) => self.find_in_file(&q),
                 Event::Theme { name, preview } => {
                     for d in &mut self.docs {
                         d.highlighter.set_theme(&name);
@@ -1160,6 +1187,16 @@ impl StrataApp {
                 self.palette_restore = None;
                 self.doc().view.focus();
             }
+        }
+    }
+
+    /// Jump history records where you were before the panel opened.
+    fn palette_jump(&mut self) {
+        if let Some((i, sels, _)) = &self.palette_restore
+            && let Some(d) = self.docs.get(*i)
+        {
+            self.jumps_back.push((d.view.id, sels.first().map_or(0, |r| r.start)));
+            self.jumps_forward.clear();
         }
     }
 
@@ -2210,6 +2247,16 @@ impl eframe::App for StrataApp {
     }
 }
 
+/// Select `cols` (chars, clamped) on 0-based `line` and scroll to it.
+fn select_on_line(d: &mut Document, line: usize, cols: std::ops::Range<usize>) {
+    let line = line.min(d.editor.buffer.len_lines().saturating_sub(1));
+    let start = d.editor.buffer.line_start(line);
+    let end = d.editor.buffer.line_end(line);
+    let range = (start + cols.start).min(end)..(start + cols.end).min(end);
+    d.editor.select_ranges(&[range], 0);
+    d.view.reveal_centered();
+}
+
 /// Wrap Paragraph at Ruler's column: the first ruler, like Sublime, else
 /// `wrap_width` (80 when that is 0).
 fn wrap_paragraph_width(s: &Settings) -> usize {
@@ -2396,6 +2443,22 @@ mod tests {
         app.replace_one();
         app.replace_one();
         assert_eq!(text(&app), "1a b=2");
+    }
+
+    #[test]
+    fn goto_anything_symbol_and_text_after_opening_a_file() {
+        let ctx = Context::default();
+        let mut app = app_with("fn alpha() {}\nfn gamma() {}\n// TODO: tidy\n");
+        app.doc().highlighter.set_syntax("Rust");
+        app.palette_events(&ctx, vec![palette::Event::GotoSymbolNamed("gam".into())]);
+        assert_eq!(ed(&app).buffer.line_of(ed(&app).primary().head), 1, "the best symbol match");
+        app.palette_events(&ctx, vec![palette::Event::FindInFile("todo".into())]);
+        let r = ed(&app).primary().range();
+        assert_eq!(ed(&app).buffer.slice(r), "TODO", "the first match is selected");
+        app.palette_events(&ctx, vec![palette::Event::GotoSymbolNamed("zzz".into())]);
+        assert!(app.status.contains("zzz"), "{}", app.status);
+        app.palette_events(&ctx, vec![palette::Event::Select { line: 0, cols: 3..8, preview: false }]);
+        assert_eq!(ed(&app).buffer.slice(ed(&app).primary().range()), "alpha");
     }
 
     #[test]

@@ -1,8 +1,9 @@
 //! The quick panel: command palette (Cmd+Shift+P), Goto Anything (Cmd+P),
 //! go to line (Ctrl+G), go to symbol (Cmd+R) and the theme/syntax pickers.
 //!
-//! In Goto Anything, `:42` jumps to a line and `@name` to a symbol, either
-//! alone (current file) or after a file query.
+//! In Goto Anything, `:42` jumps to a line, `@name` to a symbol and `#text`
+//! to a match of the text (fuzzy, like the rest), either alone (current
+//! file) or after a file query (in that file once it opens).
 
 use crate::commands::Cmd;
 use crate::files::FileIndex;
@@ -35,6 +36,13 @@ pub enum Event {
     /// 0-based line in the current file.
     GotoLine { line: usize, preview: bool },
     Theme { name: String, preview: bool },
+    /// Select `cols` (chars) on 0-based `line` of the current file (`#term`).
+    Select { line: usize, cols: std::ops::Range<usize>, preview: bool },
+    /// In the file just opened, go to the symbol best matching this query
+    /// (`file@name`); empty shows the symbol list.
+    GotoSymbolNamed(String),
+    /// In the file just opened, select the first match of this text (`file#term`).
+    FindInFile(String),
     Syntax(String),
     Chose(usize),
     Cancel,
@@ -65,6 +73,8 @@ enum Pick {
     Editor(&'static str),
     File(PathBuf),
     Line(usize),
+    /// A match on a line: (line, char columns).
+    Span(usize, std::ops::Range<usize>),
     Theme(String),
     Syntax(String),
     Choice(usize),
@@ -204,10 +214,11 @@ impl Palette {
         rank_rows(&self.text, &items, |i| &i.0, |i| i.2.clone(), |i| i.1.clone())
     }
 
-    /// Goto Anything: `file`, `file:line`, `:line`, `@symbol`, `file@symbol`.
+    /// Goto Anything: `file`, `file:line`, `:line`, `@symbol`, `file@symbol`,
+    /// `#text`, `file#text`.
     fn goto_rows(&mut self) -> Vec<Row> {
         let text = self.text.clone();
-        let (file_q, rest) = match text.find([':', '@']) {
+        let (file_q, rest) = match text.find([':', '@', '#']) {
             Some(i) => (&text[..i], Some(&text[i..])),
             None => (text.as_str(), None),
         };
@@ -222,6 +233,13 @@ impl Palette {
                         }
                         _ => vec![Row { label: format!("Type a line number between 1 and {lines}"), hits: vec![], detail: String::new(), pick: Pick::Line(usize::MAX) }],
                     };
+                }
+                Some(r) if r.starts_with('#') => {
+                    let doc = self.ctx.as_ref().map(|c| c.text.clone()).unwrap_or_default();
+                    return text_matches(&doc, &r[1..], MAX_ROWS)
+                        .into_iter()
+                        .map(|m| Row { label: m.label, hits: m.hits, detail: format!(":{}", m.line + 1), pick: Pick::Span(m.line, m.cols) })
+                        .collect();
                 }
                 Some(r) => {
                     let q = r[1..].to_owned();
@@ -291,7 +309,7 @@ impl Palette {
                     ui.set_width(width);
                     let hint = match self.mode {
                         Mode::Commands => "Type a command",
-                        Mode::Files => "Go to file  ·  :line  ·  @symbol",
+                        Mode::Files => "Go to file  ·  :line  ·  @symbol  ·  #text",
                         Mode::Theme => "Color scheme",
                         Mode::Syntax => "Syntax",
                         Mode::Choice => self.choice_hint.as_str(),
@@ -365,6 +383,7 @@ impl Palette {
             self.previewed = Some(self.selected);
             match self.rows.get(self.selected).map(|r| &r.pick) {
                 Some(Pick::Line(l)) if *l != usize::MAX => events.push(Event::GotoLine { line: *l, preview: true }),
+                Some(Pick::Span(line, cols)) => events.push(Event::Select { line: *line, cols: cols.clone(), preview: true }),
                 Some(Pick::Theme(t)) => events.push(Event::Theme { name: t.clone(), preview: true }),
                 _ => {}
             }
@@ -379,16 +398,21 @@ impl Palette {
             Pick::Cmd(c) => out.push(Event::Run(c)),
             Pick::Editor(id) => out.push(Event::Editor(id)),
             Pick::Line(l) => out.push(Event::GotoLine { line: l, preview: false }),
+            Pick::Span(line, cols) => out.push(Event::Select { line, cols, preview: false }),
             Pick::Theme(t) => out.push(Event::Theme { name: t, preview: false }),
             Pick::Syntax(s) => out.push(Event::Syntax(s)),
             Pick::Choice(i) => out.push(Event::Chose(i)),
             Pick::File(p) => {
                 out.push(Event::Open(p));
-                // "file:42" → line 42 once the file is open; "file@x" → symbol picker in it.
+                // Once the file is open: "file:42" → line 42, "file@x" → the
+                // symbol best matching x (the symbol list for a bare "@"),
+                // "file#x" → the first match of x.
                 if let Some(n) = detail.strip_prefix(':').and_then(|n| n.trim().parse::<usize>().ok()) {
                     out.push(Event::GotoLine { line: n.saturating_sub(1), preview: false });
-                } else if detail.starts_with('@') {
-                    out.push(Event::Run(Cmd::GotoSymbol));
+                } else if let Some(q) = detail.strip_prefix('@') {
+                    out.push(Event::GotoSymbolNamed(q.trim().to_owned()));
+                } else if let Some(q) = detail.strip_prefix('#').filter(|q| !q.trim().is_empty()) {
+                    out.push(Event::FindInFile(q.trim().to_owned()));
                 }
             }
         }
@@ -405,6 +429,62 @@ impl ClonedPick for Option<&Row> {
     fn cloned_pick(self) -> Option<(Pick, String)> {
         self.map(|r| (r.pick.clone(), r.detail.clone()))
     }
+}
+
+/// A line of the file matching a `#` search.
+pub struct TextMatch {
+    /// 0-based line, and the match on it in chars.
+    pub line: usize,
+    pub cols: std::ops::Range<usize>,
+    /// The line as shown (leading whitespace dropped, shortened) and the
+    /// matched chars in it.
+    label: String,
+    hits: Vec<usize>,
+}
+
+/// Longest line label shown for a `#` match.
+const LINE_LABEL_CHARS: usize = 200;
+
+/// Lines of `text` matching `term`, at most `limit`: the lines containing
+/// it (ignoring case) in file order, or if there are none, the best fuzzy
+/// matches (its letters in order), best first.
+pub fn text_matches(text: &str, term: &str, limit: usize) -> Vec<TextMatch> {
+    let term = term.trim();
+    if term.is_empty() {
+        return Vec::new();
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let label_of = |line: &str| -> (usize, String) {
+        let body = line.trim_start();
+        let skip = line.chars().count() - body.chars().count();
+        (skip, body.chars().take(LINE_LABEL_CHARS).collect())
+    };
+    let mut out = Vec::new();
+    if let Ok(re) = regex::RegexBuilder::new(&regex::escape(term)).case_insensitive(true).build() {
+        for (n, line) in lines.iter().enumerate() {
+            let Some(m) = re.find(line) else { continue };
+            let start = line[..m.start()].chars().count();
+            let cols = start..start + m.as_str().chars().count();
+            let (skip, label) = label_of(line);
+            let hits = cols.clone().map(|c| c - skip.min(c)).filter(|&c| c < LINE_LABEL_CHARS).collect();
+            out.push(TextMatch { line: n, cols, label, hits });
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    let labels: Vec<(usize, String)> = lines.iter().map(|l| label_of(l)).collect();
+    fuzzy::rank(term, &labels, |l| &l.1, limit)
+        .into_iter()
+        .map(|(n, _, hits)| {
+            let skip = labels[n].0;
+            let cols = hits.first().map_or(0..0, |&a| a + skip..hits.last().map_or(a, |&b| b) + skip + 1);
+            TextMatch { line: n, cols, label: labels[n].1.clone(), hits }
+        })
+        .collect()
 }
 
 fn accent_text(v: &egui::Visuals) -> Color32 {
@@ -520,5 +600,37 @@ mod tests {
         let events = p.finish(p.rows.first().cloned_pick().unwrap());
         assert_eq!(events, vec![Event::Open("/tmp/x/main.rs".into()), Event::GotoLine { line: 11, preview: false }]);
         assert!(!p.open);
+    }
+
+    #[test]
+    fn file_then_symbol_keeps_the_symbol() {
+        let mut p = palette(Mode::Files, "", ctx("", "Plain Text"));
+        p.text = "main@helper".into();
+        p.rebuild();
+        assert!(p.rows[0].label.ends_with("main.rs"));
+        let events = p.finish(p.rows.first().cloned_pick().unwrap());
+        assert_eq!(events, vec![Event::Open("/tmp/x/main.rs".into()), Event::GotoSymbolNamed("helper".into())]);
+        // A bare "@" after the file still opens the symbol list there.
+        let mut p = palette(Mode::Files, "main@", ctx("", "Plain Text"));
+        let events = p.finish(p.rows.first().cloned_pick().unwrap());
+        assert_eq!(events, vec![Event::Open("/tmp/x/main.rs".into()), Event::GotoSymbolNamed(String::new())]);
+    }
+
+    #[test]
+    fn hash_searches_inside_the_file() {
+        let text = "fn alpha() {}\nlet beta_value = 2;\nfn gamma() { Beta::new() }\n";
+        let mut p = palette(Mode::Files, "#beta", ctx(text, "Rust"));
+        assert_eq!(p.rows.len(), 2, "each line with a match");
+        assert!(p.rows[0].label.contains("beta_value"));
+        let events = p.finish(p.rows.first().cloned_pick().unwrap());
+        assert_eq!(events, vec![Event::Select { line: 1, cols: 4..8, preview: false }]);
+        // Fuzzy: the letters in order, like the rest of Goto Anything.
+        let p = palette(Mode::Files, "#bvl", ctx(text, "Rust"));
+        assert_eq!(p.rows.len(), 1);
+        assert!(matches!(p.rows[0].pick, Pick::Span(1, _)));
+        // After a file query, the search runs once the file is open.
+        let mut p = palette(Mode::Files, "notes#todo", ctx(text, "Rust"));
+        let events = p.finish(p.rows.first().cloned_pick().unwrap());
+        assert_eq!(events, vec![Event::Open("/tmp/x/notes.md".into()), Event::FindInFile("todo".into())]);
     }
 }
