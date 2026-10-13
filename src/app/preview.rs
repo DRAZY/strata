@@ -13,7 +13,7 @@ impl StrataApp {
         let bg = d.highlighter.background().gamma_multiply(self.settings.window_opacity.clamp(0.3, 1.0));
         let width = ui.available_width();
         self.markdown.font_size = self.settings.font_size;
-        let out = egui::Panel::right("markdown-preview")
+        let out = egui::Panel::right(self.link.id("markdown-preview"))
             .resizable(true)
             .default_size(width * 0.45)
             .min_size(180.0)

@@ -25,6 +25,9 @@ struct Request {
     targets: Vec<Target>,
     #[serde(default)]
     wait: bool,
+    /// `strata -n`: open in a new window.
+    #[serde(default)]
+    new_window: bool,
 }
 
 /// The server's first reply.
@@ -52,6 +55,7 @@ pub fn socket_path(dir: &Path) -> PathBuf {
 /// Paths another `strata` asked to open.
 pub struct Incoming {
     pub targets: Vec<Target>,
+    pub new_window: bool,
     /// Present for `--wait`: call `done` when the files are closed.
     pub waiter: Option<Waiter>,
 }
@@ -97,7 +101,7 @@ impl Server {
                 }
                 let _ = conn.set_read_timeout(None);
                 let waiter = req.wait.then_some(Waiter(conn));
-                if tx.send(Incoming { targets: req.targets, waiter }).is_err() {
+                if tx.send(Incoming { targets: req.targets, new_window: req.new_window, waiter }).is_err() {
                     return;
                 }
                 wake();
@@ -168,10 +172,10 @@ impl Sent {
 
 /// Hand `targets` to the running Strata. `Ok(None)` when none is listening
 /// (no socket, or one left behind by a crash).
-pub fn send(dir: &Path, targets: &[Target], wait: bool) -> std::io::Result<Option<Sent>> {
+pub fn send(dir: &Path, targets: &[Target], wait: bool, new_window: bool) -> std::io::Result<Option<Sent>> {
     let Some((mut stream, token)) = connect(&socket_path(dir)) else { return Ok(None) };
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let req = Request { token, targets: targets.to_vec(), wait };
+    let req = Request { token, targets: targets.to_vec(), wait, new_window };
     stream.write_all((serde_json::to_string(&req)? + "\n").as_bytes())?;
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -228,7 +232,7 @@ mod tests {
     #[test]
     fn second_instance_hands_paths_to_the_first() {
         let d = dir("rt");
-        assert!(send(&d, &[], false).unwrap().is_none(), "nobody is listening yet");
+        assert!(send(&d, &[], false, false).unwrap().is_none(), "nobody is listening yet");
         let wakes = Arc::new(AtomicUsize::new(0));
         let w = wakes.clone();
         let server = Server::start(&d, move || {
@@ -236,15 +240,16 @@ mod tests {
         })
         .unwrap();
         let t = vec![Target { path: "/x/a.rs".into(), line: Some(3), col: Some(2) }, Target::plain("/x/dir".into())];
-        let sent = send(&d, &t, false).unwrap().expect("server is listening");
+        let sent = send(&d, &t, false, false).unwrap().expect("server is listening");
         assert!(sent.ack.ok);
         let got = wait_for(&server);
         assert_eq!(got[0].targets, t);
         assert!(got[0].waiter.is_none());
+        assert!(!got[0].new_window);
         assert_eq!(wakes.load(Ordering::SeqCst), 1);
 
         // --wait: the client blocks until the server reports the files closed.
-        let sent = send(&d, &t[..1], true).unwrap().unwrap();
+        let sent = send(&d, &t[..1], true, false).unwrap().unwrap();
         let client = std::thread::spawn(move || sent.wait_closed());
         let mut got = wait_for(&server);
         std::thread::sleep(Duration::from_millis(50));
@@ -252,9 +257,13 @@ mod tests {
         got.remove(0).waiter.expect("a waiter").done();
         client.join().unwrap();
 
+        // -n: a new window.
+        send(&d, &t[..1], false, true).unwrap().unwrap();
+        assert!(wait_for(&server)[0].new_window);
+
         drop(server);
         assert!(!socket_path(&d).exists());
-        assert!(send(&d, &[], false).unwrap().is_none());
+        assert!(send(&d, &[], false, false).unwrap().is_none());
         std::fs::remove_dir_all(d).ok();
     }
 
@@ -263,7 +272,7 @@ mod tests {
         let d = dir("deep").join("a-folder-name-long-enough-to-push-the-socket-path-past-the-unix-limit-of-104-bytes");
         std::fs::create_dir_all(&d).unwrap();
         let server = Server::start(&d, || {}).unwrap();
-        assert!(send(&d, &[], false).unwrap().is_some());
+        assert!(send(&d, &[], false, false).unwrap().is_some());
         assert!(wait_for(&server)[0].targets.is_empty());
         drop(server);
         std::fs::remove_dir_all(d.parent().unwrap()).ok();
@@ -278,9 +287,9 @@ mod tests {
         #[cfg(windows)]
         std::fs::write(socket_path(&d), "1\nnope\n").unwrap();
         assert!(socket_path(&d).exists());
-        assert!(send(&d, &[], false).unwrap().is_none(), "a stale socket means nobody is running");
+        assert!(send(&d, &[], false, false).unwrap().is_none(), "a stale socket means nobody is running");
         let server = Server::start(&d, || {}).unwrap();
-        assert!(send(&d, &[Target::plain("/a".into())], false).unwrap().is_some());
+        assert!(send(&d, &[Target::plain("/a".into())], false, false).unwrap().is_some());
         assert_eq!(wait_for(&server)[0].targets[0].path, PathBuf::from("/a"));
         drop(server);
         std::fs::remove_dir_all(d).ok();

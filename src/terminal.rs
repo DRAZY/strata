@@ -526,6 +526,13 @@ fn force_kill(pid: u32) {
     }
 }
 
+#[cfg(all(test, unix))]
+impl Terminal {
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+}
+
 impl Drop for Terminal {
     /// Hang up the shell and reap it off the UI thread, so closing never blocks.
     fn drop(&mut self) {

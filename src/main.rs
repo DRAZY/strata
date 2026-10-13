@@ -49,7 +49,7 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let cwd = std::env::current_dir().unwrap_or_default();
-    let (targets, wait) = match cli::parse(std::env::args_os().skip(1), &cwd) {
+    let (targets, wait, new_window) = match cli::parse(std::env::args_os().skip(1), &cwd) {
         Cli::Help => {
             print!("{}", cli::USAGE);
             return ExitCode::SUCCESS;
@@ -62,12 +62,12 @@ fn main() -> ExitCode {
             eprintln!("strata: {e}");
             return ExitCode::from(2);
         }
-        Cli::Open { targets, wait } => (targets, wait),
+        Cli::Open { targets, wait, new_window } => (targets, wait, new_window),
     };
     let config = session::config_dir();
     // Already running: hand over the paths and get out of the way.
     if let Some(dir) = &config
-        && let Some(code) = forward(dir, &targets, wait)
+        && let Some(code) = forward(dir, &targets, wait, new_window)
     {
         return code;
     }
@@ -77,14 +77,14 @@ fn main() -> ExitCode {
     if let Some(bundle) = app_bundle()
         && std::io::IsTerminal::is_terminal(&std::io::stdin())
     {
-        return launch_bundle(&bundle, config.as_deref(), &targets, wait);
+        return launch_bundle(&bundle, config.as_deref(), &targets, wait, new_window);
     }
-    run(targets, config)
+    run(targets, new_window, config)
 }
 
 /// Send the paths to a running Strata. `None` if there isn't one.
-fn forward(dir: &Path, targets: &[Target], wait: bool) -> Option<ExitCode> {
-    match ipc::send(dir, targets, wait) {
+fn forward(dir: &Path, targets: &[Target], wait: bool, new_window: bool) -> Option<ExitCode> {
+    match ipc::send(dir, targets, wait, new_window) {
         Ok(Some(sent)) if sent.ack.ok => {
             if wait {
                 sent.wait_closed();
@@ -108,7 +108,7 @@ fn app_bundle() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn launch_bundle(bundle: &Path, config: Option<&Path>, targets: &[Target], wait: bool) -> ExitCode {
+fn launch_bundle(bundle: &Path, config: Option<&Path>, targets: &[Target], wait: bool, new_window: bool) -> ExitCode {
     let mut cmd = std::process::Command::new("open");
     cmd.arg("-a").arg(bundle);
     // Launch Services doesn't pass our environment on.
@@ -117,8 +117,11 @@ fn launch_bundle(bundle: &Path, config: Option<&Path>, targets: &[Target], wait:
         kv.push(dir);
         cmd.arg("--env").arg(kv);
     }
-    if !wait && !targets.is_empty() {
+    if !wait && (!targets.is_empty() || new_window) {
         cmd.arg("--args");
+        if new_window {
+            cmd.arg("-n");
+        }
         for t in targets {
             let mut a = t.path.clone().into_os_string();
             if let Some(line) = t.line {
@@ -144,7 +147,7 @@ fn launch_bundle(bundle: &Path, config: Option<&Path>, targets: &[Target], wait:
     // --wait: once the app is up, hand it the files over the socket and block.
     let Some(dir) = config else { return ExitCode::SUCCESS };
     for _ in 0..300 {
-        match ipc::send(dir, targets, true) {
+        match ipc::send(dir, targets, true, new_window) {
             Ok(Some(sent)) => {
                 sent.wait_closed();
                 return ExitCode::SUCCESS;
@@ -160,44 +163,32 @@ fn launch_bundle(bundle: &Path, config: Option<&Path>, targets: &[Target], wait:
     ExitCode::FAILURE
 }
 
-fn run(targets: Vec<Target>, config: Option<PathBuf>) -> ExitCode {
+fn run(targets: Vec<Target>, new_window: bool, config: Option<PathBuf>) -> ExitCode {
     #[cfg(target_os = "macos")]
     mac_open::install();
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1100.0, 720.0])
-            .with_title("Strata")
-            // Lets View ▸ Window Opacity see through to the desktop.
-            .with_transparent(true)
-            // macOS: the window is see-through, so Strata paints its own solid title bar
-            // under the traffic lights (see `title_bar`) instead of the system one.
-            .with_fullsize_content_view(true)
-            .with_titlebar_shown(false)
-            .with_title_shown(false)
-            // Otherwise eframe shows its own logo in the Dock and taskbar.
-            .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-app.png")).expect("bundled icon")),
-        ..Default::default()
-    };
+    // Every window is built the same way (see `app::windows::builder`).
+    let options = eframe::NativeOptions { viewport: app::Windows::first_builder(config.as_deref()), ..Default::default() };
     let result = eframe::run_native(
         "Strata",
         options,
         Box::new(move |cc| {
-            #[allow(unused_mut)]
-            let mut app = app::StrataApp::new(None, config.clone());
-            app.open_targets(&targets);
+            let mut windows = app::Windows::new(config.clone());
+            if !targets.is_empty() || new_window {
+                windows.open_targets(&targets, new_window);
+            }
             #[cfg(target_os = "macos")]
             {
-                app.install_native_menu(&cc.egui_ctx);
+                windows.install_native_menu(&cc.egui_ctx);
                 mac_open::set_context(&cc.egui_ctx);
             }
-            // Only the window that owns the session answers other `strata`s.
-            let server = config.filter(|_| app.owns_session()).and_then(|dir| {
+            // Only the process that owns the session answers other `strata`s.
+            let server = config.filter(|_| windows.owns_session()).and_then(|dir| {
                 let ctx = cc.egui_ctx.clone();
                 ipc::Server::start(&dir, move || ctx.request_repaint())
                     .inspect_err(|e| eprintln!("strata: can't listen for other instances: {e}"))
                     .ok()
             });
-            Ok(Box::new(Shell { app, server, waiters: Vec::new() }))
+            Ok(Box::new(Shell { windows, server, waiters: Vec::new() }))
         }),
     );
     match result {
@@ -209,10 +200,10 @@ fn run(targets: Vec<Target>, config: Option<PathBuf>) -> ExitCode {
     }
 }
 
-/// The editor plus what reaches it from outside: other `strata` processes and
-/// (macOS) Finder. Every `eframe::App` method is passed through to the editor.
+/// The editor windows plus what reaches them from outside: other `strata`
+/// processes and (macOS) Finder.
 struct Shell {
-    app: app::StrataApp,
+    windows: app::Windows,
     server: Option<ipc::Server>,
     /// `strata --wait` callers and the files they wait on.
     waiters: Vec<(Vec<PathBuf>, ipc::Waiter)>,
@@ -222,14 +213,15 @@ impl Shell {
     fn take_requests(&mut self, ctx: &egui::Context) {
         let requests = self.server.as_ref().map(ipc::Server::poll).unwrap_or_default();
         if !requests.is_empty() {
+            let mut window = egui::ViewportId::ROOT;
             for req in requests {
-                self.app.open_targets(&req.targets);
+                window = self.windows.open_targets(&req.targets, req.new_window);
                 if let Some(w) = req.waiter {
                     self.waiters.push((req.targets.iter().filter(|t| !t.path.is_dir()).map(|t| t.path.clone()).collect(), w));
                 }
             }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.send_viewport_cmd_to(window, egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd_to(window, egui::ViewportCommand::Focus);
             // macOS only lets an app come forward on its own when the user asked
             // for it; a request through Launch Services counts.
             #[cfg(target_os = "macos")]
@@ -244,7 +236,7 @@ impl Shell {
         {
             let paths = mac_open::take();
             if !paths.is_empty() {
-                self.app.open_targets(&paths.into_iter().map(Target::plain).collect::<Vec<_>>());
+                self.windows.open_targets(&paths.into_iter().map(Target::plain).collect::<Vec<_>>(), false);
             }
         }
     }
@@ -253,39 +245,32 @@ impl Shell {
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.take_requests(ctx);
-        self.app.logic(ctx, frame);
+        self.windows.root().logic(ctx, frame);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        self.app.ui(ui, frame);
+        self.windows.ui(ui, frame);
         // Release `--wait` callers whose files are all closed.
-        let app = &self.app;
-        let (done, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waiters).into_iter().partition(|(paths, _)| !paths.iter().any(|p| app.has_open_file(p)));
+        let windows = &self.windows;
+        let (done, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waiters).into_iter().partition(|(paths, _)| !paths.iter().any(|p| windows.has_open_file(p)));
         self.waiters = keep;
         done.into_iter().for_each(|(_, w)| w.done());
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        self.app.save(storage);
+        self.windows.root().save(storage);
     }
 
     fn on_exit(&mut self) {
-        self.app.on_exit();
+        self.windows.root().on_exit();
     }
 
-    fn auto_save_interval(&self) -> std::time::Duration {
-        self.app.auto_save_interval()
-    }
-
-    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
-        self.app.clear_color(visuals)
-    }
-
-    fn persist_egui_memory(&self) -> bool {
-        self.app.persist_egui_memory()
+    /// See-through windows need a transparent clear; the panels paint the color.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        self.app.raw_input_hook(ctx, raw_input);
+        self.windows.root().raw_input_hook(ctx, raw_input);
     }
 }

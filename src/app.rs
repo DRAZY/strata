@@ -7,7 +7,7 @@ use crate::document::Document;
 use crate::find::{self, Query};
 use crate::palette::{self, Palette};
 use crate::panes::Layout;
-use crate::session::{Session, SessionLock, Settings, TabState};
+use crate::session::{Session, SessionLock, Settings, TabState, WindowState};
 use crate::sidebar::{self, Sidebar};
 use egui::{Color32, FontId, Key, Rect, Sense, Stroke, pos2, vec2};
 use std::path::PathBuf;
@@ -109,6 +109,8 @@ pub struct StrataApp {
     terminal_started: bool,
     /// Right-click menus (see `context_menus`).
     context: context_menus::ContextMenus,
+    /// Ties to the other windows (see `windows`).
+    link: windows::Link,
 }
 
 mod completion;
@@ -122,6 +124,9 @@ mod preview;
 mod replace_files;
 mod snippets_ui;
 mod textutil;
+mod windows;
+
+pub use windows::Windows;
 
 #[cfg(test)]
 use menu_model::EDITOR_COMMANDS;
@@ -131,12 +136,47 @@ impl StrataApp {
         let asset_errors = crate::highlight::load_user_assets(config.as_deref());
         let (settings, settings_error) = config.as_deref().map(Settings::load).unwrap_or_default();
         let settings_error = settings_error.or_else(|| (!asset_errors.is_empty()).then(|| asset_errors.join("; ")));
+        let mut app = Self::with_settings(config, settings, settings_error.unwrap_or_default());
+        if let Some(dir) = app.config.clone() {
+            app.session_lock = SessionLock::acquire(&dir);
+            if app.session_lock.is_none() {
+                app.status = "Another Strata window owns the session: this one asks before closing unsaved tabs".into();
+            }
+        }
+        if app.hot_exit() {
+            app.restore_session();
+        }
+        match path {
+            Some(p) if p.is_dir() => app.open_folder(p),
+            Some(p) => app.open_path(p, false),
+            None => {}
+        }
+        if app.docs.is_empty() {
+            app.push_doc(Document::untitled());
+        }
+        app.session_key = app.session_fingerprint();
+
+        // Dev aids (pair with STRATA_SCREENSHOT): run find-in-files on the open folder,
+        // or open find/replace with a query.
+        if let (Ok(q), true) = (std::env::var("STRATA_DEV_FIND_IN_FILES"), app.sidebar.root.is_some()) {
+            app.dev_find_in_files(q);
+        }
+        if let Ok(q) = std::env::var("STRATA_DEV_FIND") {
+            app.open_find(true);
+            app.find.query.text = q;
+            app.find.query.regex = std::env::var_os("STRATA_DEV_FIND_REGEX").is_some();
+        }
+        app
+    }
+
+    /// A window with no tabs yet, no session lock and nothing restored.
+    fn with_settings(config: Option<PathBuf>, settings: Settings, status: String) -> Self {
         let settings_mtime = config.as_deref().and_then(|d| std::fs::metadata(Settings::path(d)).and_then(|m| m.modified()).ok());
         let mut app = Self {
             docs: Vec::new(),
             active: 0,
             closed: Vec::new(),
-            status: settings_error.unwrap_or_default(),
+            status,
             devshot: DevShot::default(),
             find: FindBar::default(),
             sidebar: Sidebar::new(),
@@ -190,38 +230,10 @@ impl StrataApp {
             terminal: crate::terminal::Panel::new(),
             terminal_started: false,
             context: context_menus::ContextMenus::new(),
+            link: windows::Link::default(),
         };
         app.build = crate::build::Build::new(app.config.clone());
         app.snippets = snippets_ui::SnippetState::new(app.config.as_deref());
-        if let Some(dir) = app.config.clone() {
-            app.session_lock = SessionLock::acquire(&dir);
-            if app.session_lock.is_none() {
-                app.status = "Another Strata window owns the session: this one asks before closing unsaved tabs".into();
-            }
-        }
-        if app.hot_exit() {
-            app.restore_session();
-        }
-        match path {
-            Some(p) if p.is_dir() => app.open_folder(p),
-            Some(p) => app.open_path(p, false),
-            None => {}
-        }
-        if app.docs.is_empty() {
-            app.push_doc(Document::untitled());
-        }
-        app.session_key = app.session_fingerprint();
-
-        // Dev aids (pair with STRATA_SCREENSHOT): run find-in-files on the open folder,
-        // or open find/replace with a query.
-        if let (Ok(q), true) = (std::env::var("STRATA_DEV_FIND_IN_FILES"), app.sidebar.root.is_some()) {
-            app.dev_find_in_files(q);
-        }
-        if let Ok(q) = std::env::var("STRATA_DEV_FIND") {
-            app.open_find(true);
-            app.find.query.text = q;
-            app.find.query.regex = std::env::var_os("STRATA_DEV_FIND_REGEX").is_some();
-        }
         app
     }
 
@@ -367,6 +379,10 @@ impl StrataApp {
             self.activate(i);
             return;
         }
+        // Open in another window: that window and tab come forward instead.
+        if self.link.open_elsewhere(&path) {
+            return;
+        }
         let mut doc = match Document::open(path.clone()) {
             Ok(d) => d,
             Err(e) => {
@@ -409,6 +425,7 @@ impl StrataApp {
         self.open_path(path.clone(), false);
         let d = self.doc();
         if d.path.as_ref() != Some(&path) {
+            self.link.select_elsewhere(&path, line, cols);
             return;
         }
         let start = d.editor.buffer.line_start(line);
@@ -639,10 +656,24 @@ impl StrataApp {
             Ok(None) => return,
             Err(e) => return self.set_aside_backups(&dir, &e),
         };
+        self.recent_files = session.recent_files.clone();
+        self.recent_projects = session.recent_projects.clone();
+        self.recent_folders = session.recent_folders.clone();
+        // This is the first window; `Windows` takes the others from here.
+        let mut unreadable = session.window_states().first().map(|w| self.restore_window(&dir, w)).unwrap_or_default();
+        unreadable.extend(self.restore_other_windows(&dir, &session));
+        if !unreadable.is_empty() {
+            self.set_aside_backups(&dir, &unreadable.join("; "));
+        }
+    }
+
+    /// Reopen one window's tabs (unsaved text from `backups/`), panes and
+    /// folder. Returns the backups that couldn't be read.
+    fn restore_window(&mut self, dir: &std::path::Path, session: &WindowState) -> Vec<String> {
         if let Some(layout) = session.layout.clone() {
             self.layout = layout.sanitized();
         }
-        let backups = Session::backups(&dir);
+        let backups = Session::backups(dir);
         let mut unreadable = Vec::new();
         for tab in &session.tabs {
             let doc = match (&tab.backup, &tab.path) {
@@ -683,16 +714,11 @@ impl StrataApp {
         }
         self.next_stamp = self.docs.iter().map(|d| d.stamp).max().unwrap_or(0) + 1;
         self.activate(session.active.min(self.docs.len().saturating_sub(1)));
-        if !unreadable.is_empty() {
-            self.set_aside_backups(&dir, &unreadable.join("; "));
-        }
-        self.recent_files = session.recent_files.clone();
-        self.recent_projects = session.recent_projects.clone();
-        self.recent_folders = session.recent_folders.clone();
-        if let Some(folder) = session.folder.filter(|f| f.is_dir()) {
+        if let Some(folder) = session.folder.clone().filter(|f| f.is_dir()) {
             self.sidebar.open_folder(folder);
             self.sidebar.visible = session.sidebar_visible;
         }
+        unreadable
     }
 
     /// The session couldn't be fully restored: keep every backup out of
@@ -704,6 +730,7 @@ impl StrataApp {
             Err(e) => {
                 // Can't move them, so don't risk pruning them either.
                 self.session_lock = None;
+                self.link.session_off = true;
                 format!("Couldn't restore the last session ({why}) or set its backups aside ({e}); session saving is off")
             }
         };
@@ -724,13 +751,32 @@ impl StrataApp {
     fn save_session(&mut self) -> bool {
         let Some(dir) = self.config.clone().filter(|_| self.session_lock.is_some()) else { return false };
         let mut backups = Vec::new();
+        let mut session = Session::of_windows(vec![self.window_state(&mut backups)]);
+        session.recent_files = self.recent_files.clone();
+        session.recent_folders = self.recent_folders.clone();
+        session.recent_projects = self.recent_projects.clone();
+        match session.save(&dir, &backups) {
+            Ok(()) => {
+                self.session_key = self.session_fingerprint();
+                true
+            }
+            Err(e) => {
+                self.status = format!("Could not save session: {e}");
+                false
+            }
+        }
+    }
+
+    /// This window's part of the session; unsaved text is added to `backups`
+    /// (names unique across every window saved with it).
+    fn window_state(&self, backups: &mut Vec<(String, String)>) -> WindowState {
         let mut tabs = Vec::new();
-        for (n, d) in self.docs.iter().enumerate() {
+        for d in &self.docs {
             if d.is_blank() {
                 continue;
             }
             let backup = d.is_dirty().then(|| {
-                let name = Session::backup_name(n);
+                let name = Session::backup_name(backups.len());
                 backups.push((name.clone(), d.editor.buffer.slice(0..d.editor.buffer.len_chars())));
                 name
             });
@@ -747,25 +793,14 @@ impl StrataApp {
                 stamp: d.stamp,
             });
         }
-        let session = Session {
+        WindowState {
             folder: self.sidebar.root.clone(),
             sidebar_visible: self.sidebar.visible,
             active: self.active.min(tabs.len().saturating_sub(1)),
             tabs,
             layout: Some(self.layout.clone()),
-            recent_files: self.recent_files.clone(),
-            recent_folders: self.recent_folders.clone(),
-            recent_projects: self.recent_projects.clone(),
-        };
-        match session.save(&dir, &backups) {
-            Ok(()) => {
-                self.session_key = self.session_fingerprint();
-                true
-            }
-            Err(e) => {
-                self.status = format!("Could not save session: {e}");
-                false
-            }
+            position: None,
+            size: None,
         }
     }
 
@@ -913,6 +948,7 @@ impl StrataApp {
                 self.snippet_from_completion();
             }
             Cmd::CloseWindow => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Cmd::NewWindow => self.link.requests.new_window = true,
             Cmd::RevertFile => self.revert(),
             Cmd::ClearRecent => self.clear_recent(),
             Cmd::ToggleStatusBar => {
@@ -1929,7 +1965,9 @@ impl eframe::App for StrataApp {
         self.apply_fonts(ctx);
         self.style_chrome(ctx);
 
-        if ctx.input(|i| i.viewport().close_requested()) {
+        if self.link.managed {
+            // One of several windows: `Windows` closes it and saves the session.
+        } else if ctx.input(|i| i.viewport().close_requested()) {
             // Hot exit: unsaved work goes into the session instead of a prompt.
             let saved = self.hot_exit() && self.save_session();
             if !saved {
@@ -2055,7 +2093,7 @@ impl eframe::App for StrataApp {
             self.licenses_window(ctx);
         }
         if self.build.visible && self.distraction.is_none() {
-            let action = egui::Panel::bottom("build").resizable(true).default_size(180.0).show(ui, |ui| self.build.show(ui)).inner;
+            let action = egui::Panel::bottom(self.link.id("build")).resizable(true).default_size(180.0).show(ui, |ui| self.build.show(ui)).inner;
             if let Some(crate::build::BuildAction::Goto(p, line, col)) = action {
                 self.open_at(p, line, col..col);
             }
@@ -2075,7 +2113,7 @@ impl eframe::App for StrataApp {
         if self.sidebar.visible && self.sidebar.root.is_some() {
             let current = self.docs[self.active].path.clone();
             let open = self.open_files_for_sidebar();
-            let action = egui::Panel::left("sidebar")
+            let action = egui::Panel::left(self.link.id("sidebar"))
                 .resizable(true)
                 .default_size(260.0)
                 .show(ui, |ui| self.sidebar.show(ui, current.as_deref(), &open))

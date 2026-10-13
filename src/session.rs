@@ -232,6 +232,8 @@ impl Settings {
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
 #[serde(default)]
 pub struct Session {
+    /// The first window, which was the only one before Strata had several
+    /// (kept so an older Strata still restores it).
     pub folder: Option<PathBuf>,
     pub sidebar_visible: bool,
     pub active: usize,
@@ -240,9 +242,27 @@ pub struct Session {
     pub recent_files: Vec<PathBuf>,
     pub recent_folders: Vec<PathBuf>,
     pub recent_projects: Vec<PathBuf>,
+    /// Every window, first one first. Empty in sessions saved before Strata
+    /// had several windows: the fields above are then the one window.
+    pub windows: Vec<WindowState>,
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
+/// One window: its tabs, panes and folder, and where it was on screen.
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq, Clone)]
+#[serde(default)]
+pub struct WindowState {
+    pub folder: Option<PathBuf>,
+    pub sidebar_visible: bool,
+    pub active: usize,
+    pub tabs: Vec<TabState>,
+    pub layout: Option<crate::panes::Layout>,
+    /// Top-left corner of the window frame, in points.
+    pub position: Option<[f32; 2]>,
+    /// Size of the content area, in points.
+    pub size: Option<[f32; 2]>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq, Clone)]
 #[serde(default)]
 pub struct TabState {
     pub path: Option<PathBuf>,
@@ -270,6 +290,20 @@ impl Session {
 
     pub fn backups(dir: &Path) -> PathBuf {
         dir.join("backups")
+    }
+
+    /// A session of these windows; the first is also written the old way.
+    pub fn of_windows(windows: Vec<WindowState>) -> Self {
+        let first = windows.first().cloned().unwrap_or_default();
+        Self { folder: first.folder, sidebar_visible: first.sidebar_visible, active: first.active, tabs: first.tabs, layout: first.layout, windows, ..Default::default() }
+    }
+
+    /// The windows to reopen. An old single-window session is one window.
+    pub fn window_states(&self) -> Vec<WindowState> {
+        if !self.windows.is_empty() {
+            return self.windows.clone();
+        }
+        vec![WindowState { folder: self.folder.clone(), sidebar_visible: self.sidebar_visible, active: self.active, tabs: self.tabs.clone(), layout: self.layout.clone(), position: None, size: None }]
     }
 
     /// `Ok(None)` when there is no session yet; `Err` when one exists but can't be read.
@@ -312,7 +346,7 @@ impl Session {
         #[cfg(unix)]
         std::fs::File::open(dir)?.sync_all()?;
         // Drop backups no tab refers to any more.
-        let keep: Vec<&str> = self.tabs.iter().filter_map(|t| t.backup.as_deref()).collect();
+        let keep: Vec<&str> = self.tabs.iter().chain(self.windows.iter().flat_map(|w| &w.tabs)).filter_map(|t| t.backup.as_deref()).collect();
         for entry in std::fs::read_dir(&bdir)?.flatten() {
             if !keep.contains(&entry.file_name().to_string_lossy().as_ref()) {
                 let _ = std::fs::remove_file(entry.path());
@@ -375,6 +409,33 @@ mod tests {
         assert_eq!(std::fs::read_to_string(Session::backups(&dir).join("1.txt")).unwrap(), "unsaved");
         assert!(!Session::backups(&dir).join("old.txt").exists());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn several_windows_round_trip_and_keep_every_windows_backups() {
+        let dir = std::env::temp_dir().join(format!("strata-session-windows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let one = WindowState { tabs: vec![TabState { path: Some("/x/a.rs".into()), ..Default::default() }], position: Some([10.0, 20.0]), ..Default::default() };
+        let two = WindowState { active: 1, tabs: vec![TabState::default(), TabState { backup: Some("2.txt".into()), ..Default::default() }], size: Some([800.0, 600.0]), ..Default::default() };
+        let s = Session::of_windows(vec![one.clone(), two.clone()]);
+        // The first window is also where an older Strata looks for it.
+        assert_eq!(s.tabs, one.tabs);
+        s.save(&dir, &[("2.txt".into(), "second window".into())]).unwrap();
+        let back = Session::load(&dir).unwrap().unwrap();
+        assert_eq!(back.window_states(), vec![one, two]);
+        assert_eq!(std::fs::read_to_string(Session::backups(&dir).join("2.txt")).unwrap(), "second window", "not pruned");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_session_from_before_windows_is_one_window() {
+        let old = r#"{"folder": "/p", "sidebar_visible": true, "active": 1, "tabs": [{"path": "/p/a"}, {"backup": "1-0.txt"}], "recent_files": ["/p/a"]}"#;
+        let s: Session = serde_json::from_str(old).unwrap();
+        let w = s.window_states();
+        assert_eq!(w.len(), 1);
+        assert_eq!((w[0].folder.as_deref(), w[0].sidebar_visible, w[0].active, w[0].tabs.len()), (Some(Path::new("/p")), true, 1, 2));
+        assert_eq!((w[0].position, w[0].size), (None, None));
+        assert_eq!(s.recent_files, vec![PathBuf::from("/p/a")]);
     }
 
     #[test]

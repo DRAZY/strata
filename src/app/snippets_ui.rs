@@ -209,6 +209,7 @@ impl StrataApp {
     pub(super) fn snippet_saved(&mut self, path: &std::path::Path) {
         if path.extension().is_some_and(|e| e == "sublime-snippet") {
             self.snippets.lib.reload();
+            self.link.requests.snippets_changed = true;
             match self.snippets.lib.errors.iter().find(|e| e.starts_with(&path.display().to_string())) {
                 Some(e) => self.status = format!("Snippet error: {e}"),
                 None if self.snippets.lib.dir().is_some_and(|d| path.starts_with(d)) => self.status = format!("Saved snippet {}", path.display()),

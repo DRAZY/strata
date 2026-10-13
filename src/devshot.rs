@@ -12,12 +12,18 @@ pub struct DevShot {
     requested: bool,
     /// Steps of STRATA_SCREENSHOT_TYPE still to type.
     typing: Option<Vec<egui::Event>>,
+    /// Another window takes the screenshot.
+    off: bool,
 }
 
 impl DevShot {
+    pub fn off() -> Self {
+        Self { off: true, ..Self::default() }
+    }
+
     /// Returns input to feed to the next frame.
     pub fn tick(&mut self, ctx: &egui::Context) -> Vec<egui::Event> {
-        let Some(path) = std::env::var_os("STRATA_SCREENSHOT") else { return Vec::new() };
+        let Some(path) = std::env::var_os("STRATA_SCREENSHOT").filter(|_| !self.off) else { return Vec::new() };
         self.frames += 1;
         ctx.request_repaint();
         let typing = self.typing.get_or_insert_with(|| {

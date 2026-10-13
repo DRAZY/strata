@@ -9,9 +9,11 @@ Usage: strata [options] [file[:line[:column]] | folder]...
 
 Opens each file in a tab (a file that doesn't exist yet opens empty and is
 created on first save) and each folder in the sidebar. If Strata is already
-running, the paths open in its window.
+running, the paths open in its focused window (a file that's already open
+comes forward in its window).
 
 Options:
+  -n, --new-window Open in a new window
   -w, --wait       Wait for the files to be closed before returning
   -h, --help       Show this help
   -v, --version    Show the version
@@ -35,7 +37,7 @@ impl Target {
 
 #[derive(Debug, PartialEq)]
 pub enum Cli {
-    Open { targets: Vec<Target>, wait: bool },
+    Open { targets: Vec<Target>, wait: bool, new_window: bool },
     Help,
     Version,
     Error(String),
@@ -45,6 +47,7 @@ pub enum Cli {
 pub fn parse(args: impl IntoIterator<Item = OsString>, cwd: &Path) -> Cli {
     let mut targets = Vec::new();
     let mut wait = false;
+    let mut new_window = false;
     let mut only_paths = false;
     for arg in args {
         let s = arg.to_string_lossy();
@@ -54,7 +57,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>, cwd: &Path) -> Cli {
                 "-w" | "--wait" => wait = true,
                 "-h" | "--help" => return Cli::Help,
                 "-v" | "--version" => return Cli::Version,
-                "-n" | "--new-window" => return Cli::Error("Strata has a single window: -n/--new-window isn't supported".into()),
+                "-n" | "--new-window" => new_window = true,
                 // macOS adds this when an app is launched from Finder on old systems.
                 _ if s.starts_with("-psn_") => {}
                 _ => return Cli::Error(format!("unknown option {s}\n\n{USAGE}")),
@@ -63,7 +66,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>, cwd: &Path) -> Cli {
         }
         targets.push(target(&arg, cwd));
     }
-    Cli::Open { targets, wait }
+    Cli::Open { targets, wait, new_window }
 }
 
 /// `file`, `file:line` or `file:line:col`. A file whose name really ends in
@@ -146,15 +149,16 @@ mod tests {
     fn options_folders_and_several_paths() {
         let d = tmp("multi");
         std::fs::create_dir_all(d.join("proj")).unwrap();
-        let Cli::Open { targets, wait } = parse(args(&["-w", "proj", "a.txt:3:4", "--", "-odd"]), &d) else { panic!() };
-        assert!(wait);
+        let Cli::Open { targets, wait, new_window } = parse(args(&["-w", "proj", "a.txt:3:4", "--", "-odd"]), &d) else { panic!() };
+        assert!(wait && !new_window);
         assert_eq!(targets, vec![Target::plain(d.join("proj")), Target { path: d.join("a.txt"), line: Some(3), col: Some(4) }, Target::plain(d.join("-odd"))]);
         assert!(targets[0].path.is_dir());
         assert_eq!(parse(args(&["--version"]), &d), Cli::Version);
         assert_eq!(parse(args(&["x", "-h"]), &d), Cli::Help);
-        assert!(matches!(parse(args(&["-n"]), &d), Cli::Error(_)));
+        assert!(matches!(parse(args(&["-n", "x"]), &d), Cli::Open { new_window: true, .. }));
+        assert!(matches!(parse(args(&["--new-window"]), &d), Cli::Open { new_window: true, wait: false, .. }));
         assert!(matches!(parse(args(&["--bogus"]), &d), Cli::Error(_)));
-        assert_eq!(parse(args(&["-psn_0_1234"]), &d), Cli::Open { targets: vec![], wait: false });
+        assert_eq!(parse(args(&["-psn_0_1234"]), &d), Cli::Open { targets: vec![], wait: false, new_window: false });
         std::fs::remove_dir_all(d).ok();
     }
 }

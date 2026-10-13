@@ -43,6 +43,7 @@ const CLOSE: &str = "ctx:close";
 const CLOSE_OTHERS: &str = "ctx:close_others";
 const CLOSE_RIGHT: &str = "ctx:close_right";
 const CLOSE_UNMODIFIED: &str = "ctx:close_unmodified";
+const NEW_WINDOW: &str = "ctx:new_window";
 const TERM_CLEAR: &str = "ctx:term_clear";
 const TERM_CLOSE: &str = "ctx:term_close";
 const TERM_CLOSE_OTHERS: &str = "ctx:term_close_others";
@@ -278,6 +279,8 @@ impl StrataApp {
             Item::new("Close Tabs to the Right", named(CLOSE_RIGHT)).enabled(k + 1 < tabs.len()),
             Item::new("Close Unmodified Tabs", named(CLOSE_UNMODIFIED)).enabled(tabs.iter().any(|&t| !self.docs[t].is_dirty())),
             Item::Separator,
+            Item::new("Move to New Window", named(NEW_WINDOW)).enabled(self.docs.len() > 1),
+            Item::Separator,
             Item::cmd("New File", Cmd::NewTab),
             Item::cmd("Open File…", Cmd::Open),
             Item::Separator,
@@ -328,6 +331,7 @@ impl StrataApp {
                 let clean = ids(&|_, t| !self.docs[t].is_dirty());
                 self.close_tabs(clean);
             }
+            Act::Named(n) if n == NEW_WINDOW => self.link.requests.move_tab = Some(me),
             Act::Cmd(Cmd::NewTab | Cmd::Open) => {
                 // New tabs open in the pane whose tab bar was clicked.
                 self.focus_group = group;

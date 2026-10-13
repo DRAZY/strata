@@ -31,11 +31,6 @@ impl StrataApp {
         self.docs.iter().any(|d| d.path.as_deref() == Some(path))
     }
 
-    /// This window holds the session lock (so it's the one other `strata`s talk to).
-    pub(crate) fn owns_session(&self) -> bool {
-        self.session_lock.is_some()
-    }
-
     pub(super) fn install_shell_command(&mut self) {
         self.status = match crate::shell_command::install() {
             Ok(msg) | Err(msg) => msg,

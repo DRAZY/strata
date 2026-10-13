@@ -52,11 +52,20 @@ strata [options] [file[:line[:column]] | folder]...
   to a line and column (a file whose name really ends in `:12` wins if it
   exists). A path that doesn't exist yet opens as an empty tab and is created
   when you first save it.
-- **One window.** If Strata is already running, `strata` hands the paths to it
-  (over `strata.sock` in the config folder; a localhost port plus a random
-  token in `strata.port` on Windows), brings it forward and returns at once.
-  `-n/--new-window` isn't supported. A socket left behind by a crash is
-  replaced by the next Strata to start.
+- **One app, many windows.** If Strata is already running, `strata` hands the
+  paths to it (over `strata.sock` in the config folder; a localhost port plus a
+  random token in `strata.port` on Windows), brings it forward and returns at
+  once. Files open in the focused window; a file already open in another
+  window comes forward there instead. `-n/--new-window` opens them in a new
+  window. A socket left behind by a crash is replaced by the next Strata to
+  start.
+- **Windows** (File ▸ New Window, ⇧⌘N / Ctrl+Shift+N, or a tab's "Move to New
+  Window"): each has its own tabs, panes, folder, find bar, terminal and
+  builds; settings, recent files and clipboard history are shared, and the
+  Window menu lists them. Close Window (⇧⌘W) asks about that window's unsaved
+  tabs and stops its shells. Quitting (or closing the last window, which quits,
+  on macOS too) keeps every window, unsaved text and position included, under
+  hot exit.
 - `git config --global core.editor "strata -w"` works: `-w` blocks until the
   tab is closed (or Strata quits).
 - **Install the command**: Strata menu ▸ Install Shell Command… (or the palette:
@@ -208,7 +217,7 @@ date; Tools ▸ On Save trims whitespace, adds a final newline, or saves on
 focus loss.
 
 Known gaps: no replace-in-files, no plugin/package system, no
-spell check, no macros, one window per app instance (no New Window), cloned
+spell check, no macros, Strata quits with its last window (macOS), cloned
 views of one file in two panes aren't supported, and Finder "Open With" isn't
 wired up (drag the file onto the window or use ⌘O). Word wrap turns off for
 files over 8 MB. The bundled grammars come from syntect's defaults and the bat

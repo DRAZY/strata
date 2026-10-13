@@ -222,6 +222,7 @@ impl StrataApp {
         };
         let mut file = vec![
             c("New File", Cmd::NewTab),
+            c("New Window", Cmd::NewWindow),
             c("Open…", Cmd::Open),
             c("Open Folder…", Cmd::OpenFolder),
             sub("Open Recent", recent),
@@ -681,6 +682,11 @@ impl StrataApp {
             window.extend([Item::System(System::Minimize), Item::System(System::Zoom), SEP()]);
         }
         window.extend(names.into_iter().enumerate().map(|(i, n)| Item::new(n, Act::Tab(i)).checked(i == self.active)));
+        // Every window, to bring one forward.
+        if self.link.windows.len() > 1 {
+            window.push(SEP());
+            window.extend(self.link.windows.iter().enumerate().map(|(k, t)| Item::new(t, Act::Named(format!("window:{k}"))).checked(k == self.link.index)));
+        }
         if MAC {
             window.extend([SEP(), Item::System(System::BringAllToFront)]);
         }
@@ -727,7 +733,7 @@ impl StrataApp {
             Act::Tab(_) => {}
             Act::ReopenWithEncoding(e) => self.reopen_with_encoding(e),
             Act::SaveWithEncoding(e) => self.save_with_encoding(e),
-            Act::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Act::Quit => self.quit(ctx),
             Act::Named(n) => match n.as_str() {
                 "toggle_spaces" => {
                     let e = &mut self.doc().editor;
@@ -822,6 +828,7 @@ impl StrataApp {
                 }
                 n if n.starts_with("bs:") => self.build_system = Some(n[3..].to_owned()).filter(|s| !s.is_empty()),
                 n if n.starts_with("project:") => self.open_project_path(std::path::PathBuf::from(&n[8..])),
+                n if n.starts_with("window:") => self.link.requests.focus_window = n[7..].parse().ok(),
                 "crlf" => self.doc().set_line_ending(crate::buffer::LineEnding::CrLf),
                 _ => {}
             },
