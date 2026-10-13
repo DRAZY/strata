@@ -1215,7 +1215,13 @@ mod tests {
         let start = std::time::Instant::now();
         drop(t);
         assert!(start.elapsed() < std::time::Duration::from_millis(500));
-        let alive = |pid: u32| std::process::Command::new("kill").args(["-0", &pid.to_string()]).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+        // Running, not merely a zombie waiting for the reaper thread (which is fine).
+        let alive = |pid: u32| {
+            std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().is_ok_and(|o| {
+                let stat = String::from_utf8_lossy(&o.stdout);
+                !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
+            })
+        };
         // Generous: SIGKILL follows after 2 s, and a loaded machine can be slow to reap.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         while alive(pid) && std::time::Instant::now() < deadline {
