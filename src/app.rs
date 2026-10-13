@@ -2104,6 +2104,10 @@ impl eframe::App for StrataApp {
             }
         }
 
+        for d in &mut self.docs {
+            (d.editor.auto_indent, d.editor.smart_indent) = (self.settings.auto_indent, self.settings.smart_indent);
+            d.editor.indent_rules = crate::indent::rules_for(d.highlighter.syntax_name());
+        }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.panes(ui));
         {
             let d = &mut self.docs[self.active];

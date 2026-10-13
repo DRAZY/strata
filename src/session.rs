@@ -50,6 +50,10 @@ pub struct Settings {
     pub theme: String,
     pub tab_size: usize,
     pub translate_tabs_to_spaces: bool,
+    /// Enter keeps the current line's indentation.
+    pub auto_indent: bool,
+    /// Per-language rules: indent after `{`/`:`/open tags, dedent closers.
+    pub smart_indent: bool,
     pub minimap: bool,
     /// Live Markdown preview beside the editor.
     pub markdown_preview: bool,
@@ -101,6 +105,8 @@ impl Default for Settings {
             theme: crate::highlight::DEFAULT_THEME.into(),
             tab_size: 4,
             translate_tabs_to_spaces: true,
+            auto_indent: true,
+            smart_indent: true,
             minimap: true,
             markdown_preview: false,
             show_tabs: true,

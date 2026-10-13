@@ -1981,13 +1981,13 @@ mod tests {
             key(Key::Backspace, Modifiers::NONE),
         ]);
         let nl = h.ed.buffer.line_ending().as_str();
-        assert_eq!(h.text(), format!("fn main() {{{nl}    x"));
+        assert_eq!(h.text(), format!("fn main() {{{nl}        x"));
         // Deleting is its own undo step, separate from the typing before it.
         h.frame(vec![key(Key::Z, Modifiers::COMMAND)]);
-        assert_eq!(h.text(), format!("fn main() {{{nl}    x;"));
-        // The indent and "x;" were typed together, so they undo together.
+        assert_eq!(h.text(), format!("fn main() {{{nl}        x;"));
+        // The Tab indent and "x;" were typed together, so they undo together.
         h.frame(vec![key(Key::Z, Modifiers::COMMAND)]);
-        assert_eq!(h.text(), format!("fn main() {{{nl}"));
+        assert_eq!(h.text(), format!("fn main() {{{nl}    "));
     }
 
     #[test]
