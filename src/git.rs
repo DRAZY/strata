@@ -360,7 +360,9 @@ struct Request {
 
 #[derive(Default)]
 struct State {
-    pending: Option<Request>,
+    /// The newest request per file, oldest file first (split panes show
+    /// several files, and each needs its own answer).
+    pending: Vec<Request>,
     /// Paths whose cached HEAD text must be re-read (saved, checked out...).
     stale: Vec<PathBuf>,
     quit: bool,
@@ -375,8 +377,8 @@ struct Shared {
 
 pub type DiffResult = (PathBuf, u64, Changes);
 
-/// Diffs documents against HEAD on one worker thread. Only the latest
-/// request matters: a newer one replaces any still pending.
+/// Diffs documents against HEAD on one worker thread. For each file only the
+/// latest request matters: a newer one replaces that file's pending one.
 pub struct GitWatcher {
     shared: Arc<Shared>,
     rx: Receiver<DiffResult>,
@@ -398,7 +400,11 @@ impl GitWatcher {
     /// Queue a diff of `text` (the document at `version`) against HEAD.
     pub fn request(&self, path: &Path, text: Arc<String>, version: u64) {
         let mut st = self.shared.state.lock().unwrap();
-        st.pending = Some(Request { path: path.to_owned(), text, version });
+        let req = Request { path: path.to_owned(), text, version };
+        match st.pending.iter_mut().find(|r| r.path == path) {
+            Some(r) => *r = req,
+            None => st.pending.push(req),
+        }
         self.shared.wake.notify_one();
     }
 
@@ -408,13 +414,9 @@ impl GitWatcher {
         self.shared.state.lock().unwrap().stale.push(path.to_owned());
     }
 
-    /// Latest finished diff, if any. Call once per frame.
+    /// The next finished diff, if any, oldest first. Call until None each frame.
     pub fn poll(&self) -> Option<DiffResult> {
-        let mut last = None;
-        while let Ok(r) = self.rx.try_recv() {
-            last = Some(r);
-        }
-        last
+        self.rx.try_recv().ok()
     }
 
     /// Cached repo info for a file's folder; None until a request for a file
@@ -446,9 +448,9 @@ fn work(shared: &Shared, tx: &Sender<DiffResult>, ctx: Option<&egui::Context>) {
     let mut heads: HashMap<PathBuf, HeadEntry> = HashMap::new();
     let mut repo_read: HashMap<PathBuf, Instant> = HashMap::new();
     loop {
-        let (req, stale) = {
+        let (reqs, stale) = {
             let mut st = shared.state.lock().unwrap();
-            while st.pending.is_none() && !st.quit {
+            while st.pending.is_empty() && !st.quit {
                 st = shared.wake.wait(st).unwrap();
             }
             // Debounce: let a burst of keystrokes settle into one request.
@@ -462,46 +464,61 @@ fn work(shared: &Shared, tx: &Sender<DiffResult>, ctx: Option<&egui::Context>) {
             if st.quit {
                 return;
             }
-            (st.pending.take(), std::mem::take(&mut st.stale))
+            (std::mem::take(&mut st.pending), std::mem::take(&mut st.stale))
         };
-        let Some(req) = req else { continue };
         for p in &stale {
             heads.remove(p);
             if let Some(dir) = p.parent() {
                 repo_read.remove(dir);
             }
         }
-        let Some(dir) = req.path.parent().map(Path::to_path_buf) else { continue };
-
-        let now = Instant::now();
-        if repo_read.get(&dir).is_none_or(|t| now.duration_since(*t) > REFRESH) {
-            let info = repo_info(&req.path);
-            shared.repos.lock().unwrap().insert(dir.clone(), info);
-            repo_read.insert(dir.clone(), now);
-        }
-        let in_repo = shared.repos.lock().unwrap().get(&dir).is_some_and(Option::is_some);
-
-        let changes = if in_repo {
-            let disk = mtime(&req.path);
-            let fresh = heads.get(&req.path).is_some_and(|h| h.mtime == disk && now.duration_since(h.read) <= REFRESH);
-            if !fresh {
-                let text = head_text(&req.path).map(Arc::new);
-                heads.insert(req.path.clone(), HeadEntry { read: now, mtime: disk, text });
+        for req in reqs {
+            if !diff_one(shared, req, &mut heads, &mut repo_read, tx, ctx) {
+                return;
             }
-            match &heads[&req.path].text {
-                Some(base) => diff_lines(base, &req.text),
-                None => Vec::new(), // untracked or new
-            }
-        } else {
-            Vec::new()
-        };
-        if tx.send((req.path, req.version, changes)).is_err() {
-            return;
-        }
-        if let Some(ctx) = ctx {
-            ctx.request_repaint();
         }
     }
+}
+
+/// Diff one request and send the result. False when the app has gone.
+fn diff_one(
+    shared: &Shared,
+    req: Request,
+    heads: &mut HashMap<PathBuf, HeadEntry>,
+    repo_read: &mut HashMap<PathBuf, Instant>,
+    tx: &Sender<DiffResult>,
+    ctx: Option<&egui::Context>,
+) -> bool {
+    let Some(dir) = req.path.parent().map(Path::to_path_buf) else { return true };
+    let now = Instant::now();
+    if repo_read.get(&dir).is_none_or(|t| now.duration_since(*t) > REFRESH) {
+        let info = repo_info(&req.path);
+        shared.repos.lock().unwrap().insert(dir.clone(), info);
+        repo_read.insert(dir.clone(), now);
+    }
+    let in_repo = shared.repos.lock().unwrap().get(&dir).is_some_and(Option::is_some);
+
+    let changes = if in_repo {
+        let disk = mtime(&req.path);
+        let fresh = heads.get(&req.path).is_some_and(|h| h.mtime == disk && now.duration_since(h.read) <= REFRESH);
+        if !fresh {
+            let text = head_text(&req.path).map(Arc::new);
+            heads.insert(req.path.clone(), HeadEntry { read: now, mtime: disk, text });
+        }
+        match &heads[&req.path].text {
+            Some(base) => diff_lines(base, &req.text),
+            None => Vec::new(), // untracked or new
+        }
+    } else {
+        Vec::new()
+    };
+    if tx.send((req.path, req.version, changes)).is_err() {
+        return false;
+    }
+    if let Some(ctx) = ctx {
+        ctx.request_repaint();
+    }
+    true
 }
 
 #[cfg(test)]
@@ -685,6 +702,30 @@ mod tests {
         };
         assert_eq!(got, (file.clone(), 2, vec![(1..2, Modified)]));
         assert_eq!(w.repo(&file).map(|i| i.branch), Some("trunk".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watcher_answers_every_file_asked_about() {
+        // Split panes ask about several files in one frame: each gets its result.
+        let Some(dir) = temp_repo("panes") else { return };
+        let (a, b) = (dir.join("sub/f.txt"), dir.join("sub/g.txt"));
+        std::fs::write(&b, "new\n").unwrap();
+        let w = GitWatcher::new(None);
+        w.request(&a, Arc::new("one\nTWO\nthree\n".into()), 1);
+        w.request(&b, Arc::new("new\n".into()), 7);
+        w.request(&a, Arc::new("one\nTWO\nthree\nfour\n".into()), 2);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while got.len() < 2 {
+            while let Some(r) = w.poll() {
+                got.push(r);
+            }
+            assert!(Instant::now() < deadline, "only got {got:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        got.sort_by_key(|r| r.1);
+        assert_eq!(got, vec![(a.clone(), 2, vec![(1..2, Modified), (3..4, Added)]), (b.clone(), 7, vec![])]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
