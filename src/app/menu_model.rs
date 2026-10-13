@@ -475,6 +475,22 @@ impl StrataApp {
                 }),
                 SEP(),
                 sub("Color Scheme", theme),
+                sub("Editor Extras", {
+                    let s = &self.settings;
+                    let t = |label: &str, key: &str, on: bool| Item::new(label, Act::Named(format!("x:{key}"))).checked(on);
+                    vec![
+                        t("Show Whitespace in Selection", "ws_sel", s.draw_white_space == "selection"),
+                        t("Show All Whitespace", "ws_all", s.draw_white_space == "all"),
+                        t("Hide Whitespace", "ws_none", s.draw_white_space == "none"),
+                        t("Highlight Trailing Whitespace", "trailing", s.highlight_trailing_whitespace),
+                        SEP(),
+                        t("Bracket Pair Colors", "brackets", s.bracket_colors),
+                        t("Color Swatches", "swatches", s.color_swatches),
+                        t("Sticky Scroll", "sticky", s.sticky_scroll),
+                        t("Smooth Scrolling", "smooth", s.smooth_scroll),
+                        t("Git Change Markers", "git", s.git_gutter),
+                    ]
+                }),
                 sub(
                     "Cursor",
                     vec![
@@ -732,6 +748,22 @@ impl StrataApp {
                         _ => &mut s.save_on_focus_lost,
                     };
                     *flag = !*flag;
+                    self.persist_settings();
+                }
+                n if n.starts_with("x:") => {
+                    let s = &mut self.settings;
+                    match &n[2..] {
+                        "ws_sel" => s.draw_white_space = "selection".into(),
+                        "ws_all" => s.draw_white_space = "all".into(),
+                        "ws_none" => s.draw_white_space = "none".into(),
+                        "trailing" => s.highlight_trailing_whitespace = !s.highlight_trailing_whitespace,
+                        "brackets" => s.bracket_colors = !s.bracket_colors,
+                        "swatches" => s.color_swatches = !s.color_swatches,
+                        "sticky" => s.sticky_scroll = !s.sticky_scroll,
+                        "smooth" => s.smooth_scroll = !s.smooth_scroll,
+                        "git" => s.git_gutter = !s.git_gutter,
+                        _ => {}
+                    }
                     self.persist_settings();
                 }
                 n if n.starts_with("caret:") => {

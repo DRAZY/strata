@@ -33,6 +33,18 @@ pub struct Settings {
     /// "blink", "smooth" (fades) or "solid".
     pub caret_blink: String,
     pub caret_width: f32,
+    /// "selection" (dots and arrows inside selections), "all" or "none".
+    pub draw_white_space: String,
+    pub highlight_trailing_whitespace: bool,
+    /// Color bracket pairs by nesting depth.
+    pub bracket_colors: bool,
+    /// Small color bars under CSS colors like #22d3ee.
+    pub color_swatches: bool,
+    /// Pin the enclosing block headers at the top while scrolling.
+    pub sticky_scroll: bool,
+    pub smooth_scroll: bool,
+    /// Git change bars in the gutter.
+    pub git_gutter: bool,
     /// 0.3 (see-through) to 1.0 (opaque).
     pub window_opacity: f32,
     pub theme: String,
@@ -74,6 +86,13 @@ impl Default for Settings {
             caret_blink: "blink".into(),
             caret_width: 2.0,
             window_opacity: 1.0,
+            draw_white_space: "selection".into(),
+            highlight_trailing_whitespace: true,
+            bracket_colors: true,
+            color_swatches: true,
+            sticky_scroll: true,
+            smooth_scroll: true,
+            git_gutter: true,
             theme: crate::highlight::DEFAULT_THEME.into(),
             tab_size: 4,
             translate_tabs_to_spaces: true,

@@ -117,6 +117,16 @@ Also: code folding (⌥⌘[ / ⌥⌘], ⌘K ⌘1…9), rulers and a fixed wrap c
 (View menu), soft undo, Emacs-style mark and yank, macros, paste from
 history, copy as HTML.
 
+Look and feel: a theme-colored gradient scrollbar with match and cursor
+ticks, pick any installed font for the editor and the interface (with sizes),
+cursor styles (line, block, underline; blink, fade, solid), window opacity,
+bracket pair colors, visible whitespace and trailing-whitespace tint, color
+swatches under CSS colors, sticky scroll headers, smooth scrolling, and git
+change bars with the branch in the status bar (View ▸ Editor Extras toggles
+each). Tools ▸ Text has JSON format/minify, Base64/URL/HTML codecs, UUID and
+date; Tools ▸ On Save trims whitespace, adds a final newline, or saves on
+focus loss.
+
 Known gaps: no replace-in-files, no plugin/package system, no
 spell check, no macros, one window per app instance (no New Window), cloned
 views of one file in two panes aren't supported, and Finder "Open With" isn't

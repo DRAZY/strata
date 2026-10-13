@@ -1897,6 +1897,32 @@ impl eframe::App for StrataApp {
             d.view.wrap = wrap;
             d.view.wrap_column = self.settings.wrap_column;
             d.view.opacity = self.settings.window_opacity.clamp(0.3, 1.0);
+            let s = &self.settings;
+            d.view.show_whitespace = match s.draw_white_space.as_str() {
+                "all" => crate::view::Whitespace::All,
+                "none" => crate::view::Whitespace::None,
+                _ => crate::view::Whitespace::Selection,
+            };
+            d.view.highlight_trailing_whitespace = s.highlight_trailing_whitespace;
+            d.view.bracket_colors = s.bracket_colors;
+            d.view.color_swatches = s.color_swatches;
+            d.view.sticky_scroll = s.sticky_scroll;
+            d.view.smooth_scroll = s.smooth_scroll;
+            d.view.line_marks = if s.git_gutter {
+                d.git_changes
+                    .iter()
+                    .map(|(r, c)| {
+                        let mark = match c {
+                            crate::git::LineChange::Added => crate::view::LineMark::Added,
+                            crate::git::LineChange::Modified => crate::view::LineMark::Modified,
+                            crate::git::LineChange::Deleted => crate::view::LineMark::Deleted,
+                        };
+                        (r.clone(), mark)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             d.view.caret_width = self.settings.caret_width.clamp(1.0, 6.0);
             d.view.caret_shape = match self.settings.caret_style.as_str() {
                 "block" => crate::view::CaretShape::Block,
