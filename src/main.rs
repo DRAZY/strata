@@ -46,11 +46,11 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Strata",
         options,
-        Box::new(|cc| {
+        Box::new(|_cc| {
             #[allow(unused_mut)]
             let mut app = app::StrataApp::new(path, session::config_dir());
             #[cfg(target_os = "macos")]
-            app.install_native_menu(&cc.egui_ctx);
+            app.install_native_menu(&_cc.egui_ctx);
             Ok(Box::new(app))
         }),
     )
