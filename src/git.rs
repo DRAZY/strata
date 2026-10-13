@@ -354,7 +354,8 @@ pub fn next_change(changes: &[(Range<usize>, LineChange)], line: usize, forward:
 
 struct Request {
     path: PathBuf,
-    text: Arc<String>,
+    /// A rope snapshot is O(1) to take on the UI thread; the worker turns it into text.
+    text: ropey::Rope,
     version: u64,
 }
 
@@ -398,7 +399,7 @@ impl GitWatcher {
     }
 
     /// Queue a diff of `text` (the document at `version`) against HEAD.
-    pub fn request(&self, path: &Path, text: Arc<String>, version: u64) {
+    pub fn request(&self, path: &Path, text: ropey::Rope, version: u64) {
         let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let req = Request { path: path.to_owned(), text, version };
         match st.pending.iter_mut().find(|r| r.path == path) {
@@ -506,7 +507,9 @@ fn diff_one(
             heads.insert(req.path.clone(), HeadEntry { read: now, mtime: disk, text });
         }
         match &heads[&req.path].text {
-            Some(base) => diff_lines(base, &req.text),
+            // Too long to diff: don't even copy it out of the rope.
+            Some(_) if req.text.len_lines() > MAX_DIFF_LINES + 1 => Vec::new(),
+            Some(base) => diff_lines(base, &String::from(&req.text)),
             None => Vec::new(), // untracked or new
         }
     } else {
@@ -690,8 +693,8 @@ mod tests {
         let Some(dir) = temp_repo("watch") else { return };
         let file = dir.join("sub/f.txt");
         let w = GitWatcher::new(None);
-        w.request(&file, Arc::new("one\ntwo\n".into()), 1);
-        w.request(&file, Arc::new("one\nTWO\nthree\n".into()), 2);
+        w.request(&file, ropey::Rope::from_str("one\ntwo\n"), 1);
+        w.request(&file, ropey::Rope::from_str("one\nTWO\nthree\n"), 2);
         let deadline = Instant::now() + Duration::from_secs(10);
         let got = loop {
             if let Some(r) = w.poll() {
@@ -712,9 +715,9 @@ mod tests {
         let (a, b) = (dir.join("sub/f.txt"), dir.join("sub/g.txt"));
         std::fs::write(&b, "new\n").unwrap();
         let w = GitWatcher::new(None);
-        w.request(&a, Arc::new("one\nTWO\nthree\n".into()), 1);
-        w.request(&b, Arc::new("new\n".into()), 7);
-        w.request(&a, Arc::new("one\nTWO\nthree\nfour\n".into()), 2);
+        w.request(&a, ropey::Rope::from_str("one\nTWO\nthree\n"), 1);
+        w.request(&b, ropey::Rope::from_str("new\n"), 7);
+        w.request(&a, ropey::Rope::from_str("one\nTWO\nthree\nfour\n"), 2);
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut got = Vec::new();
         while got.len() < 2 {

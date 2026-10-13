@@ -212,7 +212,7 @@ This changes the text itself by adding line breaks. To wrap long lines on screen
 | Command | Shortcut | What it does |
 |---------|----------|--------------|
 | Edit ▸ Paste and Indent | {{key:paste_and_indent}} | Pastes and shifts the pasted lines so they match the indentation where you paste. The relative indentation inside the pasted text is kept. |
-| Edit ▸ Paste from History | {{key:paste_from_history}} | Shows the last 15 pieces of text you copied or cut in Strata. Pick one to paste it. |
+| Edit ▸ Paste from History | {{key:paste_from_history}} | Shows the last 15 pieces of text you copied or cut in Strata (pieces over 4 MB are left out). Pick one to paste it. |
 | Edit ▸ Copy as HTML | {{key:copy_as_html}} | Copies the selection, or the whole file, as syntax-highlighted HTML in your current color scheme. Paste it into an email, a document or a slide to keep the colors. Apps that don't take HTML get plain text. |
 
 ## The Mark
@@ -291,7 +291,7 @@ Word wrap breaks long lines on screen to fit the window, without changing the fi
 Lines break after the last space that fits. A word too long for a line is cut where the line is full.
 
 > [!NOTE]
-> Files larger than about 8 million characters are never wrapped, to keep editing them fast.
+> Files larger than about 8 million characters are never wrapped, to keep editing them fast. Files in large-file mode don't wrap unless you turn it on for them; see [Very large files](troubleshooting.md#very-large-files).
 
 ## Spell check
 
@@ -335,6 +335,8 @@ Underlines are worked out only for the lines on screen, and remembered per line,
 **Edit ▸ Undo** ({{key:undo}}) and **Edit ▸ Redo** ({{key:redo}}) step through your changes. A run of typing is undone in one step, and so is any single command, even one that changed text at many cursors. Undo also puts the cursors back where they were.
 
 For undoing cursor movements and selections, see [Soft undo](#soft-undo).
+
+Undo history holds up to 256 MB of changed text per file. Replacing all of a 50 MB file holds 50 MB, so after several such edits the oldest steps are dropped; the latest step is always kept.
 
 ## Typing in other languages
 

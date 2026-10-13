@@ -154,7 +154,8 @@ pub fn bracket_palette(theme: &str) -> Vec<Color32> {
     let lines = buf.len_lines();
     let bg = hl.background();
     let mut colors: Vec<Color32> = Vec::new();
-    if hl.prepare(&buf, 0..=lines - 1) {
+    // A dozen lines: parse them all, however long it takes.
+    if hl.prepare_within(&buf, 0..=lines - 1, std::time::Duration::from_secs(5)) {
         for l in 0..lines {
             for s in hl.line(l).iter().flat_map(|v| v.iter()) {
                 let c = s.color.to_opaque();

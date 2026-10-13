@@ -29,6 +29,17 @@ const SCROLL_TIME: f64 = 0.12;
 /// Sticky scroll: most header lines pinned, and how far up to look for them.
 const MAX_STICKY: usize = 3;
 const STICKY_SCAN: usize = 5_000;
+/// Highlighting time per frame for the minimap and each sticky header (the
+/// text gets `highlight::TIME_BUDGET`): with slow grammars, they fill in last.
+const MINIMAP_HIGHLIGHT: std::time::Duration = std::time::Duration::from_micros(1_500);
+const STICKY_HIGHLIGHT: std::time::Duration = std::time::Duration::from_millis(1);
+/// Unwrapped lines longer than this (chars) are laid out only around the
+/// visible columns, `LONG_MARGIN` chars either side: a minified file's one
+/// 5 MB line must not become a 5 MB galley every frame.
+pub const LONG_LINE: usize = 4_096;
+const LONG_MARGIN: usize = 512;
+/// Sticky headers and minimap rows look at most this many chars of a line.
+const SHORT_VIEW: usize = 1_024;
 /// Overview ticks are drawn one per item up to this many, then per pixel.
 const TICKS_DIRECT: usize = 2_000;
 
@@ -119,6 +130,80 @@ pub struct EditorView {
     pub spell: crate::spell::Marks,
     /// First and last line painted last frame.
     painted: (usize, usize),
+    /// Column maps of long lines, for the text version and tab width they were made for.
+    long_lines: std::cell::RefCell<LongLines>,
+}
+
+#[derive(Default)]
+struct LongLines {
+    key: (u64, usize),
+    lines: std::collections::HashMap<usize, Arc<LongLine>>,
+}
+
+/// Where a long line's tabs are, so chars map to display columns (and back)
+/// without walking the line.
+struct LongLine {
+    /// Chars in the line.
+    len: usize,
+    /// (char offset of a tab, extra columns of all tabs up to and including it).
+    tabs: Vec<(usize, usize)>,
+}
+
+impl LongLine {
+    fn new<'a>(chunks: impl Iterator<Item = &'a str>, tab: usize) -> Self {
+        let (mut len, mut extra, mut tabs) = (0, 0, Vec::new());
+        for chunk in chunks {
+            if !chunk.contains('\t') {
+                len += chunk.chars().count();
+                continue;
+            }
+            for c in chunk.chars() {
+                if c == '\t' {
+                    let col = len + extra;
+                    extra += tab - col % tab - 1;
+                    tabs.push((len, extra));
+                }
+                len += 1;
+            }
+        }
+        Self { len, tabs }
+    }
+
+    /// Display column before char `off`.
+    fn dcol(&self, off: usize) -> usize {
+        let i = self.tabs.partition_point(|&(p, _)| p < off);
+        off + i.checked_sub(1).map_or(0, |i| self.tabs[i].1)
+    }
+
+    /// The last char offset whose column is at most `col`.
+    fn off_at(&self, col: usize) -> usize {
+        let (mut lo, mut hi) = (0, self.len);
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            if self.dcol(mid) <= col { lo = mid } else { hi = mid - 1 }
+        }
+        lo
+    }
+}
+
+/// The part of a line that gets laid out: all of it, or for a long line the
+/// visible stretch.
+struct Segment {
+    /// Char offset in the line where `text` starts.
+    start: usize,
+    text: String,
+    /// Rows of `text`; its display columns are the line's (`dcols[0]` is
+    /// the column `text` starts at).
+    rows: LineRows,
+    /// The whole line's width in columns, when only part of it is here.
+    width: Option<usize>,
+}
+
+impl Segment {
+    /// Screen x where `text`'s galley goes.
+    fn x(&self, m: &Metrics) -> f32 {
+        m.origin_x + self.rows.dcols[0] as f32 * m.char_w
+    }
 }
 
 /// What `show_whitespace` marks.
@@ -238,6 +323,7 @@ impl EditorView {
             context_line: None,
             spell: Default::default(),
             painted: (0, 0),
+            long_lines: Default::default(),
         }
     }
 
@@ -921,26 +1007,59 @@ impl EditorView {
         ((y - m.text.top() + self.scroll.y) / m.row_h).floor()
     }
 
-    /// The line and its rows at visual row `row`, which row of the line it is,
-    /// and that row laid out plain.
-    fn hit_row(&self, ui: &Ui, ed: &Editor, m: &Metrics, row: usize) -> (usize, LineRows, usize, Arc<Galley>) {
+    /// The column map of a long line, made once per edit.
+    fn long_line(&self, ed: &Editor, line: usize) -> Arc<LongLine> {
+        let tab = ed.tab_width.max(1);
+        let mut cache = self.long_lines.borrow_mut();
+        if cache.key != (ed.version(), tab) {
+            *cache = LongLines { key: (ed.version(), tab), lines: Default::default() };
+        }
+        cache.lines.entry(line).or_insert_with(|| Arc::new(LongLine::new(ed.buffer.chunks_in(ed.buffer.line_start(line)..ed.buffer.line_end(line)), tab))).clone()
+    }
+
+    /// What of `line` to lay out: the whole line, or (unwrapped and longer
+    /// than `LONG_LINE`) only the columns in view plus a margin.
+    fn segment(&self, ed: &Editor, m: &Metrics, line: usize) -> Segment {
+        let tab = ed.tab_width.max(1);
+        let start = ed.buffer.line_start(line);
+        let len = ed.buffer.line_end(line) - start;
+        if m.wrap.is_some() || len <= LONG_LINE {
+            let text = ed.buffer.line_text(line);
+            let rows = LineRows::new(text.chars(), m.wrap, tab);
+            return Segment { start: 0, text, rows, width: None };
+        }
+        let ll = self.long_line(ed, line);
+        let first_col = (self.scroll.x / m.char_w).max(0.0) as usize;
+        let cols = (m.text.width() / m.char_w).ceil() as usize + 2;
+        // Start on a multiple of the margin so small scrolls reuse the same layout.
+        let a = ll.off_at(first_col).saturating_sub(LONG_MARGIN) / LONG_MARGIN * LONG_MARGIN;
+        let b = (ll.off_at(first_col + cols) + 2 * LONG_MARGIN).min(len);
+        let text = ed.buffer.slice(start + a..start + b);
+        let rows = LineRows::starting_at(text.chars(), ll.dcol(a), tab);
+        Segment { start: a, text, rows, width: Some(ll.dcol(len)) }
+    }
+
+    /// The line at visual row `row`, the part of it laid out, which row of
+    /// the line it is, and that row laid out plain.
+    fn hit_row(&self, ui: &Ui, ed: &Editor, m: &Metrics, row: usize) -> (usize, Segment, usize, Arc<Galley>) {
         let (line, sub) = self.row_line(ed, m, row.min(self.total_rows(ed, m) - 1));
-        let text = ed.buffer.line_text(line);
-        let lr = LineRows::new(text.chars(), m.wrap, ed.tab_width);
+        let seg = self.segment(ed, m, line);
+        let lr = &seg.rows;
         let sub = sub.min(lr.rows() - 1);
         let r = lr.range(sub);
-        let bytes = byte_offsets(&text, &[r.start, r.end]);
-        let style = Styled { text: &text, spans: None, font: &m.font, fg: Color32::WHITE, tab: ed.tab_width, colors: &[] };
+        let bytes = byte_offsets(&seg.text, &[r.start, r.end]);
+        let style = Styled { text: &seg.text, spans: None, font: &m.font, fg: Color32::WHITE, tab: ed.tab_width, colors: &[] };
         let galley = layout_segment(ui, &style, bytes[0]..bytes[1], lr.dcols[r.start], None);
-        (line, lr, sub, galley)
+        (line, seg, sub, galley)
     }
 
     /// Line and display column under `p`, extending past line ends.
     fn pos_to_line_col(&self, ui: &Ui, ed: &Editor, m: &Metrics, p: Pos2) -> (usize, usize) {
         let row = self.row_at(m, p.y).max(0.0) as usize;
-        let (line, lr, sub, galley) = self.hit_row(ui, ed, m, row);
+        let (line, seg, sub, galley) = self.hit_row(ui, ed, m, row);
+        let lr = &seg.rows;
         let r = lr.range(sub);
-        let x = p.x - m.origin_x;
+        let x = p.x - seg.x(m);
         let col = if x <= galley.size().x {
             galley.cursor_from_pos(vec2(x, m.row_h * 0.5)).index.0
         } else {
@@ -954,9 +1073,9 @@ impl EditorView {
         if row < 0.0 {
             return 0;
         }
-        let (line, lr, sub, galley) = self.hit_row(ui, ed, m, row as usize);
-        let col = galley.cursor_from_pos(vec2(p.x - m.origin_x, m.row_h * 0.5)).index.0;
-        ed.buffer.line_start(line) + lr.off_at_col(sub, col)
+        let (line, seg, sub, galley) = self.hit_row(ui, ed, m, row as usize);
+        let col = galley.cursor_from_pos(vec2(p.x - seg.x(m), m.row_h * 0.5)).index.0;
+        ed.buffer.line_start(line) + seg.start + seg.rows.off_at_col(sub, col)
     }
 
     // ---- scrolling -------------------------------------------------------
@@ -992,10 +1111,17 @@ impl EditorView {
         if m.wrap.is_some() {
             return;
         }
-        let text = ed.buffer.line_text(line);
-        let galley = layout_line(ui, &text, None, &m.font, hl.foreground(), ed.tab_width);
-        let x = galley.pos_from_cursor(CCursor::new(ed.display_col(head))).min.x + m.char_w;
-        self.max_width = self.max_width.max(galley.size().x);
+        let (x, width) = if ed.buffer.line_end(line) - ed.buffer.line_start(line) > LONG_LINE {
+            // Monospace columns: laying out the whole line would cost more than it's worth.
+            let ll = self.long_line(ed, line);
+            (ll.dcol(head - ed.buffer.line_start(line)) as f32 * m.char_w, ll.dcol(ll.len) as f32 * m.char_w)
+        } else {
+            let text = ed.buffer.line_text(line);
+            let galley = layout_line(ui, &text, None, &m.font, hl.foreground(), ed.tab_width);
+            (galley.pos_from_cursor(CCursor::new(ed.display_col(head))).min.x, galley.size().x)
+        };
+        let x = x + m.char_w;
+        self.max_width = self.max_width.max(width);
         let margin = m.char_w * 4.0;
         if x - margin < self.scroll.x {
             self.scroll.x = (x - margin).max(0.0);
@@ -1120,7 +1246,7 @@ impl EditorView {
         let last = self.row_line(ed, m, last_row).0;
         self.painted = (first, last);
         if !hl.prepare(&ed.buffer, first..=last) {
-            ui.ctx().request_repaint();
+            highlight_later(ui, hl);
         }
         let sticky = self.sticky_lines(ed, m);
         let palette = if self.bracket_colors { self.bracket_palette(hl) } else { Vec::new() };
@@ -1174,34 +1300,39 @@ impl EditorView {
 
         let (mut row, mut line, mut sub0) = (first_row, first, first_sub);
         while row <= last_row && line < ed.buffer.len_lines() {
-            let text = ed.buffer.line_text(line);
-            crate::fonts::ensure_cjk(ui.ctx(), &text);
-            let spans = hl.line(line);
-            let colors = bracket_colors(&self.brackets, line, &palette, bracket_err);
-            let style = Styled { text: &text, spans: spans.as_deref().map(|v| v.as_slice()), font: &m.font, fg, tab, colors: &colors };
-            let lr = LineRows::new(text.chars(), m.wrap, tab);
-            let mut bytes = byte_offsets(&text, &lr.starts);
+            let seg = self.segment(ed, m, line);
+            // Only part of a long line: no syntax or bracket colors (long lines are plain anyway).
+            let part = seg.width.is_some();
+            let (text, lr, ox) = (&seg.text, &seg.rows, seg.x(m));
+            crate::fonts::ensure_cjk(ui.ctx(), text);
+            let spans = if part { None } else { hl.line(line) };
+            let colors = if part { Vec::new() } else { bracket_colors(&self.brackets, line, &palette, bracket_err) };
+            let style = Styled { text, spans: spans.as_deref().map(|v| v.as_slice()), font: &m.font, fg, tab, colors: &colors };
+            let mut bytes = byte_offsets(text, &lr.starts);
             bytes.push(text.len());
-            let line_start = ed.buffer.line_start(line);
+            let line_start = ed.buffer.line_start(line) + seg.start;
             let line_end = line_start + lr.len();
+            let at_end = line_end == ed.buffer.line_end(line);
             let on_caret_line = caret_lines.contains(&line);
             let fold_end = self.folds.at_header(line).map_or(line, |i| self.folds.list()[i].end);
             let mark = line_mark(&self.line_marks, line..=fold_end);
 
             // Trailing whitespace, unless a caret is in it (typing).
-            let trail = decor::trailing_ws(&text).filter(|&t| {
-                self.highlight_trailing_whitespace
+            let trail = decor::trailing_ws(text).filter(|&t| {
+                at_end
+                    && self.highlight_trailing_whitespace
                     && !ed.selections().iter().zip(&caret_lines).any(|(s, &l)| l == line && s.head >= line_start + t)
             });
             // Color literals, as line char ranges.
             let swatches: Vec<(Range<usize>, Color32)> = if self.color_swatches && text.len() <= 50_000 {
                 let chars = |b: usize| text[..b].chars().count();
-                decor::find_colors(&text).into_iter().map(|(r, c)| (chars(r.start)..chars(r.end), c)).collect()
+                decor::find_colors(text).into_iter().map(|(r, c)| (chars(r.start)..chars(r.end), c)).collect()
             } else {
                 Vec::new()
             };
             // Misspelled words, as line char ranges.
-            let misspelled: Vec<Range<usize>> = self.spell.for_line(line, &text).map(<[_]>::to_vec).unwrap_or_default();
+            // (Not on part of a long line: the marks are for the whole line.)
+            let misspelled: Vec<Range<usize>> = if part { Vec::new() } else { self.spell.for_line(line, text).map(<[_]>::to_vec).unwrap_or_default() };
             // Chars to look through for whitespace marks.
             let ws_chars: Option<Vec<char>> = match self.show_whitespace {
                 Whitespace::None => None,
@@ -1214,7 +1345,9 @@ impl EditorView {
             };
 
             // Indent guides at each tab stop inside the leading whitespace.
-            let indent = if text.trim().is_empty() {
+            let indent = if seg.start > 0 {
+                0
+            } else if text.trim().is_empty() {
                 indent_above
             } else {
                 let mut col = 0;
@@ -1251,12 +1384,13 @@ impl EditorView {
                 // The IME composition is drawn inline at the primary caret.
                 let composing = line == primary_line && preedit_chars > 0 && in_row(primary_head);
                 let insert = composing.then(|| {
-                    let byte = byte_offsets(&text, &[primary_head - line_start])[0];
+                    let byte = byte_offsets(text, &[primary_head - line_start])[0];
                     Insert { byte, text: &self.preedit }
                 });
                 let galley = layout_segment(ui, &style, bytes[sub]..bytes[sub + 1], dcol0, insert);
                 if m.wrap.is_none() {
-                    self.max_width = self.max_width.max(galley.size().x);
+                    let width = seg.width.map_or(galley.size().x, |cols| cols as f32 * m.char_w);
+                    self.max_width = self.max_width.max(width);
                 }
 
                 if on_caret_line && all_empty {
@@ -1272,7 +1406,7 @@ impl EditorView {
                 let x_at = |pos: usize| {
                     let shift = if composing && pos >= primary_head { preedit_chars } else { 0 };
                     let dcol = lr.dcols[pos.saturating_sub(line_start).min(lr.len())] - dcol0 + shift;
-                    m.origin_x + galley.pos_from_cursor(CCursor::new(dcol)).min.x
+                    ox + galley.pos_from_cursor(CCursor::new(dcol)).min.x
                 };
                 if let Some(t) = trail {
                     let (a, b) = ((line_start + t).max(row_start), row_end);
@@ -1345,7 +1479,7 @@ impl EditorView {
                     }
                 }
 
-                text_painter.galley(pos2(m.origin_x, y + m.pad), galley.clone(), fg);
+                text_painter.galley(pos2(ox, y + m.pad), galley.clone(), fg);
 
                 // Misspellings: a wavy underline.
                 for w in &misspelled {
@@ -1390,7 +1524,7 @@ impl EditorView {
 
                 // A folded header ends in a "…" pill; clicking it unfolds.
                 if last_sub && self.folds.at_header(line).is_some() {
-                    let x = m.origin_x + galley.size().x + m.char_w * 0.6;
+                    let x = ox + galley.size().x + m.char_w * 0.6;
                     let pill = Rect::from_min_size(pos2(x, y + m.pad + m.text_h * 0.15), vec2(m.char_w * 2.4, m.text_h * 0.7));
                     text_painter.rect_filled(pill, m.text_h * 0.3, fg.gamma_multiply(0.18));
                     text_painter.text(pill.center(), Align2::CENTER_CENTER, "…", m.font.clone(), fg.gamma_multiply(0.8));
@@ -1500,10 +1634,10 @@ impl EditorView {
             let y = m.text.top() + slot as f32 * m.row_h;
             let row = Rect::from_min_max(pos2(m.gutter.left(), y), pos2(m.text.right(), y + m.row_h));
             painter.rect_filled(row, 0.0, bg);
-            if !hl.prepare(&ed.buffer, line..=line) {
-                ui.ctx().request_repaint();
+            if !hl.prepare_within(&ed.buffer, line..=line, STICKY_HIGHLIGHT) {
+                highlight_later(ui, hl);
             }
-            let text = ed.buffer.line_text(line);
+            let text = short_line_text(ed, line);
             crate::fonts::ensure_cjk(ui.ctx(), &text);
             let spans = hl.line(line);
             let colors = bracket_colors(&self.brackets, line, palette, error_color(light));
@@ -1589,8 +1723,8 @@ impl EditorView {
         let last = (first + (mm.height() / MM_ROW) as usize).min(rows - 1);
         let (first_line, first_sub) = self.row_line(ed, m, first);
         let last_line = self.row_line(ed, m, last).0;
-        if !hl.prepare(&ed.buffer, first_line..=last_line) {
-            ui.ctx().request_repaint();
+        if !hl.prepare_within(&ed.buffer, first_line..=last_line, MINIMAP_HIGHLIGHT) {
+            highlight_later(ui, hl);
         }
 
         // The part the editor shows, outlined only while the pointer is over the
@@ -1616,7 +1750,7 @@ impl EditorView {
         let tab = ed.tab_width.max(1);
         let (mut row, mut line, mut sub0) = (first, first_line, first_sub);
         while row <= last && line < ed.buffer.len_lines() {
-            let text = ed.buffer.line_text(line);
+            let text = short_line_text(ed, line);
             let spans = hl.line(line);
             let color_at = |byte: usize| {
                 spans.as_ref().and_then(|v| v.iter().find(|s| s.range.contains(&byte))).map_or(fg, |s| s.color)
@@ -1660,6 +1794,22 @@ impl EditorView {
             sub0 = 0;
             line = self.next_line(line);
         }
+    }
+}
+
+/// The line, or only its first `SHORT_VIEW` chars when wrap is off (all a
+/// minimap row or sticky header shows of a long line).
+fn short_line_text(ed: &Editor, line: usize) -> String {
+    let start = ed.buffer.line_start(line);
+    ed.buffer.slice(start..ed.buffer.line_end(line).min(start + SHORT_VIEW))
+}
+
+/// Highlighting isn't done: continue next frame, or soon if it waits on its worker.
+fn highlight_later(ui: &Ui, hl: &Highlighter) {
+    if hl.waiting() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
+    } else {
+        ui.ctx().request_repaint();
     }
 }
 

@@ -95,6 +95,11 @@ pub struct Settings {
     pub detect_indentation: bool,
     /// Restore open tabs, unsaved text included, instead of asking on quit.
     pub hot_exit: bool,
+    /// Files bigger than this (MB) open in large-file mode: plain text, no
+    /// minimap, word wrap or bracket colors.
+    pub large_file_mb: f64,
+    /// Ask before opening a file bigger than this (MB).
+    pub large_file_warning_mb: f64,
     /// The terminal panel was open (a shell starts on launch only then).
     pub terminal_visible: bool,
     pub terminal_height: f32,
@@ -159,6 +164,8 @@ impl Default for Settings {
             ensure_newline_at_eof_on_save: false,
             save_on_focus_lost: false,
             hot_exit: true,
+            large_file_mb: (crate::document::LARGE_FILE_BYTES >> 20) as f64,
+            large_file_warning_mb: 500.0,
             terminal_visible: false,
             terminal_height: 240.0,
             terminal_allow_clipboard_read: false,
@@ -381,18 +388,35 @@ impl Session {
     /// A backup name never used before, so an old session.json can't point
     /// at a file that now holds another tab's text.
     pub fn backup_name(tab: usize) -> String {
+        // The clock may not tick between two calls: a counter keeps names apart.
+        static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        format!("{nanos}-{tab}.txt")
+        format!("{nanos}-{n}-{tab}.txt")
+    }
+
+    /// The backup name for one exact text (`Editor::text_id`, unique in
+    /// this process; the prefix sets this run apart from earlier ones). A
+    /// backup already written under it holds that text, so it isn't
+    /// written again until the tab changes.
+    pub fn backup_name_for(text_id: u64) -> String {
+        static RUN: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| Session::backup_name(std::process::id() as usize).replace(".txt", ""));
+        format!("{}-t{text_id}.txt", *RUN)
     }
 
     /// Every file is flushed to disk before session.json is replaced, and
     /// stale backups are pruned only after that, so a crash at any point
-    /// leaves either the old or the new session intact.
-    pub fn save(&self, dir: &Path, backups: &[(String, String)]) -> std::io::Result<()> {
+    /// leaves either the old or the new session intact. Backups are rope
+    /// snapshots (taking one costs nothing on the UI thread), and one whose
+    /// file exists already is skipped: names are never reused for other text.
+    pub fn save(&self, dir: &Path, backups: &[(String, ropey::Rope)]) -> std::io::Result<()> {
         let bdir = Self::backups(dir);
         std::fs::create_dir_all(&bdir)?;
         for (name, text) in backups {
-            write_synced(&bdir.join(name), text)?;
+            let path = bdir.join(name);
+            if !path.exists() {
+                write_backup(&path, text)?;
+            }
         }
         let tmp = dir.join("session.json.tmp");
         write_synced(&tmp, &serde_json::to_string_pretty(self)?)?;
@@ -408,6 +432,18 @@ impl Session {
         }
         Ok(())
     }
+}
+
+/// Written under a temporary name and renamed, so a backup file that exists is complete.
+fn write_backup(path: &Path, text: &ropey::Rope) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("partial");
+    let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+    for chunk in text.chunks() {
+        f.write_all(chunk.as_bytes())?;
+    }
+    f.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    std::fs::rename(&tmp, path)
 }
 
 fn write_synced(path: &Path, text: &str) -> std::io::Result<()> {

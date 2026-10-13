@@ -129,9 +129,7 @@ impl Buffer {
 
     /// The line's text without its line break.
     pub fn line_text(&self, line: usize) -> String {
-        self.rope
-            .slice(self.line_start(line)..self.line_end(line))
-            .to_string()
+        String::from(self.rope.slice(self.line_start(line)..self.line_end(line)))
     }
 
     /// The line's chars without its line break, without allocating.
@@ -154,8 +152,25 @@ impl Buffer {
         self.rope.lines_at(line.min(self.len_lines())).reversed().map(|l| l.chunks())
     }
 
+    /// The text as it is now, for a worker thread (cheap: chunks are shared).
+    pub fn snapshot(&self) -> Rope {
+        self.rope.clone()
+    }
+
+    /// The text in `range`. (Copies chunk by chunk: `to_string` would go
+    /// through `fmt` and take several times as long on big ranges.)
     pub fn slice(&self, range: Range<usize>) -> String {
-        self.rope.slice(range).to_string()
+        String::from(self.rope.slice(range))
+    }
+
+    /// The chars in `range`, without copying them out.
+    pub fn chars_in(&self, range: Range<usize>) -> impl Iterator<Item = char> + '_ {
+        self.rope.slice(range).chars()
+    }
+
+    /// The text in `range` as string chunks, without copying.
+    pub fn chunks_in(&self, range: Range<usize>) -> impl Iterator<Item = &str> {
+        self.rope.slice(range).chunks()
     }
 
     pub fn insert(&mut self, at: usize, text: &str) {

@@ -59,6 +59,8 @@ enum EditKind {
 struct Transaction {
     id: u64,
     changes: Vec<Change>,
+    /// Text held by `changes` (removed + inserted), in bytes.
+    bytes: usize,
     before: Vec<Selection>,
     after: Vec<Selection>,
     kind: Option<EditKind>,
@@ -69,6 +71,11 @@ pub struct Editor {
     sels: Vec<Selection>,
     primary: usize,
     undo: Vec<Transaction>,
+    /// Bytes held by `undo`, and the most it may hold (`UNDO_MEMORY`).
+    undo_bytes: usize,
+    undo_limit: usize,
+    /// Id of the text before the oldest step kept: 0 until steps are dropped.
+    base_id: u64,
     redo: Vec<Transaction>,
     next_id: u64,
     saved_id: u64,
@@ -76,6 +83,9 @@ pub struct Editor {
     changed_from: Option<usize>,
     /// Bumped on every text change; keys caches like search results.
     version: u64,
+    /// Unique to this text in the whole process: new for every change, and
+    /// never reused by another editor (names hot-exit backups).
+    text_id: u64,
     snapshot: Option<(u64, Arc<String>)>,
     /// Cmd+D started from a bare cursor, so it matches whole words only.
     next_whole_word: bool,
@@ -112,6 +122,17 @@ pub struct Editor {
 
 /// Soft-undo history entries kept at most.
 const SEL_HISTORY: usize = 200;
+
+/// Undo history keeps at most this much text (removed plus inserted); the
+/// oldest steps go beyond it, though never the latest one. Each Select All +
+/// type on a 50 MB file holds 50 MB.
+pub const UNDO_MEMORY: usize = 256 << 20;
+
+static NEXT_TEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn fresh_text_id() -> u64 {
+    NEXT_TEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 /// One selection-only change. `state` names the text it applies to (see
 /// `Editor::text_state`), so steps from text that no longer exists are skipped.
@@ -347,8 +368,9 @@ fn common_comment_prefix<'a>(bodies: &[&'a str]) -> &'a str {
     first[..n].trim_end()
 }
 
-/// Chars scanned on each side of the cursor for word completions.
-const COMPLETION_SCAN: usize = 1_000_000;
+/// Chars scanned on each side of the cursor for word completions (on every
+/// keystroke, so bounded however big the file).
+const COMPLETION_SCAN: usize = 250_000;
 
 /// Map `pos` through sorted edits (old coordinates). At an insertion point,
 /// `after` puts it past the inserted text; inside a replaced range it lands
@@ -418,12 +440,16 @@ impl Editor {
             sels: vec![Selection::cursor(0)],
             primary: 0,
             undo: Vec::new(),
+            undo_bytes: 0,
+            undo_limit: UNDO_MEMORY,
+            base_id: 0,
             redo: Vec::new(),
             next_id: 1,
             saved_id: 0,
             can_coalesce: false,
             changed_from: Some(0),
             version: 0,
+            text_id: fresh_text_id(),
             snapshot: None,
             next_whole_word: false,
             tab_width: 4,
@@ -455,11 +481,16 @@ impl Editor {
     }
 
     fn current_id(&self) -> u64 {
-        self.undo.last().map_or(0, |t| t.id)
+        self.undo.last().map_or(self.base_id, |t| t.id)
     }
 
     pub fn version(&self) -> u64 {
         self.version
+    }
+
+    /// Identifies the current text across every editor in the process.
+    pub fn text_id(&self) -> u64 {
+        self.text_id
     }
 
     /// Undo steps recorded so far; drops when an undo pops one.
@@ -638,6 +669,7 @@ impl Editor {
 
     fn note_change(&mut self, pos: usize) {
         self.version += 1;
+        self.text_id = fresh_text_id();
         let line = self.buffer.line_of(pos);
         self.changed_from = Some(self.changed_from.map_or(line, |l| l.min(line)));
     }
@@ -772,27 +804,59 @@ impl Editor {
         self.sel_future.clear();
 
         let saved_id = self.saved_id;
+        let bytes: usize = changes.iter().map(|c| c.removed.len() + c.inserted.len()).sum();
+        self.undo_bytes += bytes;
         if let (Some(k), true, Some(last)) = (kind, self.can_coalesce, self.undo.last_mut())
             && last.kind == Some(k)
             && last.id != saved_id
         {
             last.changes.extend(changes);
+            last.bytes += bytes;
             last.after = self.sels.clone();
             return;
         }
         self.undo.push(Transaction {
             id: self.next_id,
             changes,
+            bytes,
             before,
             after: self.sels.clone(),
             kind,
         });
         self.next_id += 1;
         self.can_coalesce = kind.is_some();
+        self.trim_undo();
+    }
+
+    /// Drop the oldest undo steps while the history holds more than
+    /// `undo_limit`. The text they led to becomes the new base: undoing
+    /// all the way stops there, and it still counts as unsaved.
+    fn trim_undo(&mut self) {
+        let excess = self.undo.iter().take(self.undo.len().saturating_sub(1)).scan(self.undo_bytes, |left, t| {
+            (*left > self.undo_limit).then(|| {
+                *left -= t.bytes;
+            })
+        });
+        let n = excess.count();
+        if n == 0 {
+            return;
+        }
+        for t in self.undo.drain(..n) {
+            self.undo_bytes -= t.bytes;
+            self.base_id = t.id;
+        }
+        self.sel_past.clear();
+    }
+
+    /// Bytes of text the undo history holds.
+    #[cfg(test)]
+    pub fn undo_bytes(&self) -> usize {
+        self.undo_bytes
     }
 
     pub fn undo(&mut self) {
         let Some(t) = self.undo.pop() else { return };
+        self.undo_bytes -= t.bytes;
         for c in t.changes.iter().rev() {
             self.splice(c.at, c.inserted.chars().count(), &c.removed);
         }
@@ -809,6 +873,7 @@ impl Editor {
         }
         let head = t.after.first().map_or(0, |s| s.head);
         self.place_selections(t.after.clone(), head);
+        self.undo_bytes += t.bytes;
         self.undo.push(t);
         self.can_coalesce = false;
     }
@@ -2313,20 +2378,30 @@ impl Editor {
         let (mut tabs, mut spaces) = (0usize, 0usize);
         let mut steps = [0usize; 9];
         let mut prev: Option<usize> = Some(0);
-        for l in 0..self.buffer.len_lines().min(200_000) {
+        // Lines are only looked at up to their first non-blank char (no copies).
+        for l in 0..self.buffer.len_lines().min(50_000) {
             if tabs + spaces >= 1000 {
                 break;
             }
-            let t = self.buffer.line_text(l);
-            if t.trim().is_empty() {
+            let (mut n, mut tab, mut blank) = (0, false, true);
+            for (i, c) in self.buffer.line_chars(l).enumerate() {
+                if c == ' ' && n == i {
+                    n += 1;
+                } else if c == '\t' && i == 0 {
+                    tab = true;
+                } else if !c.is_whitespace() {
+                    blank = false;
+                    break;
+                }
+            }
+            if blank {
                 continue;
             }
-            if t.starts_with('\t') {
+            if tab {
                 tabs += 1;
                 prev = None;
                 continue;
             }
-            let n = t.chars().take_while(|&c| c == ' ').count();
             spaces += (n > 0) as usize;
             if let Some(p) = prev
                 && matches!(n.saturating_sub(p), 2 | 3 | 4 | 8)
@@ -2978,13 +3053,14 @@ impl Editor {
     pub fn completions(&self, limit: usize) -> Vec<String> {
         let Some((_, prefix)) = self.word_prefix_at_cursor() else { return Vec::new() };
         let lower = prefix.to_lowercase();
+        let lead: Vec<char> = lower.chars().next().into_iter().flat_map(char::to_uppercase).chain(lower.chars().next()).collect();
         let h = self.primary().head;
         let lo = h.saturating_sub(COMPLETION_SCAN);
         let hi = (h + COMPLETION_SCAN).min(self.buffer.len_chars());
         let mut best: std::collections::HashMap<String, (bool, usize)> = std::collections::HashMap::new();
         let mut word = String::new();
         let mut start = 0;
-        for (i, c) in self.buffer.slice(lo..hi).chars().chain(std::iter::once(' ')).enumerate() {
+        for (i, c) in self.buffer.chars_in(lo..hi).chain(std::iter::once(' ')).enumerate() {
             if is_ident(c) {
                 if word.is_empty() {
                     start = lo + i;
@@ -2996,7 +3072,9 @@ impl Editor {
                 continue;
             }
             let at_cursor = start <= h && h <= lo + i;
+            // Cheap test first: most words don't even start with the right letter.
             if !at_cursor
+                && word.starts_with(&lead[..])
                 && word != prefix
                 && !word.starts_with(|c: char| c.is_ascii_digit())
                 && word.to_lowercase().starts_with(&lower)
@@ -3172,6 +3250,45 @@ mod tests {
 
     fn text(e: &Editor) -> String {
         e.buffer.slice(0..e.buffer.len_chars())
+    }
+
+    #[test]
+    fn undo_history_memory_is_capped() {
+        let big = "x".repeat(1000);
+        let mut e = Editor::new(Buffer::from_str(&big));
+        e.undo_limit = 4_500;
+        for word in ["a", "b", "c", "d"] {
+            e.select_all();
+            e.insert_text(&format!("{word}{big}"));
+        }
+        // Each step holds ~2 KB: only the newest two fit.
+        assert!(e.undo_bytes() <= 4_500 && e.history_len() == 2, "{} bytes, {} steps", e.undo_bytes(), e.history_len());
+        e.undo();
+        e.undo();
+        e.undo();
+        assert_eq!(e.buffer.slice(0..1), "b", "undo stops at the oldest step kept");
+        assert!(e.is_dirty(), "the dropped steps' text is still unsaved");
+        e.redo();
+        e.redo();
+        assert_eq!(e.buffer.slice(0..1), "d");
+        // One step bigger than the limit is still kept, alone.
+        e.select_all();
+        e.insert_text(&"y".repeat(5_000));
+        assert_eq!(e.history_len(), 1);
+        e.undo();
+        assert_eq!(e.buffer.slice(0..1), "d");
+    }
+
+    #[test]
+    fn text_ids_are_unique_per_text() {
+        let mut a = Editor::new(Buffer::from_str("x"));
+        let b = Editor::new(Buffer::from_str("x"));
+        assert_ne!(a.text_id(), b.text_id());
+        let before = a.text_id();
+        a.insert_text("y");
+        assert_ne!(a.text_id(), before);
+        a.undo();
+        assert_ne!(a.text_id(), before, "never reused, even for the same text");
     }
 
     #[test]

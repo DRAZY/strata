@@ -91,6 +91,19 @@ impl LineRows {
         Self { starts, dcols }
     }
 
+    /// One unwrapped row of part of a line that starts at display column
+    /// `col` (so tabs land on the line's tab stops).
+    pub fn starting_at(chars: impl Iterator<Item = char>, col: usize, tab: usize) -> Self {
+        let tab = tab.max(1);
+        let mut dcols = vec![col];
+        let mut col = col;
+        for c in chars {
+            col += if c == '\t' { tab - col % tab } else { 1 };
+            dcols.push(col);
+        }
+        Self { starts: vec![0], dcols }
+    }
+
     pub fn rows(&self) -> usize {
         self.starts.len()
     }

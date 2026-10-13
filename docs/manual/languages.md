@@ -11,7 +11,7 @@ When you open a file, or save it under a new name, Strata chooses a syntax from 
 3. **The extension.** Compound extensions are tried longest first, so `page.html.erb` matches `html.erb` before `erb`, and `types.d.ts` falls back to `ts`. A few extensions are mapped specially: `.jsonc` and `.json5` are JSON, `.mjs` and `.cjs` are JavaScript, `.h` is C++, and `.fs`, `.fsi` and `.fsx` are F#.
 4. **The first line**, when the name gives no answer. A shebang such as `#!/usr/bin/env python3` or `#!/bin/bash`, or a first line like `<?xml` or `<html>`, picks the matching syntax.
 
-If nothing matches, the file is Plain Text.
+If nothing matches, the file is Plain Text. Very large files and files with very long lines open as Plain Text whatever their name; choose a syntax to highlight them anyway (see [Very large files](troubleshooting.md#very-large-files)).
 
 ## Choosing a syntax yourself
 

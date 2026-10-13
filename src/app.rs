@@ -126,6 +126,9 @@ pub struct StrataApp {
     crash_notice: Option<crate::crash::PreviousCrash>,
 }
 
+mod autosave;
+#[cfg(test)]
+mod bench;
 mod completion;
 mod context_menus;
 mod diagnostics;
@@ -133,6 +136,7 @@ mod features;
 mod find_options;
 mod help_ui;
 mod keymap_ui;
+mod large_files;
 mod launch;
 pub(crate) mod menu_model;
 mod more;
@@ -280,7 +284,7 @@ impl StrataApp {
             let v = d.editor.version();
             if d.git_version != Some(v) || periodic {
                 d.git_version = Some(v);
-                self.git.request(&path, d.editor.text_snapshot(), v);
+                self.git.request(&path, d.editor.buffer.snapshot(), v);
             }
         }
         if periodic {
@@ -292,7 +296,7 @@ impl StrataApp {
     fn wraps(&self, i: usize) -> bool {
         let d = &self.docs[i];
         let prose = matches!(d.highlighter.syntax_name(), "Markdown" | "MultiMarkdown" | "Plain Text" | "reStructuredText" | "Textile" | "LaTeX");
-        d.wrap.unwrap_or(self.settings.word_wrap || prose)
+        d.can_wrap() && d.wrap.unwrap_or((self.settings.word_wrap || prose) && d.large.is_none())
     }
 
     /// Use the macOS menu bar. Must run on the main thread (not in tests).
@@ -406,7 +410,10 @@ impl StrataApp {
         if self.link.open_elsewhere(&path) {
             return;
         }
-        let mut doc = match Document::open(path.clone()) {
+        if !self.confirm_open(&path) {
+            return;
+        }
+        let mut doc = match Document::open_with(path.clone(), self.large_file_bytes()) {
             Ok(d) => d,
             Err(e) => {
                 log::warn!("couldn't open {}: {e}", path.display());
@@ -415,7 +422,7 @@ impl StrataApp {
             }
         };
         doc.preview = preview;
-        self.status = format!("Opened {}", path.display());
+        self.status = large_files::opened_status(&doc, &path);
         if !preview {
             self.remember_file(&path);
         }
@@ -747,7 +754,7 @@ impl StrataApp {
                         None
                     }
                 },
-                (None, Some(path)) if path.exists() => Document::open(path.clone()).ok(),
+                (None, Some(path)) if path.exists() => Document::open_with(path.clone(), self.large_file_bytes()).ok(),
                 _ => None,
             };
             let Some(mut doc) = doc else { continue };
@@ -818,13 +825,10 @@ impl StrataApp {
         h.finish()
     }
 
+    /// Write the session now (quitting): waits for an autosave in progress.
     fn save_session(&mut self) -> bool {
-        let Some(dir) = self.config.clone().filter(|_| self.session_lock.is_some()) else { return false };
-        let mut backups = Vec::new();
-        let mut session = Session::of_windows(vec![self.window_state(&mut backups)]);
-        session.recent_files = self.recent_files.clone();
-        session.recent_folders = self.recent_folders.clone();
-        session.recent_projects = self.recent_projects.clone();
+        let Some((dir, session, backups)) = self.session_to_save() else { return false };
+        autosave::wait();
         match session.save(&dir, &backups) {
             Ok(()) => {
                 self.session_key = self.session_fingerprint();
@@ -840,15 +844,15 @@ impl StrataApp {
 
     /// This window's part of the session; unsaved text is added to `backups`
     /// (names unique across every window saved with it).
-    fn window_state(&self, backups: &mut Vec<(String, String)>) -> WindowState {
+    fn window_state(&self, backups: &mut autosave::Backups) -> WindowState {
         let mut tabs = Vec::new();
         for d in &self.docs {
             if d.is_blank() {
                 continue;
             }
             let backup = d.is_dirty().then(|| {
-                let name = Session::backup_name(backups.len());
-                backups.push((name.clone(), d.editor.buffer.slice(0..d.editor.buffer.len_chars())));
+                let name = Session::backup_name_for(d.editor.text_id());
+                backups.push((name.clone(), d.editor.buffer.snapshot()));
                 name
             });
             tabs.push(TabState {
@@ -1081,6 +1085,9 @@ impl StrataApp {
             Cmd::ToggleWordWrap => {
                 let on = self.wraps(self.active);
                 self.docs[self.active].wrap = Some(!on);
+                if !self.docs[self.active].can_wrap() {
+                    self.status = "Word wrap is off for files with a line longer than 200,000 characters".into();
+                }
             }
             Cmd::MoveToGroup(g) => self.move_to_pane(g as usize),
             Cmd::ToggleSidebar => self.sidebar.visible = !self.sidebar.visible,
@@ -2073,9 +2080,7 @@ impl eframe::App for StrataApp {
         } else if now - self.last_session_save > 5.0 {
             // Also save as you go, so a crash loses at most a few seconds.
             self.last_session_save = now;
-            if self.hot_exit() && self.session_fingerprint() != self.session_key {
-                self.save_session();
-            }
+            self.autosave();
         }
         // Files and folders dropped on the window open in tabs / the sidebar.
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_owned()).filter(|p| !p.as_os_str().is_empty()).collect());
@@ -2130,9 +2135,9 @@ impl eframe::App for StrataApp {
                 _ => crate::view::Whitespace::Selection,
             };
             d.view.highlight_trailing_whitespace = s.highlight_trailing_whitespace;
-            d.view.bracket_colors = s.bracket_colors;
+            d.view.bracket_colors = s.bracket_colors && d.large.is_none();
             d.view.color_swatches = s.color_swatches;
-            d.view.sticky_scroll = s.sticky_scroll;
+            d.view.sticky_scroll = s.sticky_scroll && d.large.is_none();
             d.view.smooth_scroll = s.smooth_scroll;
             d.view.line_marks = if s.git_gutter {
                 d.git_changes
@@ -2166,7 +2171,7 @@ impl eframe::App for StrataApp {
             }
             d.view.font_size = self.settings.font_size;
             d.view.line_spacing = (self.settings.line_height, self.settings.line_padding_top, self.settings.line_padding_bottom);
-            d.view.minimap = minimap;
+            d.view.minimap = minimap && d.large.is_none();
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
 

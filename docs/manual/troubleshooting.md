@@ -163,12 +163,27 @@ Strata checks the files you're looking at about once a second, and other open fi
 
 ## Very large files
 
-Strata opens large files, but turns a few features off to stay fast:
+Strata stays responsive on files of hundreds of megabytes and on minified files whose whole text is one line. Opening a 50 MB file takes a fraction of a second, and typing, scrolling and jumping to the end stay instant.
+
+**Large-file mode.** A file bigger than 20 MB (the `large_file_mb` setting), or with a line longer than 10,000 characters, opens in large-file mode, like in Sublime Text and VS Code. The status bar says so when it opens. In this mode the file shows as Plain Text, and the minimap, word wrap, bracket colors and sticky scroll are off for it. To highlight it anyway, choose its syntax in the status bar's syntax menu (or **View ▸ Syntax**): highlighting then works in the background, a screenful at a time, so the editor never waits for it. **View ▸ Word Wrap** still turns wrapping on for that file, unless it has a line longer than 200,000 characters.
+
+**Asking first.** Opening a file bigger than 500 MB (the `large_file_warning_mb` setting) asks first, since all of it is read into memory. So does opening a file that looks binary (it has a NUL byte near the start and isn't UTF-16): shown as text it's gibberish, and saving it could damage it.
+
+**What else stays fast, and how:**
+
+- Syntax highlighting works on the lines you see. When you jump far into a big file, those lines are colored at once from a best guess, and a background thread parses up to them and corrects the colors within moments.
+- Very long lines are laid out only where you're looking, so a 5 MB line scrolls and edits as quickly as a short one.
+- Unsaved changes are backed up for hot exit on a background thread, and a tab's backup is only rewritten when that tab changed.
+- The status bar's word count appears for files up to 1 million characters and selections up to 4 million.
+- Undo keeps up to 256 MB of changed text. Past that, the oldest steps are dropped (the newest step is always kept, however big).
+
+**Limits that remain:**
 
 - Word wrap doesn't apply to files longer than about 8 million characters.
 - Lines longer than 20,000 characters are shown without syntax colors.
 - Find in Files skips files larger than 50 MB.
 - Git change bars aren't shown for files with more than 200,000 lines.
+- Strata reads the whole file when it opens it (about a second for 500 MB).
 
 ## macOS blocks the first launch
 

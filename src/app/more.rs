@@ -8,6 +8,9 @@ use crate::panes::Layout;
 use std::path::{Path, PathBuf};
 
 const CLIP_HISTORY: usize = 15;
+/// Copies bigger than this (bytes) go to the clipboard but not the history,
+/// so copying all of a huge file a few times doesn't pin gigabytes.
+const CLIP_HISTORY_MAX_BYTES: usize = 4 << 20;
 /// Presses of Ctrl+Tab closer together than this walk deeper into the stack.
 const STACK_WALK_SECS: f64 = 1.5;
 
@@ -34,7 +37,7 @@ impl StrataApp {
             o.commands
                 .iter()
                 .filter_map(|c| match c {
-                    egui::OutputCommand::CopyText(t) if !t.is_empty() => Some(t.clone()),
+                    egui::OutputCommand::CopyText(t) if !t.is_empty() && t.len() <= CLIP_HISTORY_MAX_BYTES => Some(t.clone()),
                     _ => None,
                 })
                 .collect()
