@@ -56,9 +56,26 @@ impl Item {
         Item::Action { label: label.into(), act, keys: None, hint: None, check: None, enabled: true }
     }
 
-    /// A window command, with its shortcut from the command table.
+    /// A window command, with its shortcut from the keymap.
     pub fn cmd(label: impl Into<String>, cmd: Cmd) -> Self {
-        Item::new(label, Act::Cmd(cmd)).keys(cmd.keys().first().copied())
+        Item::new(label, Act::Cmd(cmd)).bound(crate::keybindings::Target::Cmd(cmd))
+    }
+
+    /// The shortcut the keymap gives `target`: an accelerator for a single
+    /// key, or text for a chord (menus can't bind those).
+    pub fn bound(mut self, target: crate::keybindings::Target) -> Self {
+        let (k, h) = crate::keybindings::current().menu_keys(target);
+        if let Item::Action { keys, hint, .. } = &mut self {
+            *keys = k;
+            *hint = h;
+        }
+        self
+    }
+
+    /// A shortcut outside the keymap (Cut, Copy, Paste, Quit), dropped if a
+    /// key binding uses the key so the menu doesn't swallow it.
+    pub fn fixed(self, mods: Modifiers, key: Key) -> Self {
+        if crate::keybindings::current().is_bound(mods, key) { self } else { self.key(mods, key) }
     }
 
     pub fn keys(mut self, k: Option<(Modifiers, Key)>) -> Self {
@@ -70,14 +87,6 @@ impl Item {
 
     pub fn key(self, mods: Modifiers, key: Key) -> Self {
         self.keys(Some((mods, key)))
-    }
-
-    /// Shortcut text for chords the menu can't bind ("⌘K ⌘U").
-    pub fn hint(mut self, text: &str) -> Self {
-        if let Item::Action { hint, .. } = &mut self {
-            *hint = Some(crate::keys::spaced(text));
-        }
-        self
     }
 
     pub fn checked(mut self, on: bool) -> Self {
@@ -96,6 +105,19 @@ impl Item {
 }
 
 pub type Menus = Vec<(String, Vec<Item>)>;
+
+/// Remove every accelerator, e.g. while a chord waits for its second key (the
+/// native menu would otherwise take ⌘U from ⌘K ⌘U).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn strip_keys(items: &mut [Item]) {
+    for it in items {
+        match it {
+            Item::Action { keys, .. } => *keys = None,
+            Item::Sub(_, kids) => strip_keys(kids),
+            _ => {}
+        }
+    }
+}
 
 /// A cheap fingerprint of a menu description, to rebuild native menus only on change.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

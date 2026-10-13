@@ -24,6 +24,7 @@ mod devshot;
 mod highlight;
 mod indent;
 mod ipc;
+mod keybindings;
 mod keys;
 mod menus;
 mod lang;

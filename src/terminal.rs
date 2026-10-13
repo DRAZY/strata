@@ -251,19 +251,6 @@ pub fn app_keeps(cmd: Option<Cmd>, mods: Modifiers) -> bool {
     if MAC { mods.mac_cmd || mods.command } else { (mods.ctrl || mods.command) && mods.shift }
 }
 
-/// The window shortcuts pressed this frame that the terminal doesn't own.
-pub fn pressed(ctx: &egui::Context) -> Vec<Cmd> {
-    let mut out = Vec::new();
-    for &cmd in Cmd::ALL {
-        for &(mods, key) in cmd.keys() {
-            if app_keeps(Some(cmd), mods) && crate::keys::take(ctx, mods, key) {
-                out.push(cmd);
-            }
-        }
-    }
-    out
-}
-
 /// Drop menu accelerators the terminal needs (macOS menus would swallow Ctrl+G and friends).
 #[cfg(target_os = "macos")]
 pub fn strip_menu_keys(items: &mut [crate::menus::Item]) {

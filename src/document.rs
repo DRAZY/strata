@@ -39,6 +39,8 @@ pub struct Document {
     /// How the file's bytes are read and written: detected on open, changed
     /// by "Reopen with Encoding" / "Save with Encoding".
     pub encoding: Encoding,
+    /// Tab name for a generated, pathless tab (e.g. "Default Key Bindings").
+    pub title: Option<String>,
 }
 
 pub fn mtime(path: &Path) -> Option<SystemTime> {
@@ -73,6 +75,7 @@ impl Document {
             encoding: Encoding::UTF8,
             git_changes: Vec::new(),
             git_version: None,
+            title: None,
         }
     }
 
@@ -145,6 +148,7 @@ impl Document {
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
+            .or_else(|| self.title.clone())
             .unwrap_or_else(|| self.untitled_name())
     }
 

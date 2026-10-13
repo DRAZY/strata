@@ -32,11 +32,11 @@ pub fn secondary_click_in(ctx: &egui::Context, rect: egui::Rect, layer: egui::La
 /// The standard clipboard rows.
 pub fn clipboard_items(can_cut: bool, can_copy: bool, can_paste: bool) -> Vec<Item> {
     vec![
-        Item::new("Cut", Act::Cut).key(CMD, Key::X).enabled(can_cut),
-        Item::new("Copy", Act::Copy).key(CMD, Key::C).enabled(can_copy),
-        Item::new("Paste", Act::Paste).key(CMD, Key::V).enabled(can_paste),
+        Item::new("Cut", Act::Cut).fixed(CMD, Key::X).enabled(can_cut),
+        Item::new("Copy", Act::Copy).fixed(CMD, Key::C).enabled(can_copy),
+        Item::new("Paste", Act::Paste).fixed(CMD, Key::V).enabled(can_paste),
         Item::Separator,
-        Item::new("Select All", Act::SelectAll).key(CMD, Key::A),
+        Item::new("Select All", Act::SelectAll).bound(crate::keybindings::Target::Editor("select_all")),
     ]
 }
 
