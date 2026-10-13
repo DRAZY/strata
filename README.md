@@ -4,6 +4,22 @@ A fast, open-source, keyboard-first text editor in the spirit of Sublime Text.
 
 > Status: alpha. Icon: `assets/icon.svg`.
 
+## Documentation
+
+The user manual is built into the app: **Help ▸ Documentation** (F1, or
+"Help: Documentation" in the command palette). It covers editing, find and
+replace, snippets, projects, panes and windows, the terminal, Markdown preview,
+build systems, git, appearance, every setting, key bindings, the command line
+and troubleshooting, with search across all pages. **Help ▸ Keyboard
+Shortcuts** lists every command and its keys, generated from the key bindings
+in effect (your `keybindings.json` included).
+
+The pages are Markdown files in [`docs/manual/`](docs/manual/), compiled into
+the binary. Shortcuts in them are written as `{{key:command_id}}` and filled in
+with the current platform's keys. `cargo test` checks that every page parses,
+every link and anchor resolves, every setting is documented and every command
+appears on the shortcuts page.
+
 ## Goals
 
 - Opens instantly; stays smooth on huge files (100 MB+).
@@ -260,10 +276,9 @@ each). Tools ▸ Text has JSON format/minify, Base64/URL/HTML codecs, UUID and
 date; Tools ▸ On Save trims whitespace, adds a final newline, or saves on
 focus loss.
 
-Known gaps: no replace-in-files, no plugin/package system, no
-spell check, no macros, Strata quits with its last window (macOS), cloned
-views of one file in two panes aren't supported, and Finder "Open With" isn't
-wired up (drag the file onto the window or use ⌘O). Word wrap turns off for
+Known gaps: no plugin/package system, no spell check, Strata quits with its
+last window (macOS too), and cloned views of one file in two panes aren't
+supported. Word wrap turns off for
 files over 8 MB. The bundled grammars come from syntect's defaults and the bat
 project (via the `two-face` crate, MIT/Apache-2.0); each grammar's own license
 text ships in Help ▸ Licenses.
@@ -271,8 +286,8 @@ text ships in Help ▸ Licenses.
 ## Color schemes and fonts
 
 **33 curated color schemes** plus Strata Dark and Strata Light, grouped in
-View ▸ Color Scheme (also under Settings ▸ Color Scheme and the status bar.s Theme
-menu) as Dark, Light and High Contrast. **UI: Select Color Scheme** (in the
+View ▸ Color Scheme (also under Settings ▸ Color Scheme and the status bar's Theme
+menu) as Dark, Light and High Contrast. **Preferences: Color Scheme…** (in the
 command palette) previews each one as you arrow through the list; Esc puts
 the old one back.
 

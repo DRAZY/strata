@@ -778,6 +778,30 @@ impl Keymap {
         self.for_target(t).next().map(Binding::label)
     }
 
+    /// Every context-free shortcut for `t` ("⇧ ⌘ P", "⌘ K ⌘ U"), first one first.
+    pub fn labels(&self, t: Target) -> Vec<String> {
+        self.for_target(t).map(Binding::label).collect()
+    }
+
+    /// Bindings limited to a context (keys, what they run, the context), in file order.
+    pub fn context_bindings(&self) -> Vec<(String, String, String)> {
+        let name = |k: CtxKey| match k {
+            CtxKey::TerminalFocus => "terminal_focus",
+            CtxKey::PanelHasFocus => "panel_has_focus",
+            CtxKey::PanelVisible => "panel_visible",
+            CtxKey::OverlayVisible => "overlay_visible",
+        };
+        self.bindings
+            .iter()
+            .filter(|b| !b.conds.is_empty())
+            .map(|b| {
+                let what = b.action.map_or("noop".to_owned(), Target::name);
+                let ctx = b.conds.iter().map(|c| if c.want { name(c.key).to_owned() } else { format!("not {}", name(c.key)) }).collect::<Vec<_>>().join(", ");
+                (b.label(), what, ctx)
+            })
+            .collect()
+    }
+
     /// For a menu item: an accelerator for a single key, or display text for a chord.
     pub fn menu_keys(&self, t: Target) -> (Option<(Modifiers, Key)>, Option<String>) {
         match self.for_target(t).next() {
@@ -1040,6 +1064,17 @@ fn parse_entry(item: &Value, line: usize) -> Result<Entry, String> {
     Ok(Entry { line, keys, what, conds })
 }
 
+/// Every command a key can run: window commands, editor commands, view
+/// commands, fold levels and tab digits.
+pub fn all_targets() -> Vec<Target> {
+    let mut targets: Vec<Target> = Cmd::ALL.iter().map(|&c| Target::Cmd(c)).collect();
+    targets.extend(EDITOR_COMMANDS.iter().map(|c| Target::Editor(c.id)));
+    targets.extend(VIEW_COMMANDS.iter().map(|v| Target::View(v.0)));
+    targets.extend((2..=9).map(Target::FoldLevel));
+    targets.extend((0..9).map(Target::Tab));
+    targets
+}
+
 /// The read-only list of every command and its default keys, as JSON with comments.
 pub fn defaults_text() -> String {
     let defaults = Keymap::defaults();
@@ -1055,11 +1090,7 @@ pub fn defaults_text() -> String {
          // Copy an entry into your {FILE_NAME} (the other pane) and change its keys there.\n\
          // \"primary\" works too: ⌘ on macOS, Ctrl elsewhere. Commands without a key are commented out.\n[\n"
     );
-    let mut targets: Vec<Target> = Cmd::ALL.iter().map(|&c| Target::Cmd(c)).collect();
-    targets.extend(EDITOR_COMMANDS.iter().map(|c| Target::Editor(c.id)));
-    targets.extend(VIEW_COMMANDS.iter().map(|v| Target::View(v.0)));
-    targets.extend((2..=9).map(Target::FoldLevel));
-    targets.extend((0..9).map(Target::Tab));
+    let targets = all_targets();
     let entry = |keys: &str, t: Target| {
         let (id, args) = t.id();
         let args = args.map(|a| format!(", \"args\": {a}")).unwrap_or_default();

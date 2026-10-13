@@ -20,6 +20,7 @@ mod fold;
 mod fonts;
 mod fuzzy;
 mod git;
+mod help;
 mod devshot;
 mod highlight;
 mod indent;

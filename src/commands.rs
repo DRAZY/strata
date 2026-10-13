@@ -116,6 +116,9 @@ pub enum Cmd {
     NewSnippet,
     InstallShellCommand,
     KeyBindings,
+    KeyboardShortcuts,
+    SearchDocumentation,
+    GettingStarted,
 }
 
 impl Cmd {
@@ -235,6 +238,9 @@ impl Cmd {
         Cmd::NewSnippet,
         Cmd::InstallShellCommand,
         Cmd::KeyBindings,
+        Cmd::KeyboardShortcuts,
+        Cmd::SearchDocumentation,
+        Cmd::GettingStarted,
     ];
 
     pub fn name(self) -> &'static str {
@@ -306,6 +312,9 @@ impl Cmd {
             Cmd::About => "Help: About Strata",
             Cmd::InstallShellCommand => "Strata: Install Shell Command",
             Cmd::Documentation => "Help: Documentation",
+            Cmd::KeyboardShortcuts => "Help: Keyboard Shortcuts",
+            Cmd::SearchDocumentation => "Help: Search Documentation",
+            Cmd::GettingStarted => "Help: Getting Started",
             Cmd::Build => "Tools: Build",
             Cmd::BuildWith => "Tools: Build With…",
             Cmd::CancelBuild => "Tools: Cancel Build",
@@ -419,7 +428,9 @@ impl Cmd {
             Cmd::About => &[],
             Cmd::InstallShellCommand => &[],
             Cmd::KeyBindings => &[],
-            Cmd::Documentation => &[],
+            // F1 everywhere (with fn on Mac keyboards); ⌘? is macOS's own Help menu search.
+            Cmd::Documentation => &[(NONE, Key::F1)],
+            Cmd::KeyboardShortcuts | Cmd::SearchDocumentation | Cmd::GettingStarted => &[],
             Cmd::Build => &[(CMD, Key::B)],
             Cmd::BuildWith => &[(CMD_SHIFT, Key::B)],
             Cmd::CancelBuild => if MAC { &[(CTRL, Key::C)] } else { &[] },
@@ -564,6 +575,9 @@ impl Cmd {
             Cmd::RefreshFolders => "refresh_folder_list",
             Cmd::About => "about",
             Cmd::Documentation => "documentation",
+            Cmd::KeyboardShortcuts => "keyboard_shortcuts",
+            Cmd::SearchDocumentation => "search_documentation",
+            Cmd::GettingStarted => "getting_started",
             Cmd::Build => "build",
             Cmd::BuildWith => "build_with",
             Cmd::CancelBuild => "cancel_build",

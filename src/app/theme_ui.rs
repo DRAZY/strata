@@ -67,7 +67,7 @@ impl StrataApp {
         if self.docs.iter().any(|d| !d.highlighter.is_showing(&want)) {
             let mut reported = REPORTED.lock().unwrap_or_else(|e| e.into_inner());
             if highlight::theme_canonical_name(&want).is_none() && *reported != want {
-                self.status = format!("Unknown color scheme \"{want}\" (UI: Select Color Scheme lists them)");
+                self.status = format!("Unknown color scheme \"{want}\" (Preferences: Color Scheme… lists them)");
                 reported.clone_from(&want);
             }
             for d in &mut self.docs {

@@ -691,7 +691,14 @@ impl StrataApp {
         }
         m.push(("Window".into(), window));
 
-        let mut help = vec![c("Documentation", Cmd::Documentation), SEP(), c("Licenses and Attribution…", Cmd::Licenses)];
+        let mut help = vec![
+            c("Documentation", Cmd::Documentation),
+            c("Getting Started", Cmd::GettingStarted),
+            c("Keyboard Shortcuts", Cmd::KeyboardShortcuts),
+            c("Search Documentation…", Cmd::SearchDocumentation),
+            SEP(),
+            c("Licenses and Attribution…", Cmd::Licenses),
+        ];
         if !MAC {
             help.extend([SEP(), Item::new("About Strata", Act::Cmd(Cmd::About))]);
         }

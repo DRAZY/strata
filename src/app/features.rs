@@ -1,5 +1,6 @@
 //! Window-level features behind the menus: recent files, revert, jump
-//! history, go to definition, projects, distraction-free mode, About.
+//! history, go to definition, projects, distraction-free mode, About
+//! (the manual is in `help_ui`).
 
 use super::StrataApp;
 use crate::panes::Layout;
@@ -274,15 +275,6 @@ impl StrataApp {
             });
         });
         self.about_open = open;
-    }
-
-    pub(super) fn open_documentation(&mut self) {
-        // The README ships next to the binary in development; otherwise show the shortcuts in the palette.
-        let readme = std::env::current_exe().ok().and_then(|exe| exe.ancestors().map(|a| a.join("README.md")).find(|p| p.exists()));
-        match readme {
-            Some(p) => self.open_path(p, false),
-            None => self.status = "Every command and its shortcut is listed in the Command Palette (⇧⌘P)".into(),
-        }
     }
 }
 

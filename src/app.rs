@@ -113,11 +113,14 @@ pub struct StrataApp {
     link: windows::Link,
     /// keybindings.json and a pending chord (see `keymap_ui`).
     keymap: keymap_ui::KeymapState,
+    /// Help ▸ Documentation (see `help_ui`).
+    help: help_ui::HelpState,
 }
 
 mod completion;
 mod context_menus;
 mod features;
+mod help_ui;
 mod keymap_ui;
 mod launch;
 pub(crate) mod menu_model;
@@ -236,6 +239,7 @@ impl StrataApp {
             terminal_started: false,
             context: context_menus::ContextMenus::new(),
             link: windows::Link::default(),
+            help: help_ui::HelpState::default(),
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -814,6 +818,9 @@ impl StrataApp {
     // ---- commands --------------------------------------------------------
 
     fn run(&mut self, ctx: &egui::Context, cmd: Cmd) {
+        if self.help_takes(cmd) {
+            return;
+        }
         match cmd {
             Cmd::NewTab => self.push_doc(Document::untitled()),
             Cmd::Open => {
@@ -997,7 +1004,10 @@ impl StrataApp {
             Cmd::RefreshFolders => self.sidebar.refresh(),
             Cmd::About => self.about_open = true,
             Cmd::InstallShellCommand => self.install_shell_command(),
-            Cmd::Documentation => self.open_documentation(),
+            Cmd::Documentation => self.open_help(None, false),
+            Cmd::KeyboardShortcuts => self.open_help(Some(crate::help::SHORTCUTS), false),
+            Cmd::SearchDocumentation => self.open_help(None, true),
+            Cmd::GettingStarted => self.open_help(Some(crate::help::WELCOME), false),
             Cmd::ToggleWordWrap => {
                 let on = self.wraps(self.active);
                 self.docs[self.active].wrap = Some(!on);
@@ -1035,6 +1045,8 @@ impl StrataApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        // The help window's own keys (Esc, back/forward) come first.
+        self.help_keys(ctx);
         // Window and editor commands, from the keymap (see `keymap_ui`).
         self.dispatch_keys(ctx);
         if self.terminal_has_keys(ctx) {
@@ -1575,11 +1587,14 @@ impl StrataApp {
             ("Open Folder", Cmd::OpenFolder),
             ("Open File", Cmd::Open),
             ("New File", Cmd::NewTab),
+            ("Documentation", Cmd::Documentation),
         ];
         for (i, (name, cmd)) in rows.into_iter().enumerate() {
             let y = center.y + 54.0 + i as f32 * 26.0;
             painter.text(pos2(center.x - 8.0, y), egui::Align2::RIGHT_CENTER, name, FontId::proportional(14.0), fg.gamma_multiply(0.55));
-            painter.text(pos2(center.x + 8.0, y), egui::Align2::LEFT_CENTER, cmd.shortcut_label().unwrap_or_default(), FontId::proportional(14.0), fg.gamma_multiply(0.85));
+            // Unbound: say where to find it instead.
+            let keys = cmd.shortcut_label().unwrap_or_else(|| if cmd == Cmd::Documentation { "Help menu".into() } else { String::new() });
+            painter.text(pos2(center.x + 8.0, y), egui::Align2::LEFT_CENTER, keys, FontId::proportional(14.0), fg.gamma_multiply(0.85));
         }
     }
 
@@ -2150,7 +2165,8 @@ impl eframe::App for StrataApp {
             self.completion.show(ctx, d);
         }
         self.snippet_from_completion();
-        let dialog_open = self.palette.open || self.about_open || self.licenses_open;
+        self.help_window(ctx);
+        let dialog_open = self.palette.open || self.about_open || self.licenses_open || self.help.open;
         if self.docs.len() == 1 && self.docs[0].is_blank() && self.layout.groups() == 1 && !dialog_open {
             self.welcome(ctx);
         }
@@ -2163,6 +2179,8 @@ impl eframe::App for StrataApp {
                 "about" => self.about_open = true,
                 "theme" => self.open_palette(ctx, palette::Mode::Theme, q),
                 "licenses" => self.licenses_open = true,
+                "help" => self.dev_help(q, false),
+                "helpsearch" => self.dev_help(q, true),
                 "fold" => self.run_act(ctx, crate::menus::Act::Named(format!("fold_level:{}", q.parse::<usize>().unwrap_or(2)))),
                 // "run:key_bindings" runs a command by its keybindings.json id.
                 "run" => self.run_command_id(ctx, q),

@@ -1215,6 +1215,59 @@ impl Preview {
     }
 }
 
+// ---- whole documents (the Help viewer) ---------------------------------------------
+
+/// Draws a short document in full, in the current color scheme. Unlike the
+/// preview it lays out every block (help pages are small) and reports where
+/// each heading landed, for anchors and search hits.
+#[derive(Default)]
+pub struct DocRender {
+    code: HashMap<u64, Option<Arc<Vec<Span>>>>,
+    code_theme: String,
+    font_attempt: u64,
+}
+
+/// What a document frame produced: a clicked link, and (slug, y) for every
+/// top-level heading, y measured from the top of the content.
+pub struct DocFrame {
+    pub clicked: Option<String>,
+    pub headings: Vec<(String, f32)>,
+}
+
+impl DocRender {
+    /// Draw `blocks` at `size` points, at most `MAX_WIDTH` wide, into `ui`
+    /// (normally the inside of a scroll area).
+    pub fn show(&mut self, ui: &mut Ui, hl: &Highlighter, size: f32, blocks: &[TopBlock]) -> DocFrame {
+        let ctx = ui.ctx().clone();
+        let pal = Palette::new(hl);
+        if self.code_theme != hl.theme_key() {
+            self.code.clear();
+            self.code_theme = hl.theme_key();
+        }
+        let (family, variable) = body_font(&ctx, &mut self.font_attempt);
+        let full = ui.available_width();
+        let width = (full - 2.0 * MARGIN).clamp(60.0, MAX_WIDTH);
+        let origin = ui.max_rect().min;
+        let rect = Rect::from_min_size(origin + vec2(((full - width) / 2.0).max(8.0), MARGIN * 0.75), vec2(width, 1e7));
+        let mut child = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)).id_salt("doc-blocks"));
+        let mut d = Draw { pal: &pal, family, variable, size, theme: hl.theme_name(), code: &mut self.code, clicked: None, small: size * 0.9 };
+        let mut headings = Vec::new();
+        for (i, b) in blocks.iter().enumerate() {
+            if i > 0 {
+                child.add_space(size * 0.9);
+            }
+            if let Block::Heading { slug, .. } = &b.block {
+                headings.push((slug.clone(), child.cursor().top() - origin.y));
+            }
+            block(&mut child, &mut d, &b.block, 0, false, i);
+        }
+        let clicked = d.clicked.take();
+        let used = child.min_rect();
+        ui.set_min_size(vec2(full, used.bottom() - origin.y + MARGIN * 2.0));
+        DocFrame { clicked, headings }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
