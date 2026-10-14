@@ -268,6 +268,52 @@ pub fn builder() -> ViewportBuilder {
         .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon-app.png")).expect("bundled icon"))
 }
 
+/// The frame on which a window's placement is checked: by then it is shown
+/// and the system has reported which monitor it is on.
+const PLACEMENT_FRAME: u8 = 3;
+
+/// Where a window shows up when its saved place is on no monitor.
+const FALLBACK_POSITION: Pos2 = Pos2::new(64.0, 64.0);
+
+/// Commands that bring a window back on screen: moved to the main monitor if
+/// its title bar is on none (`monitor`, the size of the monitor it's on, is
+/// None then on macOS; `visible` checks a point elsewhere), and shrunk if
+/// it's bigger than its monitor.
+fn placement_fixes(outer: egui::Rect, inner: Vec2, monitor: Option<Vec2>, visible: impl Fn(Pos2) -> Option<bool>) -> Vec<ViewportCommand> {
+    let mut cmds = Vec::new();
+    // Somewhere on the title bar, where the window is grabbed to move it.
+    let grab = outer.left_top() + egui::vec2(outer.width().min(120.0) / 2.0, 8.0);
+    let offscreen = monitor.is_none() || visible(grab) == Some(false);
+    if offscreen {
+        cmds.push(ViewportCommand::OuterPosition(FALLBACK_POSITION));
+    }
+    if let Some(m) = monitor {
+        // Only when it can't fit at all: a window zoomed to fill its screen stays.
+        let fit = inner.min(m - egui::vec2(32.0, 64.0)).max(egui::vec2(320.0, 200.0));
+        if inner.x > m.x || inner.y > m.y {
+            cmds.push(ViewportCommand::InnerSize(fit));
+        }
+    }
+    cmds
+}
+
+/// Is `p` (in points) on a monitor? None where the system can't tell us
+/// (then the monitor size alone decides).
+#[cfg(windows)]
+fn on_a_monitor(p: Pos2, pixels_per_point: f32) -> Option<bool> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromPoint};
+    let pt = POINT { x: (p.x * pixels_per_point) as i32, y: (p.y * pixels_per_point) as i32 };
+    // SAFETY: a plain query with a point by value.
+    let monitor = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONULL) };
+    Some(!monitor.is_null())
+}
+
+#[cfg(not(windows))]
+fn on_a_monitor(_: Pos2, _: f32) -> Option<bool> {
+    None
+}
+
 /// `builder` placed where a saved window was, ignoring nonsense sizes.
 fn placed(position: Option<Pos2>, size: Option<Vec2>) -> ViewportBuilder {
     let mut b = builder();
@@ -292,6 +338,8 @@ struct Slot {
     /// When it last had the keyboard, to pick who comes forward next.
     focused_at: u64,
     close_requested: bool,
+    /// Frames drawn, up to the one where the placement is checked.
+    frames: u8,
 }
 
 type Confirm = Box<dyn FnMut(&mut StrataApp, usize) -> bool>;
@@ -385,7 +433,7 @@ impl Windows {
         self.next_salt += 1;
         app.link.salt = self.next_salt;
         self.clock += 1;
-        self.slots.push(Slot { id, app, builder, position, size, focused_at: self.clock, close_requested: false });
+        self.slots.push(Slot { id, app, builder, position, size, focused_at: self.clock, close_requested: false, frames: 0 });
         self.slots.len() - 1
     }
 
@@ -508,6 +556,19 @@ impl Windows {
             (v.focused == Some(true), v.close_requested(), v.minimized == Some(true), v.fullscreen == Some(true), v.outer_rect, v.inner_rect)
         });
         let slot = &mut self.slots[i];
+        // A few frames in (once the window is up), make sure a window placed
+        // where it was last time is on a monitor that's still connected.
+        if slot.frames < PLACEMENT_FRAME {
+            slot.frames += 1;
+            if slot.frames == PLACEMENT_FRAME && !minimized && !fullscreen {
+                let (monitor, ppp) = ctx.input(|inp| (inp.viewport().monitor_size, inp.viewport().native_pixels_per_point.unwrap_or(1.0)));
+                if let (Some(outer), Some(inner)) = (outer, inner) {
+                    for cmd in placement_fixes(outer, inner.size(), monitor, |p| on_a_monitor(p, ppp)) {
+                        ctx.send_viewport_cmd(cmd);
+                    }
+                }
+            }
+        }
         if focused && self.focused != slot.id {
             self.clock += 1;
             slot.focused_at = self.clock;
@@ -908,6 +969,23 @@ mod tests {
         assert_eq!(first.docs[0].editor.tab_width, 8, "a new default indentation applies, as when settings.json changes");
         assert_eq!(first.recent_files, vec![dir.join("a.txt")]);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn windows_off_every_monitor_come_back() {
+        let r = |x: f32, y: f32| Rect::from_min_size(pos2(x, y), vec2(1000.0, 700.0));
+        let size = vec2(1000.0, 680.0);
+        let monitor = Some(vec2(1440.0, 900.0));
+        assert!(placement_fixes(r(100.0, 80.0), size, monitor, |_| None).is_empty(), "on screen: left alone");
+        assert!(placement_fixes(r(-1500.0, 80.0), size, monitor, |_| Some(true)).is_empty(), "on a second monitor to the left");
+        // macOS: on no monitor at all.
+        assert_eq!(placement_fixes(r(5000.0, 80.0), size, None, |_| None), [ViewportCommand::OuterPosition(FALLBACK_POSITION)]);
+        // Windows: the nearest monitor is reported, but the title bar is on none.
+        assert_eq!(placement_fixes(r(5000.0, 80.0), size, monitor, |_| Some(false)), [ViewportCommand::OuterPosition(FALLBACK_POSITION)]);
+        // Bigger than the (smaller, now) monitor: shrunk to fit.
+        let fixes = placement_fixes(r(0.0, 0.0), vec2(2400.0, 1400.0), monitor, |_| Some(true));
+        assert_eq!(fixes, [ViewportCommand::InnerSize(vec2(1408.0, 836.0))]);
+        assert!(placement_fixes(r(0.0, 0.0), vec2(1440.0, 875.0), monitor, |_| Some(true)).is_empty(), "a zoomed window stays");
     }
 
     #[test]
