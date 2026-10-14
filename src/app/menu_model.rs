@@ -444,7 +444,7 @@ impl StrataApp {
         m.push((
             "View".into(),
             vec![
-                sub("Side Bar", vec![c("Toggle Side Bar", Cmd::ToggleSidebar).checked(self.sidebar.visible), SEP(), c("Toggle Show Open Files", Cmd::ToggleOpenFiles).checked(self.sidebar.show_open_files)]),
+                sub("Side Bar", vec![c("Toggle Side Bar", Cmd::ToggleSidebar).checked(self.sidebar.shown()), SEP(), c("Toggle Show Open Files", Cmd::ToggleOpenFiles).checked(self.sidebar.show_open_files)]),
                 c("Toggle Minimap", Cmd::ToggleMinimap).checked(self.settings.minimap),
                 c("Toggle Tabs", Cmd::ToggleTabs).checked(self.settings.show_tabs),
                 c("Toggle Status Bar", Cmd::ToggleStatusBar).checked(self.settings.show_status_bar),

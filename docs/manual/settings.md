@@ -45,9 +45,9 @@ A value of the wrong type (for example `"font_size": "big"`) counts as an error 
 
 Menus and commands that change a setting (View ▸ Editor Extras, the Color Scheme menu, zooming, the font pickers and so on) save it to `settings.json` right away. When Strata writes the file:
 
-- Keys it doesn't know are kept, so you can keep notes or settings for other tools there.
-- Every setting is written out, and the order of keys that were already there is kept.
-- Comments are not kept. If you rely on comments in the file, make changes by editing it rather than through menus.
+- Only the setting that changed is touched: its value is replaced where it is, or, if the file doesn't mention it yet, it is added after the last key. Comments, blank lines, the order of keys and keys Strata doesn't know are all kept, so you can keep notes or settings for other tools there.
+- Settings left at their defaults are not written out.
+- If the file doesn't exist yet (Preferences ▸ Settings creates it), it starts with every setting and its current value.
 
 ## Settings that are not in settings.json
 
@@ -142,6 +142,8 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `show_tabs` | true/false | `true` | Show the tab bar. |
 | `show_status_bar` | true/false | `true` | Show the status bar. |
 | `markdown_preview` | true/false | `false` | Show the live Markdown preview beside the editor. See [Markdown](markdown.md). |
+| `sidebar_respect_gitignore` | true/false | `true` | The side bar's tree hides files and folders that `.gitignore` (and `.ignore`, `.git/info/exclude` and your global Git excludes) ignore, as Goto Anything and Find in Files do. See [Projects and Side Bar](projects.md#what-the-tree-shows). |
+| `file_exclude_patterns` | list of text | `[".git", ".DS_Store"]` | Names the side bar never shows, files or folders, as globs: for example `["*.pyc", "node_modules", ".git", ".DS_Store"]`. |
 
 ### Editing
 

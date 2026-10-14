@@ -31,6 +31,13 @@ impl KeymapState {
         Self { file, chord: Chord::default(), startup, pasted: None, last_mods: egui::Modifiers::NONE }
     }
 
+    /// A dialog has the keyboard this frame: no bindings run, a half-typed
+    /// chord is dropped.
+    pub fn modal_frame(&mut self, ctx: &egui::Context) {
+        self.chord = Chord::default();
+        self.last_mods = ctx.input(|i| i.modifiers);
+    }
+
     /// A chord's first key was pressed; the next key finishes it.
     #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
     pub fn chord_pending(&self) -> bool {

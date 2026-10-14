@@ -190,3 +190,81 @@ mod tests {
         shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join("about.ppm"));
     }
 }
+
+/// Window chrome at awkward sizes, to look at by eye:
+/// `STRATA_UI_SHOTS=<folder> cargo test --release ui_shots`.
+#[cfg(test)]
+mod ui_shots {
+    use super::*;
+    use crate::commands::Cmd;
+    use std::path::PathBuf;
+
+    fn tree() -> PathBuf {
+        let d = std::env::temp_dir().join("strata-ui-shots-tree");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("sous-dossier_très_long_nom")).unwrap();
+        for n in ["中文文件名_非常长的名字_测试用例.rs", "a_really_really_long_file_name_that_goes_on_and_on.txt", "README.md"] {
+            std::fs::write(d.join(n), "# Title\n\nSome text.\n").unwrap();
+        }
+        d
+    }
+
+    #[test]
+    fn ui_shots() {
+        let Some(dir) = std::env::var_os("STRATA_UI_SHOTS").map(PathBuf::from) else { return };
+        let tree = tree();
+        let cn = tree.join("中文文件名_非常长的名字_测试用例.rs");
+        let long = tree.join("a_really_really_long_file_name_that_goes_on_and_on.txt");
+        let md = tree.join("README.md");
+
+        // Many tabs in a narrow window: the current one in view, CJK names, the overflow arrow.
+        let mut sh = Shooter::new(640, 420, 2.0).unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(Some(long.clone()), None);
+        app.settings.theme_mode = "light".into();
+        app.apply_settings();
+        app.open_folder(tree.clone());
+        app.open_path(cn.clone(), false);
+        app.open_path(md.clone(), false);
+        for n in 0..8 {
+            let p = tree.join(format!("extra_file_{n}.txt"));
+            std::fs::write(&p, "x\n").unwrap();
+            app.open_path(p, false);
+        }
+        app.open_path(cn.clone(), false);
+        sh.shoot(&ctx, &mut app, 6, vec![], &dir.join("tabs_narrow.ppm"));
+        app.open_find(true);
+        sh.shoot(&ctx, &mut app, 4, vec![Event::Text("Title".into())], &dir.join("find_640.ppm"));
+
+        // The status bar at 420 points.
+        let mut sh2 = Shooter::new(420, 300, 2.0).unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(Some(long.clone()), None);
+        app.settings.theme_mode = "light".into();
+        app.apply_settings();
+        app.status = "Reloaded a_really_really_long_file_name (changed on disk)".into();
+        sh2.shoot(&ctx, &mut app, 5, vec![], &dir.join("status_420.ppm"));
+        let mut sh3 = Shooter::new(700, 300, 2.0).unwrap();
+        let ctx = Context::default();
+        app.docs[0].conflict = true;
+        sh3.shoot(&ctx, &mut app, 5, vec![], &dir.join("status_700_conflict.ppm"));
+
+        // Completion near the bottom of the window.
+        let ctx = Context::default();
+        let p = std::env::temp_dir().join("strata-ui-shots-compl.rs");
+        let mut body = String::new();
+        for i in 0..60 {
+            body += &format!("let identifier_number_{i} = {i};\n");
+        }
+        body += "ident";
+        std::fs::write(&p, &body).unwrap();
+        let mut app = StrataApp::new(Some(p), None);
+        sh.run(&ctx, &mut app, 3, vec![]);
+        let end = app.docs[0].editor.buffer.len_chars();
+        app.docs[0].editor.select_ranges(&[end..end], 0);
+        app.docs[0].view.reveal();
+        sh.run(&ctx, &mut app, 3, vec![]);
+        app.run(&ctx, Cmd::ShowCompletions);
+        sh.shoot(&ctx, &mut app, 4, vec![], &dir.join("completion_bottom.ppm"));
+    }
+}

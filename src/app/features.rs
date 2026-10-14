@@ -149,8 +149,9 @@ impl StrataApp {
     }
 
     /// F12: find where the word under the cursor is defined, in this file,
-    /// the other open files, then the folder (files of the same type).
-    pub(super) fn goto_definition(&mut self) {
+    /// the other open files, then the folder (files of the same type, in the
+    /// background: see `lookup`).
+    pub(super) fn goto_definition_in(&mut self, ctx: Option<egui::Context>) {
         let Some(word) = self.word_at_cursor() else { return };
         let here = &self.docs[self.active];
         let syntax = here.highlighter.syntax_name().to_owned();
@@ -168,25 +169,10 @@ impl StrataApp {
                 return;
             }
         }
-        if let (Some(walker), Some(ext)) = (self.walk_folders(), ext) {
-            for entry in walker.flatten().take(20_000) {
-                let p = entry.path();
-                if p.extension() != Some(ext.as_os_str()) || entry.metadata().map_or(true, |m| m.len() > 2_000_000) {
-                    continue;
-                }
-                let Ok(text) = std::fs::read_to_string(p) else { continue };
-                if !text.contains(&word) {
-                    continue;
-                }
-                if let Some(s) = crate::symbols::symbols(&syntax, &text).into_iter().find(|s| s.name == word) {
-                    self.push_jump();
-                    self.open_path(p.to_owned(), false);
-                    self.goto_line(s.line);
-                    return;
-                }
-            }
+        match ext {
+            Some(ext) => self.find_definition_in_folders(ctx, word, syntax, ext),
+            None => self.status = format!("No definition found for {word}"),
         }
-        self.status = format!("No definition found for {word}");
     }
 
     // ---- projects ----------------------------------------------------------------
@@ -260,16 +246,6 @@ impl StrataApp {
         };
     }
 
-    /// A walk of every folder in the sidebar (respecting .gitignore); None without one.
-    pub(super) fn walk_folders(&self) -> Option<ignore::Walk> {
-        let (first, rest) = self.sidebar.roots.split_first()?;
-        let mut b = ignore::WalkBuilder::new(first);
-        for r in rest {
-            b.add(r);
-        }
-        Some(b.require_git(false).build())
-    }
-
     // ---- view modes ----------------------------------------------------------------
 
     /// Full screen with only the text: no sidebar, tabs, status bar or minimap.
@@ -277,11 +253,13 @@ impl StrataApp {
         match self.distraction.take() {
             Some(sidebar) => {
                 self.sidebar.visible = sidebar;
-                self.fullscreen = false;
+                // Back to how the window was: still full screen if it was before.
+                self.fullscreen = self.fullscreen_before_distraction;
             }
             None => {
                 self.distraction = Some(self.sidebar.visible);
                 self.sidebar.visible = false;
+                self.fullscreen_before_distraction = self.fullscreen;
                 self.fullscreen = true;
             }
         }
@@ -359,7 +337,7 @@ mod tests {
         app.push_doc(Document::from_buffer(None, Buffer::from_str("fn main() { helper(); }\n")));
         app.doc().highlighter.set_syntax("Rust");
         app.doc().editor.select_ranges(&[14..14], 0);
-        app.goto_definition();
+        app.goto_definition_in(None);
         assert_eq!(app.active, 0);
         app.jump(true);
         assert_eq!(app.active, 1, "jump back returns to the call");

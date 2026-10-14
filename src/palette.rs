@@ -48,9 +48,38 @@ pub enum Event {
     Cancel,
 }
 
+/// The current file's text, kept as a rope snapshot (a cheap clone) and
+/// turned into a `String` only if a query needs it (`@symbol`, `#text`).
+pub struct DocText {
+    rope: ropey::Rope,
+    text: std::cell::OnceCell<Arc<String>>,
+}
+
+impl DocText {
+    pub fn new(rope: ropey::Rope) -> Self {
+        Self { rope, text: std::cell::OnceCell::new() }
+    }
+
+    pub fn get(&self) -> Arc<String> {
+        self.text
+            .get_or_init(|| {
+                let mut s = String::with_capacity(self.rope.len_bytes());
+                self.rope.chunks().for_each(|c| s.push_str(c));
+                Arc::new(s)
+            })
+            .clone()
+    }
+
+    /// Made into a string yet?
+    #[cfg(test)]
+    pub fn is_copied(&self) -> bool {
+        self.text.get().is_some()
+    }
+}
+
 /// Snapshot of the current file, taken when the panel opens.
 pub struct Context {
-    pub text: Arc<String>,
+    pub text: DocText,
     pub syntax: String,
     pub lines: usize,
     /// The window's folders (Goto Anything lists their files).
@@ -170,7 +199,7 @@ impl Palette {
 
     fn symbols(&mut self) -> &[Symbol] {
         let ctx = self.ctx.as_ref().expect("open palette has a context");
-        self.symbols.get_or_insert_with(|| symbols::symbols(&ctx.syntax, &ctx.text))
+        self.symbols.get_or_insert_with(|| symbols::symbols(&ctx.syntax, &ctx.text.get()))
     }
 
     /// Recompute the rows when the query, mode or file list changed.
@@ -237,7 +266,7 @@ impl Palette {
                     };
                 }
                 Some(r) if r.starts_with('#') => {
-                    let doc = self.ctx.as_ref().map(|c| c.text.clone()).unwrap_or_default();
+                    let doc = self.ctx.as_ref().map(|c| c.text.get()).unwrap_or_default();
                     return text_matches(&doc, &r[1..], MAX_ROWS)
                         .into_iter()
                         .map(|m| Row { label: m.label, hits: m.hits, detail: format!(":{}", m.line + 1), pick: Pick::Span(m.line, m.cols) })
@@ -317,6 +346,7 @@ impl Palette {
                         Mode::Choice => self.choice_hint.as_str(),
                     };
                     let id = egui::Id::new("palette-query");
+                    crate::fonts::ensure_cjk(ui.ctx(), &self.text);
                     let field = crate::ctxmenu::text_field(ui, id, &mut self.text, |ui, text| {
                         ui.add(egui::TextEdit::singleline(text).id(id).hint_text(hint).font(FontId::proportional(16.0)).desired_width(f32::INFINITY).margin(vec2(8.0, 6.0)))
                     });
@@ -335,6 +365,8 @@ impl Palette {
                     let row_h = 26.0;
                     egui::ScrollArea::vertical().max_height(row_h * 12.0).auto_shrink([false, true]).show(ui, |ui| {
                         for (i, row) in self.rows.iter().take(MAX_ROWS).enumerate() {
+                            crate::fonts::ensure_cjk(ui.ctx(), &row.label);
+                            crate::fonts::ensure_cjk(ui.ctx(), &row.detail);
                             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
                             if i == self.selected {
                                 ui.painter().rect_filled(rect, 4.0, accent);
@@ -533,7 +565,7 @@ mod tests {
 
     fn ctx(text: &str, syntax: &str) -> Context {
         Context {
-            text: Arc::new(text.into()),
+            text: DocText::new(ropey::Rope::from_str(text)),
             syntax: syntax.into(),
             lines: text.lines().count().max(1),
             roots: Vec::new(),
@@ -616,6 +648,23 @@ mod tests {
         let mut p = palette(Mode::Files, "main@", ctx("", "Plain Text"));
         let events = p.finish(p.rows.first().cloned_pick().unwrap());
         assert_eq!(events, vec![Event::Open("/tmp/x/main.rs".into()), Event::GotoSymbolNamed(String::new())]);
+    }
+
+    #[test]
+    fn the_file_text_is_copied_only_for_symbol_and_text_queries() {
+        let copied = |p: &Palette| p.ctx.as_ref().unwrap().text.is_copied();
+        let mut p = palette(Mode::Commands, "", ctx("fn alpha() {}\n", "Rust"));
+        p.text = "save".into();
+        p.rebuild();
+        assert!(!copied(&p), "the command palette never reads the file");
+        let mut p = palette(Mode::Files, "main", ctx("fn alpha() {}\n", "Rust"));
+        p.text = ":1".into();
+        p.rebuild();
+        assert!(!copied(&p), "nor do file names and line numbers");
+        p.text = "@alp".into();
+        p.rebuild();
+        assert!(copied(&p));
+        assert_eq!(p.rows[0].label, "alpha");
     }
 
     #[test]

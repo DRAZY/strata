@@ -11,8 +11,9 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Never shown in the tree.
-const HIDDEN: &[&str] = &[".git", ".DS_Store"];
+/// How often the folders shown in the tree are checked for changes made
+/// outside Strata (seconds).
+const WATCH_SECS: f64 = 2.0;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Tab {
@@ -30,6 +31,9 @@ pub enum Action {
     Close(usize),
     /// A file or folder was renamed on disk (open tabs follow it).
     Renamed(PathBuf, PathBuf),
+    /// A file or folder went to the Trash (its tabs close, or keep their
+    /// unsaved text marked deleted).
+    Deleted(PathBuf),
     Status(String),
     /// The user confirmed Replace in Files: edit open tabs, then call
     /// [`Sidebar::start_disk_replace`] with the rest.
@@ -71,13 +75,47 @@ struct Entry {
     is_dir: bool,
 }
 
+/// A folder's entries, and its modification time when they were read (it
+/// changes when something is added, removed or renamed in it).
+struct Listing {
+    mtime: Option<std::time::SystemTime>,
+    entries: Vec<Entry>,
+}
+
+/// Which entries the tree leaves out.
+#[derive(Clone, PartialEq)]
+pub struct TreeFilter {
+    /// Hide what .gitignore (and .ignore, the global excludes) ignore.
+    pub respect_gitignore: bool,
+    /// Names (globs like `*.pyc`) never shown.
+    pub exclude: Vec<String>,
+}
+
+impl Default for TreeFilter {
+    fn default() -> Self {
+        Self { respect_gitignore: true, exclude: vec![".git".into(), ".DS_Store".into()] }
+    }
+}
+
+fn modified(dir: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(dir).and_then(|m| m.modified()).ok()
+}
 pub struct Sidebar {
     /// The window's folders, in the order added; empty when none is open.
     pub roots: Vec<PathBuf>,
     pub visible: bool,
     pub tab: Tab,
-    /// Directory listings, read once per folder until refreshed.
-    listings: HashMap<PathBuf, Vec<Entry>>,
+    /// Directory listings, read once per folder until it changes or is refreshed.
+    listings: HashMap<PathBuf, Listing>,
+    /// Folders whose entries were drawn this frame and last frame: only those
+    /// are checked for outside changes.
+    drawn: std::collections::HashSet<PathBuf>,
+    drawn_before: std::collections::HashSet<PathBuf>,
+    last_check: f64,
+    filter: TreeFilter,
+    exclude: globset::GlobSet,
+    /// Asking "Move … to the Trash?".
+    delete: Option<PathBuf>,
     pub query: Query,
     pub search: Search,
     focus_query: bool,
@@ -110,6 +148,12 @@ impl Sidebar {
             visible: true,
             tab: Tab::Files,
             listings: HashMap::new(),
+            drawn: Default::default(),
+            drawn_before: Default::default(),
+            last_check: 0.0,
+            filter: TreeFilter::default(),
+            exclude: exclude_set(&TreeFilter::default().exclude),
+            delete: None,
             query: Query::default(),
             search: Search::default(),
             focus_query: false,
@@ -266,6 +310,51 @@ impl Sidebar {
         }
     }
 
+    /// A dialog of the sidebar's is up (a name prompt, or Replace in Files' question).
+    pub fn modal_open(&self) -> bool {
+        self.prompt.is_some() || self.confirm.is_some() || self.delete.is_some()
+    }
+
+    /// Settings for what the tree hides; a change re-reads it.
+    pub fn set_filter(&mut self, filter: &TreeFilter) {
+        if *filter != self.filter {
+            self.filter = filter.clone();
+            self.exclude = exclude_set(&filter.exclude);
+            self.refresh();
+        }
+    }
+
+    /// Re-read the folders on screen whose contents changed outside Strata
+    /// (checked every couple of seconds; `now` is the input time).
+    pub fn watch(&mut self, now: f64) {
+        if now - self.last_check < WATCH_SECS {
+            return;
+        }
+        self.last_check = now;
+        let stale: Vec<PathBuf> = self
+            .drawn_before
+            .iter()
+            .filter(|dir| self.listings.get(*dir).is_some_and(|l| l.mtime != modified(dir)))
+            .cloned()
+            .collect();
+        for dir in stale {
+            self.listings.remove(&dir);
+        }
+    }
+
+    /// Ask for a new name for `path` (as its Rename… menu item does).
+    #[cfg(test)]
+    pub fn ask_rename(&mut self, path: &Path) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.prompt = Some(Prompt { kind: PromptKind::Rename, target: path.to_owned(), name, error: None });
+    }
+
+    /// The name typed in the open prompt, and its error.
+    #[cfg(test)]
+    pub fn prompt_state(&mut self) -> Option<(&mut String, Option<&str>)> {
+        self.prompt.as_mut().map(|p| (&mut p.name, p.error.as_deref()))
+    }
+
     /// The "Replace N occurrences…?" question is up.
     #[cfg(test)]
     pub fn confirming(&self) -> bool {
@@ -327,6 +416,8 @@ impl Sidebar {
     }
 
     pub fn show(&mut self, ui: &mut Ui, current: Option<&Path>, open: &[OpenFile]) -> Option<Action> {
+        self.drawn_before = std::mem::take(&mut self.drawn);
+        self.watch(ui.input(|i| i.time));
         self.search.poll();
         let finished = self.poll_replace(open, Some(ui.ctx().clone())).map(Action::Status);
         if self.pending_replace && !self.search.running {
@@ -334,7 +425,8 @@ impl Sidebar {
             self.ask_to_replace(open);
         }
         let confirmed = self.confirm_replace(ui.ctx());
-        let prompted = self.prompt(ui.ctx()).or(confirmed).or(finished);
+        let deleted = self.confirm_delete(ui.ctx());
+        let prompted = self.prompt(ui.ctx()).or(confirmed).or(deleted).or(finished);
         let roots = self.roots.clone();
         ui.horizontal(|ui| {
             if roots.is_empty() {
@@ -364,6 +456,7 @@ impl Sidebar {
                     if self.show_open_files && open.len() > 1 {
                         egui::CollapsingHeader::new(RichText::new("OPEN FILES").small().weak()).id_salt("open-files").default_open(true).show(ui, |ui| {
                             for (i, f) in open.iter().enumerate() {
+                                crate::fonts::ensure_cjk(ui.ctx(), &f.name);
                                 ui.horizontal(|ui| {
                                     let label = if f.dirty { format!("● {}", f.name) } else { f.name.clone() };
                                     if ui.selectable_label(f.active, label).clicked() {
@@ -381,6 +474,7 @@ impl Sidebar {
                     // Each folder is a top-level tree, like Sublime's project folders.
                     for root in &roots {
                         let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
+                        crate::fonts::ensure_cjk(ui.ctx(), &name);
                         let mut header = egui::CollapsingHeader::new(RichText::new(name).strong()).id_salt(root).default_open(true);
                         if self.reveal.as_ref().is_some_and(|(r, _)| r.starts_with(root)) {
                             header = header.open(Some(true));
@@ -421,6 +515,10 @@ impl Sidebar {
         if !is_root && ui.button("Rename…").clicked() {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             ask(PromptKind::Rename, path.to_owned(), name);
+            ui.close();
+        }
+        if !is_root && ui.button(format!("Move to {}…", crate::trash::trash_name())).clicked() {
+            self.delete = Some(path.to_owned());
             ui.close();
         }
         ui.separator();
@@ -485,6 +583,39 @@ impl Sidebar {
         yes.then_some(Action::ReplaceInFiles)
     }
 
+    /// "Move … to the Trash?"
+    fn confirm_delete(&mut self, ctx: &egui::Context) -> Option<Action> {
+        let path = self.delete.clone()?;
+        let (mut yes, mut no) = (false, false);
+        egui::Modal::new(egui::Id::new("sidebar-delete")).show(ctx, |ui| {
+            ui.set_width(340.0);
+            let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+            crate::fonts::ensure_cjk(ui.ctx(), &name);
+            let what = if path.is_dir() { "the folder" } else { "" };
+            ui.label(RichText::new(format!("Move {what} “{name}” to the {}?", crate::trash::trash_name()).replace("  ", " ")).strong());
+            ui.add_space(4.0);
+            let more = if path.is_dir() { "Everything in it goes too. " } else { "" };
+            ui.label(RichText::new(format!("{more}You can put it back from the {}. Open tabs of it close; any with unsaved changes stay open, marked deleted.", crate::trash::trash_name())).small().weak());
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                yes = ui.button(format!("Move to {}", crate::trash::trash_name())).clicked() || ui.input(|i| i.key_pressed(Key::Enter));
+                no = ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape));
+            });
+        });
+        if !(yes || no) {
+            return None;
+        }
+        self.delete = None;
+        if no {
+            return None;
+        }
+        self.refresh();
+        Some(match crate::trash::move_to_trash(&path) {
+            Ok(()) => Action::Deleted(path),
+            Err(e) => Action::Status(format!("Could not move {} to the {}: {e}", path.display(), crate::trash::trash_name())),
+        })
+    }
+
     /// The name dialog, if one is open. Creates/renames on Enter.
     fn prompt(&mut self, ctx: &egui::Context) -> Option<Action> {
         let p = self.prompt.as_mut()?;
@@ -498,6 +629,7 @@ impl Sidebar {
         egui::Modal::new(egui::Id::new("sidebar-prompt")).show(ctx, |ui| {
             ui.set_width(320.0);
             ui.label(RichText::new(title).strong());
+            crate::fonts::ensure_cjk(ui.ctx(), &p.name);
             let field = ui.add(egui::TextEdit::singleline(&mut p.name).desired_width(f32::INFINITY));
             field.request_focus();
             if let Some(e) = &p.error {
@@ -512,26 +644,41 @@ impl Sidebar {
             self.prompt = None;
             return None;
         }
-        if !done || p.name.trim().is_empty() {
+        if !done {
             return None;
         }
         let name = p.name.trim().to_owned();
+        if let Err(e) = check_name(&name, p.kind != PromptKind::Rename) {
+            p.error = Some(e);
+            return None;
+        }
+        let exists = || std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("“{name}” already exists"));
         let result = match p.kind {
             PromptKind::NewFile => {
                 let path = p.target.join(&name);
-                if path.exists() {
-                    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "already exists"))
+                if std::fs::symlink_metadata(&path).is_ok() {
+                    Err(exists())
                 } else {
-                    path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, "")).map(|_| Action::Open(path, false))
+                    // `create_new`: never truncate a file that appeared meanwhile.
+                    path.parent()
+                        .map_or(Ok(()), std::fs::create_dir_all)
+                        .and_then(|()| std::fs::OpenOptions::new().write(true).create_new(true).open(&path))
+                        .map(|_| Action::Open(path, false))
                 }
             }
-            PromptKind::NewFolder => std::fs::create_dir_all(p.target.join(&name)).map(|_| Action::Status(format!("Created {name}"))),
+            PromptKind::NewFolder => {
+                let path = p.target.join(&name);
+                if std::fs::symlink_metadata(&path).is_ok() { Err(exists()) } else { std::fs::create_dir_all(&path).map(|_| Action::Status(format!("Created {name}"))) }
+            }
             PromptKind::Rename => {
                 let to = p.target.with_file_name(&name);
-                if to.exists() {
-                    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "already exists"))
+                if to == p.target {
+                    // Nothing to do.
+                    Ok(Action::Status(String::new()))
+                } else if std::fs::symlink_metadata(&to).is_ok() && !same_file(&p.target, &to) {
+                    Err(exists())
                 } else {
-                    std::fs::rename(&p.target, &to).map(|_| Action::Renamed(p.target.clone(), to))
+                    rename(&p.target, &to).map(|_| Action::Renamed(p.target.clone(), to))
                 }
             }
         };
@@ -549,24 +696,21 @@ impl Sidebar {
     }
 
     fn listing(&mut self, dir: &Path) -> &[Entry] {
-        self.listings.entry(dir.to_owned()).or_insert_with(|| {
-            let mut entries: Vec<Entry> = std::fs::read_dir(dir)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().into_owned();
-                    if HIDDEN.contains(&name.as_str()) {
-                        return None;
-                    }
-                    let is_dir = e.file_type().ok()?.is_dir();
-                    Some(Entry { path: e.path(), name, is_dir })
-                })
-                .collect();
-            // Folders first, then case-insensitive by name.
-            entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
-            entries
-        })
+        self.drawn.insert(dir.to_owned());
+        let (filter, exclude) = (&self.filter, &self.exclude);
+        &self
+            .listings
+            .entry(dir.to_owned())
+            .or_insert_with(|| {
+                // The time first: a change while reading shows up next check.
+                let mtime = modified(dir);
+                let mut entries = read_folder(dir, filter.respect_gitignore);
+                entries.retain(|e| !exclude.is_match(&e.name));
+                // Folders first, then case-insensitive by name.
+                entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+                Listing { mtime, entries }
+            })
+            .entries
     }
 
     fn tree(&mut self, ui: &mut Ui, dir: &Path, current: Option<&Path>, action: &mut Option<Action>) {
@@ -574,6 +718,7 @@ impl Sidebar {
         let entries: Vec<(PathBuf, String, bool)> =
             self.listing(dir).iter().map(|e| (e.path.clone(), e.name.clone(), e.is_dir)).collect();
         for (path, name, is_dir) in entries {
+            crate::fonts::ensure_cjk(ui.ctx(), &name);
             if is_dir {
                 // Children are listed only once the folder is expanded.
                 let mut header = egui::CollapsingHeader::new(&name).id_salt(&path).default_open(false);
@@ -607,6 +752,7 @@ impl Sidebar {
             ui.toggle_value(&mut self.query.whole_word, "\"ab\"").on_hover_text("Whole word");
         });
         let mut field = |ui: &mut Ui, label: &str, text: &mut String, id: &str, hint: &str, focus: bool| {
+            crate::fonts::ensure_cjk(ui.ctx(), text);
             ui.horizontal(|ui| {
                 ui.add_sized([48.0, 18.0], egui::Label::new(RichText::new(label).small().weak()));
                 let id = egui::Id::new(id);
@@ -716,10 +862,12 @@ impl Sidebar {
                 let file = &self.search.results[fi];
                 match hi {
                     None => {
+                        crate::fonts::ensure_cjk(ui.ctx(), &file.path.to_string_lossy());
                         ui.label(RichText::new(self.display_path(&file.path)).strong()).on_hover_text(file.path.display().to_string());
                     }
                     Some(hi) => {
                         let hit = &file.hits[hi];
+                        crate::fonts::ensure_cjk(ui.ctx(), &hit.preview);
                         if ui.add(egui::Button::new(hit_text(ui, hit.line, &hit.preview, &hit.preview_cols)).frame(false)).clicked() {
                             action = Some(Action::OpenAt(file.path.clone(), hit.line, hit.cols.clone()));
                         }
@@ -729,6 +877,118 @@ impl Sidebar {
         });
         action
     }
+}
+
+/// One folder's entries (not its subfolders'), leaving out what .gitignore
+/// ignores when `gitignore` is on.
+fn read_folder(dir: &Path, gitignore: bool) -> Vec<Entry> {
+    let entry = |path: PathBuf, is_dir: bool| {
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        Some(Entry { path, name, is_dir })
+    };
+    if !gitignore {
+        return std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| entry(e.path(), e.file_type().ok()?.is_dir())).collect();
+    }
+    ignore::WalkBuilder::new(dir)
+        .max_depth(Some(1))
+        .hidden(false)
+        .require_git(false)
+        .build()
+        .flatten()
+        .filter(|e| e.depth() == 1)
+        .filter_map(|e| {
+            // A symlink to a folder lists as a folder.
+            let is_dir = e.file_type()?.is_dir() || (e.path_is_symlink() && e.path().is_dir());
+            entry(e.into_path(), is_dir)
+        })
+        .collect()
+}
+
+fn exclude_set(patterns: &[String]) -> globset::GlobSet {
+    let mut b = globset::GlobSetBuilder::new();
+    for p in patterns {
+        if let Ok(g) = globset::Glob::new(p) {
+            b.add(g);
+        }
+    }
+    b.build().unwrap_or_else(|_| globset::GlobSet::empty())
+}
+
+/// Names Windows reserves for devices, with or without an extension.
+const RESERVED: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// A name typed for a new file or folder (`nested`: `a/b/c` makes the
+/// folders in between) or for a rename (one name only).
+fn check_name(name: &str, nested: bool) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Type a name".into());
+    }
+    if name.contains('\\') {
+        return Err(if nested { "Use / between folder names, not \\" } else { "A name can't contain \\" }.into());
+    }
+    if !nested && name.contains('/') {
+        return Err("A name can't contain /".into());
+    }
+    name.split('/').try_for_each(check_component)
+}
+
+/// One file or folder name.
+fn check_component(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Empty folder name (two slashes, or one at the start or end)".into());
+    }
+    if name == "." || name == ".." {
+        return Err(format!("“{name}” isn't a name"));
+    }
+    if name.contains('\0') {
+        return Err("A name can't contain a null character".into());
+    }
+    if cfg!(windows) {
+        if let Some(c) = name.chars().find(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') || (*c as u32) < 32) {
+            return Err(format!("A name can't contain {c:?} on Windows"));
+        }
+        let stem = name.split('.').next().unwrap_or(name).trim_end().to_uppercase();
+        if RESERVED.contains(&stem.as_str()) {
+            return Err(format!("“{name}” is reserved by Windows"));
+        }
+        if name.ends_with(['.', ' ']) {
+            return Err("A name can't end with a dot or a space on Windows".into());
+        }
+    }
+    Ok(())
+}
+
+/// Are `a` and `b` the same file (e.g. names differing only in case on a
+/// case-insensitive disk)?
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+            (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows disks ignore case: the same name in other letters is the same file.
+        a.parent() == b.parent() && a.file_name().map(|n| n.to_string_lossy().to_lowercase()) == b.file_name().map(|n| n.to_string_lossy().to_lowercase())
+    }
+}
+
+/// Rename `from` to `to`; a change of case only goes through a temporary
+/// name, which file systems that ignore case need.
+fn rename(from: &Path, to: &Path) -> std::io::Result<()> {
+    if !same_file(from, to) {
+        return std::fs::rename(from, to);
+    }
+    let tmp = (0..).map(|n| from.with_file_name(format!(".strata-rename-{}-{n}", std::process::id()))).find(|p| std::fs::symlink_metadata(p).is_err()).expect("a free name");
+    std::fs::rename(from, &tmp)?;
+    std::fs::rename(&tmp, to).inspect_err(|_| {
+        let _ = std::fs::rename(&tmp, from);
+    })
 }
 
 /// For comparing paths that may differ only by symlinks or `..`.
@@ -835,6 +1095,97 @@ mod tests {
         s.find_in_folder(&dir.join("sub"));
         assert_eq!(s.where_text, dir.join("sub").display().to_string());
         assert!(s.tab == Tab::Search && s.shown());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    fn names(s: &mut Sidebar, dir: &Path) -> Vec<String> {
+        s.listing(dir).iter().map(|e| e.name.clone()).collect()
+    }
+
+    #[test]
+    fn the_tree_hides_ignored_and_excluded_files() {
+        let dir = temp_dir("ignore");
+        std::fs::create_dir_all(dir.join("target/debug")).unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".gitignore"), "target/\n*.log\n").unwrap();
+        for f in ["main.rs", "debug.log", ".env", "x.pyc", ".DS_Store"] {
+            std::fs::write(dir.join(f), "").unwrap();
+        }
+        let mut s = Sidebar::new();
+        s.open_folder(dir.clone());
+        assert_eq!(names(&mut s, &dir), [".env", ".gitignore", "main.rs", "x.pyc"]);
+        s.set_filter(&TreeFilter { respect_gitignore: true, exclude: vec!["*.pyc".into(), ".git".into(), ".DS_Store".into(), ".env".into()] });
+        assert_eq!(names(&mut s, &dir), [".gitignore", "main.rs"]);
+        s.set_filter(&TreeFilter { respect_gitignore: false, exclude: vec![] });
+        assert_eq!(names(&mut s, &dir), [".git", "target", ".DS_Store", ".env", ".gitignore", "debug.log", "main.rs", "x.pyc"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn folders_on_screen_notice_outside_changes() {
+        let dir = temp_dir("watch");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let mut s = Sidebar::new();
+        s.open_folder(dir.clone());
+        assert_eq!(names(&mut s, &dir), ["sub"]);
+        names(&mut s, &dir.join("sub"));
+        // A frame later (what was drawn is what's watched)…
+        s.drawn_before = std::mem::take(&mut s.drawn);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.join("new.txt"), "").unwrap();
+        std::fs::write(dir.join("sub/inner.txt"), "").unwrap();
+        s.watch(1.0);
+        assert_eq!(names(&mut s, &dir), ["sub"], "not checked more than every couple of seconds");
+        s.watch(5.0);
+        assert_eq!(names(&mut s, &dir), ["sub", "new.txt"]);
+        assert_eq!(names(&mut s, &dir.join("sub")), ["inner.txt"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn names_are_checked() {
+        assert!(check_name("", true).is_err());
+        assert!(check_name("a/b.rs", true).is_ok(), "New File makes the folders in between");
+        assert!(check_name("a/b.rs", false).is_err(), "a rename is one name");
+        for bad in ["..", ".", "a/../b", "a//b", "/abs", "a\\b", "x/"] {
+            assert!(check_name(bad, true).is_err(), "{bad}");
+        }
+        assert!(check_name(".env", false).is_ok());
+        assert_eq!(check_name("CON.txt", false).is_err(), cfg!(windows));
+        assert_eq!(check_name("a:b", false).is_err(), cfg!(windows));
+    }
+
+    /// Run the name prompt as if OK were pressed.
+    fn submit(s: &mut Sidebar, kind: PromptKind, target: &Path, name: &str) -> (Option<Action>, Option<String>) {
+        s.prompt = Some(Prompt { kind, target: target.to_owned(), name: name.into(), error: None });
+        let ctx = egui::Context::default();
+        let mut action = None;
+        let raw = egui::RawInput { events: vec![egui::Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }], ..Default::default() };
+        ctx.run_ui(raw, |ui| action = s.prompt(ui.ctx())).textures_delta.clear();
+        (action, s.prompt.as_ref().and_then(|p| p.error.clone()))
+    }
+
+    #[test]
+    fn new_and_rename_refuse_bad_and_taken_names_and_allow_case_changes() {
+        let dir = temp_dir("names");
+        std::fs::create_dir_all(dir.join("taken")).unwrap();
+        std::fs::write(dir.join("readme.md"), "x").unwrap();
+        let mut s = Sidebar::new();
+        let (a, e) = submit(&mut s, PromptKind::NewFolder, &dir, "taken");
+        assert!(a.is_none() && e.is_some_and(|e| e.contains("already exists")), "New Folder no longer says Created");
+        let (a, e) = submit(&mut s, PromptKind::NewFile, &dir, "../escape.txt");
+        assert!(a.is_none() && e.is_some() && !dir.parent().unwrap().join("escape.txt").exists());
+        let (a, _) = submit(&mut s, PromptKind::NewFile, &dir, "deep/er/file.rs");
+        assert!(matches!(a, Some(Action::Open(..))) && dir.join("deep/er/file.rs").is_file());
+        // Only the case changes: allowed, also where the disk ignores case.
+        let (a, e) = submit(&mut s, PromptKind::Rename, &dir.join("readme.md"), "README.md");
+        assert!(matches!(a, Some(Action::Renamed(..))), "{e:?}");
+        let listed: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(listed.contains(&"README.md".to_owned()) && !listed.contains(&"readme.md".to_owned()), "{listed:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("README.md")).unwrap(), "x");
+        // Onto another existing file: refused.
+        let (a, e) = submit(&mut s, PromptKind::Rename, &dir.join("README.md"), "taken");
+        assert!(a.is_none() && e.is_some());
         std::fs::remove_dir_all(dir).ok();
     }
 

@@ -39,13 +39,19 @@ pub fn is_cjk(c: char) -> bool {
         | 0x20000..=0x2FA1F)  // ideograph extensions
 }
 
-/// Load the fallbacks once, the first time `text` contains CJK.
+/// Load the fallbacks once, the first time `text` contains CJK. Cheap
+/// enough to call on every label every frame: ASCII returns at once.
 pub fn ensure_cjk(ctx: &Context, text: &str) {
+    if text.is_ascii() || !text.chars().any(is_cjk) {
+        return;
+    }
     let loaded = Id::new("strata-cjk-fonts");
-    if ctx.data(|d| d.get_temp::<bool>(loaded).is_some()) || !text.chars().any(is_cjk) {
+    if ctx.data(|d| d.get_temp::<bool>(loaded).is_some()) {
         return;
     }
     ctx.data_mut(|d| d.insert_temp(loaded, true));
+    // The new fonts take effect next frame.
+    ctx.request_repaint();
     for (i, files) in CANDIDATES.iter().enumerate() {
         let Some(bytes) = files.iter().find_map(|f| std::fs::read(f).ok()) else { continue };
         let families = [FontFamily::Monospace, FontFamily::Proportional]

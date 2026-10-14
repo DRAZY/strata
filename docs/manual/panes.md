@@ -33,6 +33,8 @@ The "stack" orders every tab in the window by when you last used it. Press {{key
 
 To jump straight to a tab by position in the current pane, press ⌘1 through ⌘9 on macOS, or Alt+1 through Alt+9 on Windows and Linux. 9 always goes to the last tab. The Window menu also lists every tab in the window.
 
+When a pane has more tabs than fit, its tab bar scrolls: the current tab is always scrolled into view, and the mouse wheel (or a two-finger swipe) over the tab bar scrolls it sideways. A ⌄ button at the right end then lists all of the pane's tabs; pick one to switch to it.
+
 ### Rearranging tabs
 
 Drag a tab along the tab bar to reorder it. Drag it onto a tab in another pane to move it there, or drop it on another pane's text area to move it to the end of that pane's tabs.

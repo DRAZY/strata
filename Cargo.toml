@@ -52,4 +52,9 @@ muda = { version = "0.21.2", default-features = false }
 # Finder / Dock "open documents" Apple Events (same versions muda and eframe use).
 objc2 = "0.6.5"
 block2 = "0.6.2"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAppleEventDescriptor", "NSAppleEventManager", "NSNotification", "NSOperation", "NSString", "NSURL"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAppleEventDescriptor", "NSAppleEventManager", "NSError", "NSFileManager", "NSNotification", "NSOperation", "NSString", "NSURL"] }
+
+[target.'cfg(windows)'.dependencies]
+# Side bar Delete (the Recycle Bin) and putting restored windows on a monitor
+# (the version already in the build, through winit).
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell"] }

@@ -123,6 +123,10 @@ pub struct Settings {
     pub added_words: Vec<String>,
     /// Scopes spell check looks at (a Sublime scope selector).
     pub spelling_selector: String,
+    /// The side bar hides what .gitignore ignores.
+    pub sidebar_respect_gitignore: bool,
+    /// Names (globs) the side bar never shows.
+    pub file_exclude_patterns: Vec<String>,
 }
 
 impl Default for Settings {
@@ -185,6 +189,8 @@ impl Default for Settings {
             dictionary: crate::spell::DEFAULT_DICTIONARY.into(),
             added_words: Vec::new(),
             spelling_selector: crate::spell::DEFAULT_SELECTOR.into(),
+            sidebar_respect_gitignore: true,
+            file_exclude_patterns: vec![".git".into(), ".DS_Store".into()],
         }
     }
 }
@@ -270,25 +276,43 @@ impl Settings {
         serde_json::from_str(&strip_jsonc(text)).map_err(|e| format!("settings.json: {e}"))
     }
 
-    /// Writes the settings, keeping keys Strata doesn't know. Refuses to replace a
-    /// file that doesn't parse, so a typo never costs the user their settings.
+    /// Writes the settings. An existing file is edited in place: only the
+    /// values that changed are rewritten (a setting that isn't in the file is
+    /// added only if it differs from the default), so comments, order and
+    /// keys Strata doesn't know all stay. Refuses to touch a file that doesn't
+    /// parse, so a typo never costs the user their settings. A new file gets
+    /// every setting.
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         crate::private::create_dir_all(dir)?;
         let path = Self::path(dir);
-        let mut map = match std::fs::read_to_string(&path) {
-            Ok(text) if !text.trim().is_empty() => match serde_json::from_str::<serde_json::Value>(&strip_jsonc(&text)) {
-                Ok(serde_json::Value::Object(m)) => m,
-                _ => return Err(std::io::Error::other("settings.json has errors; fix them first so your settings aren't overwritten")),
-            },
-            _ => serde_json::Map::new(),
-        };
-        if let serde_json::Value::Object(ours) = serde_json::to_value(self)? {
-            map.extend(ours);
-        }
-        let text = serde_json::to_string_pretty(&map)? + "\n";
+        let Some(text) = self.settings_text(&path)? else { return Ok(()) };
         crate::buffer::Buffer::from_str(&text).write_to(&path, crate::encoding::Encoding::UTF8)?;
         crate::private::restrict(&path, false);
         Ok(())
+    }
+
+    /// The new settings.json text, or None when the file already says it all.
+    fn settings_text(&self, path: &Path) -> std::io::Result<Option<String>> {
+        use serde_json::Value;
+        let broken = || std::io::Error::other("settings.json has errors; fix them first so your settings aren't overwritten");
+        let Value::Object(ours) = serde_json::to_value(self)? else { return Err(broken()) };
+        let original = match std::fs::read_to_string(path) {
+            Ok(text) if !text.trim().is_empty() => text,
+            _ => return Ok(Some(serde_json::to_string_pretty(&ours)? + "\n")),
+        };
+        let Ok(Value::Object(file)) = serde_json::from_str::<Value>(&strip_jsonc(&original)) else { return Err(broken()) };
+        let Value::Object(defaults) = serde_json::to_value(Settings::default())? else { return Err(broken()) };
+        let mut text = original.clone();
+        for (key, value) in &ours {
+            let changed = match file.get(key) {
+                Some(old) => !crate::jsonc::same(old, value),
+                None => !defaults.get(key).is_some_and(|d| crate::jsonc::same(d, value)),
+            };
+            if changed {
+                text = crate::jsonc::set_key(&text, key, value).ok_or_else(broken)?;
+            }
+        }
+        Ok((text != original).then_some(text))
     }
 }
 
@@ -609,6 +633,38 @@ mod tests {
     }
 
     #[test]
+    fn saving_settings_edits_the_file_in_place() {
+        let dir = std::env::temp_dir().join(format!("strata-settings-jsonc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = "// Strata settings\n{\n    // bigger\n    \"font_size\": 18,\n    \"my_plugin_key\": true, /* unknown to Strata */\n    \"rulers\": [80],\n}\n";
+        std::fs::write(Settings::path(&dir), text).unwrap();
+        let (mut s, err) = Settings::load(&dir);
+        assert_eq!(err, None);
+        // Nothing changed: the file isn't touched.
+        s.save(&dir).unwrap();
+        assert_eq!(std::fs::read_to_string(Settings::path(&dir)).unwrap(), text);
+        // Zoom: only that value changes.
+        s.font_size = 19.0;
+        s.save(&dir).unwrap();
+        assert_eq!(std::fs::read_to_string(Settings::path(&dir)).unwrap(), text.replace("18,", "19.0,"));
+        // A View toggle that isn't in the file yet: added, nothing else is.
+        s.minimap = false;
+        s.save(&dir).unwrap();
+        let after = std::fs::read_to_string(Settings::path(&dir)).unwrap();
+        assert!(after.starts_with("// Strata settings\n{\n    // bigger\n") && after.contains("/* unknown to Strata */"), "{after}");
+        assert!(after.contains("    \"minimap\": false,\n}"), "{after}");
+        assert!(!after.contains("tab_size"), "defaults aren't written out");
+        let (back, err) = Settings::load(&dir);
+        assert_eq!((back.font_size, back.minimap, back.rulers.clone(), err), (19.0, false, vec![80], None));
+        // A missing file gets every setting.
+        std::fs::remove_file(Settings::path(&dir)).unwrap();
+        s.save(&dir).unwrap();
+        assert!(std::fs::read_to_string(Settings::path(&dir)).unwrap().contains("\"tab_size\": 4"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn appearance_settings_parse_with_defaults() {
         let s = Settings::parse("{}").unwrap();
         assert_eq!((s.theme_mode.as_str(), s.line_height, s.line_padding_top), ("fixed", 1.0, 0.0));
@@ -638,9 +694,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(Settings::path(&dir), text).unwrap();
         s.save(&dir).unwrap();
-        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(Settings::path(&dir)).unwrap()).unwrap();
+        let text = std::fs::read_to_string(Settings::path(&dir)).unwrap();
+        assert!(text.contains("// size") && text.contains("/* \"tab_size\": 9, */"), "comments are kept: {text}");
+        let saved: serde_json::Value = serde_json::from_str(&strip_jsonc(&text)).unwrap();
         assert_eq!(saved["mine"], serde_json::Value::Bool(true));
-        assert_eq!(saved["font_size"], serde_json::json!(16.0));
+        assert_eq!(saved["font_size"], serde_json::json!(16));
         std::fs::remove_dir_all(dir).ok();
     }
 }

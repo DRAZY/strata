@@ -126,7 +126,8 @@ pub fn fingerprint(menus: &Menus) -> u64 {
     fn walk(items: &[Item], h: &mut std::collections::hash_map::DefaultHasher) {
         for it in items {
             match it {
-                Item::Action { label, check, enabled, hint, keys, .. } => (label, check, enabled, hint, keys).hash(h),
+                // The action too: two items can swap what they do under one label.
+                Item::Action { label, check, enabled, hint, keys, act } => (label, check, enabled, hint, keys, format!("{act:?}")).hash(h),
                 Item::Separator => 0u8.hash(h),
                 Item::Sub(l, kids) => {
                     l.hash(h);
@@ -355,5 +356,9 @@ mod tests {
         let b: Menus = vec![("View".into(), vec![Item::new("Word Wrap", Act::Cmd(Cmd::ToggleWordWrap)).checked(true)])];
         assert_ne!(fingerprint(&a), fingerprint(&b));
         assert_eq!(fingerprint(&a), fingerprint(&a));
+        // Same label, another action (Open Recent entries, build variants…).
+        let c: Menus = vec![("File".into(), vec![Item::new("notes.md", Act::OpenRecent("/a/notes.md".into()))])];
+        let d: Menus = vec![("File".into(), vec![Item::new("notes.md", Act::OpenRecent("/b/notes.md".into()))])];
+        assert_ne!(fingerprint(&c), fingerprint(&d));
     }
 }
