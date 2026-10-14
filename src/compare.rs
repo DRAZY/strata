@@ -86,9 +86,28 @@ pub struct Compare {
 /// Changed words of a row: (fixed side, editable side) char ranges.
 type Words = (Vec<Range<usize>>, Vec<Range<usize>>);
 
-/// Split like a buffer: a final newline is followed by an empty last line.
+/// Split like a buffer: lines end at `\n`, `\r\n` or a lone `\r` (ropey's
+/// `cr_lines`), and a final break is followed by an empty last line.
 fn buffer_lines(s: &str) -> Vec<&str> {
-    s.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect()
+    let b = s.as_bytes();
+    let mut lines = Vec::new();
+    let (mut start, mut i) = (0, 0);
+    while i < b.len() {
+        let len = match (b[i], b.get(i + 1)) {
+            (b'\r', Some(b'\n')) => 2,
+            (b'\r' | b'\n', _) => 1,
+            _ => 0,
+        };
+        if len == 0 {
+            i += 1;
+            continue;
+        }
+        lines.push(&s[start..i]);
+        i += len;
+        start = i;
+    }
+    lines.push(&s[start..]);
+    lines
 }
 
 impl Compare {
@@ -837,6 +856,25 @@ mod tests {
 
     fn editor(text: &str) -> Editor {
         Editor::new(Buffer::from_str(text))
+    }
+
+    #[test]
+    fn lines_split_like_the_buffer_with_lone_carriage_returns() {
+        for s in ["a\rb\r\nc\nd", "\r\r\n\n", "x\r", "", "one\ntwo\n"] {
+            let lines = buffer_lines(s);
+            let b = Buffer::from_str(s);
+            assert_eq!(lines.len(), b.len_lines(), "{s:?}");
+            for (i, l) in lines.iter().enumerate() {
+                assert_eq!(*l, b.line_text(i), "{s:?} line {i}");
+            }
+        }
+        // Old Mac line endings: same text both sides, so nothing differs.
+        let text = "a\rb\rc\r";
+        let mut c = Compare::new(text, "old".into(), "Plain Text", "new".into());
+        let mut ed = editor(text);
+        c.refresh(&mut ed, 0.0, true);
+        assert_eq!(c.stats(), (0, 0, 0));
+        assert_eq!(c.aligned.rows.len(), ed.buffer.len_lines());
     }
 
     #[test]
