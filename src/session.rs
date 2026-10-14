@@ -105,8 +105,10 @@ pub struct Settings {
     /// The terminal panel was open (a shell starts on launch only then).
     pub terminal_visible: bool,
     pub terminal_height: f32,
-    /// Let programs in the terminal read the clipboard (OSC 52). Writing is always allowed.
+    /// Let programs in the terminal read the clipboard (OSC 52).
     pub terminal_allow_clipboard_read: bool,
+    /// Let programs in the terminal set the clipboard (OSC 52); each time, the status bar says so.
+    pub terminal_allow_clipboard_write: bool,
     /// Opening the find bar with a multi-line selection turns on In Selection.
     pub auto_find_in_selection: bool,
     /// Underline misspelled words in prose: comments, strings, Markdown, plain text.
@@ -172,6 +174,7 @@ impl Default for Settings {
             terminal_visible: false,
             terminal_height: 240.0,
             terminal_allow_clipboard_read: false,
+            terminal_allow_clipboard_write: true,
             auto_find_in_selection: false,
             spell_check: false,
             dictionary: crate::spell::DEFAULT_DICTIONARY.into(),
