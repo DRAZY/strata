@@ -317,6 +317,7 @@ impl Palette {
                         Mode::Choice => self.choice_hint.as_str(),
                     };
                     let id = egui::Id::new("palette-query");
+                    crate::fonts::ensure_cjk(ui.ctx(), &self.text);
                     let field = crate::ctxmenu::text_field(ui, id, &mut self.text, |ui, text| {
                         ui.add(egui::TextEdit::singleline(text).id(id).hint_text(hint).font(FontId::proportional(16.0)).desired_width(f32::INFINITY).margin(vec2(8.0, 6.0)))
                     });
@@ -335,6 +336,8 @@ impl Palette {
                     let row_h = 26.0;
                     egui::ScrollArea::vertical().max_height(row_h * 12.0).auto_shrink([false, true]).show(ui, |ui| {
                         for (i, row) in self.rows.iter().take(MAX_ROWS).enumerate() {
+                            crate::fonts::ensure_cjk(ui.ctx(), &row.label);
+                            crate::fonts::ensure_cjk(ui.ctx(), &row.detail);
                             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
                             if i == self.selected {
                                 ui.painter().rect_filled(rect, 4.0, accent);

@@ -382,6 +382,7 @@ impl Sidebar {
                     if self.show_open_files && open.len() > 1 {
                         egui::CollapsingHeader::new(RichText::new("OPEN FILES").small().weak()).id_salt("open-files").default_open(true).show(ui, |ui| {
                             for (i, f) in open.iter().enumerate() {
+                                crate::fonts::ensure_cjk(ui.ctx(), &f.name);
                                 ui.horizontal(|ui| {
                                     let label = if f.dirty { format!("● {}", f.name) } else { f.name.clone() };
                                     if ui.selectable_label(f.active, label).clicked() {
@@ -399,6 +400,7 @@ impl Sidebar {
                     // Each folder is a top-level tree, like Sublime's project folders.
                     for root in &roots {
                         let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
+                        crate::fonts::ensure_cjk(ui.ctx(), &name);
                         let mut header = egui::CollapsingHeader::new(RichText::new(name).strong()).id_salt(root).default_open(true);
                         if self.reveal.as_ref().is_some_and(|(r, _)| r.starts_with(root)) {
                             header = header.open(Some(true));
@@ -516,6 +518,7 @@ impl Sidebar {
         egui::Modal::new(egui::Id::new("sidebar-prompt")).show(ctx, |ui| {
             ui.set_width(320.0);
             ui.label(RichText::new(title).strong());
+            crate::fonts::ensure_cjk(ui.ctx(), &p.name);
             let field = ui.add(egui::TextEdit::singleline(&mut p.name).desired_width(f32::INFINITY));
             field.request_focus();
             if let Some(e) = &p.error {
@@ -592,6 +595,7 @@ impl Sidebar {
         let entries: Vec<(PathBuf, String, bool)> =
             self.listing(dir).iter().map(|e| (e.path.clone(), e.name.clone(), e.is_dir)).collect();
         for (path, name, is_dir) in entries {
+            crate::fonts::ensure_cjk(ui.ctx(), &name);
             if is_dir {
                 // Children are listed only once the folder is expanded.
                 let mut header = egui::CollapsingHeader::new(&name).id_salt(&path).default_open(false);
@@ -625,6 +629,7 @@ impl Sidebar {
             ui.toggle_value(&mut self.query.whole_word, "\"ab\"").on_hover_text("Whole word");
         });
         let mut field = |ui: &mut Ui, label: &str, text: &mut String, id: &str, hint: &str, focus: bool| {
+            crate::fonts::ensure_cjk(ui.ctx(), text);
             ui.horizontal(|ui| {
                 ui.add_sized([48.0, 18.0], egui::Label::new(RichText::new(label).small().weak()));
                 let id = egui::Id::new(id);
@@ -734,10 +739,12 @@ impl Sidebar {
                 let file = &self.search.results[fi];
                 match hi {
                     None => {
+                        crate::fonts::ensure_cjk(ui.ctx(), &file.path.to_string_lossy());
                         ui.label(RichText::new(self.display_path(&file.path)).strong()).on_hover_text(file.path.display().to_string());
                     }
                     Some(hi) => {
                         let hit = &file.hits[hi];
+                        crate::fonts::ensure_cjk(ui.ctx(), &hit.preview);
                         if ui.add(egui::Button::new(hit_text(ui, hit.line, &hit.preview, &hit.preview_cols)).frame(false)).clicked() {
                             action = Some(Action::OpenAt(file.path.clone(), hit.line, hit.cols.clone()));
                         }

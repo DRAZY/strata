@@ -136,3 +136,36 @@ fn toggle_side_bar_check_matches_what_is_shown() {
     assert_eq!((app.sidebar.shown(), checked(&app)), (true, Some(true)));
     std::fs::remove_dir_all(dir).ok();
 }
+
+#[test]
+fn cjk_file_names_load_the_cjk_fonts() {
+    let loaded = |ctx: &Context| ctx.data(|d| d.get_temp::<bool>(egui::Id::new("strata-cjk-fonts")).is_some());
+    let dir = temp_dir("cjk");
+    let file = dir.join("中文文件名.rs");
+    std::fs::write(&file, "fn main() {}\n").unwrap();
+    // ASCII names leave them unloaded (they're tens of MB).
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    frame(&mut app, &ctx, vec![]);
+    assert!(!loaded(&ctx));
+    // A tab named in Chinese (the editor text is ASCII).
+    let ctx = Context::default();
+    let mut app = StrataApp::new(Some(file.clone()), None);
+    frame(&mut app, &ctx, vec![]);
+    assert!(loaded(&ctx), "the tab name asked for them");
+    // The side bar alone (no tab, no CJK text anywhere else).
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    app.open_folder(dir.clone());
+    app.settings.show_tabs = false;
+    frame(&mut app, &ctx, vec![]);
+    frame(&mut app, &ctx, vec![]);
+    assert!(loaded(&ctx), "the side bar row asked for them");
+    // The status bar.
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    app.status = "Renamed to 名前.txt".into();
+    frame(&mut app, &ctx, vec![]);
+    assert!(loaded(&ctx), "the status message asked for them");
+    std::fs::remove_dir_all(dir).ok();
+}

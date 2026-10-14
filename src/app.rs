@@ -1454,6 +1454,7 @@ impl StrataApp {
             return;
         }
         let title = self.title();
+        crate::fonts::ensure_cjk(ui.ctx(), &title);
         egui::Panel::top("titlebar").exact_size(28.0).frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
             let rect = ui.max_rect();
             let resp = ui.interact(rect, egui::Id::new("titlebar"), Sense::click_and_drag());
@@ -1582,6 +1583,8 @@ impl StrataApp {
     }
 
     fn find_bar(&mut self, ui: &mut egui::Ui) {
+        crate::fonts::ensure_cjk(ui.ctx(), &self.find.query.text);
+        crate::fonts::ensure_cjk(ui.ctx(), &self.find.replacement);
         self.refresh_matches();
         // Typing in the query jumps to the first match after where search began.
         if self.find.query != self.find.last_query {
@@ -1905,6 +1908,9 @@ impl StrataApp {
         let area = ui.max_rect();
         let cells = self.layout.cells(area);
         let names = self.display_names();
+        for n in &names {
+            crate::fonts::ensure_cjk(&ctx, n);
+        }
         let mut tab_rects = Vec::new();
         let mut actions = Vec::new();
         let find_open = self.find.open && self.find.highlight;
@@ -1976,6 +1982,7 @@ impl StrataApp {
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
+        crate::fonts::ensure_cjk(ui.ctx(), &self.status);
         ui.horizontal(|ui| {
             let d = &mut self.docs[self.active];
             let (line, col) = d.editor.cursor_line_col();
