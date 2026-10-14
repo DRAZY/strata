@@ -242,12 +242,17 @@ pub fn key_bytes(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
 
 /// Text to send for a paste: bracketed when the program asked for it.
 pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    // Pasted text never carries escape sequences: an ESC (or an 8-bit C1
+    // control such as CSI, U+009B) would let copied text drive the terminal,
+    // and with bracketed paste an embedded end marker would let the rest of
+    // the text escape the bracket and run as typed input. Removing every ESC
+    // and C1 control (rather than just the end marker, which a nested marker
+    // like "\x1b[20\x1b[201~1~" would reconstitute) closes that for good.
+    let clean: String = text.chars().filter(|&c| c != '\x1b' && !('\u{80}'..='\u{9f}').contains(&c)).collect();
     if bracketed {
-        // A pasted end marker would let the text escape the bracket.
-        let clean = text.replace("\x1b[201~", "");
         format!("\x1b[200~{clean}\x1b[201~").into_bytes()
     } else {
-        text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+        clean.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
     }
 }
 
@@ -1130,7 +1135,23 @@ mod tests {
     fn paste_is_bracketed_on_request() {
         assert_eq!(paste_bytes("a\nb", false), b"a\rb");
         assert_eq!(paste_bytes("a\r\nb", false), b"a\rb");
-        assert_eq!(paste_bytes("x\x1b[201~y", true), b"\x1b[200~xy\x1b[201~");
+        assert_eq!(paste_bytes("x\x1b[201~y", true), b"\x1b[200~x[201~y\x1b[201~");
+    }
+
+    #[test]
+    fn pasted_text_cannot_escape_the_bracket() {
+        // Stripping only the end marker once would rebuild it from a nested one.
+        for evil in ["\x1b[20\x1b[201~1~rm -rf ~\n", "a\x1b\x1b[201~[201~b", "x\u{9b}201~y", "\x1b]52;c;?\x07"] {
+            let out = paste_bytes(evil, true);
+            let body = &out[6..out.len() - 6];
+            assert!(out.starts_with(b"\x1b[200~") && out.ends_with(b"\x1b[201~"));
+            assert!(!body.contains(&0x1b), "{evil:?} left an ESC inside the bracket");
+            assert!(!String::from_utf8_lossy(body).contains('\u{9b}'), "{evil:?} left a C1 CSI");
+        }
+        // Unbracketed pastes lose their escapes too.
+        assert_eq!(paste_bytes("a\x1b[2Jb", false), b"a[2Jb");
+        // Ordinary text, including non-ASCII, is untouched.
+        assert_eq!(paste_bytes("héllo — ✓", true), "\x1b[200~héllo — ✓\x1b[201~".as_bytes());
     }
 
     #[test]
