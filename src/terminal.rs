@@ -242,12 +242,17 @@ pub fn key_bytes(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
 
 /// Text to send for a paste: bracketed when the program asked for it.
 pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    // Pasted text never carries escape sequences: an ESC (or an 8-bit C1
+    // control such as CSI, U+009B) would let copied text drive the terminal,
+    // and with bracketed paste an embedded end marker would let the rest of
+    // the text escape the bracket and run as typed input. Removing every ESC
+    // and C1 control (rather than just the end marker, which a nested marker
+    // like "\x1b[20\x1b[201~1~" would reconstitute) closes that for good.
+    let clean: String = text.chars().filter(|&c| c != '\x1b' && !('\u{80}'..='\u{9f}').contains(&c)).collect();
     if bracketed {
-        // A pasted end marker would let the text escape the bracket.
-        let clean = text.replace("\x1b[201~", "");
         format!("\x1b[200~{clean}\x1b[201~").into_bytes()
     } else {
-        text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+        clean.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
     }
 }
 
@@ -437,25 +442,30 @@ impl Terminal {
         let _ = self.sender.send(Msg::Resize(window));
     }
 
-    /// Handle what the emulator reported since the last frame. True if a
-    /// program asked to read the clipboard and `allow_read` refused it.
-    fn poll(&mut self, ctx: &egui::Context, theme: &Theme, allow_read: bool) -> bool {
-        let mut blocked = false;
+    /// Handle what the emulator reported since the last frame, reporting
+    /// clipboard use (OSC 52) in `clip`.
+    fn poll(&mut self, ctx: &egui::Context, theme: &Theme, allow: Clipboard, clip: &mut ClipboardUse) {
         let events = std::mem::take(&mut *self.queue.lock().unwrap_or_else(|e| e.into_inner()));
         for e in events {
             match e {
                 TermEvent::Title(t) => self.title = Some(t),
                 TermEvent::ResetTitle => self.title = None,
-                // Writing the clipboard (OSC 52) is fine; reading it hands
-                // whatever you copied (a password, say) to any program that
-                // prints the right escape sequence, so it's off unless allowed.
-                TermEvent::ClipboardStore(_, text) => ctx.copy_text(text),
-                TermEvent::ClipboardLoad(_, format) if allow_read => {
+                // Writing the clipboard (OSC 52) is allowed by default, as in
+                // other terminals, and always reported (the app says so in the
+                // status bar); reading it hands whatever you copied (a
+                // password, say) to any program that prints the right escape
+                // sequence, so it's off unless allowed.
+                TermEvent::ClipboardStore(_, text) if allow.write => {
+                    ctx.copy_text(text);
+                    clip.wrote = true;
+                }
+                TermEvent::ClipboardStore(..) => clip.write_blocked = true,
+                TermEvent::ClipboardLoad(_, format) if allow.read => {
                     if let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
                         self.write(format(&text));
                     }
                 }
-                TermEvent::ClipboardLoad(..) => blocked = true,
+                TermEvent::ClipboardLoad(..) => clip.read_blocked = true,
                 TermEvent::ColorRequest(i, format) => self.write(format(theme.rgb_at(i))),
                 TermEvent::TextAreaSizeRequest(format) => {
                     let (w, h) = self.cell;
@@ -470,7 +480,6 @@ impl Terminal {
                 TermEvent::Wakeup | TermEvent::MouseCursorDirty | TermEvent::CursorBlinkingChange => {}
             }
         }
-        blocked
     }
 
     /// The visible screen as text, one line per row.
@@ -592,10 +601,28 @@ pub struct Panel {
     /// This frame's text area and tab labels (tab index, response), for context menus.
     pub body: Option<egui::Response>,
     pub tab_labels: Vec<(usize, egui::Response)>,
-    /// Let programs read the clipboard with OSC 52 (`terminal_allow_clipboard_read`).
-    pub allow_clipboard_read: bool,
-    /// A program asked to read the clipboard and was refused (cleared by the app).
-    pub clipboard_blocked: bool,
+    /// What programs may do with the clipboard through OSC 52.
+    pub clipboard: Clipboard,
+    /// What they did or tried since the app last looked (it clears this).
+    pub clipboard_use: ClipboardUse,
+}
+
+/// OSC 52 permissions (`terminal_allow_clipboard_read` / `_write`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clipboard {
+    pub read: bool,
+    pub write: bool,
+}
+
+/// OSC 52 activity since the app last took it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ClipboardUse {
+    /// A program set the clipboard.
+    pub wrote: bool,
+    /// A program tried to set it and `write` refused.
+    pub write_blocked: bool,
+    /// A program asked to read it and `read` refused.
+    pub read_blocked: bool,
 }
 
 impl Default for Panel {
@@ -626,8 +653,8 @@ impl Panel {
             theme: None,
             body: None,
             tab_labels: Vec::new(),
-            allow_clipboard_read: false,
-            clipboard_blocked: false,
+            clipboard: Clipboard { read: false, write: true },
+            clipboard_use: ClipboardUse::default(),
         }
     }
 
@@ -712,7 +739,7 @@ impl Panel {
         }
         let theme = self.theme.clone().unwrap_or_else(|| Theme::new(Color32::BLACK, Color32::LIGHT_GRAY, Color32::WHITE, Color32::DARK_GRAY));
         for t in &mut self.tabs {
-            self.clipboard_blocked |= t.poll(ctx, &theme, self.allow_clipboard_read);
+            t.poll(ctx, &theme, self.clipboard, &mut self.clipboard_use);
         }
         let mut i = self.tabs.len();
         while i > 0 {
@@ -1130,7 +1157,23 @@ mod tests {
     fn paste_is_bracketed_on_request() {
         assert_eq!(paste_bytes("a\nb", false), b"a\rb");
         assert_eq!(paste_bytes("a\r\nb", false), b"a\rb");
-        assert_eq!(paste_bytes("x\x1b[201~y", true), b"\x1b[200~xy\x1b[201~");
+        assert_eq!(paste_bytes("x\x1b[201~y", true), b"\x1b[200~x[201~y\x1b[201~");
+    }
+
+    #[test]
+    fn pasted_text_cannot_escape_the_bracket() {
+        // Stripping only the end marker once would rebuild it from a nested one.
+        for evil in ["\x1b[20\x1b[201~1~rm -rf ~\n", "a\x1b\x1b[201~[201~b", "x\u{9b}201~y", "\x1b]52;c;?\x07"] {
+            let out = paste_bytes(evil, true);
+            let body = &out[6..out.len() - 6];
+            assert!(out.starts_with(b"\x1b[200~") && out.ends_with(b"\x1b[201~"));
+            assert!(!body.contains(&0x1b), "{evil:?} left an ESC inside the bracket");
+            assert!(!String::from_utf8_lossy(body).contains('\u{9b}'), "{evil:?} left a C1 CSI");
+        }
+        // Unbracketed pastes lose their escapes too.
+        assert_eq!(paste_bytes("a\x1b[2Jb", false), b"a[2Jb");
+        // Ordinary text, including non-ASCII, is untouched.
+        assert_eq!(paste_bytes("héllo — ✓", true), "\x1b[200~héllo — ✓\x1b[201~".as_bytes());
     }
 
     #[test]
@@ -1237,15 +1280,53 @@ mod tests {
         let shell = ("/bin/sh".to_owned(), vec!["-c".to_owned(), "printf '\\033]52;c;?\\007'; sleep 5".to_owned()]);
         let ctx = egui::Context::default();
         let mut panel = Panel::new();
-        assert!(!panel.allow_clipboard_read, "denied by default");
+        assert!(!panel.clipboard.read, "denied by default");
         panel.tabs.push(Terminal::spawn(None, &std::env::temp_dir(), Some(shell), 20, 3).unwrap());
         panel.visible = true;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !panel.clipboard_blocked && std::time::Instant::now() < deadline {
+        while !panel.clipboard_use.read_blocked && std::time::Instant::now() < deadline {
             panel.poll(&ctx);
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert!(panel.clipboard_blocked, "the read was refused and reported");
+        assert!(panel.clipboard_use.read_blocked, "the read was refused and reported");
+    }
+
+    /// A shell prints an OSC 52 write; returns what the panel reported and what reached the clipboard.
+    #[cfg(unix)]
+    fn osc52_write(allow_write: bool) -> (ClipboardUse, Vec<String>) {
+        // "aGk=" is "hi" in base64.
+        let shell = ("/bin/sh".to_owned(), vec!["-c".to_owned(), "printf '\\033]52;c;aGk=\\007'; sleep 5".to_owned()]);
+        let ctx = egui::Context::default();
+        let mut panel = Panel::new();
+        panel.clipboard.write = allow_write;
+        panel.tabs.push(Terminal::spawn(None, &std::env::temp_dir(), Some(shell), 20, 3).unwrap());
+        panel.visible = true;
+        let mut copied = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while panel.clipboard_use == ClipboardUse::default() && std::time::Instant::now() < deadline {
+            let mut out = ctx.run_ui(Default::default(), |_| {
+                panel.poll(&ctx);
+            });
+            out.textures_delta.clear();
+            copied.extend(out.platform_output.commands.iter().filter_map(|c| match c {
+                egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                _ => None,
+            }));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        (panel.clipboard_use, copied)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn programs_can_set_the_clipboard_and_it_is_reported() {
+        assert!(Panel::new().clipboard.write, "allowed by default, like other terminals");
+        let (used, copied) = osc52_write(true);
+        assert!(used.wrote && !used.write_blocked, "{used:?}");
+        assert_eq!(copied, ["hi"]);
+        let (used, copied) = osc52_write(false);
+        assert!(used.write_blocked && !used.wrote, "{used:?}");
+        assert!(copied.is_empty(), "nothing reached the clipboard");
     }
 
     #[cfg(unix)]

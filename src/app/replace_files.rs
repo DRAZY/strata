@@ -74,7 +74,7 @@ impl StrataApp {
     /// STRATA_DEV_REPLACE in Replace. STRATA_DEV_REPLACE_STEP=confirm shows
     /// the confirmation; =run replaces and shows the summary.
     pub(super) fn dev_find_in_files(&mut self, q: String) {
-        let env = |k: &str| std::env::var(k).unwrap_or_default();
+        let env = |k: &str| crate::dev::var(k).unwrap_or_default();
         self.sidebar.start_find_in_files(Some(q));
         self.sidebar.where_text = env("STRATA_DEV_WHERE");
         self.sidebar.replacement = env("STRATA_DEV_REPLACE");
@@ -85,7 +85,8 @@ impl StrataApp {
                 self.sidebar.search.wait();
                 // The next frame's sidebar shows the confirmation.
             }
-            "run" => {
+            // Replaces on disk: debug builds only (see `crate::dev`).
+            "run" if crate::dev::risky_var("STRATA_DEV_REPLACE_STEP").is_some() => {
                 self.sidebar.request_replace(&open, None);
                 self.sidebar.search.wait();
                 self.sidebar.skip_confirm();

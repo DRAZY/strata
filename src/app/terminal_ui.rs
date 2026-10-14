@@ -56,7 +56,8 @@ impl StrataApp {
         let ctx = ui.ctx().clone();
         if !self.terminal_started {
             self.terminal_started = true;
-            let dev = std::env::var("STRATA_DEV_TERMINAL").ok();
+            // Dev aid: types a command into a new terminal (debug builds only; see `crate::dev`).
+            let dev = crate::dev::risky_var("STRATA_DEV_TERMINAL");
             if self.settings.terminal_visible || dev.is_some() {
                 self.new_terminal(&ctx);
                 if let (Some(cmd), Some(t)) = (dev, self.terminal.active_terminal()) {
@@ -65,10 +66,15 @@ impl StrataApp {
                 }
             }
         }
-        self.terminal.allow_clipboard_read = self.settings.terminal_allow_clipboard_read;
+        self.terminal.clipboard = crate::terminal::Clipboard { read: self.settings.terminal_allow_clipboard_read, write: self.settings.terminal_allow_clipboard_write };
         let all_exited = self.terminal.poll(&ctx);
-        if std::mem::take(&mut self.terminal.clipboard_blocked) {
+        let clip = std::mem::take(&mut self.terminal.clipboard_use);
+        if clip.read_blocked {
             self.status = "A program in the terminal tried to read the clipboard; Strata blocked it (setting: terminal_allow_clipboard_read)".into();
+        } else if clip.write_blocked {
+            self.status = "A program in the terminal tried to set the clipboard; Strata blocked it (setting: terminal_allow_clipboard_write)".into();
+        } else if clip.wrote {
+            self.status = "A program in the terminal set the clipboard".into();
         }
         if all_exited {
             // The last shell exited.

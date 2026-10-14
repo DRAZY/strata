@@ -50,14 +50,15 @@ The preview updates on every edit. Very large files (more than about a quarter o
 
 ## Links
 
-Click a link in the preview to follow it:
+Click a link in the preview to follow it. Hover over a link first to see where it really goes; the tooltip shows the address, whatever the link text says.
 
 | Link | What happens |
 |---|---|
 | An anchor such as `#installation` | The preview scrolls to the heading with that anchor. Anchors are made the GitHub way: lowercase, spaces become hyphens, punctuation is dropped. |
-| A web address or any other link with a scheme (`https:`, `mailto:` …) | Opens in your default browser or app. |
+| A web or mail address (`http:`, `https:`, `mailto:`) | Opens in your default browser or mail app. |
 | A relative path to a text file, such as `docs/setup.md` | Opens the file in a tab. The path is relative to the Markdown file's folder. |
-| A relative path to anything else (an image, a PDF, a folder) | Opens in the system's default app. |
+| A relative path to anything else (an image, a PDF, an app, a folder) | Shown in Finder (Explorer on Windows, the file manager on Linux), not opened, so a link can't start a program. |
+| Any other kind of link (`file:`, `smb:`, `vnc:`, an app's own scheme …) or a network path (`//server/share`) | Not followed. The status bar shows the link so you can copy it and open it yourself if you trust it. |
 | A path that doesn't exist | The status bar says "Link target not found". |
 
 Links inside tables work the same way.
@@ -92,6 +93,7 @@ The exported page:
 - uses a clean, GitHub-like style with a readable column width, and switches between light and dark colors to match the reader's system setting.
 - includes tables, task lists, strikethrough and footnotes.
 - keeps images as links to their original paths. They aren't copied into the page, so keep the HTML file where those paths still work.
+- never runs scripts. HTML written in the Markdown keeps plain formatting tags such as `<b>`, `<br>`, `<details>`, images and tables, without event handlers or styles; anything else, such as `<script>`, `<iframe>` or `<style>`, appears as text. Links and images keep only web, mail and relative addresses, so a `javascript:` link becomes inert. Copy as HTML and printing work the same way.
 
 Code blocks are exported as plain monospace text, without syntax highlighting. Alerts keep their label (Note, Tip, Important, Warning or Caution) and their color, in light and dark mode.
 

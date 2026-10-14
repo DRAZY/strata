@@ -10,7 +10,7 @@ keywords = ["editor", "text-editor", "code-editor", "egui"]
 categories = ["text-editors"]
 
 [dependencies]
-eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11"] }
+eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11", "links"] }
 egui = "0.36.2"
 ignore = "0.4.33"
 regex = "1.13.1"
@@ -29,10 +29,23 @@ spellbook = "0.4.2"
 # Compresses printed PDFs (already built for syntect and png).
 flate2 = "1.1.10"
 
+# Dev aids read from STRATA_* environment variables (see src/dev.rs).
+# `devtools` (default): screenshots and first-frame panels; build release
+# packages with --no-default-features to leave them out. `dev-hooks`: the
+# aids that run or change things, which otherwise work only in debug builds.
+[features]
+default = ["devtools"]
+devtools = []
+dev-hooks = []
+
 # build.rs precompiles bat's extra syntaxes (via two-face) plus assets/syntaxes.
 [build-dependencies]
 syntect = { version = "5.3.0", default-features = false, features = ["yaml-load", "dump-create", "dump-load", "parsing", "regex-fancy"] }
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
+
+# Checking who's on the other end of the single-instance socket (getpeereid / SO_PEERCRED).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21.2", default-features = false }

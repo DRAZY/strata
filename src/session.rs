@@ -105,8 +105,10 @@ pub struct Settings {
     /// The terminal panel was open (a shell starts on launch only then).
     pub terminal_visible: bool,
     pub terminal_height: f32,
-    /// Let programs in the terminal read the clipboard (OSC 52). Writing is always allowed.
+    /// Let programs in the terminal read the clipboard (OSC 52).
     pub terminal_allow_clipboard_read: bool,
+    /// Let programs in the terminal set the clipboard (OSC 52); each time, the status bar says so.
+    pub terminal_allow_clipboard_write: bool,
     /// Opening the find bar with a multi-line selection turns on In Selection.
     pub auto_find_in_selection: bool,
     /// Underline misspelled words in prose: comments, strings, Markdown, plain text.
@@ -172,6 +174,7 @@ impl Default for Settings {
             terminal_visible: false,
             terminal_height: 240.0,
             terminal_allow_clipboard_read: false,
+            terminal_allow_clipboard_write: true,
             auto_find_in_selection: false,
             spell_check: false,
             dictionary: crate::spell::DEFAULT_DICTIONARY.into(),
@@ -265,7 +268,7 @@ impl Settings {
     /// Writes the settings, keeping keys Strata doesn't know. Refuses to replace a
     /// file that doesn't parse, so a typo never costs the user their settings.
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dir)?;
+        crate::private::create_dir_all(dir)?;
         let path = Self::path(dir);
         let mut map = match std::fs::read_to_string(&path) {
             Ok(text) if !text.trim().is_empty() => match serde_json::from_str::<serde_json::Value>(&strip_jsonc(&text)) {
@@ -278,7 +281,9 @@ impl Settings {
             map.extend(ours);
         }
         let text = serde_json::to_string_pretty(&map)? + "\n";
-        crate::buffer::Buffer::from_str(&text).write_to(&path, crate::encoding::Encoding::UTF8)
+        crate::buffer::Buffer::from_str(&text).write_to(&path, crate::encoding::Encoding::UTF8)?;
+        crate::private::restrict(&path, false);
+        Ok(())
     }
 }
 
@@ -435,7 +440,7 @@ impl Session {
 
     fn save_with(&self, dir: &Path, backups: &[(String, ropey::Rope)], prune: bool) -> std::io::Result<()> {
         let bdir = Self::backups(dir);
-        std::fs::create_dir_all(&bdir)?;
+        crate::private::create_dir_all(&bdir)?;
         for (name, text) in backups {
             let path = bdir.join(name);
             if !path.exists() {
@@ -465,7 +470,7 @@ impl Session {
 fn write_backup(path: &Path, text: &ropey::Rope) -> std::io::Result<()> {
     use std::io::Write;
     let tmp = path.with_extension("partial");
-    let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+    let mut f = std::io::BufWriter::new(crate::private::create(&tmp)?);
     for chunk in text.chunks() {
         f.write_all(chunk.as_bytes())?;
     }
@@ -475,7 +480,7 @@ fn write_backup(path: &Path, text: &ropey::Rope) -> std::io::Result<()> {
 
 fn write_synced(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
-    let mut f = std::fs::File::create(path)?;
+    let mut f = crate::private::create(path)?;
     f.write_all(text.as_bytes())?;
     f.sync_all()
 }
@@ -486,8 +491,8 @@ pub struct SessionLock(#[allow(dead_code)] std::fs::File);
 impl SessionLock {
     /// `None` if another Strata already holds it.
     pub fn acquire(dir: &Path) -> Option<Self> {
-        std::fs::create_dir_all(dir).ok()?;
-        let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("session.lock")).ok()?;
+        crate::private::create_dir_all(dir).ok()?;
+        let f = crate::private::options().create(true).truncate(false).write(true).open(dir.join("session.lock")).ok()?;
         f.try_lock().ok()?;
         Some(Self(f))
     }

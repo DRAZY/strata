@@ -199,7 +199,7 @@ impl StrataApp {
     /// Dev aid (pair with STRATA_SCREENSHOT and STRATA_DEV_FIND):
     /// STRATA_DEV_SELECT="4..20,30..41" selects those char ranges first.
     pub(super) fn dev_select(&mut self) {
-        let Ok(spec) = std::env::var("STRATA_DEV_SELECT") else { return };
+        let Some(spec) = crate::dev::var("STRATA_DEV_SELECT") else { return };
         let ranges: Vec<Range<usize>> = spec
             .split(',')
             .filter_map(|r| r.split_once(".."))

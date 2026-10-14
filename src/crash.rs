@@ -12,15 +12,25 @@
 //! ends that thread: it's logged with its backtrace, and Strata keeps going.
 //!
 //! Nothing is sent anywhere. Reports are plain text the user can read and
-//! choose to share.
+//! choose to share, so they're made safe to share: the home folder is
+//! written `~` (`redact_home`), and a panic message, which can quote the
+//! text being edited (`byte index 7 is out of bounds of `...``), has quoted
+//! text removed and is cut to `MAX_MESSAGE` characters (`tidy_message`).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, Once, OnceLock};
 use std::time::SystemTime;
 
-/// Where problems are reported. TODO(owner): point at the real repository.
+/// Where problems are reported: the one place this URL is written in code
+/// (Help ▸ Report a Problem…, the crash notice). It also appears, to keep in
+/// step by hand, in Cargo.toml (`repository`), README.md and
+/// docs/manual/troubleshooting.md; a test checks they agree.
+/// TODO(owner): point at the real repository.
 pub const ISSUES_URL: &str = "https://github.com/strata-editor/strata/issues";
+
+/// Longest panic message kept in a report or the log.
+pub const MAX_MESSAGE: usize = 300;
 
 /// The commit Strata was built from, when built from a git checkout.
 pub const COMMIT: Option<&str> = option_env!("STRATA_GIT_HASH");
@@ -75,10 +85,50 @@ impl Panic {
     fn of(info: &std::panic::PanicHookInfo) -> Self {
         Self {
             thread: std::thread::current().name().unwrap_or("unnamed").to_owned(),
-            message: payload_text(info.payload()),
+            message: tidy_message(&payload_text(info.payload())),
             location: info.location().map_or_else(|| "an unknown location".into(), |l| format!("{}:{}:{}", l.file(), l.line(), l.column())),
             backtrace: std::backtrace::Backtrace::force_capture().to_string(),
         }
+    }
+}
+
+/// A panic message fit for a report: text in backquotes (where Rust's string
+/// and slice panics quote the string, i.e. the user's text) is replaced by its
+/// length, and the rest is cut to `MAX_MESSAGE` characters.
+pub fn tidy_message(msg: &str) -> String {
+    let mut out = String::new();
+    let mut parts = msg.split('`');
+    if let Some(first) = parts.next() {
+        out.push_str(first);
+    }
+    let rest: Vec<&str> = parts.collect();
+    // Pairs of backquotes: (quoted, after). An unpaired last one keeps going to the end.
+    for (i, chunk) in rest.iter().enumerate() {
+        if i % 2 == 0 {
+            let closed = i + 1 < rest.len();
+            out.push_str(&format!("`<{} characters not included>", chunk.chars().count()));
+            if closed {
+                out.push('`');
+            }
+        } else {
+            out.push_str(chunk);
+        }
+    }
+    let n = out.chars().count();
+    if n > MAX_MESSAGE {
+        let mut cut: String = out.chars().take(MAX_MESSAGE).collect();
+        cut.push_str(&format!("… ({} more characters not included)", n - MAX_MESSAGE));
+        return cut;
+    }
+    out
+}
+
+/// `text` with the home folder written `~`, for reports people share.
+pub fn redact_home(text: &str) -> String {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    match home.map(|h| h.to_string_lossy().into_owned()).filter(|h| h.len() > 1) {
+        Some(h) => text.replace(h.trim_end_matches(['/', '\\']), "~"),
+        None => text.to_owned(),
     }
 }
 
@@ -108,7 +158,7 @@ pub fn report_text(p: &Panic, log: Option<&[String]>, at: SystemTime) -> String 
         None => s.push_str("(the log was busy)\n"),
     }
     s.push('\n');
-    s
+    redact_home(&s)
 }
 
 /// What happened to unsaved work after a crash.
@@ -143,10 +193,10 @@ impl Rescue {
 pub fn write_recovered(config: &Path, texts: &[(String, String)]) -> std::io::Result<PathBuf> {
     let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let dir = config.join(format!("backups.recovered-{stamp}"));
-    std::fs::create_dir_all(&dir)?;
+    crate::private::create_dir_all(&dir)?;
     for (i, (name, text)) in texts.iter().enumerate() {
         let safe: String = name.chars().map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') { c } else { '_' }).take(60).collect();
-        std::fs::write(dir.join(format!("{:02} {}.txt", i + 1, safe.trim())), text)?;
+        crate::private::write(&dir.join(format!("{:02} {}.txt", i + 1, safe.trim())), text)?;
     }
     Ok(dir)
 }
@@ -215,11 +265,11 @@ fn on_panic(info: &std::panic::PanicHookInfo) {
 fn write_report(dir: &Path, p: &Panic) -> Option<PathBuf> {
     let now = SystemTime::now();
     let text = report_text(p, crate::logging::try_recent_lines().as_deref(), now);
-    std::fs::create_dir_all(dir).ok()?;
+    crate::private::create_dir_all(dir).ok()?;
     // Two crashes in one second (two processes) get their own files.
     let stamp = crate::logging::file_stamp(now);
     let path = (0..100).map(|n| dir.join(if n == 0 { format!("{REPORT_PREFIX}{stamp}.txt") } else { format!("{REPORT_PREFIX}{stamp}-{n}.txt") })).find(|p| !p.exists())?;
-    std::fs::write(&path, text).ok()?;
+    crate::private::write(&path, text).ok()?;
     Some(path)
 }
 
@@ -277,7 +327,7 @@ pub fn check_previous(config: &Path) -> Option<PreviousCrash> {
     let marker = dir.join(LAST_LAUNCH);
     let last = std::fs::read_to_string(&marker).ok().and_then(|s| s.trim().parse::<u128>().ok());
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    if std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&marker, now.to_string())).is_err() {
+    if crate::private::create_dir_all(&dir).and_then(|()| crate::private::write(&marker, now.to_string())).is_err() {
         log::warn!("couldn't write {}", marker.display());
     }
     let last = SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(u64::try_from(last?).ok()?);
@@ -307,7 +357,7 @@ pub fn latest_report(config: &Path) -> Option<PathBuf> {
 
 /// Dev aid: `STRATA_DEV_PANIC=40` panics on the UI thread at frame 40;
 /// `thread:40` panics on a background thread instead (Strata should keep
-/// going). Inert unless set.
+/// going). Inert unless set, and in release builds (see `crate::dev`).
 pub struct DevPanic {
     at: Option<(bool, u64)>,
     frame: u64,
@@ -315,7 +365,7 @@ pub struct DevPanic {
 
 impl DevPanic {
     pub fn from_env() -> Self {
-        let spec = std::env::var("STRATA_DEV_PANIC").unwrap_or_default();
+        let spec = crate::dev::risky_var("STRATA_DEV_PANIC").unwrap_or_default();
         let (thread, n) = match spec.strip_prefix("thread:") {
             Some(n) => (true, n),
             None => (false, spec.as_str()),
@@ -348,6 +398,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn panic_messages_leave_out_quoted_text_and_stay_short() {
+        // Older Rust quoted the whole string in slicing panics; code may too.
+        let msg = tidy_message("byte index 1 is not a char boundary; it is inside 'é' (bytes 0..2) of `é my secret password`");
+        assert!(!msg.contains("secret"), "{msg}");
+        assert_eq!(tidy_message("byte index 3 is out of bounds of `abcdef`"), "byte index 3 is out of bounds of `<6 characters not included>`");
+        assert_eq!(tidy_message("a `b` c `d"), "a `<1 characters not included>` c `<1 characters not included>");
+        assert_eq!(tidy_message("index out of bounds: the len is 0 but the index is 3"), "index out of bounds: the len is 0 but the index is 3");
+        let long = tidy_message(&"x".repeat(1000));
+        assert!(long.starts_with(&"x".repeat(MAX_MESSAGE)) && long.ends_with("(700 more characters not included)"), "{long}");
+    }
+
+    #[test]
+    fn reports_write_the_home_folder_as_tilde() {
+        let Some(home) = std::env::var_os("HOME").map(|h| h.to_string_lossy().into_owned()).filter(|h| h.len() > 1) else { return };
+        let p = Panic { thread: "main".into(), message: "boom".into(), location: format!("{home}/src/x.rs:1:1"), backtrace: format!("at {home}/.cargo/registry/y.rs") };
+        let text = report_text(&p, Some(&[format!("opened {home}/Documents/a.txt")]), SystemTime::now());
+        assert!(!text.contains(&home), "{text}");
+        assert!(text.contains("~/Documents/a.txt") && text.contains("~/src/x.rs"));
+    }
+
+    #[test]
+    fn the_issues_url_is_the_same_everywhere() {
+        let repo = ISSUES_URL.strip_suffix("/issues").expect("ends in /issues");
+        assert!(include_str!("../Cargo.toml").contains(&format!("repository = \"{repo}\"")), "Cargo.toml repository");
+        assert!(include_str!("../docs/manual/troubleshooting.md").contains(&format!("<{ISSUES_URL}/new>")), "troubleshooting.md");
     }
 
     #[test]

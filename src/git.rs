@@ -53,12 +53,20 @@ fn work_dir(path: &Path) -> Option<&Path> {
     if path.is_dir() { Some(path) } else { path.parent().filter(|p| p.is_dir()) }
 }
 
-/// Run git in `dir`; stdout on success. Never prompts, never hangs past the timeout.
+/// Where `core.hooksPath` points so no hook can run.
+const NO_HOOKS: &str = if cfg!(windows) { "core.hooksPath=NUL" } else { "core.hooksPath=/dev/null" };
+
+/// Run git in `dir`; stdout on success. Never prompts, never hangs past the
+/// timeout, reads at most `MAX_HEAD_BYTES + 1` bytes of output. The folder may
+/// be someone else's repository, so nothing in its config gets to run a
+/// program: no fsmonitor, hooks, pager or textconv (`head_text`), and the
+/// system-wide config is skipped too.
 fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     let mut cmd = Command::new("git");
-    cmd.args(["-c", "core.fsmonitor=false", "-c", "core.quotepath=false", "--no-pager"])
+    cmd.args(["-c", "core.fsmonitor=false", "-c", NO_HOOKS, "-c", "core.quotepath=false", "--no-pager"])
         .args(args)
         .current_dir(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_ASKPASS", "")
@@ -74,11 +82,12 @@ fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let mut child = cmd.spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
+    let stdout = child.stdout.take()?;
     // Read on a helper thread so a full pipe can't deadlock the timeout loop.
+    // Past the limit the pipe closes, and git stops (or the timeout ends it).
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
-        stdout.read_to_end(&mut buf).map(|_| buf)
+        stdout.take(MAX_HEAD_BYTES as u64 + 1).read_to_end(&mut buf).map(|_| buf)
     });
     let deadline = Instant::now() + GIT_TIMEOUT;
     let status = loop {
@@ -119,7 +128,7 @@ pub fn head_text(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     // `HEAD:./name` is resolved relative to the cwd, i.e. the repo-relative
     // path with forward slashes, without fighting symlinked/UNC root spellings.
-    let out = git(dir, &["show", &format!("HEAD:./{name}")])?;
+    let out = git(dir, &["show", "--no-textconv", &format!("HEAD:./{name}")])?;
     if out.len() > MAX_HEAD_BYTES {
         return None;
     }
@@ -673,6 +682,28 @@ mod tests {
         let new = dir.join("sub/new.txt");
         std::fs::write(&new, "x").unwrap();
         assert_eq!(head_text(&new), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cloned repository's own config can name programs (textconv, fsmonitor,
+    /// hooks); reading HEAD must not run any of them.
+    #[cfg(unix)]
+    #[test]
+    fn repo_config_runs_no_programs() {
+        let Some(dir) = temp_repo("hostile") else { return };
+        let marker = dir.join("ran");
+        let cmd = format!("sh -c 'touch {}; echo converted'", marker.display());
+        let set = |k: &str, v: &str| assert!(git(&dir, &["config", k, v]).is_some(), "{k}");
+        set("diff.evil.textconv", &cmd);
+        set("core.fsmonitor", &cmd);
+        let hooks = dir.join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        set("core.hooksPath", hooks.to_str().unwrap());
+        std::fs::write(dir.join(".gitattributes"), "*.txt diff=evil\n").unwrap();
+        let file = dir.join("sub/f.txt");
+        assert_eq!(head_text(&file).as_deref(), Some("one\ntwo\nthree\n"), "the committed bytes, not a textconv");
+        let _ = repo_info(&file);
+        assert!(!marker.exists(), "a program from the repository's config ran");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

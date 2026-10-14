@@ -23,6 +23,12 @@ impl StrataApp {
         let action = out.inner;
         match action {
             Some(Action::Open(p)) => self.open_path(p, false),
+            Some(Action::Reveal(p)) => {
+                self.status = match crate::ctxmenu::reveal_in_file_manager(&p) {
+                    Ok(()) => format!("Not a text file, so Strata showed it instead of opening it: {}", p.display()),
+                    Err(e) => format!("Could not open the file manager: {e}"),
+                }
+            }
             Some(Action::Status(s)) => self.status = s,
             None => {}
         }

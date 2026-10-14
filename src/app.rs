@@ -191,14 +191,14 @@ impl StrataApp {
 
         // Dev aids (pair with STRATA_SCREENSHOT): run find-in-files on the open folders
         // (or open files), or open find/replace with a query.
-        if let Ok(q) = std::env::var("STRATA_DEV_FIND_IN_FILES") {
+        if let Some(q) = crate::dev::var("STRATA_DEV_FIND_IN_FILES") {
             app.dev_find_in_files(q);
         }
         app.dev_select();
-        if let Ok(q) = std::env::var("STRATA_DEV_FIND") {
+        if let Some(q) = crate::dev::var("STRATA_DEV_FIND") {
             app.open_find(true);
             app.find.query.text = q;
-            app.find.query.regex = std::env::var_os("STRATA_DEV_FIND_REGEX").is_some();
+            app.find.query.regex = crate::dev::var("STRATA_DEV_FIND_REGEX").is_some();
         }
         app
     }
@@ -229,7 +229,7 @@ impl StrataApp {
             next_stamp: 1,
             palette: Palette::new(menu_model::palette_editor_commands()),
             palette_restore: None,
-            dev_palette: std::env::var("STRATA_DEV_PALETTE").ok(),
+            dev_palette: crate::dev::var("STRATA_DEV_PALETTE"),
             session_lock: None,
             recent_files: Vec::new(),
             recent_folders: Vec::new(),
@@ -2359,6 +2359,7 @@ impl eframe::App for StrataApp {
         }
         if let Some(spec) = self.dev_palette.take() {
             let (mode, q) = spec.split_once(':').unwrap_or((&spec, ""));
+            let mode = if crate::dev::palette_mode_allowed(mode) { mode } else { "" };
             match mode {
                 // "split:2" puts the current tab in a second pane.
                 "split" => self.move_to_pane(q.parse::<usize>().unwrap_or(2).saturating_sub(1)),

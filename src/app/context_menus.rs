@@ -78,7 +78,7 @@ pub(super) struct ContextMenus {
 
 impl ContextMenus {
     pub fn new() -> Self {
-        let dev = std::env::var("STRATA_DEV_CONTEXT").ok().map(|what| DevClick { what, frames: 0, stage: 0, at: egui::Pos2::ZERO });
+        let dev = crate::dev::var("STRATA_DEV_CONTEXT").map(|what| DevClick { what, frames: 0, stage: 0, at: egui::Pos2::ZERO });
         Self { dev, ..Default::default() }
     }
 

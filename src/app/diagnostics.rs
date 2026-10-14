@@ -88,7 +88,11 @@ impl StrataApp {
                 }
                 Err(e) => self.status = format!("Could not read {}: {e}", report.display()),
             },
-            2 => ctx.open_url(egui::OpenUrl::new_tab(format!("{}/new", crash::ISSUES_URL))),
+            2 => {
+                if let Err(msg) = crate::links::open_web(ctx, &format!("{}/new", crash::ISSUES_URL)) {
+                    self.status = msg;
+                }
+            }
             _ => self.crash_notice = None,
         }
     }
@@ -96,15 +100,6 @@ impl StrataApp {
     #[cfg(test)]
     pub(super) fn set_crash_notice(&mut self, crash: PreviousCrash) {
         self.crash_notice = Some(crash);
-    }
-}
-
-/// `path` with the home folder written as `~`, so a report doesn't carry the user name.
-fn redact_home(text: &str) -> String {
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-    match home.map(|h| h.to_string_lossy().into_owned()).filter(|h| h.len() > 1) {
-        Some(h) => text.replace(h.trim_end_matches(['/', '\\']), "~"),
-        None => text.to_owned(),
     }
 }
 
@@ -129,7 +124,7 @@ pub fn problem_report(config: Option<&Path>, log: &[String]) -> String {
         s.push('\n');
     }
     s.push_str("```\n");
-    redact_home(&s)
+    crash::redact_home(&s)
 }
 
 #[cfg(test)]

@@ -597,7 +597,11 @@ fn contents(h: &mut HelpState, ui: &mut egui::Ui, hl: &crate::highlight::Highlig
                     }
                 }
                 Link::Page(p, anchor) => h.go(&p, anchor),
-                Link::External(u) => ui.ctx().open_url(egui::OpenUrl::new_tab(u)),
+                Link::External(u) => {
+                    if let Err(msg) = crate::links::open_web(ui.ctx(), &u) {
+                        return Some(msg);
+                    }
+                }
                 Link::Broken(u) => return Some(format!("Help: no page for {u}")),
             }
         }

@@ -28,13 +28,20 @@ Strata creates most of these only when it needs them.
 | `session.lock` | Marks which running Strata owns the session |
 | `Logs/` | The log: `strata.log`, plus `strata.1.log` and `strata.2.log` before it. See [Logs](#logs) |
 | `Crashes/` | A report for each time Strata crashed. See [If Strata crashes](#if-strata-crashes) |
+| `Print/` | PDFs made for File ▸ Print…, deleted after a day. See [Printing](printing.md) |
 | `strata.sock` (macOS, Linux) or `strata.port` (Windows) | How the `strata` command finds the running app. See [Command Line](cli.md) |
 | `Snippets/` | Your snippets. See [Snippets](snippets.md) |
 | `Syntaxes/` | Your `.sublime-syntax` grammars. See [Languages](languages.md) |
 | `Themes/` | Your `.tmTheme` and `.sublime-color-scheme` color schemes. See [Appearance](appearance.md) |
 | `build_systems/` | Your build systems, as `.json` files. See [Build Systems](build.md) |
 
-If the folder's path is very long, the `strata.sock` file goes in your system's temporary folder instead.
+If the folder's path is very long, the `strata.sock` file goes in a folder only you can open, `strata-<your user id>`, inside `$XDG_RUNTIME_DIR` (Linux) or your system's temporary folder. Strata answers a `strata` command only when it runs as the same user.
+
+### Who can read the folder
+
+The folder holds the text of your unsaved tabs, the paths of files you've opened, and crash reports, so on macOS and Linux only your account can open it: Strata creates it, and the folders it keeps inside it, readable by you alone, and makes the files it writes there (session, backups, logs, crash reports, settings) readable by you alone. If an older copy of Strata left them readable by others, Strata fixes that when it starts. Your own snippets, syntaxes and color schemes keep the permissions you gave them. When you choose the folder with `STRATA_CONFIG_DIR`, Strata leaves that folder's own permissions alone (it may be shared) and only restricts what it keeps inside it.
+
+On Windows, `%APPDATA%` is already private to your account, so Strata doesn't change any permissions there.
 
 ## Reset settings
 
@@ -122,7 +129,7 @@ If Strata quits unexpectedly, it first saves your unsaved tabs and writes a cras
 - **With hot exit off**, unsaved text goes in a new `backups.recovered-<time>/` folder, one `.txt` file per tab.
 - If even that fails, the session Strata saves every few seconds still has your work up to a few seconds before the crash.
 
-The crash report is a text file in the `Crashes` folder, named `strata-crash-<date>-<time>.txt` (UTC). It contains Strata's version, your system, where in Strata's code the crash happened, and the last 200 lines of the log. Like the log, it doesn't contain the text of your files.
+The crash report is a text file in the `Crashes` folder, named `strata-crash-<date>-<time>.txt` (UTC). It contains Strata's version, your system, where in Strata's code the crash happened, and the last 200 lines of the log. Like the log, it doesn't contain the text of your files: your home folder is written `~`, and the error message is cut short, with any text it quotes left out.
 
 The next time Strata starts, a notice in the corner says that it quit unexpectedly and what happened to your unsaved work:
 

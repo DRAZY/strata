@@ -449,7 +449,9 @@ setting at its default, the ones above included.
 Strata makes no network connections of its own: no telemetry, no update
 checks, no downloads, and Markdown images aren't fetched. A link you click (in
 the Markdown preview, the manual, or Help ▸ Report a Problem…) opens in your
-browser. The `strata` command talks to the running app over a local socket
+browser; only `http`, `https` and `mailto` links leave Strata (other local
+files are shown in the file manager, other schemes are refused; see
+`src/links.rs`). The `strata` command talks to the running app over a local socket
 (a localhost-only port with a random token on Windows). The terminal and build
 systems run the programs you choose, and Git integration only reads your local
 repository.
@@ -500,6 +502,14 @@ instead. `STRATA_CONFIG_DIR=dir` uses a separate settings/session folder (and it
 single-instance socket, so a test copy never talks to your everyday Strata;
 for the .app use `open --env STRATA_CONFIG_DIR=dir -a dist/Strata.app file`,
 with your installed Strata quit, since both copies share a bundle id).
+
+Which dev aids a build has (see `src/dev.rs`): the ones that only look
+(screenshots, first-frame panels, `STRATA_DEV_WINDOWS`, `STRATA_DEV_CONTEXT`)
+come with the `devtools` feature, on by default; release packages should be
+built with `--no-default-features` to leave them out. The ones that run or
+change things (`STRATA_DEV_PANIC`, `STRATA_DEV_TERMINAL`,
+`STRATA_DEV_REPLACE_STEP=run`, `STRATA_DEV_PALETTE="run:..."`) work only in
+debug builds, or in a release build made with `--features dev-hooks`.
 
 ## License
 
