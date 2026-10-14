@@ -41,6 +41,7 @@ mod palette;
 mod panes;
 mod pdf;
 mod print;
+mod private;
 mod replace;
 mod search;
 mod session;
@@ -174,6 +175,13 @@ fn launch_bundle(bundle: &Path, config: Option<&Path>, targets: &[Target], wait:
 }
 
 fn run(targets: Vec<Target>, new_window: bool, config: Option<PathBuf>) -> ExitCode {
+    // Owner-only config folder (Unix): the session holds unsaved text. A
+    // folder picked with STRATA_CONFIG_DIR may be shared, so only what Strata
+    // keeps inside it is restricted.
+    if let Some(dir) = &config {
+        let _ = private::create_dir_all(dir);
+        private::harden(dir, std::env::var_os("STRATA_CONFIG_DIR").is_none());
+    }
     logging::init(config.as_deref());
     crash::install(config.as_deref());
     log::info!("{} starting on {}, settings in {}", crash::version_line(), crash::system_line(), config.as_deref().map_or("(none)".into(), |d| d.display().to_string()));

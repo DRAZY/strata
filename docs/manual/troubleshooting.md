@@ -36,6 +36,12 @@ Strata creates most of these only when it needs them.
 
 If the folder's path is very long, the `strata.sock` file goes in your system's temporary folder instead.
 
+### Who can read the folder
+
+The folder holds the text of your unsaved tabs, the paths of files you've opened, and crash reports, so on macOS and Linux only your account can open it: Strata creates it, and the folders it keeps inside it, readable by you alone, and makes the files it writes there (session, backups, logs, crash reports, settings) readable by you alone. If an older copy of Strata left them readable by others, Strata fixes that when it starts. Your own snippets, syntaxes and color schemes keep the permissions you gave them. When you choose the folder with `STRATA_CONFIG_DIR`, Strata leaves that folder's own permissions alone (it may be shared) and only restricts what it keeps inside it.
+
+On Windows, `%APPDATA%` is already private to your account, so Strata doesn't change any permissions there.
+
 ## Reset settings
 
 Your settings live in `settings.json`. To go back to the defaults, do one of these:

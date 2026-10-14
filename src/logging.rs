@@ -107,7 +107,7 @@ impl Sink {
     fn open(&mut self) -> Option<&mut File> {
         if self.file.is_none() && !self.broken {
             let dir = self.dir.as_ref()?;
-            let opened = std::fs::create_dir_all(dir).and_then(|()| std::fs::OpenOptions::new().create(true).append(true).open(Self::path(dir, 0)));
+            let opened = crate::private::create_dir_all(dir).and_then(|()| crate::private::options().create(true).append(true).open(Self::path(dir, 0)));
             match opened {
                 Ok(f) => {
                     self.size = f.metadata().map_or(0, |m| m.len());

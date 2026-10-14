@@ -143,10 +143,10 @@ impl Rescue {
 pub fn write_recovered(config: &Path, texts: &[(String, String)]) -> std::io::Result<PathBuf> {
     let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let dir = config.join(format!("backups.recovered-{stamp}"));
-    std::fs::create_dir_all(&dir)?;
+    crate::private::create_dir_all(&dir)?;
     for (i, (name, text)) in texts.iter().enumerate() {
         let safe: String = name.chars().map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') { c } else { '_' }).take(60).collect();
-        std::fs::write(dir.join(format!("{:02} {}.txt", i + 1, safe.trim())), text)?;
+        crate::private::write(&dir.join(format!("{:02} {}.txt", i + 1, safe.trim())), text)?;
     }
     Ok(dir)
 }
@@ -215,11 +215,11 @@ fn on_panic(info: &std::panic::PanicHookInfo) {
 fn write_report(dir: &Path, p: &Panic) -> Option<PathBuf> {
     let now = SystemTime::now();
     let text = report_text(p, crate::logging::try_recent_lines().as_deref(), now);
-    std::fs::create_dir_all(dir).ok()?;
+    crate::private::create_dir_all(dir).ok()?;
     // Two crashes in one second (two processes) get their own files.
     let stamp = crate::logging::file_stamp(now);
     let path = (0..100).map(|n| dir.join(if n == 0 { format!("{REPORT_PREFIX}{stamp}.txt") } else { format!("{REPORT_PREFIX}{stamp}-{n}.txt") })).find(|p| !p.exists())?;
-    std::fs::write(&path, text).ok()?;
+    crate::private::write(&path, text).ok()?;
     Some(path)
 }
 
@@ -277,7 +277,7 @@ pub fn check_previous(config: &Path) -> Option<PreviousCrash> {
     let marker = dir.join(LAST_LAUNCH);
     let last = std::fs::read_to_string(&marker).ok().and_then(|s| s.trim().parse::<u128>().ok());
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    if std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&marker, now.to_string())).is_err() {
+    if crate::private::create_dir_all(&dir).and_then(|()| crate::private::write(&marker, now.to_string())).is_err() {
         log::warn!("couldn't write {}", marker.display());
     }
     let last = SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(u64::try_from(last?).ok()?);
