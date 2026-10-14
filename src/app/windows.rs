@@ -722,7 +722,7 @@ impl Windows {
     pub fn emergency_save(&mut self) -> crate::crash::Rescue {
         use crate::crash::Rescue;
         let tabs = self.unsaved().count();
-        if self.hot_exit() && crate::crash::rescue(|| if self.save_session() { Rescue::Session { tabs } } else { Rescue::Nothing }) != Rescue::Nothing {
+        if self.hot_exit() && crate::crash::rescue(|| if self.write_session(false) { Rescue::Session { tabs } } else { Rescue::Nothing }) != Rescue::Nothing {
             return Rescue::Session { tabs };
         }
         if tabs == 0 {
@@ -747,9 +747,15 @@ impl Windows {
 
     /// Write the session now (quitting): waits for an autosave in progress.
     fn save_session(&mut self) -> bool {
+        self.write_session(true)
+    }
+
+    /// `prune`: drop backups the new session doesn't use (not after a crash).
+    fn write_session(&mut self, prune: bool) -> bool {
         let Some((dir, session, backups)) = self.session_to_save() else { return false };
         super::autosave::wait();
-        match session.save(&dir, &backups) {
+        let written = if prune { session.save(&dir, &backups) } else { session.save_keeping_backups(&dir, &backups) };
+        match written {
             Ok(()) => {
                 self.session_key = self.fingerprint();
                 true
@@ -1078,6 +1084,25 @@ mod tests {
         w.slots[0].app.link.requests.quit = true;
         let commands = pass(&mut w, &ctx, 0, vec![], false);
         assert!(commands.contains(&ViewportCommand::Close));
+    }
+
+    #[test]
+    fn the_emergency_save_keeps_the_last_good_backups() {
+        let config = temp_dir("crash-keep");
+        let mut w = Windows::new(Some(config.clone()));
+        w.root().doc().editor.insert_text("good");
+        assert!(w.save_session());
+        let read_all = || -> Vec<String> {
+            let mut v: Vec<String> = std::fs::read_dir(Session::backups(&config)).unwrap().map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(read_all(), vec!["good"]);
+        // The state after a panic may be damaged: the backups from before it stay.
+        w.root().doc().editor.insert_text(" then the crash");
+        assert_eq!(w.emergency_save(), crate::crash::Rescue::Session { tabs: 1 });
+        assert_eq!(read_all(), vec!["good", "good then the crash"]);
+        std::fs::remove_dir_all(config).ok();
     }
 
     #[test]

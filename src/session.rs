@@ -423,6 +423,17 @@ impl Session {
     /// snapshots (taking one costs nothing on the UI thread), and one whose
     /// file exists already is skipped: names are never reused for other text.
     pub fn save(&self, dir: &Path, backups: &[(String, ropey::Rope)]) -> std::io::Result<()> {
+        self.save_with(dir, backups, true)
+    }
+
+    /// `save`, but keeping backups no tab refers to any more: after a crash
+    /// the state being saved may be damaged, so the last good backups stay
+    /// (the next ordinary save prunes them).
+    pub fn save_keeping_backups(&self, dir: &Path, backups: &[(String, ropey::Rope)]) -> std::io::Result<()> {
+        self.save_with(dir, backups, false)
+    }
+
+    fn save_with(&self, dir: &Path, backups: &[(String, ropey::Rope)], prune: bool) -> std::io::Result<()> {
         let bdir = Self::backups(dir);
         std::fs::create_dir_all(&bdir)?;
         for (name, text) in backups {
@@ -436,6 +447,9 @@ impl Session {
         std::fs::rename(&tmp, Self::path(dir))?;
         #[cfg(unix)]
         std::fs::File::open(dir)?.sync_all()?;
+        if !prune {
+            return Ok(());
+        }
         // Drop backups no tab refers to any more.
         let keep: Vec<&str> = self.tabs.iter().chain(self.windows.iter().flat_map(|w| &w.tabs)).filter_map(|t| t.backup.as_deref()).collect();
         for entry in std::fs::read_dir(&bdir)?.flatten() {
