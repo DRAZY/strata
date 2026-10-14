@@ -152,6 +152,8 @@ mod terminal_ui;
 mod preview;
 mod printing;
 mod replace_files;
+#[cfg(test)]
+mod save_safety;
 mod snippets_ui;
 mod spelling;
 mod textutil;
@@ -601,25 +603,36 @@ impl StrataApp {
             }
             self.docs[i].encoding = crate::encoding::Encoding::UTF8;
         }
+        let reasons = self.overwrite_reasons(i, path);
+        if reasons.is_empty() {
+            return true;
+        }
         let d = &self.docs[i];
-        let same_file = d.path.as_deref() == Some(path);
+        let read_only = reasons[0] == READ_ONLY_REASON;
+        let ok = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title(if read_only { "File is read-only" } else { "Overwrite file?" })
+            .set_description(format!("{}\n\n{}", d.name(), reasons.join("\n\n")))
+            .set_buttons(rfd::MessageButtons::OkCancelCustom("Save Anyway".into(), "Cancel".into()))
+            .show();
+        matches!(ok, rfd::MessageDialogResult::Ok | rfd::MessageDialogResult::Yes) || ok == rfd::MessageDialogResult::Custom("Save Anyway".into())
+    }
+
+    /// Why saving tab `i` to `path` needs a yes first (none: just save).
+    fn overwrite_reasons(&self, i: usize, path: &std::path::Path) -> Vec<&'static str> {
+        let d = &self.docs[i];
         let mut reasons = Vec::new();
-        if same_file && d.changed_on_disk() {
+        // Saving replaces the file (rename), which a read-only file doesn't stop.
+        if std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().readonly()) {
+            reasons.push(READ_ONLY_REASON);
+        }
+        if d.path.as_deref() == Some(path) && d.changed_on_disk() {
             reasons.push("It was changed by another program since you opened it; saving replaces those changes.");
         }
         if d.editor.buffer.lossy {
             reasons.push("Some bytes couldn't be decoded and show as \u{FFFD}; saving writes that character in their place.");
         }
-        if reasons.is_empty() {
-            return true;
-        }
-        let ok = rfd::MessageDialog::new()
-            .set_level(rfd::MessageLevel::Warning)
-            .set_title("Overwrite file?")
-            .set_description(format!("{}\n\n{}", d.name(), reasons.join("\n\n")))
-            .set_buttons(rfd::MessageButtons::OkCancelCustom("Save Anyway".into(), "Cancel".into()))
-            .show();
-        matches!(ok, rfd::MessageDialogResult::Ok | rfd::MessageDialogResult::Yes) || ok == rfd::MessageDialogResult::Custom("Save Anyway".into())
+        reasons
     }
 
     fn save_all(&mut self) {
@@ -2375,6 +2388,9 @@ fn select_on_line(d: &mut Document, line: usize, cols: std::ops::Range<usize>) {
 fn wrap_paragraph_width(s: &Settings) -> usize {
     s.rulers.first().copied().filter(|&r| r > 0).unwrap_or(if s.wrap_width > 0 { s.wrap_width } else { 80 })
 }
+
+/// The first thing Save asks about, for a read-only file (Save As still works).
+const READ_ONLY_REASON: &str = "The file is read-only. Save anyway? (It stays read-only.)";
 
 /// The status line after startup: problems with settings.json and with user
 /// themes and syntaxes.

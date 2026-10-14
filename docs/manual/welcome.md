@@ -57,12 +57,13 @@ When you click a file once in the side bar, it opens as a preview tab that the n
 | File ▸ Save All | {{key:save_all}} | Saves every modified file that already has a name. Untitled tabs are skipped. |
 | File ▸ Revert File | {{key:revert}} | Throws away unsaved changes and reloads the file from disk. Strata asks first. |
 
-Saves are atomic. Strata writes the new text to a temporary file next to the original, then swaps it into place. If something goes wrong partway, your old file is left intact. File permissions are kept, and saving a symbolic link writes to the file it points to.
+Saves are atomic. Strata writes the new text to a temporary file next to the original, then swaps it into place. If something goes wrong partway (a full disk, say), the save fails and your old file is left intact. File permissions are kept, saving a symbolic link writes to the file it points to, and a file with several hard links keeps them all. Only when Strata can't create files in the folder at all does it write the file in place.
 
 Tools ▸ On Save has three options that apply to every save: trim trailing whitespace, make sure the file ends with a newline, and save all files whenever the Strata window loses focus. See [Editing](editing.md#on-save-options).
 
 Strata may ask before saving in a few cases:
 
+- The file is read-only. Choose **Save Anyway** to replace it (it stays read-only), or **Cancel** and use Save As to save a copy elsewhere.
 - The file was changed by another program since you opened it. Choose **Save Anyway** to replace those changes, or **Cancel**.
 - Some bytes couldn't be decoded when the file was opened (they show as �).
 - The file's encoding can't hold some of the characters you typed. Strata offers to save it as UTF-8 instead. See [Encodings and Line Endings](encodings.md).
