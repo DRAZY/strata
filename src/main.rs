@@ -27,6 +27,7 @@ mod devshot;
 mod diff;
 mod highlight;
 mod indent;
+mod jsonc;
 mod ipc;
 mod keybindings;
 mod keys;

@@ -45,9 +45,9 @@ A value of the wrong type (for example `"font_size": "big"`) counts as an error 
 
 Menus and commands that change a setting (View ▸ Editor Extras, the Color Scheme menu, zooming, the font pickers and so on) save it to `settings.json` right away. When Strata writes the file:
 
-- Keys it doesn't know are kept, so you can keep notes or settings for other tools there.
-- Every setting is written out, and the order of keys that were already there is kept.
-- Comments are not kept. If you rely on comments in the file, make changes by editing it rather than through menus.
+- Only the setting that changed is touched: its value is replaced where it is, or, if the file doesn't mention it yet, it is added after the last key. Comments, blank lines, the order of keys and keys Strata doesn't know are all kept, so you can keep notes or settings for other tools there.
+- Settings left at their defaults are not written out.
+- If the file doesn't exist yet (Preferences ▸ Settings creates it), it starts with every setting and its current value.
 
 ## Settings that are not in settings.json
 
