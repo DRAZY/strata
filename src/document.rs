@@ -23,6 +23,9 @@ pub struct Document {
     pub restored_dirty: bool,
     /// Modification time when last read or written, to notice outside changes.
     pub disk_mtime: Option<SystemTime>,
+    /// Size in bytes then (None: unknown, e.g. restored from a session): a
+    /// rewrite within one mtime tick usually changes it.
+    pub disk_len: Option<u64>,
     /// The file changed on disk while this tab had unsaved edits.
     pub conflict: bool,
     /// The file was deleted or moved away outside Strata.
@@ -85,6 +88,14 @@ pub fn mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+/// Modification time and size of the file at `path`.
+fn stamp(path: &Path) -> (Option<SystemTime>, Option<u64>) {
+    match std::fs::metadata(path) {
+        Ok(m) => (m.modified().ok(), Some(m.len())),
+        Err(_) => (None, None),
+    }
+}
+
 impl Document {
     pub fn untitled() -> Self {
         Self::from_buffer(None, Buffer::from_str(""))
@@ -98,6 +109,7 @@ impl Document {
         highlighter.detect(path.as_deref(), &buffer.line_text(0));
         Self {
             disk_mtime: path.as_deref().and_then(mtime),
+            disk_len: path.as_deref().and_then(|p| stamp(p).1),
             path,
             editor: Editor::new(buffer),
             highlighter,
@@ -165,8 +177,8 @@ impl Document {
 
     fn reload_as(&mut self, enc: Encoding) -> io::Result<()> {
         let Some(path) = &self.path else { return Err(io::Error::other("the tab has no file")) };
+        let (now, len) = stamp(path);
         let bytes = std::fs::read(path)?;
-        let now = mtime(path);
         let (line, col) = self.editor.cursor_line_col();
         self.reload(Buffer::decode_as(&bytes, enc));
         let b = &self.editor.buffer;
@@ -174,7 +186,7 @@ impl Document {
         let at = (b.line_start(line) + col - 1).min(b.line_end(line));
         self.editor.select_ranges(&[at..at], 0);
         self.encoding = enc;
-        self.disk_mtime = now;
+        (self.disk_mtime, self.disk_len) = (now, len);
         self.restored_dirty = false;
         self.deleted = false;
         Ok(())
@@ -238,7 +250,7 @@ impl Document {
         self.restored_dirty = false;
         self.conflict = false;
         self.deleted = false;
-        self.disk_mtime = mtime(&path);
+        (self.disk_mtime, self.disk_len) = stamp(&path);
         if self.path.as_ref() != Some(&path) {
             self.highlighter.detect(Some(&path), &self.editor.buffer.line_text(0));
             // Still large: note the new name's syntax, keep showing it plain.
@@ -256,27 +268,27 @@ impl Document {
     /// overwritten: the tab is flagged instead. Returns true if reloaded.
     pub fn check_disk(&mut self) -> bool {
         let Some(path) = &self.path else { return false };
-        let now = mtime(path);
+        let (now, len) = stamp(path);
         if now.is_none() {
             // Gone from disk: keep the text as unsaved so hot exit backs it up.
             if self.disk_mtime.is_some() && !path.exists() {
                 self.deleted = true;
                 self.restored_dirty = true;
-                self.disk_mtime = None;
+                (self.disk_mtime, self.disk_len) = (None, None);
             }
             return false;
         }
-        if now == self.disk_mtime {
+        if !self.differs_from(now, len) {
             return false;
         }
         if self.is_dirty() {
             self.conflict = true;
-            self.disk_mtime = now;
+            (self.disk_mtime, self.disk_len) = (now, len);
             return false;
         }
         let Ok(bytes) = std::fs::read(path) else { return false };
         self.reload(Buffer::decode_as(&bytes, self.encoding));
-        self.disk_mtime = now;
+        (self.disk_mtime, self.disk_len) = (now, len);
         true
     }
 
@@ -298,7 +310,17 @@ impl Document {
 
     /// True if saving would overwrite changes made outside Strata.
     pub fn changed_on_disk(&self) -> bool {
-        self.conflict || self.path.as_deref().and_then(mtime).is_some_and(|now| Some(now) != self.disk_mtime)
+        self.conflict
+            || self.path.as_deref().is_some_and(|p| {
+                let (now, len) = stamp(p);
+                now.is_some() && self.differs_from(now, len)
+            })
+    }
+
+    /// A file stamped `now` / `len` isn't the one the tab last matched: the
+    /// time differs, or the size does (a rewrite within one mtime tick).
+    fn differs_from(&self, now: Option<SystemTime>, len: Option<u64>) -> bool {
+        now != self.disk_mtime || (self.disk_len.is_some() && len != self.disk_len)
     }
 
     /// Swap in new text, keeping the cursor on (about) the same spot. The
@@ -419,6 +441,31 @@ mod tests {
 
     fn all(doc: &Document) -> String {
         doc.editor.buffer.slice(0..doc.editor.buffer.len_chars())
+    }
+
+    #[test]
+    fn a_change_within_the_same_mtime_tick_is_noticed() {
+        let dir = scratch("same-tick");
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let mut doc = Document::open(path.clone()).unwrap();
+        let tick = mtime(&path).unwrap();
+        // Another program rewrites the file and the clock (or a coarse
+        // filesystem) gives it the same modification time.
+        std::fs::write(&path, "one two\n").unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(tick).unwrap();
+        assert_eq!(mtime(&path), Some(tick));
+        assert!(doc.changed_on_disk(), "the size differs");
+        assert!(doc.check_disk());
+        assert_eq!(all(&doc), "one two\n");
+        assert!(!doc.changed_on_disk());
+
+        doc.editor.insert_text("mine ");
+        std::fs::write(&path, "one two three\n").unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(tick).unwrap();
+        assert!(!doc.check_disk(), "unsaved edits are kept");
+        assert!(doc.conflict);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

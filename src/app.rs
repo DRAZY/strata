@@ -786,6 +786,8 @@ impl StrataApp {
                         d.restored_dirty = true;
                         d.encoding = tab.encoding.as_deref().and_then(crate::encoding::Encoding::from_id).unwrap_or_default();
                         d.disk_mtime = tab.disk_mtime;
+                        // (Its size then wasn't kept.)
+                        d.disk_len = None;
                         // Edited while Strata was closed (a git pull, another editor)?
                         d.conflict = tab.conflict || path.as_deref().and_then(crate::document::mtime).is_some_and(|now| Some(now) != tab.disk_mtime);
                         d.deleted = path.as_ref().is_some_and(|p| !p.exists());

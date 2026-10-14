@@ -31,6 +31,7 @@ pub(super) struct Meta {
     encoding: Encoding,
     restored_dirty: bool,
     disk_mtime: Option<SystemTime>,
+    disk_len: Option<u64>,
     conflict: bool,
     deleted: bool,
     line_ending: LineEnding,
@@ -44,6 +45,7 @@ impl Meta {
             encoding: d.encoding,
             restored_dirty: d.restored_dirty,
             disk_mtime: d.disk_mtime,
+            disk_len: d.disk_len,
             conflict: d.conflict,
             deleted: d.deleted,
             line_ending: d.editor.buffer.line_ending(),
@@ -61,6 +63,7 @@ impl Meta {
         d.encoding = self.encoding;
         d.restored_dirty = self.restored_dirty;
         d.disk_mtime = self.disk_mtime;
+        d.disk_len = self.disk_len;
         d.conflict = self.conflict;
         d.deleted = self.deleted;
         d.editor.buffer.set_line_ending(self.line_ending);
@@ -90,6 +93,7 @@ impl StrataApp {
         doc.encoding = src.encoding;
         doc.restored_dirty = src.restored_dirty;
         doc.disk_mtime = src.disk_mtime;
+        doc.disk_len = src.disk_len;
         doc.conflict = src.conflict;
         doc.deleted = src.deleted;
         doc.wrap = src.wrap;
