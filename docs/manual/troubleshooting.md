@@ -165,7 +165,7 @@ Strata checks the files you're looking at about once a second, and other open fi
 
 Strata stays responsive on files of hundreds of megabytes and on minified files whose whole text is one line. Opening a 50 MB file takes a fraction of a second, and typing, scrolling and jumping to the end stay instant.
 
-**Large-file mode.** A file bigger than 20 MB (the `large_file_mb` setting), or with a line longer than 10,000 characters, opens in large-file mode, like in Sublime Text and VS Code. The status bar says so when it opens. In this mode the file shows as Plain Text, and the minimap, word wrap, bracket colors and sticky scroll are off for it. To highlight it anyway, choose its syntax in the status bar's syntax menu (or **View ▸ Syntax**): highlighting then works in the background, a screenful at a time, so the editor never waits for it. **View ▸ Word Wrap** still turns wrapping on for that file, unless it has a line longer than 200,000 characters.
+**Large-file mode.** A file bigger than 20 MB (the `large_file_mb` setting), or with a line longer than 10,000 characters, opens in large-file mode. The status bar says so when it opens. In this mode the file shows as Plain Text, and the minimap, word wrap, bracket colors and sticky scroll are off for it. To highlight it anyway, choose its syntax in the status bar's syntax menu (or **View ▸ Syntax**): highlighting then works in the background, a screenful at a time, so the editor never waits for it. **View ▸ Word Wrap** still turns wrapping on for that file, unless it has a line longer than 200,000 characters.
 
 **Asking first.** Opening a file bigger than 500 MB (the `large_file_warning_mb` setting) asks first, since all of it is read into memory. So does opening a file that looks binary (it has a NUL byte near the start and isn't UTF-16): shown as text it's gibberish, and saving it could damage it.
 
@@ -205,20 +205,20 @@ Install it first. On macOS and Linux, run **Strata: Install Shell Command** from
 
 ## FAQ
 
-**Can I use my Sublime Text key bindings?**
-Mostly. Strata reads Sublime's keymap format, and many Sublime command names and arguments work as they are. See [Customizing Key Bindings](keybindings.md#commands).
+**Can I bring key bindings from another editor?**
+Often, yes. `keybindings.json` uses a common JSON keymap format, and many command names used by other editors' keymaps are accepted as aliases, with their arguments. Bindings for commands Strata doesn't have are skipped and reported. See [Customizing Key Bindings](keybindings.md#commands).
 
-**Can I use Sublime Text color schemes and syntaxes?**
-Yes. Put `.tmTheme` or `.sublime-color-scheme` files in `Themes/`, and `.sublime-syntax` files in `Syntaxes/`, then restart Strata.
+**Can I add color schemes and syntaxes?**
+Yes. Put `.tmTheme` or `.sublime-color-scheme` files in `Themes/`, and `.sublime-syntax` files in `Syntaxes/`, then restart Strata. See [Importing color schemes](appearance.md#importing-color-schemes) and [Adding your own syntaxes](languages.md#adding-your-own-syntaxes).
 
 **Does Strata have plugins or packages?**
-No. Strata doesn't have a plugin system.
+Not yet. You can add snippets, syntaxes, color schemes and build systems as files, but there's no plugin system.
 
 **Is there a Vim mode?**
 No.
 
 **Is there a spell checker?**
-No.
+Yes. Turn it on with **View ▸ Spell Check** ({{key:toggle_spell_check}}). See [Spell check](editing.md#spell-check).
 
 **Where do I see all the keyboard shortcuts?**
 Open **Help ▸ Keyboard Shortcuts**, or see [Keyboard Shortcuts](shortcuts.md).

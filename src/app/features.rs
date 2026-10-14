@@ -295,6 +295,7 @@ impl StrataApp {
 
     pub(super) fn about_window(&mut self, ctx: &egui::Context) {
         let mut open = self.about_open;
+        let mut show_licenses = false;
         egui::Window::new("About Strata").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
             let icon = ctx.data_mut(|d| d.get_temp::<egui::TextureHandle>(egui::Id::new("about-icon"))).unwrap_or_else(|| {
                 let data = eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon-app.png")).expect("bundled icon");
@@ -303,16 +304,29 @@ impl StrataApp {
                 ctx.data_mut(|d| d.insert_temp(egui::Id::new("about-icon"), tex.clone()));
                 tex
             });
+            ui.set_max_width(340.0);
             ui.vertical_centered(|ui| {
                 ui.add(egui::Image::new(&icon).fit_to_exact_size(egui::vec2(96.0, 96.0)));
                 ui.heading("Strata");
-                ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-                ui.add_space(6.0);
-                ui.label("A fast, open-source, keyboard-first text editor.");
-                ui.label("MIT licensed. Built with Rust, egui, ropey and syntect.");
+                let version = match crate::crash::COMMIT {
+                    Some(c) => format!("Version {} ({c})", env!("CARGO_PKG_VERSION")),
+                    None => format!("Version {}", env!("CARGO_PKG_VERSION")),
+                };
+                ui.label(egui::RichText::new(version).weak());
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("A fast, open-source code and text editor.").strong());
+                ui.add_space(2.0);
+                ui.label("Native, written in Rust, and built for the keyboard. Your files stay on your computer: no accounts, no telemetry.");
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("MIT License · © 2026 Strata contributors").small().weak());
+                ui.add_space(4.0);
+                show_licenses = ui.button("Licenses and Attribution…").clicked();
             });
         });
         self.about_open = open;
+        if show_licenses {
+            self.licenses_open = true;
+        }
     }
 }
 

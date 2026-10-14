@@ -1,6 +1,6 @@
 # Snippets
 
-A snippet is a small template you insert by typing a short word and pressing Tab. It can have fields to fill in, which you step through with Tab. Strata reads snippets in Sublime Text's `.sublime-snippet` format, so snippet files you already have work as they are.
+A snippet is a small template you insert by typing a short word and pressing Tab. It can have fields to fill in, which you step through with Tab. Snippet files use the `.sublime-snippet` XML format, so existing snippet collections work unchanged.
 
 ## Using snippets
 

@@ -2,9 +2,9 @@
 
 Strata can show a live preview of a Markdown file beside the editor, drawn in your color scheme and updated as you type. You can also save any Markdown file as a standalone HTML page.
 
-## Showing the Preview
+## Showing the preview
 
-Choose View ▸ Markdown Preview or press {{key:toggle_markdown_preview}} ("Markdown: Toggle Preview" in the Command Palette). Do the same again to hide it, or right-click the preview and choose Hide Preview.
+Choose View ▸ Markdown Preview or press {{key:toggle_markdown_preview}} ("Markdown: Toggle Preview" in the command palette). Do the same again to hide it, or right-click the preview and choose Hide Preview.
 
 The preview opens as a panel on the right side of the window. Drag its left edge to make it wider or narrower.
 
@@ -12,14 +12,14 @@ The preview always shows the file you're working on. When you switch to a file t
 
 The preview is on or off for every window at once, and Strata remembers your choice.
 
-## Which Files Are Markdown
+## Which files are Markdown
 
 A file is previewed when either:
 
 - its extension is `.md`, `.markdown`, `.mdown`, `.mkd` or `.mkdn` (upper or lower case), or
 - its syntax is set to Markdown, for example with View ▸ Syntax ▸ Markdown on a file without an extension.
 
-## What the Preview Shows
+## What the preview shows
 
 The preview understands GitHub-flavored Markdown:
 
@@ -62,7 +62,7 @@ Click a link in the preview to follow it:
 
 Links inside tables work the same way.
 
-## Right-Click Menu
+## Right-click menu
 
 Right-click anywhere in the preview for:
 
@@ -79,7 +79,7 @@ Edit ▸ Copy as HTML is a different command: it copies the selected source code
 
 ## Exporting to HTML
 
-Choose File ▸ Export ▸ Markdown as HTML… (or "Markdown: Export as HTML…" in the Command Palette, or Export as HTML… in the preview's right-click menu). The menu item is available when the current file is Markdown. Strata asks where to save, suggesting the file's name with `.html` in the same folder, and the status bar confirms when the file is written.
+Choose File ▸ Export ▸ Markdown as HTML… (or "Markdown: Export as HTML…" in the command palette, or Export as HTML… in the preview's right-click menu). The menu item is available when the current file is Markdown. Strata asks where to save, suggesting the file's name with `.html` in the same folder, and the status bar confirms when the file is written.
 
 The page is exported from the text in the editor, so unsaved changes are included.
 
@@ -95,7 +95,7 @@ The exported page:
 
 Code blocks are exported as plain monospace text, without syntax highlighting. Alerts keep their label (Note, Tip, Important, Warning or Caution) and their color, in light and dark mode.
 
-## The Setting
+## The setting
 
 | Setting | Default | Meaning |
 |---|---|---|

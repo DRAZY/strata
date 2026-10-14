@@ -2,7 +2,7 @@
 
 When a file belongs to a Git repository, Strata marks the lines you've changed since the last commit and shows the current branch. It's a light touch: Strata shows changes but doesn't run Git commands that change anything.
 
-## Change Bars
+## Change bars
 
 Lines that differ from the last commit get a colored bar at the left edge of the line-number gutter:
 
@@ -22,7 +22,7 @@ The bars compare the text in the editor with the file as it was in the last comm
 
 For very large files, or files whose differences are huge, Strata skips the comparison or marks a large changed area as modified, to stay fast.
 
-### Turning Change Bars Off
+### Turning change bars off
 
 Choose View ▸ Editor Extras ▸ Git Change Markers to turn the bars on or off. This sets `git_gutter` in your settings:
 
@@ -32,11 +32,11 @@ Choose View ▸ Editor Extras ▸ Git Change Markers to turn the bars on or off.
 
 See [Settings](settings.md) for how to edit `settings.json`.
 
-## Branch in the Status Bar
+## Branch in the status bar
 
 When the current file is in a repository, the status bar shows its branch, for example "⎇ main". If you've checked out a commit rather than a branch, it shows the short commit hash instead.
 
-## Jumping Between Changes
+## Jumping between changes
 
 | Command | Key |
 |---|---|
@@ -49,13 +49,13 @@ They work even when the change bars are turned off.
 
 ## Compare with HEAD
 
-To see the whole file next to its last committed version, choose File ▸ Compare ▸ Compare with HEAD ("Git: Compare with HEAD" in the Command Palette, {{key:compare_with_head}}). The committed text is on the left and your file, still editable, on the right, with the changed lines and words marked. See [Comparing Files](compare.md).
+To see the whole file next to its last committed version, choose File ▸ Compare ▸ Compare with HEAD ("Git: Compare with HEAD" in the command palette, {{key:compare_with_head}}). The committed text is on the left and your file, still editable, on the right, with the changed lines and words marked. See [Comparing Files](compare.md).
 
 ## Show Unsaved Changes
 
 To see what you've changed since you last saved (rather than since the last commit), right-click in the editor and choose Show Unsaved Changes…. Strata opens a read-only tab named "Unsaved changes: …" with a unified diff of the file on disk against the text in the editor. This works for any saved file, in a repository or not, and is available when the file has unsaved changes.
 
-## How It Works
+## How it works
 
 Strata runs the `git` command-line program in the background to find the repository, the branch and each file's committed text, so Git must be installed and on your search path. Without it, Strata works normally but shows no change bars or branch.
 
@@ -63,6 +63,6 @@ The work happens in the background and never makes the editor wait. Strata compa
 
 Strata never asks for passwords and doesn't contact remote servers; it only reads your local repository.
 
-## What Isn't Supported
+## What isn't supported
 
-Strata doesn't have its own Git interface. To commit, stage, switch branches, pull, push, view history or blame, or discard changes, use Git in the [Terminal](terminal.md) or another Git tool. There is no side-by-side diff view against the last commit, and the side bar doesn't color files by their Git status.
+Strata doesn't have its own Git interface. To commit, stage, switch branches, pull, push, view history or blame, or discard changes, use Git in the [terminal](terminal.md) or another Git tool. The side bar doesn't color files by their Git status.

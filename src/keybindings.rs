@@ -580,7 +580,7 @@ pub fn resolve(command: &str, args: &Map<String, Value>) -> Result<What, String>
                 (2, 3) => run(Cmd::LayoutRows2),
                 (2, 4) => run(Cmd::LayoutRows3),
                 (3, 3) => run(Cmd::LayoutGrid),
-                _ => Err("set_layout: only Sublime's standard layouts (single, columns 2–4, rows 2–3, grid 4) are supported".into()),
+                _ => Err("set_layout: only the standard layouts (single, columns 2–4, rows 2–3, grid 4) are supported".into()),
             };
         }
         _ => {}
@@ -1134,7 +1134,7 @@ pub fn template() -> String {
          //\n\
          // Modifiers: primary (⌘ on macOS, Ctrl elsewhere), super/cmd, ctrl, alt/option, shift.\n\
          // Binding a command replaces its default keys. Later entries win.\n\
-         // Sublime Text keymaps can be pasted in: its command names and args work too, e.g.\n\
+         // Common command names from other editors' keymaps work too, with their args, e.g.\n\
          //   {{ \"keys\": [\"{palette}\"], \"command\": \"show_overlay\", \"args\": {{\"overlay\": \"command_palette\"}} }}\n\
          // \"context\": [{{\"key\": \"terminal_focus\"}}] limits a binding to the terminal\n\
          // (also panel_has_focus, panel_visible, overlay_visible).\n\

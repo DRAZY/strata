@@ -12,7 +12,7 @@ If the file doesn't exist yet, Strata writes it first, with every setting filled
 
 ## How the file works
 
-The file is JSON, with two relaxations borrowed from Sublime Text: comments (`//` and `/* */`) and trailing commas are allowed.
+The file is JSON, with two relaxations: comments (`//` and `/* */`) and trailing commas are allowed.
 
 ```json
 {
@@ -79,7 +79,7 @@ Many settings have a menu item, so you rarely need to edit the file for them:
 | View ▸ Terminal, and resizing the terminal panel | `terminal_visible`, `terminal_height` |
 | View ▸ Spell Check, View ▸ Dictionary, and Add Word to Dictionary in the editor's right-click menu | `spell_check`, `dictionary`, `added_words` |
 
-## All Settings
+## All settings
 
 Every setting Strata reads, with its default value. Text values are written in quotes, as they appear in the file.
 
@@ -138,7 +138,7 @@ Every setting Strata reads, with its default value. Text values are written in q
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `window_opacity` | number | `1.0` | From 0.3 (see-through) to 1.0 (opaque). |
-| `help_in_own_window` | boolean | `true` | Open the documentation in its own window, so you can read along while you work in the editor. The Pop Out / Dock button in the help toolbar switches it. |
+| `help_in_own_window` | true/false | `true` | Open the documentation in its own window, so you can read along while you work in the editor. The Pop Out / Dock button in the help toolbar switches it. |
 | `show_tabs` | true/false | `true` | Show the tab bar. |
 | `show_status_bar` | true/false | `true` | Show the status bar. |
 | `markdown_preview` | true/false | `false` | Show the live Markdown preview beside the editor. See [Markdown](markdown.md). |

@@ -2,7 +2,7 @@
 
 Strata can search the current file, a whole folder, and your project's file names and symbols. This page covers the find bar, Find in Files, Replace in Files, Goto Anything and the other ways to jump around your code.
 
-## The Find Bar
+## The find bar
 
 Open the find bar with {{key:show_find}} (Find ▸ Find…). It appears at the bottom of the window with a Find field, the match count and Previous, Next and Find All buttons. Find always shows just the Find row, even if the bar was showing Replace. If you have text selected on a single line when you open it, that text becomes the search.
 
@@ -24,7 +24,7 @@ Toggle buttons sit to the left of the Find field. Click one, or press its key, t
 | `▣` | Highlight matches | {{key:toggle_highlight_matches}} | Outline every match in the file (and mark them on the scrollbar) while the bar is open. On by default. |
 | `AB` | Preserve case | {{key:toggle_preserve_case}} | Shown on the Replace row: replacements take the case of the text they replace. See [Preserve case](#preserve-case). |
 
-On macOS, Whole Word has no key by default because ⌥⌘W is View ▸ Word Wrap; bind `toggle_whole_word` in [Key Bindings](keybindings.md) if you want one. Wrap and Highlight Matches have no key by default. Every option is also in the Command Palette ("Find: Toggle In Selection" and so on).
+On macOS, Whole Word has no key by default because ⌥⌘W is View ▸ Word Wrap; bind `toggle_whole_word` in [Key Bindings](keybindings.md) if you want one. Wrap and Highlight Matches have no key by default. Every option is also in the command palette ("Find: Toggle In Selection" and so on).
 
 The options, and the last search and replacement text, are saved with the window's session, so they're still set after you quit and reopen Strata.
 
@@ -34,7 +34,7 @@ With In Selection on, the find bar searches only the text that was selected when
 
 The searched ranges are remembered for each tab, so stepping through matches (which changes the selection) doesn't change what is searched. They follow your edits: replacing text inside them, or typing before them, keeps them covering the same text. To search a different part of the file, select it and turn In Selection off and on again, or reopen the find bar with a selection that spans several lines (or with several selections). If there was nothing selected, the label says "No selection".
 
-Like Sublime Text, the `auto_find_in_selection` setting (off by default) turns In Selection on by itself when you open the find bar while a selection spans several lines. A selection on a single line still becomes the search text instead.
+The `auto_find_in_selection` setting (off by default) turns In Selection on by itself when you open the find bar while a selection spans several lines. A selection on a single line still becomes the search text instead.
 
 Replace All with In Selection on replaces only inside the selection, as a single undo step, and the status bar says "Replaced N occurrences in the selection".
 
@@ -93,7 +93,7 @@ These commands search for the selection, or the word at the cursor, without open
 
 Quick Add Next and Quick Find All are the quickest way to get multiple cursors. See [Editing](editing.md) for working with them.
 
-## Regular Expressions
+## Regular expressions
 
 With `.*` turned on, the Find field takes a regular expression. Strata uses a fast regular expression engine that supports the usual syntax (character classes, `\d`, `\w`, `\b`, groups, named groups like `(?P<name>...)`, alternation and repetition) but not look-around or backreferences inside the pattern. `^` and `$` match at the start and end of each line.
 
@@ -110,7 +110,7 @@ The find bar and Replace in Files read the replacement the same way. Refer to ca
 | `${1}x` | Group 1 followed by `x` (use braces when letters or digits follow the group number). |
 | `$$` | A literal dollar sign. |
 
-The Sublime Text forms work too:
+Backslash forms work too:
 
 | Write | To insert |
 |---|---|
@@ -123,9 +123,9 @@ Without `.*`, the replacement text is inserted exactly as typed.
 
 ## Find in Files
 
-Find in Files searches every file in the folders open in the sidebar. Open it with {{key:find_in_files}} (Find ▸ Find in Files…, or "Find: Find in Folder…" in the Command Palette). The sidebar switches to its Search tab and puts the cursor in the Find field. A single-line selection in the editor becomes the search text. To search one folder of the tree, right-click it and choose Find in Folder…, which puts that folder in Where.
+Find in Files searches every file in the folders open in the side bar. Open it with {{key:find_in_files}} (Find ▸ Find in Files…, or "Find: Find in Folder…" in the command palette). The side bar switches to its Search tab and puts the cursor in the Find field. A single-line selection in the editor becomes the search text. To search one folder of the tree, right-click it and choose Find in Folder…, which puts that folder in Where.
 
-With no folder open, Find in Files still works: like Sublime Text, it searches your open files (`<open files>`), and the sidebar shows just the Search tab (its × hides it again). If no file is open either, the summary asks you to open a folder or a file. See [Projects and Sidebar](projects.md) for opening folders.
+With no folder open, Find in Files still works: it searches your open files (`<open files>`), and the side bar shows just the Search tab (its × hides it again). If no file is open either, the summary asks you to open a folder or a file. See [Projects and Side Bar](projects.md) for opening folders.
 
 The Search tab has its own `.*`, `Aa` and `"ab"` toggles (separate from the find bar's) and three fields:
 
@@ -148,7 +148,7 @@ Where is a comma-separated list. Each entry can be:
 | `src/main.rs` | A single file. |
 | `*.rs`, `*.{ts,tsx}` | Include only files matching this pattern. |
 | `-*.min.js`, `-target/` | Exclude files or folders matching this pattern (a leading `-`). |
-| `<open folders>` | Every folder open in the sidebar. `<project>` means the same. |
+| `<open folders>` | Every folder open in the side bar. `<project>` means the same. |
 | `<open files>` | Every file open in a tab. |
 
 How patterns match:
@@ -182,7 +182,7 @@ To step through results from the keyboard, use Find ▸ Find Results ▸ Next Re
 
 ## Replace in Files
 
-Replace in Files changes every match of a Find in Files search. Open it with {{key:replace_in_files}} (Find ▸ Replace in Files…). The sidebar shows the Search tab; if a selection filled in the Find field, the cursor goes to the Replace field.
+Replace in Files changes every match of a Find in Files search. Open it with {{key:replace_in_files}} (Find ▸ Replace in Files…). The side bar shows the Search tab; if a selection filled in the Find field, the cursor goes to the Replace field.
 
 1. Fill in Find, Where and Replace, and set the options.
 2. Click **Replace…**. Strata runs the search again so it works from fresh results.
@@ -264,9 +264,9 @@ If nothing is found, the status bar says "No definition found for …".
 
 ## Go to Reference
 
-{{key:goto_reference}} (Goto ▸ Goto Reference…) searches the open folders for the word under the cursor, as a whole word and case sensitive. The results appear in the sidebar's Search tab; step through them with Next Result and Previous Result (see [Find in Files](find.md#find-in-files)). With no folder open, it opens the find bar with the word instead.
+{{key:goto_reference}} (Goto ▸ Goto Reference…) searches the open folders for the word under the cursor, as a whole word and case sensitive. The results appear in the side bar's Search tab; step through them with Next Result and Previous Result (see [Find in Files](find.md#find-in-files)). With no folder open, it opens the find bar with the word instead.
 
-## Jump Back and Forward
+## Jump back and forward
 
 Strata remembers where you were before each jump: opening a file from Goto Anything, going to a line or symbol, Go to Definition, clicking a Find in Files result, and so on. It keeps the last 100 places.
 
@@ -277,7 +277,7 @@ Strata remembers where you were before each jump: opening a file from Goto Anyth
 
 Places in tabs you've since closed are skipped.
 
-## Other Navigation
+## Other navigation
 
 | Command | Shortcut | What it does |
 |---|---|---|
@@ -287,9 +287,9 @@ Places in tabs you've since closed are skipped.
 
 Switch Header/Implementation looks in the same folder for a file with the same name: from a header (`.h`, `.hh`, `.hpp`, `.hxx`, `.h++`, `.inl`, `.ipp`) to a source file (`.c`, `.cc`, `.cpp`, `.cxx`, `.c++`, `.m`, `.mm`), and back.
 
-## Command Palette
+## Command palette
 
-The Command Palette ({{key:command_palette}}, Tools ▸ Command Palette…) runs any command by name. Type part of a name, such as `save all` or `dupl`, and press Enter. It uses the same fuzzy matching as Goto Anything.
+The command palette ({{key:command_palette}}, Tools ▸ Command Palette…) runs any command by name. Type part of a name, such as `save all` or `dupl`, and press Enter. It uses the same fuzzy matching as Goto Anything.
 
 Each row shows the command's current shortcut on the right, so the palette is also a handy way to learn keys. Commands are named by area, like "File: Save All", "Find: Replace in Files…" or "Layout: Columns: 2", and "Set Syntax: …" entries switch the current file's language.
 

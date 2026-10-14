@@ -138,7 +138,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// Scenes for the manual: a split view, a Compare tab.
+    /// Scenes for the manual: a split view, a Compare tab, spell check, About.
     #[test]
     fn headless_shots() {
         let Some(dir) = std::env::var_os("STRATA_HEADLESS_SHOTS").map(PathBuf::from) else { return };
@@ -182,5 +182,11 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join("spell.ppm"));
+
+        // The About window over an empty editor.
+        let ctx = Context::default();
+        let mut app = StrataApp::new(None, None);
+        app.about_open = true;
+        shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join("about.ppm"));
     }
 }

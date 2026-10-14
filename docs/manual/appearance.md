@@ -24,7 +24,7 @@ The menus group the schemes like this, in this order:
 | Your Themes | Schemes you add yourself (see [Importing color schemes](#importing-color-schemes)). This group only appears when you have some. |
 | Classic | InspiredGitHub, base16-eighties.dark, base16-mocha.dark, base16-ocean.dark, base16-ocean.light |
 
-The credits and licenses for each palette are in **Help ▸ Licenses and Attribution…** ({{key:licenses}}).
+The credits and licenses for each palette are in **Help ▸ Licenses and Attribution…**.
 
 ### Picking a scheme
 
@@ -52,7 +52,7 @@ The settings behind this are:
 | Setting | What it does |
 |---------|--------------|
 | `theme_mode` | `"fixed"` (the default) always uses `theme`. `"auto"` (or `"system"`) follows the system, using `light_theme` in light mode and `dark_theme` otherwise. `"dark"` always uses `dark_theme`, and `"light"` always uses `light_theme`. |
-| `theme` | The scheme used in fixed mode. Setting it to `"auto"` also follows the system, as in Sublime Text. |
+| `theme` | The scheme used in fixed mode. Setting it to `"auto"` also follows the system. |
 | `dark_theme` | The dark-mode scheme. Default `"Strata Dark"`. |
 | `light_theme` | The light-mode scheme. Default `"Strata Light"`. |
 
@@ -140,7 +140,7 @@ Colors can be written as:
 - `rgb(…)` and `rgba(…)`, with numbers or percentages, for example `rgb(30, 30, 46)` or `rgba(255, 0, 0, 0.5)`.
 - `hsl(…)` and `hsla(…)`, for example `hsl(240, 21%, 15%)`.
 - A few names: `black`, `white`, `transparent`, `red`, `green`, `blue`, `yellow`, `orange`, `purple`, `gray` (or `grey`), `silver`, `cyan` (or `aqua`), `magenta` (or `fuchsia`) and `pink`.
-- Sublime Text's `color()` function, which starts from a color and adjusts it: `alpha()` (or `a()`), `blend()`, `blenda()`, `lightness()` (or `l()`) and `saturation()` (or `s()`). For example `color(#1e1e2e blend(#ffffff 90%))` keeps 90% of the first color and mixes in 10% white.
+- The `color()` function, which starts from a color and adjusts it: `alpha()` (or `a()`), `blend()`, `blenda()`, `lightness()` (or `l()`) and `saturation()` (or `s()`). For example `color(#1e1e2e blend(#ffffff 90%))` keeps 90% of the first color and mixes in 10% white.
 
 ### Turning off italic and underline
 
@@ -156,13 +156,13 @@ Colors can be written as:
 
 ## Importing color schemes
 
-You can add your own schemes by putting `.tmTheme` or Sublime Text 3/4 `.sublime-color-scheme` files in a folder called `Themes` inside Strata's config folder (create it if it isn't there; [Troubleshooting](troubleshooting.md) shows where the config folder is on each system). Files must sit directly in `Themes`, not in subfolders.
+You can add your own schemes by putting `.tmTheme` or `.sublime-color-scheme` files in a folder called `Themes` inside Strata's config folder (create it if it isn't there; [Troubleshooting](troubleshooting.md) shows where the config folder is on each system). Files must sit directly in `Themes`, not in subfolders.
 
 Schemes are loaded when Strata starts, so restart Strata after adding or changing one. Each appears under **Your Themes**, named after its file: `Themes/Midnight.sublime-color-scheme` shows up as **Midnight**. A file with the same name as a built-in scheme replaces it.
 
 For `.sublime-color-scheme` files, Strata reads:
 
-- Comments and trailing commas, as Sublime Text allows.
+- Comments and trailing commas.
 - `variables`, used through `var(name)`. Variables can refer to other variables.
 - `globals`, including `background`, `foreground`, `caret`, `line_highlight`, `selection`, `selection_foreground`, `selection_border`, `inactive_selection`, `gutter`, `gutter_foreground`, `find_highlight`, `guide`, `active_guide`, `stack_guide`, `brackets_foreground`, `accent` and `invisibles` (or `whitespace`). Globals Strata doesn't use are ignored.
 - `rules`, each with a `scope` and any of `foreground`, `background` and `font_style` (`bold`, `italic`, `underline`; `stippled_underline` and `squiggly_underline` become a plain underline). When a rule's `foreground` is a list of colors, the first one is used.
@@ -256,7 +256,7 @@ The menu items are **Font ▸ Larger**, **Smaller** and **Reset Size**. Each ste
 For finer control, use these settings:
 
 - `line_height`: a multiple of the font's own line height, from 0.8 to 3.0 (default 1.0).
-- `line_padding_top` and `line_padding_bottom`: extra points above and below each line, from 0 to 40 (default 0). These are Sublime Text's names.
+- `line_padding_top` and `line_padding_bottom`: extra points above and below each line, from 0 to 40 (default 0).
 
 ```json
 {
@@ -318,7 +318,7 @@ All of these are on by default, with whitespace shown in selections only.
 
 **View ▸ Toggle Tabs** ({{key:toggle_tabs}}) hides or shows the tab bar, and **View ▸ Toggle Status Bar** ({{key:toggle_status_bar}}) hides or shows the status bar. The settings are `show_tabs` and `show_status_bar`.
 
-## Distraction free mode
+## Distraction-free mode
 
 **View ▸ Toggle Distraction Free** ({{key:toggle_distraction_free}}) goes full screen and shows only your text: the side bar, tabs, status bar, minimap, Markdown preview and build results are hidden, and on Windows and Linux the menu bar too. Run it again to return; the side bar and minimap come back as they were. Hiding the minimap here only affects this window and doesn't change your `minimap` setting.
 

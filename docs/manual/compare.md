@@ -4,20 +4,20 @@ Compare shows two versions of a text side by side: the lines line up, with blank
 
 The left side is a fixed text: another tab, a file, or the file as last committed to Git. The right side is your file itself, and you can edit it right there: the comparison updates as you type, and saving saves the file.
 
-## Starting a Comparison
+## Starting a comparison
 
 | Command | Shortcut | What it does |
 |---|---|---|
 | File ▸ Compare ▸ Compare with… | {{key:compare_with}} | Compare the current file with another open tab, the version at Git `HEAD`, or a file you choose. |
-| File ▸ Compare ▸ Compare with HEAD | {{key:compare_with_head}} | Compare the current file with its last committed version ("Git: Compare with HEAD" in the Command Palette). |
+| File ▸ Compare ▸ Compare with HEAD | {{key:compare_with_head}} | Compare the current file with its last committed version ("Git: Compare with HEAD" in the command palette). |
 
-You can also right-click a tab and choose **Compare with…**, or right-click a file in the sidebar and choose **Compare with Open File…**, which opens the file if needed and asks what to compare it with.
+You can also right-click a tab and choose **Compare with…**, or right-click a file in the side bar and choose **Compare with Open File…**, which opens the file if needed and asks what to compare it with.
 
 "Compare with…" lists the other open tabs first, then "Git: the version at HEAD" when the file is in a repository, then "Choose a File…". The comparison opens in a new tab named after both sides, like `old.rs ↔ new.rs`, next to the file's own tab.
 
 When the left side is another open tab, it follows that tab: edit either file and the comparison updates. A file chosen from disk, or the HEAD version, stays as it was when you opened the comparison.
 
-## Reading a Comparison
+## Reading a comparison
 
 | Mark | Meaning |
 |---|---|
@@ -28,7 +28,7 @@ When the left side is another open tab, it follows that tab: edit either file an
 
 The header above the two sides says how many changes there are and how many lines were removed and added, for example "2 of 5 changes · −3 +7". The strip at the right edge is an overview of the whole comparison: each change is a mark, the frame shows what's on screen, and clicking or dragging in it scrolls there.
 
-## Moving Between Changes
+## Moving between changes
 
 | Command | Shortcut | What it does |
 |---|---|---|
@@ -46,7 +46,7 @@ The caret lands on the first line of the change on the right side, and the chang
 
 Both are also buttons in the header (**Swap Sides** and the **Ignore whitespace** checkbox) and items in File ▸ Compare.
 
-## Editing in a Comparison
+## Editing in a comparison
 
 The right side is another view of the file's buffer, so everything you can do in an editor works there: typing, selecting with the mouse or keyboard, multiple cursors, undo, the Edit and Selection menus, find, and save. Edits show up at once in the file's own tab, and undo works from either one. The comparison is recomputed as you type; for very large files it waits for a short pause in your typing.
 

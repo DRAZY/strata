@@ -10,7 +10,7 @@ Build systems let you compile, run or test the file you're working on without le
 | Tools ▸ Build With… | {{key:build_with}} | Lists every build system that fits the current file, with its variants, and runs the one you pick. |
 | Tools ▸ Cancel Build | {{key:cancel_build}} | Stops the running build. |
 
-In the Command Palette these are "Tools: Build", "Tools: Build With…" and "Tools: Cancel Build".
+In the command palette these are "Tools: Build", "Tools: Build With…" and "Tools: Cancel Build".
 
 Build With… shows entries such as "Cargo" and "Cargo - Test": a build system's main command, then each of its variants. Strata remembers your choice, and Build runs it again as long as it still fits the current file. When it doesn't (say you switched to a file in another language), Build goes back to choosing automatically.
 
@@ -22,7 +22,7 @@ Builds don't take keyboard input. To run a program that asks for input, use the 
 
 Tools ▸ Save All on Build is on by default: before each build, Strata saves every modified file that already has a name on disk. Untitled files aren't saved. Turn it off in the Tools menu ("Tools: Save All on Build" in the palette, or the `save_all_on_build` setting) if you'd rather save yourself.
 
-## How Strata Chooses a Build System
+## How Strata chooses a build system
 
 Each build system says which files it fits:
 
@@ -35,13 +35,13 @@ For example, a `.rs` file inside a Cargo project fits both Cargo and Rust with t
 
 If nothing fits, the status bar says "No build system for this file".
 
-### Choosing One Yourself
+### Choosing one yourself
 
 Tools ▸ Build System lists Automatic and every build system by name. Pick one to pin it: Build then always runs that system's main command, as long as it fits the current file; otherwise Build falls back to the usual choice. Pick Automatic to unpin. Picking an entry here (Automatic included) also forgets the last Build With… choice, so Automatic really means "the best fit for this file".
 
 The pinned choice applies to the current window and isn't kept when you quit.
 
-## Built-in Build Systems
+## Built-in build systems
 
 | Name | Runs | Used for | Variants |
 |---|---|---|---|
@@ -61,7 +61,7 @@ Cargo, Make and npm run in the folder that holds their marker file. The others r
 
 The tools themselves (Cargo, Python, a C compiler and so on) must be installed. On macOS and Linux, Strata adds the usual tool folders to the search path if they exist: `/opt/homebrew/bin`, `/usr/local/bin`, and `.cargo/bin`, `.local/bin`, `go/bin` and `.bun/bin` in your home folder.
 
-## The Build Results Panel
+## The build results panel
 
 Starting a build opens the Build Results panel at the bottom of the window. Its header shows:
 
@@ -84,7 +84,7 @@ When the build ends, a final line says how:
 
 To show or hide the panel, use Tools ▸ Build Results ▸ Show Build Results, View ▸ Show Panel ▸ Build Results, or {{key:toggle_build_results}} ("Tools: Build Results: Show/Hide"). Drag its top edge to resize it. It is hidden in distraction-free mode.
 
-## Jumping to Errors
+## Jumping to errors
 
 Output lines that the build system recognizes as a file location, such as `src/main.rs:12:5: error…`, are results. Hover over a result to underline it and see its message, and click it to open the file at that line and column. Relative paths are read from the folder the build ran in.
 
@@ -92,7 +92,7 @@ To step through results from the keyboard, use Tools ▸ Build Results ▸ Next 
 
 Each built-in build system recognizes its tools' messages: Rust compiler locations, the `file:line:column: message` style of C compilers, Go and Make, Python tracebacks, Node stack traces, Ruby and bash errors, and TypeScript compiler errors for npm.
 
-## Custom Build Systems
+## Custom build systems
 
 Your own build systems are JSON files in the `build_systems` folder inside Strata's settings folder:
 
@@ -106,7 +106,7 @@ Each `.json` file holds one build system, or a list of them in square brackets. 
 
 Strata reads the folder again each time you run Build or Build With…, so changes take effect on your next build. Tools ▸ Build System lists the names it knew at the last build.
 
-### Creating One
+### Creating one
 
 Choose Tools ▸ Build System ▸ New Build System… ("Tools: Build System: New Build System…" in the palette). Strata creates `untitled.json` (or `untitled-2.json` and so on) in the `build_systems` folder and opens it with this starting point:
 
@@ -153,7 +153,7 @@ If `syntaxes` or `extensions` is given, the current file must match one of them 
 
 Each variant needs a `name` and can change `cmd`, `working_dir`, `env`, `shell` and `file_regex`. Anything a variant doesn't set comes from the main build system; its `env` is added to the main one.
 
-### Running Through the Shell
+### Running through the shell
 
 With `"shell": true`, the parts of `cmd` are joined with spaces and run as one command line by `sh -c` on macOS and Linux, or `cmd /S /C` on Windows. Use this for pipes, `&&`, wildcards, or commands like `npm` that are scripts on Windows. Variable values are quoted for the shell, so paths with spaces work.
 
@@ -179,7 +179,7 @@ Write `$$` for a literal `$`. Any other name is read from the environment (such 
 
 Using a `$file…` variable in a file that has never been saved, or `$folder` when no folder is open, stops the build with a message instead of running it.
 
-### File Regex
+### File regex
 
 `file_regex` is matched against each line of output. Mark its parts with named groups:
 
@@ -194,7 +194,7 @@ If the expression has no group named `file`, Strata uses the first four plain gr
 
 When a matching line has no message, Strata uses the most recent line that started with "error" or "warning", which suits compilers that print the message above the location.
 
-### A Complete Example
+### A complete example
 
 ```json
 {
@@ -215,7 +215,7 @@ When a matching line has no message, Strata uses the most recent line that start
 
 This build system fits C files and headers in a folder with a `Makefile`. Because it matches both the file and a marker file (and adds a priority of 1), it scores higher than the built-in Make and C systems when Strata chooses automatically. Build With… offers "My Make", "My Make - Clean" and "My Make - Run".
 
-## When Something Goes Wrong
+## When something goes wrong
 
 Problems are reported in the status bar, and problems with a build also appear in the Build Results panel.
 

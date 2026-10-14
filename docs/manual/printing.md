@@ -4,9 +4,9 @@ Strata prints a file as clean, syntax-colored pages with line numbers, a header 
 
 ## Printing
 
-Choose File ▸ Print… ("File: Print…" in the Command Palette). A small dialog asks for the options below, then Strata opens the pages as a PDF in your PDF viewer (Preview on macOS), where you choose the printer, check the pages and print. Printing from the viewer gives you the system's full print dialog, page ranges and printer settings on every platform.
+Choose File ▸ Print… ("File: Print…" in the command palette). A small dialog asks for the options below, then Strata opens the pages as a PDF in your PDF viewer (Preview on macOS), where you choose the printer, check the pages and print. Printing from the viewer gives you the system's full print dialog, page ranges and printer settings on every platform.
 
-Print has no default shortcut, because {{key:goto_anything}} is Goto Anything, as in Sublime Text. You can give it one in your key bindings with the command `print`; see [Key Bindings](keybindings.md).
+Print has no default shortcut, because {{key:goto_anything}} opens Goto Anything. You can give it one in your key bindings with the command `print`; see [Key Bindings](keybindings.md).
 
 ## Options
 

@@ -1,24 +1,24 @@
-# Projects and Sidebar
+# Projects and Side Bar
 
-Open a folder and Strata shows it in the sidebar, where you can browse files, create and rename them, and search the whole folder. A window can show several folders at once, like a Sublime Text project. A project file remembers the folders together with the files and layout you had open.
+Open a folder and Strata shows it in the side bar, where you can browse files, create and rename them, and search the whole folder. A window can show several folders at once, and a project file remembers the folders together with the files and layout you had open.
 
-## Opening a Folder
+## Opening a folder
 
 There are several ways to open a folder:
 
-- **File ▸ Open Folder…** ({{key:open_folder}}) picks a folder with the system dialog. It replaces the folders in the sidebar.
+- **File ▸ Open Folder…** ({{key:open_folder}}) picks a folder with the system dialog. It replaces the folders in the side bar.
 - **Project ▸ Add Folder to Project…** ({{key:prompt_add_folder}}) picks a folder and adds it below the ones already there, so one window can show several folders (an app and a library it uses, say).
 - **Drag a folder** from your file manager onto the Strata window. (Dropped files open in tabs.)
 - **From the command line**, pass a folder: `strata ~/code/myapp`. See [Command Line](cli.md).
 - **File ▸ Open Recent** and **Project ▸ Open Recent** list folders you've opened before, shown with a trailing `/`.
 
-Opening a folder replaces the folders that were in the sidebar; your open tabs stay where they are. The first folder's name also appears in the window title, followed by "+1", "+2"… when there are more.
+Opening a folder replaces the folders that were in the side bar; your open tabs stay where they are. The first folder's name also appears in the window title, followed by "+1", "+2"… when there are more.
 
-Every folder in the sidebar counts everywhere a folder does: Find in Files and Goto Anything search all of them, Goto Symbol in Project and Goto Definition look through all of them, and hot exit reopens all of them next time. Build systems use the folder holding the current file (else the first one) for `$folder`, and a new terminal starts in the folder holding the current file.
+Every folder in the side bar counts everywhere a folder does: Find in Files and Goto Anything search all of them, Goto Symbol in Project and Goto Definition look through all of them, and hot exit reopens all of them next time. Build systems use the folder holding the current file (else the first one) for `$folder`, and a new terminal starts in the folder holding the current file.
 
-## The Sidebar
+## The side bar
 
-The sidebar sits on the left of the window. It appears while a folder is open, and also for Find in Files when no folder is open. Show or hide it with {{key:toggle_side_bar}} (View ▸ Side Bar ▸ Toggle Side Bar). Drag its right edge to make it wider or narrower.
+The side bar sits on the left of the window. It appears while a folder is open, and also for Find in Files when no folder is open. Show or hide it with {{key:toggle_side_bar}} (View ▸ Side Bar ▸ Toggle Side Bar). Drag its right edge to make it wider or narrower.
 
 At the top are two tabs:
 
@@ -29,7 +29,7 @@ At the top are two tabs:
 
 ### The folder tree
 
-Each folder in the sidebar is a tree of its own, in the order you added them; hover over a folder's name to see its full path. The tree lists folders first, then files, each sorted by name without regard to case. Click a folder's arrow or name to expand or collapse it. The file in the current tab is highlighted.
+Each folder in the side bar is a tree of its own, in the order you added them; hover over a folder's name to see its full path. The tree lists folders first, then files, each sorted by name without regard to case. Click a folder's arrow or name to expand or collapse it. The file in the current tab is highlighted.
 
 | Do this | To |
 |---|---|
@@ -43,7 +43,7 @@ The tree shows every file and folder except `.git` folders and `.DS_Store` files
 
 ### Refreshing
 
-Strata reads each folder's contents when you first expand it and doesn't watch for changes made outside the app. To pick up new, renamed or deleted files, click the ⟳ button at the top right of the Files tab, or choose Project ▸ Refresh Folders ({{key:refresh_folder_list}}). Files you create or rename from the sidebar menu show up right away.
+Strata reads each folder's contents when you first expand it and doesn't watch for changes made outside the app. To pick up new, renamed or deleted files, click the ⟳ button at the top right of the Files tab, or choose Project ▸ Refresh Folders ({{key:refresh_folder_list}}). Files you create or rename from the side bar menu show up right away.
 
 ### Right-click menu
 
@@ -57,7 +57,7 @@ Right-click a file, a folder, or a top folder's name:
 | Copy Path | Copy the full path to the clipboard. |
 | Reveal in Finder | Show the item in your file manager. On Windows it's called Show in Explorer, and on Linux Open Containing Folder. |
 | Find in Folder… | Switch to the Search tab with that folder (a file's own folder, for a file) in Where, so the search covers just it. |
-| Remove Folder from Project | On a top folder only: take it out of the sidebar. Nothing on disk changes. |
+| Remove Folder from Project | On a top folder only: take it out of the side bar. Nothing on disk changes. |
 
 In the name dialog, press Enter to confirm or Esc to cancel. Strata won't overwrite an existing file or folder; the dialog shows the error instead.
 
@@ -71,15 +71,15 @@ Turn the section on or off with View ▸ Side Bar ▸ Toggle Show Open Files ({{
 
 ### Revealing the current file
 
-To find the current file in the tree, right-click its tab (or the text in the editor) and choose **Reveal in Side Bar**. Strata opens the folders above it and scrolls it into view. The item is available when the file is inside one of the sidebar's folders.
+To find the current file in the tree, right-click its tab (or the text in the editor) and choose **Reveal in Side Bar**. Strata opens the folders above it and scrolls it into view. The item is available when the file is inside one of the side bar's folders.
 
 ### Closing folders
 
-To take one folder out, right-click its name and choose Remove Folder from Project. Project ▸ Remove all Folders from Project ("Project: Remove All Folders from Project" in the Command Palette, {{key:close_folder}}) closes every folder and hides the sidebar. Your tabs stay open.
+To take one folder out, right-click its name and choose Remove Folder from Project. Project ▸ Remove all Folders from Project ("Project: Remove All Folders from Project" in the command palette, {{key:close_folder}}) closes every folder and hides the side bar. Your tabs stay open.
 
 ## Projects
 
-A project is a small `.strata-project` file that records the sidebar's folders, the files you had open, and your pane layout, so you can come back to all of it in one step.
+A project is a small `.strata-project` file that records the side bar's folders, the files you had open, and your pane layout, so you can come back to all of it in one step.
 
 | Command | Shortcut | What it does |
 |---|---|---|
@@ -96,7 +96,7 @@ Save Project As suggests a name based on the first folder, such as `myapp.strata
 
 When you open a project, Strata:
 
-1. shows the project's folders in the sidebar, in place of the ones there before,
+1. shows the project's folders in the side bar, in place of the ones there before,
 2. switches to the saved pane layout,
 3. opens each listed file that still exists, in the current pane.
 
@@ -125,7 +125,7 @@ A `.strata-project` file is plain JSON. It must be strict JSON: no comments and 
 
 | Field | Meaning |
 |---|---|
-| `folders` | The folders to show in the sidebar, in order. |
+| `folders` | The folders to show in the side bar, in order. |
 | `files` | Files to open, in order. Missing files are skipped. |
 | `layout` | The pane layout: `cols` are column widths and `rows` are row heights, each a list of fractions. Up to 4 of each; Strata scales them to add up to 1. |
 

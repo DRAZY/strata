@@ -1,6 +1,8 @@
 # Welcome to Strata
 
-Strata is a fast, keyboard-first text editor in the style of Sublime Text. This page walks you through the window, opening and saving files, and the two shortcuts worth learning first.
+Strata is a fast, open-source editor for code and text. It opens instantly, handles everything from a quick note to a 500 MB log file, and puts every command a keystroke away: multiple cursors, Goto Anything, project-wide search, split panes, a built-in terminal, Markdown preview and more. Your work is saved as you go, so you can quit at any time and pick up exactly where you left off.
+
+This page walks you through the window, opening and saving files, and the two shortcuts worth learning first. To find out more about Strata itself, see [About Strata](about.md).
 
 ## The window at a glance
 
@@ -9,7 +11,7 @@ A Strata window has a few parts. Each one can be shown or hidden.
 | Part | What it does | Show or hide |
 |------|--------------|--------------|
 | Tabs | One tab per open file, along the top of each pane. | View ▸ Toggle Tabs |
-| Sidebar | The folder you opened, plus open files and search results. | View ▸ Side Bar ▸ Toggle Side Bar ({{key:toggle_side_bar}}) |
+| Side bar | The folder you opened, plus open files and search results. | View ▸ Side Bar ▸ Toggle Side Bar ({{key:toggle_side_bar}}) |
 | Editor | Where you type. You can split it into several panes. | |
 | Minimap | A small overview of the whole file on the right; click or drag it to scroll. | View ▸ Toggle Minimap ({{key:toggle_minimap}}) |
 | Status bar | Cursor position, number of cursors and selected characters, Git branch, word count, and menus for syntax, encoding, line endings, indentation and color scheme. Messages from Strata show here too. | View ▸ Toggle Status Bar ({{key:toggle_status_bar}}) |
@@ -23,8 +25,8 @@ Settings live under Strata ▸ Settings on macOS, and under the Preferences menu
 There are several ways to open things:
 
 - **File ▸ Open…** ({{key:open_file}}) opens one or more files.
-- **File ▸ Open Folder…** ({{key:open_folder}}) shows a folder in the sidebar. From there you can open any file in it, and Goto Anything searches it. See [Projects and Folders](projects.md).
-- **Drag and drop** files onto the window to open them in tabs. Drop a folder to show it in the sidebar.
+- **File ▸ Open Folder…** ({{key:open_folder}}) shows a folder in the side bar. From there you can open any file in it, and Goto Anything searches it. See [Projects and Side Bar](projects.md).
+- **Drag and drop** files onto the window to open them in tabs. Drop a folder to show it in the side bar.
 - **File ▸ Open Recent** lists your recently opened files and folders. It also has **Reopen Closed File** ({{key:reopen_last_file}}) and **Clear Items**.
 - **From the command line**, you can open files and folders in Strata. See [Command Line](cli.md).
 
@@ -34,7 +36,7 @@ If a file is already open, Strata switches to its tab instead of opening it twic
 
 **File ▸ New File** ({{key:new_file}}) opens an empty tab. Until you save it, the tab is named after its first line of text, or "untitled" if it's empty.
 
-**File ▸ New Window** ({{key:new_window}}) opens another window. See [Panes, Tabs and Windows](panes.md).
+**File ▸ New Window** ({{key:new_window}}) opens another window. See [Panes, Windows and Tabs](panes.md).
 
 ## Tabs
 
@@ -44,7 +46,7 @@ To move between tabs, use {{key:next_view}} and {{key:prev_view}}. You can also 
 
 Right-click a tab for more options, such as Close Other Tabs, Close Tabs to the Right, Close Unmodified Tabs and Copy File Path.
 
-When you click a file once in the sidebar, it opens as a preview tab that the next preview replaces. Split panes, preview tabs and multiple windows are covered in [Panes, Tabs and Windows](panes.md).
+When you click a file once in the side bar, it opens as a preview tab that the next preview replaces. Split panes, preview tabs and multiple windows are covered in [Panes, Windows and Tabs](panes.md).
 
 ## Saving
 
@@ -81,7 +83,7 @@ Quitting Strata never asks you to save. Everything comes back the next time you 
 - the open tabs and the panes they're in
 - the text of unsaved files, including untitled ones
 - each tab's cursor position, syntax and word wrap choice
-- the folder in the sidebar
+- the folder in the side bar
 
 Strata also saves this session every few seconds while you work, so a crash loses at most a few seconds of typing. Files without unsaved changes are read fresh from disk. If a file with unsaved changes was edited by another program while Strata was closed, its tab comes back flagged as changed on disk.
 
@@ -92,33 +94,45 @@ Strata also saves this session every few seconds while you work, so a crash lose
 
 You can reach almost everything in Strata from two places.
 
-**The Command Palette** ({{key:command_palette}}) lists every command, with its shortcut. Start typing part of a name, such as "dup" for Edit: Duplicate Line or "wrap" for View: Toggle Word Wrap, then press Enter. It's also the quickest way to find out what a shortcut is.
+**The command palette** ({{key:command_palette}}) lists every command, with its shortcut. Start typing part of a name, such as "dup" for Edit: Duplicate Line or "wrap" for View: Toggle Word Wrap, then press Enter. It's also the quickest way to find out what a shortcut is.
 
 **Goto Anything** ({{key:goto_anything}}) finds files by name in your open folder and your open tabs. Type a few letters of the file name; they don't need to be next to each other. You can add more:
 
 - `:42` goes to line 42 of the current file. `name:42` opens a file at line 42.
 - `@name` jumps to a symbol (a function, class, heading and so on) in the current file. `file@name` does the same in another file.
 
-See [Find and Navigation](find.md) for search, symbols and go to definition.
+See [Find and Replace](find.md) for search, symbols and Go to Definition.
 
 ## Where to go next
 
 - [Editing](editing.md): multiple cursors, line commands, comments, case conversion, folding and more.
 - [Snippets](snippets.md): insert templates by typing a short trigger and pressing Tab.
-- [Find and Navigation](find.md): find, replace, find in files, Goto Anything and symbols.
-- [Projects and Folders](projects.md): the sidebar, project files and recent projects.
-- [Panes, Tabs and Windows](panes.md): split layouts, groups, preview tabs and multiple windows.
-- [Terminal](terminal.md), [Build Systems](build.md) and [Git](git.md).
-- [Markdown](markdown.md): live preview and HTML export.
+- [Find and Replace](find.md): find, replace, Find in Files, Goto Anything and symbols.
+- [Projects and Side Bar](projects.md): the side bar, project files and recent projects.
+- [Panes, Windows and Tabs](panes.md): split layouts, groups, preview tabs and multiple windows.
+- [Comparing Files](compare.md) and [Printing and Exporting](printing.md).
+- [Terminal](terminal.md), [Build Systems](build.md) and [Git Integration](git.md).
+- [Markdown Preview](markdown.md): live preview and HTML export.
 - [Appearance](appearance.md) and [Settings](settings.md): make Strata look and behave the way you like.
 - [Keyboard Shortcuts](shortcuts.md) and [Customizing Key Bindings](keybindings.md).
 - [Languages](languages.md) and [Encodings and Line Endings](encodings.md).
-- [Troubleshooting](troubleshooting.md): where Strata keeps its files, and common questions.
+- [Troubleshooting and FAQ](troubleshooting.md): where Strata keeps its files, crash reports, and common questions.
+- [About Strata](about.md): what Strata is, its license and credits.
 
 ## Getting help
 
-You can open this help at any time:
+You can open this manual at any time:
 
-- **Help ▸ Documentation** ({{key:documentation}}) opens this manual.
+- **Help ▸ Documentation** ({{key:documentation}}) opens it. In the command palette, it's **Help: Documentation**.
 - **Help ▸ Keyboard Shortcuts** shows every shortcut as it's currently set up, including your own changes. You can also open it [here](shortcuts.md).
-- In the Command Palette, type **Help: Documentation**.
+
+### Using the manual
+
+| To | Do this |
+|---|---|
+| Search every page | Type in the search field at the top ({{key:show_find}} puts the cursor there). Press Enter to open the best match. |
+| Go back or forward | Click ← or →, or press Alt+← and Alt+→. |
+| Read along while you work | Click **Pop Out** to move the manual into its own window, or **Dock** to put it back inside the editor window. |
+| Close it | Press Esc (first clearing the search, if there is one). |
+
+The manual opens in its own window by default. To keep it inside the editor window instead, click **Dock** once, or set `"help_in_own_window": false` in your [settings](settings.md#window).

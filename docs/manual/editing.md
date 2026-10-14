@@ -1,6 +1,6 @@
 # Editing
 
-This page covers the tools for changing text: multiple cursors, selections, line commands, comments, case conversion, completion, folding and more. Every command here is also in the Command Palette ({{key:command_palette}}).
+This page covers the tools for changing text: multiple cursors, selections, line commands, comments, case conversion, completion, folding and more. Every command here is also in the command palette ({{key:command_palette}}).
 
 ## Multiple cursors
 
@@ -203,7 +203,7 @@ The selection commands rearrange the texts of two or more selections among thems
 
 **Edit ▸ Wrap ▸ Wrap Paragraph at Ruler** ({{key:wrap_lines}}) reflows the paragraph around the cursor so no line is longer than the first ruler (80 characters if there are no rulers). A paragraph is a run of non-blank lines. The first line's indentation is kept, and so is a comment marker that every line shares, such as `//` or `#`, so wrapping a comment block keeps it a comment.
 
-Like Sublime Text, the width is the first column in the `rulers` setting (View ▸ Ruler); with no rulers it is the `wrap_width` setting (80 by default). On macOS this command has no shortcut by default, because Sublime gives ⌥⌘Q to Quit and Keep Windows; bind `wrap_lines` in your key bindings to add one. Edit ▸ Wrap also has fixed widths: 70, 72, 78, 80, 100 and 120 characters.
+The width is the first column in the `rulers` setting (View ▸ Ruler); with no rulers it is the `wrap_width` setting (80 by default). On macOS this command has no default shortcut, because ⌥⌘Q belongs to Quit and Keep Windows; bind `wrap_lines` in your key bindings to add one. Edit ▸ Wrap also has fixed widths: 70, 72, 78, 80, 100 and 120 characters.
 
 This changes the text itself by adding line breaks. To wrap long lines on screen only, use [word wrap](#word-wrap).
 
@@ -215,7 +215,7 @@ This changes the text itself by adding line breaks. To wrap long lines on screen
 | Edit ▸ Paste from History | {{key:paste_from_history}} | Shows the last 15 pieces of text you copied or cut in Strata (pieces over 4 MB are left out). Pick one to paste it. |
 | Edit ▸ Copy as HTML | {{key:copy_as_html}} | Copies the selection, or the whole file, as syntax-highlighted HTML in your current color scheme. Paste it into an email, a document or a slide to keep the colors. Apps that don't take HTML get plain text. |
 
-## The Mark
+## The mark
 
 The mark is a saved position you can come back to, as in Emacs. It's handy for selecting or deleting a large span without dragging. All of these are under **Edit ▸ Mark**.
 
@@ -245,7 +245,7 @@ A macro records:
 - keys such as the arrows, Home, End, Enter, Tab, Backspace and Delete
 - editing commands you run with a keyboard shortcut, such as Duplicate Line or Toggle Comment
 
-It does not record commands you pick from a menu or the Command Palette, mouse clicks, or window commands such as Save. Strata keeps the last macro until you record another one or quit.
+It does not record commands you pick from a menu or the command palette, mouse clicks, or window commands such as Save. Strata keeps the last macro until you record another one or quit.
 
 ## Bookmarks
 
@@ -304,7 +304,7 @@ Spell check reads prose, not code:
 - Identifiers in prose are split into words: `camelCase`, `PascalCase` and `snake_case` are checked as `camel`, `Case` and so on.
 - Words with digits (`utf8`), short ALL-CAPS words (acronyms like `HTTP` or `JSON`, up to four letters), long hexadecimal strings, URLs, email addresses, file names and paths (anything with a `.`, `/` or `@` inside), and text in backticks are skipped. So are words in non-Latin scripts.
 
-What counts as prose is the `spelling_selector` setting, a scope selector like Sublime Text's: comma-separated alternatives, each a scope (such as `source comment`) with optional `- exclusions`, where `-(a, b)` excludes several at once. See [Settings](settings.md#find-and-spelling) for the default.
+What counts as prose is the `spelling_selector` setting, a scope selector: comma-separated alternatives, each a scope (such as `source comment`) with optional `- exclusions`, where `-(a, b)` excludes several at once. See [Settings](settings.md#find-and-spelling) for the default.
 
 ### Fixing words
 
@@ -342,7 +342,7 @@ Undo history holds up to 256 MB of changed text per file. Replacing all of a 50 
 
 Strata supports input methods for Chinese, Japanese, Korean and other languages. The text you're composing appears at the cursor, and the input method's candidate window opens next to it. Strata loads CJK fonts from your system the first time such text appears, and CJK characters take two columns when lines wrap.
 
-## On Save Options
+## On save options
 
 **Tools ▸ On Save** has options that apply every time you save:
 

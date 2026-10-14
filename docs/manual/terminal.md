@@ -2,11 +2,11 @@
 
 Strata has a built-in terminal in a panel at the bottom of the window. It runs your usual shell, can hold several shells as tabs, and uses the colors of your color scheme.
 
-## Opening the Terminal
+## Opening the terminal
 
 There are three ways to show the terminal:
 
-- Choose View ▸ Terminal, or press {{key:toggle_terminal}}. In the Command Palette this is "View: Toggle Terminal".
+- Choose View ▸ Terminal, or press {{key:toggle_terminal}}. In the command palette this is "View: Toggle Terminal".
 - Choose Tools ▸ New Terminal, or press {{key:new_terminal}} ("Terminal: New Terminal" in the palette). This always starts another shell in a new tab.
 - Click the + button in the terminal's tab row.
 
@@ -18,7 +18,7 @@ Toggle Terminal works like a switch:
 
 The panel is hidden in distraction-free mode and comes back when you leave it.
 
-## Shell and Starting Folder
+## Shell and starting folder
 
 | System | Shell |
 |---|---|
@@ -57,11 +57,11 @@ When a shell exits (for example, you type `exit`), its tab closes by itself. Whe
 
 If a program rings the terminal bell, its tab name and the panel's border flash briefly.
 
-## Resizing the Panel
+## Resizing the panel
 
 Drag the top edge of the panel up or down. Strata remembers the height when you let go, and new windows and future sessions use it.
 
-## Colors and Text
+## Colors and text
 
 The terminal takes its background, text, cursor and selection colors from the current color scheme, so it matches the editor. Its 16 basic colors come from the scheme's own terminal palette when the scheme has one; otherwise Strata uses a palette tuned for light or dark backgrounds. See [Appearance](appearance.md) to change the color scheme.
 
@@ -69,7 +69,7 @@ Programs can use all 256 xterm colors and full 24-bit ("truecolor") colors. Prog
 
 Text uses the editor's monospace font at the editor's font size. Bold, italic, underlined, strikethrough, dim and inverse text are shown. The cursor can be a block, a bar or an underline, as the program asks; when the terminal doesn't have the keyboard, the cursor is drawn as an outline. The window opacity setting also applies to the terminal background.
 
-## Selecting and Scrolling
+## Selecting and scrolling
 
 | Action | Result |
 |---|---|
@@ -84,7 +84,7 @@ The terminal keeps up to 10,000 lines of scrollback. As soon as you type, the vi
 
 In full-screen programs such as `less` or `vim`, the wheel scrolls the program's own view instead of the scrollback. Programs that ask for mouse reporting receive wheel events. Mouse clicks are always used for selecting text and are not sent to programs.
 
-## Copy, Paste and Clear
+## Copy, paste and clear
 
 | Action | macOS | Windows and Linux |
 |---|---|---|
@@ -102,7 +102,7 @@ Programs can also put text on the clipboard with the standard terminal escape se
 
 Reading the clipboard the same way is blocked by default, because any program, or a file you print with `cat`, could otherwise read what you copied, such as a password. When a program tries, the status bar says Strata blocked it. To allow it, set `"terminal_allow_clipboard_read": true` in your settings.
 
-## Right-Click Menu
+## Right-click menu
 
 Right-click inside the terminal for:
 
@@ -116,7 +116,7 @@ Right-click inside the terminal for:
 | Close Terminal | Closes the current tab. If it was the last one, the panel hides. |
 | Hide Panel | Hides the terminal; the shells keep running. |
 
-## Keys in the Terminal
+## Keys in the terminal
 
 While the terminal has the keyboard, most keys go to the shell, so that programs like `bash`, `vim` and `tmux` work as they do in any terminal. Only some of Strata's shortcuts still work:
 
@@ -127,7 +127,7 @@ While the terminal has the keyboard, most keys go to the shell, so that programs
 
 Toggle Terminal ({{key:toggle_terminal}}) and New Terminal ({{key:new_terminal}}) always work, whatever keys they are bound to.
 
-So on macOS the Command Palette, Save and Build still work from the terminal, while Ctrl+G and Ctrl+R go to the shell. On Windows and Linux, Ctrl+Shift+P (the Command Palette) works, but Ctrl+S, Ctrl+B and F4 go to the shell. Editing commands, such as Toggle Comment, never act while the terminal has the keyboard.
+So on macOS the command palette, Save and Build still work from the terminal, while Ctrl+G and Ctrl+R go to the shell. On Windows and Linux, Ctrl+Shift+P (the command palette) works, but Ctrl+S, Ctrl+B and F4 go to the shell. Editing commands, such as Toggle Comment, never act while the terminal has the keyboard.
 
 On macOS, while the terminal has the keyboard, menu items whose shortcut isn't a ⌘ shortcut show no shortcut, so the menu bar doesn't take those keys from the shell.
 
@@ -135,7 +135,7 @@ On macOS, while the terminal has the keyboard, menu items whose shortcut isn't a
 
 The Alt key (Option on macOS) works as the Meta key: Alt+B sends Esc followed by B, which shells use for word movement and editing. On macOS this means Option can't type the special characters it normally types (such as accented letters), so use the editor for those and paste them.
 
-### Making Your Own Shortcuts Work in the Terminal
+### Making your own shortcuts work in the terminal
 
 To make one of your own key bindings work while the terminal has the keyboard, give it the `terminal_focus` context in your `keybindings.json`:
 
@@ -147,11 +147,11 @@ To make one of your own key bindings work while the terminal has the keyboard, g
 
 See [Key Bindings](keybindings.md) for how to edit key bindings.
 
-## Going Back to the Editor
+## Going back to the editor
 
 Click in the editor, or press {{key:toggle_terminal}} to hide the terminal and return the keyboard to the editor. Esc and Tab go to the shell, so they don't leave the terminal.
 
-## Closing Windows and Quitting
+## Closing windows and quitting
 
 Closing a terminal tab, closing a window, or quitting Strata stops the shells in it, along with any programs they started. Strata doesn't ask first, so finish or save anything running in the terminal before you close it.
 

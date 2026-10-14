@@ -307,7 +307,7 @@ impl Cmd {
             Cmd::ReopenClosed => "File: Reopen Closed Tab",
             Cmd::NextTab => "View: Next Tab",
             Cmd::PrevTab => "View: Previous Tab",
-            Cmd::ToggleSidebar => "View: Toggle Sidebar",
+            Cmd::ToggleSidebar => "View: Toggle Side Bar",
             Cmd::Find => "Find: Find…",
             Cmd::Replace => "Find: Replace…",
             Cmd::FindNext => "Find: Find Next",

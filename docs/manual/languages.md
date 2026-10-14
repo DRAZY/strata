@@ -33,7 +33,7 @@ The bundled syntaxes cover the common programming languages, markup and config f
 - **Writing:** Markdown, MultiMarkdown, reStructuredText, AsciiDoc (Asciidoctor), Textile, LaTeX, TeX, BibTeX, Typst, orgmode.
 - **Other:** Diff, Regular Expression, log files, x86_64 Assembly, LLVM, GLSL, WGSL, Verilog, SystemVerilog, VHDL.
 
-The licenses for the bundled grammars are in **Help ▸ Licenses and Attribution…** ({{key:licenses}}).
+The licenses for the bundled grammars are in **Help ▸ Licenses and Attribution…**.
 
 ## Code in Markdown
 
@@ -43,7 +43,7 @@ In the preview, the language can be a syntax name, a file extension or a common 
 
 ## Adding your own syntaxes
 
-Strata reads Sublime Text's `.sublime-syntax` format. To add a language, or to replace a bundled one:
+Syntax definitions use the `.sublime-syntax` YAML format, so existing grammars work unchanged. To add a language, or to replace a bundled one:
 
 1. Find Strata's config folder ([Troubleshooting](troubleshooting.md) shows where it is on each system).
 2. Create a folder called `Syntaxes` inside it, if there isn't one.
@@ -55,7 +55,7 @@ Syntaxes are loaded once, when Strata starts, so changes need a restart. Your sy
 If a file can't be used, Strata skips it and names it in the status bar at startup, for example when the file isn't valid YAML or contains a regular expression Strata can't compile. The other syntaxes still load.
 
 > [!NOTE]
-> Strata doesn't read Sublime Text's `.tmPreferences` files, so Toggle Comment only works for languages whose comment markers Strata already knows (see [Comments](#comments)). A syntax you add under a new name has none. Color schemes are added the same way, in a `Themes` folder; see [Appearance](appearance.md#importing-color-schemes).
+> Strata doesn't read `.tmPreferences` files, so Toggle Comment only works for languages whose comment markers Strata already knows (see [Comments](#comments)). A syntax you add under a new name has none. Color schemes are added the same way, in a `Themes` folder; see [Appearance](appearance.md#importing-color-schemes).
 
 ## Word wrap for prose
 

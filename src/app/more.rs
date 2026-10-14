@@ -444,7 +444,7 @@ impl StrataApp {
                 }
             });
             ui.add_space(6.0);
-            ui.label(egui::RichText::new("Syntax definitions come from syntect, the bat project (via two-face) and Sublime Text community packages, each under its own license. Strata's own PowerShell and JSX grammars are MIT.").small().weak());
+            ui.label(egui::RichText::new("Syntax definitions come from syntect, the bat project (via two-face) and community grammar packages, each under its own license. Strata's own PowerShell and JSX grammars are MIT.").small().weak());
             egui::CollapsingHeader::new(format!("All Rust crates ({})", all_crates().count())).show(ui, |ui| {
                 ui.label(egui::RichText::new("Every crate compiled into Strata, with its version and license.").small().weak());
                 egui::ScrollArea::vertical().id_salt("crate-licenses").max_height(260.0).show(ui, |ui| {

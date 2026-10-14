@@ -1,18 +1,106 @@
-# Strata
+<p align="center"><img src="assets/icon-app.png" width="112" alt="Strata icon"></p>
 
-A fast, open-source, keyboard-first text editor in the spirit of Sublime Text.
+<h1 align="center">Strata</h1>
 
-> Status: alpha. Icon: `assets/icon.svg`.
+<p align="center"><strong>A fast, open-source code and text editor.</strong></p>
+
+Strata is a native editor for macOS and Windows, written in Rust. It opens
+instantly, stays smooth on files of hundreds of megabytes, and keeps every
+command a keystroke away. Multiple cursors, Goto Anything, project-wide search
+and replace, split panes, a built-in terminal and a live Markdown preview are
+all there out of the box, with no accounts, no telemetry and nothing to set up.
+
+> **Status: alpha.** Strata is usable every day, but expect rough edges and
+> frequent changes. Screenshots will be added here; the app's icon is
+> `assets/icon.svg`.
+
+## Features
+
+- **Multiple cursors** and box selection, Quick Add Next, split selection into
+  lines, and soft undo for cursor changes.
+- **Goto Anything** for files, lines (`:42`), symbols (`@name`) and text
+  (`#text`), plus a **command palette** that lists every command with its
+  shortcut.
+- **Find and replace** with regular expressions, In Selection and Preserve
+  Case; **Find in Files** and **Replace in Files** across whole folders,
+  respecting `.gitignore`, with undo.
+- **Tabs, split panes and multiple windows**: up to four panes in columns,
+  rows or a grid, several views of one file, and a distraction-free mode.
+- **Projects**: one or more folders in the side bar, saved as
+  `.strata-project` files.
+- **Built-in terminal** with tabs, true color and your scheme's palette.
+- **Live Markdown preview** with GitHub-style tables, task lists, alerts,
+  footnotes and highlighted code, plus HTML export.
+- **About 190 languages** highlighted, with symbols, smart indentation and
+  comment toggling for many of them.
+- **35 color schemes** (One Dark, Dracula, Nord, Solarized, Gruvbox, Tokyo
+  Night, Catppuccin, Rosé Pine and more) that can follow the system's light
+  or dark mode, every one checked for WCAG AA contrast. Bundled coding fonts
+  with ligatures.
+- **Compare** two files, a file with another tab, or a file with its last Git
+  commit, side by side and still editable.
+- **Git change bars** in the gutter and the current branch in the status bar.
+- **Spell check** for comments, strings and prose, with built-in US and UK
+  English dictionaries.
+- **Snippets**, **build systems** with clickable errors, macros, bookmarks,
+  code folding, and text tools (JSON format, Base64, URL encoding and more).
+- **Hot exit**: quit at any time without being asked to save. Every window,
+  tab and unsaved change comes back next time.
+- **Big files**: a 95 MB, 1.6 million-line file opens highlighted in about
+  0.6 s on an M-series Mac, and minified one-line files stay responsive.
+- **40 encodings**, atomic saves, **printing** and **PDF export**.
+- **Plain-file configuration**: settings and key bindings are JSON files that
+  apply as soon as you save. Add your own snippets (`.sublime-snippet`),
+  syntaxes (`.sublime-syntax`) and color schemes (`.tmTheme`,
+  `.sublime-color-scheme`); these widely shared formats mean existing
+  collections work unchanged.
+- **Private by design**: Strata never connects to the network on its own. It
+  has no telemetry or update checks, and logs and crash reports stay on your
+  computer.
+
+## Install
+
+**macOS (Apple silicon).** Download the `Strata-<version>-arm64.dmg` from the
+project's releases, open it and drag Strata to Applications. Test builds are
+ad-hoc signed but not notarized, so the first launch on a new Mac is blocked
+by Gatekeeper: right-click Strata.app and choose **Open**, or run
+`xattr -dr com.apple.quarantine /Applications/Strata.app` once.
+
+**Windows (x64).** Build from source (below), or take the `strata.exe`
+artifact from a CI run. Add its folder to `PATH` to use the `strata` command.
+
+**Linux.** The code builds for Linux, but it isn't an officially supported
+platform yet.
+
+To use Strata from a terminal on macOS, choose **Strata ▸ Install Shell
+Command…**. See [Command line](#command-line).
+
+## Build from source
+
+You need Rust (install it from <https://rustup.rs>).
+
+```sh
+cargo build --release              # → target/release/strata (strata.exe on Windows)
+cargo run --release -- path/to/file.rs   # or a folder, which opens in the side bar
+```
+
+To build the macOS app and a DMG (on an Apple silicon Mac, with the
+`aarch64-apple-darwin` Rust target and ImageMagick's `magick` installed):
+
+```sh
+scripts/package-macos.sh           # → dist/Strata.app and dist/Strata-<version>-arm64.dmg
+```
 
 ## Documentation
 
 The user manual is built into the app: **Help ▸ Documentation** (F1, or
 "Help: Documentation" in the command palette). It covers editing, find and
-replace, snippets, projects, panes and windows, the terminal, Markdown preview,
-build systems, git, appearance, every setting, key bindings, the command line
-and troubleshooting, with search across all pages. **Help ▸ Keyboard
-Shortcuts** lists every command and its keys, generated from the key bindings
-in effect (your `keybindings.json` included).
+replace, snippets, projects, panes and windows, comparing files, printing, the
+terminal, Markdown preview, build systems, Git, appearance, every setting, key
+bindings, the command line and troubleshooting, with search across all pages.
+It opens in its own window so you can read along while you work. **Help ▸
+Keyboard Shortcuts** lists every command and its keys, generated from the key
+bindings in effect (your `keybindings.json` included).
 
 The pages are Markdown files in [`docs/manual/`](docs/manual/), compiled into
 the binary. Shortcuts in them are written as `{{key:command_id}}` and filled in
@@ -20,56 +108,18 @@ with the current platform's keys. `cargo test` checks that every page parses,
 every link and anchor resolves, every setting is documented and every command
 appears on the shortcuts page.
 
-## Goals
-
-- Opens instantly; stays smooth on huge files (100 MB+) and minified one-line
-  files: highlighting runs a screenful at a time with a background parser,
-  long lines are laid out only where visible, and big files open in a
-  large-file mode (plain text, no minimap or wrap) like Sublime and VS Code.
-  `scripts/bench-large-files.sh` measures it.
-- Multiple cursors, Goto Anything, command palette, split panes, minimap.
-- Reads existing `.sublime-syntax` / `.tmTheme` grammars and color schemes so the
-  ecosystem's community grammars work on day one.
-- MIT-licensed. Supported platforms: **macOS (Apple silicon)** and **Windows (x64)**.
-
-## Clean-room rule
-
-This project is **not** derived from Sublime Text's code, binaries, or bundled
-assets. Read `docs/CLEAN_ROOM.md` before contributing.
-
-## Proposed stack
-
-| Layer | Choice | Why |
-|---|---|---|
-| Core | Rust | Speed, memory safety, single binary |
-| Text buffer | `ropey` | Rope with O(log n) edits on huge files |
-| Highlighting | `syntect` | Reads `.sublime-syntax` + `.tmTheme` natively |
-| Spell check | `spellbook` + SCOWL | Pure-Rust Hunspell; same results on every platform |
-| Parsing (later) | `tree-sitter` | Structural selection, symbols |
-| UI | `winit` + `wgpu` | GPU text rendering, Sublime-level responsiveness |
-| Plugins | Lua or WASM | Sandboxed, embeddable |
-
-See `docs/FEATURES.md` for the feature spec and roadmap.
-
-## Build & run
-
-Requires Rust (install from https://rustup.rs).
-
-```sh
-cargo run --release -- path/to/file.rs     # or a folder, which opens in the sidebar
-```
-
 ## Command line
 
 ```
 strata [options] [file[:line[:column]] | folder]...
 
+  -n, --new-window open the files in a new window
   -w, --wait       wait until the files' tabs are closed (for $EDITOR / git)
   -h, --help       show help
   -v, --version    show the version
 ```
 
-- Files open in tabs, folders in the sidebar; `file:12` and `file:12:5` jump
+- Files open in tabs, folders in the side bar; `file:12` and `file:12:5` jump
   to a line and column (a file whose name really ends in `:12` wins if it
   exists). A path that doesn't exist yet opens as an empty tab and is created
   when you first save it.
@@ -99,7 +149,7 @@ strata [options] [file[:line[:column]] | folder]...
   opens files from Finder (Open With ▸ Strata, or drop on the Dock icon) and
   `open -a Strata file`, both when it's running and on a cold start.
 
-## Shortcuts
+## Keyboard shortcuts
 
 Cmd on macOS, Ctrl on Windows unless noted. Every command is also in the
 command palette, which shows its shortcut.
@@ -113,7 +163,7 @@ command palette, which shows its shortcut.
 | Next / previous tab | ⌃Tab, ⌥⌘→, ⇧⌘] | Ctrl+Tab, Ctrl+PgDn |
 | Tab 1–9 | ⌘1…⌘9 | Alt+1…Alt+9 |
 | Open / open folder / save / save as / save all | ⌘O / ⇧⌘O / ⌘S / ⇧⌘S / ⌥⌘S | Ctrl+… |
-| Toggle sidebar / full screen | ⌘\\ / ⌃⌘F | Ctrl+\\ / F11 |
+| Toggle side bar / full screen | ⌘\\ / ⌃⌘F | Ctrl+\\ / F11 |
 | Settings | ⌘, | Ctrl+, |
 | Add next occurrence / all occurrences | ⌘D / ⌃⌘G | Ctrl+D / Alt+F3 |
 | Add cursor / cursor above, below | ⌘click / ⌃⇧↑↓ | Ctrl+click / Ctrl+Alt+↑↓ |
@@ -142,8 +192,8 @@ per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
 
 Preferences ▸ Key Bindings (macOS: Strata ▸ Settings ▸ Key Bindings, or
 "Preferences: Key Bindings" in the palette) opens Strata's defaults, read-only,
-next to your `keybindings.json` in the settings folder. It's a Sublime-style
-keymap, comments and trailing commas allowed:
+next to your `keybindings.json` in the settings folder. It's a JSON list of
+bindings, with comments and trailing commas allowed:
 
 ```jsonc
 [
@@ -157,11 +207,11 @@ keymap, comments and trailing commas allowed:
 
 - **Commands** use Strata's ids (`command_palette`, `goto_anything`,
   `toggle_side_bar`, `split_selection_into_lines`, `focus_group` with
-  `{"group": 0}`…; the defaults pane lists them all) or Sublime's command
-  names with their args (`show_overlay`, `show_panel`, `toggle_comment`
+  `{"group": 0}`…; the defaults pane lists them all) or common command
+  names from other editors' keymaps, with their args (`show_overlay`, `show_panel`, `toggle_comment`
   `{"block": true}`, `expand_selection` `{"to": "line"}`, `select_lines`,
   `run_macro_file` for Delete Line / Add Line, `set_layout`, `select_by_index`,
-  `fold_by_level`…), so a pasted Sublime keymap mostly just works. Unknown
+  `fold_by_level`…), so a pasted keymap mostly just works. Unknown
   commands are reported and skipped.
 - **Keys**: `super`/`cmd` (macOS), `ctrl`, `alt`/`option`, `shift`, `primary`;
   letters, digits, `f1`–`f24`, arrows, `home`/`end`, `pageup`/`pagedown`,
@@ -179,9 +229,9 @@ keymap, comments and trailing commas allowed:
   menus all show your keys. Cut, Copy, Paste and Quit keep their standard keys
   unless you bind those keys to something else.
 
-## What works
+## Feature reference
 
-- **Menus like Sublime's**: a native macOS menu bar (Strata, File, Edit,
+- **Menus**: a native macOS menu bar (Strata, File, Edit,
   Selection, Find, View, Goto, Tools, Project, Window, Help) and an in-window
   menu bar on Windows. Every item runs a real command and shows its shortcut.
 - **Files and formats**: open, save, save as, save all, revert, open recent,
@@ -191,12 +241,12 @@ keymap, comments and trailing commas allowed:
   conversion. Saves are atomic (temp file + rename), keep symlinks and file
   permissions, and refuse text the chosen encoding can't hold.
 - **Tabs and split panes**: preview tabs, drag to reorder or into another pane;
-  1–4 columns, 2 rows or a 2×2 grid (Alt+Cmd+1…5), draggable dividers.
+  1–4 columns, 2 or 3 rows, or a 2×2 grid (Alt+Cmd+1…5), draggable dividers.
 - **Several views of one file** (File ▸ New View into File, or a tab's Split
   View): each view has its own cursors, scroll and folds; text, undo history,
   saving and unsaved state are shared, and edits in one view move the others'
   selections and bookmarks along. Hot exit keeps every view (the text once).
-- **Compare** (File ▸ Compare ▸ Compare with…, a tab's or the sidebar's
+- **Compare** (File ▸ Compare ▸ Compare with…, a tab's or the side bar's
   Compare with…, or Git: Compare with HEAD): two texts side by side with
   aligned lines and filler rows, changed lines and words marked, one scroll
   position, F7 / Shift+F7 for the next / previous difference, swap sides and
@@ -223,7 +273,7 @@ keymap, comments and trailing commas allowed:
   Windows): a live, theme-colored preview beside the editor with GitHub-style
   tables, task lists, footnotes, alerts and highlighted code blocks; it follows
   the editor's scroll. File ▸ Export ▸ Markdown as HTML… saves a standalone page.
-- **Snippets** in Sublime's `.sublime-snippet` format (bring your own: put
+- **Snippets** in the `.sublime-snippet` XML format (bring your own: put
   them anywhere under the config folder's `Snippets/`; they reload when
   changed). Type a trigger and press Tab, or pick one from the completion list
   or Tools ▸ Snippets…; Tab / Shift+Tab move through `$1…$n` fields, `$0` is
@@ -237,7 +287,7 @@ keymap, comments and trailing commas allowed:
   Python `def` `class` `ifmain` `for`; JS/TS `fn` `arrow` `log` `imp`; Go
   `func` `iferr`; Markdown `link` `img` `code` `table`; HTML `html5` `a`
   `div`; shell `shebang` `if` `for`. A user snippet with the same trigger wins.
-- **Languages**: about 200 grammars, chosen by file name, extension or first
+- **Languages**: about 190 grammars, chosen by file name, extension or first
   line. Beyond syntect's defaults (C/C++, C#, Go, Java, JavaScript, Python,
   Ruby, Rust, PHP, HTML, CSS, SQL, YAML, JSON, Markdown, shell, Makefile, Diff…)
   it bundles bat's collection: TypeScript, TSX, JSX, TOML, Swift, Kotlin, Dart,
@@ -249,7 +299,8 @@ keymap, comments and trailing commas allowed:
   `.sublime-color-scheme` color schemes to `Themes/`; broken files are skipped and named in the status
   bar.
 - **Spell check** (View ▸ Spell Check, F6): wavy underlines for misspelled
-  words in comments, strings and prose (Sublime's `spelling_selector`),
+  words in comments, strings and prose (chosen by the `spelling_selector`
+  scope selector),
   camelCase/snake_case aware; right-click for suggestions, Ignore Word and Add
   Word to Dictionary (`added_words`); Next/Prev Misspelling; bundled SCOWL
   en_US and en_GB Hunspell dictionaries via the pure-Rust `spellbook` crate.
@@ -274,15 +325,15 @@ keymap, comments and trailing commas allowed:
   theme's palette, selection and scrollback. While it has the keyboard it keeps
   Ctrl and Alt keys (Alt/Option is Meta); ⌘C/⌘V/⌘K copy, paste and clear on
   macOS, Ctrl+Shift+C/V (or Ctrl+C with a selection) elsewhere.
-- **Right-click menus** everywhere, like Sublime's: the editor (Show Unsaved
+- **Right-click menus** everywhere: the editor (Show Unsaved
   Changes as a diff, Cut/Copy/Paste, Select All, Reveal in Finder, Copy File
   Path, Reveal in Side Bar, Goto Definition, Toggle Comment, Fold), the line
   numbers (bookmark, fold, copy line), tabs (Close Others, to the Right,
   Unmodified), the terminal (Copy, Paste, Select All, Clear, New/Close, Hide)
   and its tabs, the Markdown preview (copy as Markdown or HTML, export, hide),
   and the find, replace, palette and find-in-folder fields.
-- **Projects**: open a folder (sidebar with New File/Folder, Rename, Reveal),
-  save and reopen `.strata-project` files.
+- **Projects**: open one or more folders (side bar with New File/Folder,
+  Rename, Reveal), save and reopen `.strata-project` files.
 - **Settings** in `settings.json` (⌘, opens it): fonts, line spacing, color
   scheme (fixed or following the system), color overrides, tab size,
   spaces vs tabs, indentation detection, word wrap, wrap width, minimap,
@@ -307,10 +358,9 @@ each). Tools ▸ Text has JSON format/minify, Base64/URL/HTML codecs, UUID and
 date; Tools ▸ On Save trims whitespace, adds a final newline, or saves on
 focus loss.
 
-Known gaps: no plugin/package system, no spell check, Strata quits with its
-last window (macOS too), and cloned views of one file in two panes aren't
-supported. Word wrap turns off for
-files over 8 MB. The bundled grammars come from syntect's defaults and the bat
+Known gaps: no plugin or package system yet, and Strata quits with its last
+window (macOS too). Word wrap turns off for files over about 8 million
+characters. The bundled grammars come from syntect's defaults and the bat
 project (via the `two-face` crate, MIT/Apache-2.0); each grammar's own license
 text ships in Help ▸ Licenses.
 
@@ -351,7 +401,7 @@ Appearance, or in `settings.json`:
 ```
 
 In Auto mode, picking a dark scheme sets `dark_theme` and a light one sets
-`light_theme`. `"theme": "auto"` works too, as in Sublime.
+`light_theme`. `"theme": "auto"` works too.
 
 **Your own colors**, without writing a scheme (applied live; names are the
 roles above, plus `background`, `foreground`, `caret`, `selection`,
@@ -365,7 +415,7 @@ roles above, plus `background`, `foreground`, `caret`, `selection`,
 "font_options": ["no_italic"],   // also "no_underline"
 ```
 
-**Bring a scheme**: put `.tmTheme` or Sublime Text 3/4 `.sublime-color-scheme`
+**Bring a scheme**: put `.tmTheme` or `.sublime-color-scheme`
 files (variables, globals, rules with `scope`/`foreground`/`background`/
 `font_style`; `var()`, `color(… alpha() blend())`; comments and trailing
 commas allowed) in the config folder's `Themes/`. They appear under Your
@@ -386,7 +436,7 @@ height; in `settings.json`:
 "ui_font_face": "Inter",
 "ui_font_size": 13,
 "line_height": 1.3,              // multiple of the font's own line height
-"line_padding_top": 0,           // extra points above / below each line (Sublime's names)
+"line_padding_top": 0,           // extra points above / below each line
 "line_padding_bottom": 0,
 "caret_width": 2,
 ```
@@ -394,7 +444,24 @@ height; in `settings.json`:
 Settings ▸ Settings (⌘,) opens `settings.json`; a new file is written with every
 setting at its default, the ones above included.
 
+## Privacy
+
+Strata makes no network connections of its own: no telemetry, no update
+checks, no downloads, and Markdown images aren't fetched. A link you click (in
+the Markdown preview, the manual, or Help ▸ Report a Problem…) opens in your
+browser. The `strata` command talks to the running app over a local socket
+(a localhost-only port with a random token on Windows). The terminal and build
+systems run the programs you choose, and Git integration only reads your local
+repository.
+
 ## Development
+
+Strata is written in Rust on [egui](https://github.com/emilk/egui)/eframe
+(GPU rendering through wgpu), with ropey for the text buffer, syntect and
+two-face for highlighting, alacritty_terminal for the terminal, pulldown-cmark
+for Markdown, spellbook for spell check and encoding_rs for encodings.
+`docs/FEATURES.md` has the feature spec and roadmap. Contributions must follow
+the clean-room rules in [`docs/CLEAN_ROOM.md`](docs/CLEAN_ROOM.md).
 
 `cargo test` runs editor-core unit tests plus headless egui tests that drive
 the real widget and the whole window with simulated keys and clicks.
@@ -434,12 +501,9 @@ single-instance socket, so a test copy never talks to your everyday Strata;
 for the .app use `open --env STRATA_CONFIG_DIR=dir -a dist/Strata.app file`,
 with your installed Strata quit, since both copies share a bundle id).
 
-## Test build for macOS (Apple silicon)
+## License
 
-```sh
-scripts/package-macos.sh   # → dist/Strata-<version>-arm64.dmg
-```
-
-The app is ad-hoc signed, not notarized. On the Mac that built it, it opens
-normally. On another Mac, the first launch is blocked by Gatekeeper: right-click
-Strata.app → Open, or run `xattr -dr com.apple.quarantine /Applications/Strata.app`.
+Strata is released under the [MIT License](LICENSE). Bundled fonts, color
+schemes, syntax definitions and dictionaries come from other open-source
+projects under their own licenses; see **Help ▸ Licenses and Attribution…**
+in the app.

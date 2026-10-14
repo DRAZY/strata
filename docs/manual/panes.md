@@ -47,14 +47,14 @@ Drag a tab along the tab bar to reorder it. Drag it onto a tab in another pane t
 
 ### Preview tabs
 
-Clicking a file once in the sidebar opens it as a preview, shown with an italic title. The next file you preview in that pane replaces it, so you can look through files without collecting tabs.
+Clicking a file once in the side bar opens it as a preview, shown with an italic title. The next file you preview in that pane replaces it, so you can look through files without collecting tabs.
 
 A preview tab becomes a regular tab when you:
 
 - edit it,
 - save it,
 - double-click its tab,
-- double-click the file in the sidebar, or open it any other way (File ▸ Open…, Goto Anything, a Find in Files result).
+- double-click the file in the side bar, or open it any other way (File ▸ Open…, Goto Anything, a Find in Files result).
 
 ### Tab right-click menu
 
@@ -72,12 +72,12 @@ Right-click a tab for:
 | New File | Open an untitled tab in this pane. |
 | Open File… | Open files into this pane. |
 | Copy File Path | Copy the file's full path. |
-| Reveal in Side Bar | Show the file in the sidebar's folder tree. Available when the file is inside the open folder. |
+| Reveal in Side Bar | Show the file in the side bar's folder tree. Available when the file is inside the open folder. |
 | Reveal in Finder | Show the file in your file manager (Show in Explorer on Windows, Open Containing Folder on Linux). |
 
 When closing several tabs, Strata asks about each one with unsaved changes and stops if you choose Cancel.
 
-## Several Views of One File
+## Several views of one file
 
 A file can be open in more than one tab at a time, for example to look at the top of a long file while you edit the bottom, or to keep two distant parts of it side by side.
 
@@ -93,7 +93,7 @@ They are one file in every other way too:
 - There's one undo history. Undo and redo work from any view, and step back through edits made in all of them, newest first.
 - Saving any view saves the file, and every view shows the same unsaved dot. Save As, Reopen with Encoding, line endings and Revert apply to every view.
 - Closing a view never asks about unsaved changes while another view of the file is still open; the last one asks as usual.
-- Opening the file again (from the sidebar, Goto Anything or a search result) uses the view you're in, or the one you used last.
+- Opening the file again (from the side bar, Goto Anything or a search result) uses the view you're in, or the one you used last.
 - Find in Files and Replace in Files count and change the file once.
 - With hot exit on, every view comes back next time, with its own cursors and pane, and unsaved text is kept once.
 
@@ -115,7 +115,7 @@ Split the editor area into panes with View ▸ Layout. Each pane, also called a 
 
 Panes are numbered left to right, then top to bottom. When you switch to a layout with fewer panes, the tabs from the panes that go away move into the last remaining pane.
 
-**Split Right** ({{key:split_right}}, "Layout: Split Right" in the Command Palette) moves the current file into the pane to its right, adding a column if there isn't one.
+**Split Right** ({{key:split_right}}, "Layout: Split Right" in the command palette) moves the current file into the pane to its right, adding a column if there isn't one.
 
 Drag the line between two panes to resize them. Each pane keeps at least a small minimum size. The focused pane is marked with a thin accent line along its top, and an empty pane shows a hint until you drag a tab into it. Click a pane to focus it.
 
@@ -137,7 +137,7 @@ To focus pane 1 to 4 directly, press Ctrl+1 to Ctrl+4 (⌃1 to ⌃4 on macOS), o
 
 With hot exit on (see below), your layout, the pane sizes and which pane each tab is in are saved with the window and restored next time.
 
-## Multiple Windows
+## Multiple windows
 
 Strata can have several windows open at once, each with its own tabs.
 
@@ -151,7 +151,7 @@ From the command line, `strata -n` opens files in a new window. See [Command Lin
 
 ### What each window has
 
-Each window has its own tabs, panes and layout, sidebar folder, find bar, Command Palette, terminal panel and builds.
+Each window has its own tabs, panes and layout, side bar folder, find bar, command palette, terminal panel and builds.
 
 These are shared by every window:
 
@@ -175,25 +175,25 @@ Closing the last window quits Strata, on every platform, including macOS. Quitti
 - With **hot exit** on (the default), Strata saves every window, its tabs and any unsaved text, without asking. Next time you start Strata, all of your windows come back where they were.
 - With hot exit off, Strata asks about each unsaved tab, and quitting stops if you choose Cancel.
 
-On macOS, Strata ▸ Quit and Keep Windows (⌥⌘Q, as in Sublime Text) does the same as Quit. Hot exit is controlled by the `hot_exit` setting; see [Settings](settings.md).
+On macOS, Strata ▸ Quit and Keep Windows (⌥⌘Q) does the same as Quit. Hot exit is controlled by the `hot_exit` setting; see [Settings](settings.md).
 
-## Full Screen and Distraction Free
+## Full screen and distraction-free mode
 
 | Command | Shortcut | What it does |
 |---|---|---|
 | View ▸ Toggle Full Screen | {{key:toggle_full_screen}} | Fill the screen with the window. |
 | View ▸ Toggle Distraction Free | {{key:toggle_distraction_free}} | Full screen with only the text. |
 
-Distraction-free mode hides the sidebar, tabs, status bar, minimap and build results, plus the menu bar on Windows and Linux. Use the same shortcut, or the Command Palette's "View: Toggle Distraction Free Mode", to come back; the sidebar and minimap return as they were.
+Distraction-free mode hides the side bar, tabs, status bar, minimap and build results, plus the menu bar on Windows and Linux. Use the same shortcut, or the command palette's "View: Toggle Distraction Free Mode", to come back; the side bar and minimap return as they were.
 
-## Showing and Hiding Parts of the Window
+## Showing and hiding parts of the window
 
 | Command | Shortcut | What it does |
 |---|---|---|
-| View ▸ Side Bar ▸ Toggle Side Bar | {{key:toggle_side_bar}} | Show or hide the sidebar. |
-| View ▸ Side Bar ▸ Toggle Show Open Files | {{key:toggle_open_files}} | Show or hide the Open Files list in the sidebar. |
+| View ▸ Side Bar ▸ Toggle Side Bar | {{key:toggle_side_bar}} | Show or hide the side bar. |
+| View ▸ Side Bar ▸ Toggle Show Open Files | {{key:toggle_open_files}} | Show or hide the Open Files list in the side bar. |
 | View ▸ Toggle Tabs | {{key:toggle_tabs}} | Show or hide the tab bars. |
 | View ▸ Toggle Status Bar | {{key:toggle_status_bar}} | Show or hide the status bar. |
 | View ▸ Toggle Minimap | {{key:toggle_minimap}} | Show or hide the minimap. |
 
-Tabs, status bar and minimap are settings (`show_tabs`, `show_status_bar` and `minimap`), so they apply to every window and are remembered. The sidebar is shown or hidden per window. For the sidebar itself, see [Projects and Sidebar](projects.md).
+Tabs, status bar and minimap are settings (`show_tabs`, `show_status_bar` and `minimap`), so they apply to every window and are remembered. The side bar is shown or hidden per window. For the side bar itself, see [Projects and Side Bar](projects.md).

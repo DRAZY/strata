@@ -14,7 +14,7 @@ Some examples:
 strata notes.md                 # open a file
 strata src/main.rs:120          # open at line 120
 strata src/main.rs:120:8        # open at line 120, column 8
-strata ~/projects/website       # open a folder in the sidebar
+strata ~/projects/website       # open a folder in the side bar
 strata -n todo.txt              # open in a new window
 strata -w message.txt           # wait until you close the tab
 ```
@@ -43,7 +43,7 @@ Some files really have names that end in a colon and a number. If a file with th
 ## New files and folders
 
 - **A file that doesn't exist yet** opens in an empty tab. The file is created the first time you save, so `strata new-idea.md` is a quick way to start a new file.
-- **A folder** opens in the sidebar. See [Projects](projects.md).
+- **A folder** opens in the side bar. See [Projects](projects.md).
 
 ## When Strata is already running
 
@@ -114,7 +114,7 @@ Besides the command line, you can open files and folders in Strata from:
 - **Terminal**: `open -a Strata file.txt`.
 - **A Strata window**: drag files or folders onto it.
 
-Files open in tabs and folders open in the sidebar, as they do from the command line. A file that's already open comes forward in its window.
+Files open in tabs and folders open in the side bar, as they do from the command line. A file that's already open comes forward in its window.
 
 ## Exit status
 

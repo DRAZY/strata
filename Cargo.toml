@@ -3,6 +3,11 @@ name = "strata"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "A fast, open-source code and text editor, written in Rust"
+repository = "https://github.com/strata-editor/strata"
+readme = "README.md"
+keywords = ["editor", "text-editor", "code-editor", "egui"]
+categories = ["text-editors"]
 
 [dependencies]
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11"] }

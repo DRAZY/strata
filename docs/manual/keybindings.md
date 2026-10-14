@@ -1,6 +1,6 @@
 # Customizing Key Bindings
 
-You can change any shortcut in Strata by editing one file, `keybindings.json`. It uses the same format as Sublime Text keymaps, so you can often paste Sublime bindings straight in.
+You can change any shortcut in Strata by editing one file, `keybindings.json`. It uses a common JSON keymap format, and many command names from other editors' keymaps are accepted too, so you can often paste existing bindings straight in.
 
 ## Open your key bindings
 
@@ -38,7 +38,7 @@ Comments (`//` and `/* */`) and trailing commas are allowed.
   // A chord: press Cmd+K (Ctrl+K), then Cmd+T (Ctrl+T)
   { "keys": ["primary+k", "primary+t"], "command": "title_case" },
 
-  // A Sublime-style command with arguments
+  // A command with arguments
   { "keys": ["primary+shift+p"], "command": "show_overlay", "args": {"overlay": "command_palette"} },
 
   // Remove a default shortcut
@@ -118,8 +118,8 @@ A chord is two keys pressed one after the other. Upper Case ({{key:upper_case}})
 
 The `command` can be any of these:
 
-- **A Strata command name.** Every command is listed in the Default Key Bindings pane, including the ones with no shortcut. Most names match Sublime Text's: `save`, `goto_line`, `toggle_side_bar`, `duplicate_line`, `upper_case`, `toggle_terminal`, `key_bindings`.
-- **A Sublime Text command name.** Many Sublime names that don't match a Strata name directly are also accepted, with their arguments. See the two tables below.
+- **A Strata command name.** Every command is listed in the Default Key Bindings pane, including the ones with no shortcut. For example `save`, `goto_line`, `toggle_side_bar`, `duplicate_line`, `upper_case`, `toggle_terminal` and `key_bindings`.
+- **A common alias.** Command names used by other editors' keymaps are also accepted, with their arguments, so existing keymaps mostly work. See the two tables below.
 - **`""`, `"unbound"` or `"noop"`.** See [Unbinding](#unbinding).
 
 A command Strata doesn't recognize is skipped and reported in the status bar with its line number.
@@ -152,17 +152,17 @@ These commands need `args`, or do something different depending on them.
 | `move_to_neighboring_group` | `{"forward": false}` | Move the file to the previous pane. With `true` or no args, the next one |
 | `build` | `{"select": true}` | Build With (choose a build system). Without it, Build |
 | `toggle_setting` | `{"setting": "word_wrap"}` | Toggle word wrap. Only `word_wrap` is supported |
-| `set_layout` | Sublime's `cols`, `rows` and `cells` | Sublime's standard layouts: single, 2 to 4 columns, 2 or 3 rows, and the 4-pane grid |
-| `run_macro_file` | `{"file": "res://Packages/Default/Delete Line.sublime-macro"}` | Sublime's built-in macros: Delete Line, Add Line, Add Line Before, Delete to Hard EOL, Delete to Hard BOL, Delete to BOL |
+| `set_layout` | `cols`, `rows` and `cells` | The standard layouts: single, 2 to 4 columns, 2 or 3 rows, and the 4-pane grid |
+| `run_macro_file` | `{"file": "res://Packages/Default/Delete Line.sublime-macro"}` | The standard line macros: Delete Line, Add Line, Add Line Before, Delete to Hard EOL, Delete to Hard BOL, Delete to BOL |
 | `edit_settings` | a `base_file` ending in `.sublime-keymap` | Open Key Bindings. Without it, open Settings |
 
-Pane and tab numbers in `args` start at 0, as in Sublime Text.
+Pane and tab numbers in `args` start at 0.
 
-### Other Sublime command names
+### Other command aliases
 
-These Sublime names take no arguments and run the Strata command shown.
+These names take no arguments and run the Strata command shown.
 
-| Sublime command | Strata command |
+| Alias | Strata command |
 |---|---|
 | `prompt_open_file`, `prompt_open` | `open_file` |
 | `prompt_open_folder`, `prompt_add_folder` | `open_folder` |
@@ -176,7 +176,7 @@ These Sublime names take no arguments and run the Strata command shown.
 | `close_pane` | `close_group` |
 | `redo_or_repeat` | `redo` |
 
-Commands from Sublime packages and plugins don't exist in Strata, so bindings for them are skipped and reported.
+Commands that come from another editor's plugins don't exist in Strata, so bindings for them are skipped and reported.
 
 ## Unbinding
 
@@ -217,7 +217,7 @@ So `{"key": "panel_visible", "operand": false}` and `{"key": "panel_visible", "o
 | `panel_visible` | The find bar or the terminal panel is open |
 | `overlay_visible` or `overlay_has_focus` | The command palette or another quick panel (Goto Anything, Goto Line, and so on) is open |
 
-Other Sublime context keys, such as `selector` or `setting.*`, aren't supported. A binding that uses one is skipped and reported.
+Other context keys, such as `selector` or `setting.*`, aren't supported. A binding that uses one is skipped and reported.
 
 ### The terminal keeps most keys
 
