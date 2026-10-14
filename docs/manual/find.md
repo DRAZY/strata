@@ -97,7 +97,7 @@ Quick Add Next and Quick Find All are the quickest way to get multiple cursors. 
 
 With `.*` turned on, the Find field takes a regular expression. Strata uses a fast regular expression engine that supports the usual syntax (character classes, `\d`, `\w`, `\b`, groups, named groups like `(?P<name>...)`, alternation and repetition) but not look-around or backreferences inside the pattern. `^` and `$` match at the start and end of each line.
 
-In the find bar a pattern can match across lines (for example `\n` matches a line break). Find in Files searches one line at a time, so its matches never span lines.
+In the find bar a pattern can match across lines (for example `\n` matches a line break). Files with Windows line endings (`\r\n`) behave the same as files with Unix ones: `\n` matches the whole `\r\n`, `$` matches before it, `.` doesn't match its `\r`, and a match or replacement never takes half of one. Find in Files searches one line at a time, so its matches never span lines.
 
 ### Replacement syntax
 

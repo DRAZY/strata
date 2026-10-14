@@ -1530,7 +1530,12 @@ impl StrataApp {
             let (byte, end) = (d.editor.buffer.char_to_byte(p.start()), d.editor.buffer.char_to_byte(p.end()));
             let eol = d.editor.buffer.line_ending().as_str();
             // Only the selected match: the text past it is cut off (as In Selection's scope may be).
-            if let Some(caps) = r.regex().captures_at(&text[..end], byte).filter(|c| c.get(0).is_some_and(|m| m.range() == (byte..end))) {
+            // (The match may sit inside the selection, grown to whole `\r\n` pairs.)
+            let found = |c: &regex::Captures| crate::find::replaceable(&text, c) == Some(byte..end);
+            let caps = r.regex().captures_at(&text[..end], byte);
+            let grown = text.as_bytes().get(byte) == Some(&b'\r');
+            let caps = caps.filter(found).or_else(|| grown.then(|| r.regex().captures_at(&text[..end], byte + 1)).flatten().filter(found));
+            if let Some(caps) = caps {
                 let rep = self.replacement_for(&r, &caps, eol);
                 self.doc().editor.replace_ranges(vec![(p.range(), rep)]);
                 self.refresh_matches();

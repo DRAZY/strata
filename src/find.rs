@@ -23,13 +23,78 @@ impl Query {
     }
 
     pub fn build(&self) -> Result<Regex, regex::Error> {
-        let pattern = if self.regex { self.text.clone() } else { regex::escape(&self.text) };
+        let pattern = if self.regex { any_line_break(&self.text) } else { regex::escape(&self.text) };
         let pattern = if self.whole_word { format!(r"\b(?:{pattern})\b") } else { pattern };
+        // CRLF mode: `^`/`$` treat `\r\n` as one line break and `.` doesn't
+        // match `\r`, so a pattern behaves the same in CRLF and LF files.
         RegexBuilder::new(&pattern)
             .case_insensitive(!self.case_sensitive)
             .multi_line(true)
+            .crlf(true)
             .build()
     }
+}
+
+/// `pattern` with each `\n` outside a character class made to match a
+/// whole line break, `\r\n` too, so `(\w+)\n` works in CRLF files.
+fn any_line_break(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars();
+    let mut class = 0usize;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('n') if class == 0 => out.push_str(r"(?:\r?\n)"),
+                Some(e) => {
+                    out.push('\\');
+                    out.push(e);
+                }
+                None => out.push('\\'),
+            },
+            '[' => {
+                class += 1;
+                out.push(c);
+                // A `]` (or `^]`) right after `[` is a literal.
+                let rest = chars.as_str();
+                let lit = if rest.starts_with("^]") { 2 } else { usize::from(rest.starts_with(']')) };
+                for _ in 0..lit {
+                    out.extend(chars.next());
+                }
+            }
+            ']' if class > 0 => {
+                class -= 1;
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Is byte `i` of `text` between the `\r` and `\n` of a line break?
+fn inside_crlf(text: &str, i: usize) -> bool {
+    let b = text.as_bytes();
+    i > 0 && i < b.len() && b[i - 1] == b'\r' && b[i] == b'\n'
+}
+
+/// `r` grown to whole `\r\n` pairs, so a match never takes half a line
+/// break (`\n` finds the whole `\r\n`; `\s` at a line end takes both).
+pub fn whole_line_breaks(text: &str, r: Range<usize>) -> Range<usize> {
+    let start = if inside_crlf(text, r.start) { r.start - 1 } else { r.start };
+    let end = if inside_crlf(text, r.end) { r.end + 1 } else { r.end };
+    start..end
+}
+
+/// The byte range a regex replacement should replace: the match grown to
+/// whole line breaks, or None when one of its (non-empty) groups holds half
+/// a `\r\n` (expanding it would write a lone `\r` or `\n`).
+pub fn replaceable(text: &str, caps: &regex::Captures) -> Option<Range<usize>> {
+    let m = caps.get(0)?;
+    let splits = |g: regex::Match| !g.is_empty() && (inside_crlf(text, g.start()) || inside_crlf(text, g.end()));
+    if caps.iter().skip(1).flatten().any(splits) {
+        return None;
+    }
+    Some(whole_line_breaks(text, m.range()))
 }
 
 /// The find bar's toggles (and its last text), kept in the session.
@@ -69,23 +134,7 @@ impl Default for FindOptions {
 
 /// Non-empty matches as char ranges, in document order.
 pub fn find_all(re: &Regex, text: &str, limit: usize) -> (Vec<Range<usize>>, bool) {
-    let mut out = Vec::new();
-    // Matches arrive in order, so byte→char conversion is one running count.
-    let (mut byte, mut chr) = (0, 0);
-    for m in re.find_iter(text) {
-        if m.start() == m.end() {
-            continue;
-        }
-        if out.len() == limit {
-            return (out, true);
-        }
-        chr += text[byte..m.start()].chars().count();
-        let start = chr;
-        chr += text[m.start()..m.end()].chars().count();
-        byte = m.end();
-        out.push(start..chr);
-    }
-    (out, false)
+    find_in(re, text, &[0..text.len()], limit)
 }
 
 /// Non-empty matches inside `scope` (sorted, disjoint byte ranges of
@@ -93,6 +142,7 @@ pub fn find_all(re: &Regex, text: &str, limit: usize) -> (Vec<Range<usize>>, boo
 /// `\b` still see the text before a range.
 pub fn find_in(re: &Regex, text: &str, scope: &[Range<usize>], limit: usize) -> (Vec<Range<usize>>, bool) {
     let mut out = Vec::new();
+    // Matches arrive in order, so byte→char conversion is one running count.
     let (mut byte, mut chr) = (0, 0);
     for m in scope.iter().flat_map(|r| matches_in(re, text, r.clone())) {
         if out.len() == limit {
@@ -111,6 +161,8 @@ pub fn find_in(re: &Regex, text: &str, scope: &[Range<usize>], limit: usize) -> 
 pub fn matches_in<'a>(re: &'a Regex, text: &'a str, range: Range<usize>) -> impl Iterator<Item = Range<usize>> + 'a {
     let hay = &text[..range.end];
     let mut at = range.start;
+    // End of the last match given out (a grown match may reach past `at`).
+    let mut done = range.start;
     std::iter::from_fn(move || {
         while at <= hay.len() {
             let m = re.find_at(hay, at)?;
@@ -120,7 +172,12 @@ pub fn matches_in<'a>(re: &'a Regex, text: &'a str, range: Range<usize>) -> impl
                 continue;
             }
             at = m.end();
-            return Some(m.range());
+            let r = whole_line_breaks(text, m.range());
+            if r.start < done || r.end > range.end {
+                continue;
+            }
+            (at, done) = (at.max(r.end), r.end);
+            return Some(r);
         }
         None
     })
@@ -260,6 +317,24 @@ mod tests {
         let re = Query::literal("a.b", false).build().unwrap();
         let (m, _) = find_all(&re, "axb a.b", 10);
         assert_eq!(m, vec![4..7]);
+    }
+
+    #[test]
+    fn a_newline_in_a_pattern_matches_crlf_too() {
+        assert_eq!(any_line_break(r"a\nb"), r"a(?:\r?\n)b");
+        assert_eq!(any_line_break(r"[\n]\\n\n+"), r"[\n]\\n(?:\r?\n)+", "not in a class, not after an escaped backslash");
+        assert_eq!(any_line_break(r"[]\n]\n[^]x]\n"), r"[]\n](?:\r?\n)[^]x](?:\r?\n)");
+        let q = Query { text: r"(\w+)\n".into(), regex: true, ..Default::default() };
+        assert_eq!(find_all(&q.build().unwrap(), "one\r\ntwo\n", 10).0, vec![0..5, 5..9]);
+    }
+
+    #[test]
+    fn matches_never_split_a_crlf() {
+        let q = |p: &str| Query { text: p.into(), regex: true, ..Default::default() }.build().unwrap();
+        assert_eq!(find_all(&q(r"\s+$"), "a  \r\nb", 10).0, vec![1..3]);
+        assert_eq!(find_all(&q("^.*$"), "ab\r\ncd", 10).0, vec![0..2, 4..6], "`.` and `$` stop before \\r");
+        assert_eq!(find_all(&q(r"\r"), "a\r\nb", 10).0, vec![1..3], "grown to the whole break");
+        assert_eq!(find_all(&q(r"\r|\n"), "a\r\nb", 10).0, vec![1..3], "once, not twice");
     }
 
     #[test]

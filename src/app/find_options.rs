@@ -167,16 +167,30 @@ impl StrataApp {
         for range in ranges {
             let hay = &text[..range.end];
             let mut at = range.start;
+            // Where the last replaced match ended.
+            let mut last_end = None;
             while at <= hay.len() {
                 let Some(caps) = r.regex().captures_at(hay, at) else { break };
                 let m = caps.get(0).expect("group 0");
-                chr += text[byte..m.start()].chars().count();
-                let start = chr;
-                chr += m.as_str().chars().count();
-                byte = m.end();
-                edits.push((start..chr, self.replacement_for(r, &caps, eol)));
                 // After an empty match, move on a char (like `captures_iter`).
                 at = if m.is_empty() { m.end() + hay[m.end()..].chars().next().map_or(1, char::len_utf8) } else { m.end() };
+                // Like `Regex::replace_all`: no empty match right where the
+                // previous match ended ("a*" → "X" in "baaac" is "XbXcX").
+                if m.is_empty() && last_end == Some(m.start()) {
+                    continue;
+                }
+                // Never replace half of a `\r\n` (see `find::replaceable`).
+                let Some(span) = crate::find::replaceable(&text, &caps) else { continue };
+                if span.start < byte || span.end > range.end {
+                    continue;
+                }
+                chr += text[byte..span.start].chars().count();
+                let start = chr;
+                chr += text[span.clone()].chars().count();
+                byte = span.end;
+                at = at.max(span.end);
+                last_end = Some(span.end);
+                edits.push((start..chr, self.replacement_for(r, &caps, eol)));
             }
         }
         edits
@@ -454,6 +468,64 @@ mod tests {
         }
         let tip = |cmd: Cmd| format!("({})", cmd.shortcut_label().unwrap());
         assert!(tip(Cmd::ToggleFindInSelection).contains('L'));
+    }
+
+    fn regex_replace_all(text: &str, pattern: &str, replacement: &str) -> String {
+        let mut app = app_with(text);
+        app.find.query = Query { text: pattern.into(), regex: true, case_sensitive: true, whole_word: false };
+        app.find.replacement = replacement.into();
+        app.replace_all();
+        self::text(&app)
+    }
+
+    #[test]
+    fn regex_replace_all_keeps_crlf_line_breaks_whole() {
+        assert_eq!(regex_replace_all("a  \r\nb  \r\nc", r"\s+$", ""), "a\r\nb\r\nc");
+        assert_eq!(regex_replace_all("ab\r\ncd", "^(.*)$", "<$1>"), "<ab>\r\n<cd>");
+        assert_eq!(regex_replace_all("foo\r\nfoo bar\r\n", "foo$", "X"), "X\r\nfoo bar\r\n");
+        assert_eq!(regex_replace_all("a\r\nb", r"a\r\nb", "c"), "c", "whole line breaks still match");
+        // `\n` (or `\s`) takes the whole `\r\n`, never half of it.
+        assert_eq!(regex_replace_all("a\r\nb\r\nc", r"\n", " "), "a b c");
+        assert_eq!(regex_replace_all("a.\r\nb", r"\.\s", "!"), "a!b");
+        assert_eq!(regex_replace_all("x\r\ny", r"[^x]y", "Z"), "xZ");
+        // A group holding half a line break would write a lone `\r`: skipped.
+        assert_eq!(regex_replace_all("x\r\ny", r"x(\s)", "[$1]"), "x\r\ny");
+        // A CRLF file gets exactly what the same text with LF breaks gets.
+        let cases = [
+            ("a  \nb\n", r"\s+$", ""),
+            ("a  \n\n b\n", r"\s+", "_"),
+            ("ab\ncd\n", "^(.*)$", "<$1>"),
+            ("one\ntwo\n", r"(\w+)\n", "$1;"),
+            ("k = 1\nk = 2\n", r"^k = (.)$", "$1"),
+            ("x.\ny\n", r".$", "!"),
+        ];
+        for (lf, pattern, rep) in cases {
+            let want = regex_replace_all(lf, pattern, rep).replace('\n', "\r\n");
+            assert_eq!(regex_replace_all(&lf.replace('\n', "\r\n"), pattern, rep), want, "{pattern:?} on {lf:?}");
+        }
+    }
+
+    #[test]
+    fn find_does_not_match_inside_crlf() {
+        let mut app = app_with("foo  \r\nbar\r\nx");
+        app.find.query = Query { text: r"\s+$".into(), regex: true, case_sensitive: true, whole_word: false };
+        app.refresh_matches();
+        assert_eq!(app.docs[0].finder.matches, vec![3..5]);
+        app.find.query.text = r"\n".into();
+        app.refresh_matches();
+        assert_eq!(app.docs[0].finder.matches, vec![5..7, 10..12], "whole line breaks");
+        // Replace (one) replaces the selected, grown match.
+        app.find.replacement = " ".into();
+        app.doc().editor.select_ranges(&[5..7], 0);
+        app.replace_one();
+        assert_eq!(text(&app), "foo   bar\r\nx");
+    }
+
+    #[test]
+    fn replace_all_with_empty_matches_follows_regex_semantics() {
+        // No empty match right after a real one (as `Regex::replace_all`).
+        assert_eq!(regex_replace_all("baaac", "a*", "X"), "XbXcX");
+        assert_eq!(regex_replace_all("baaac", "a*", "X"), regex::Regex::new("a*").unwrap().replace_all("baaac", "X"));
     }
 
     #[test]
