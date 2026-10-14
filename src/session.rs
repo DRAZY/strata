@@ -343,6 +343,12 @@ pub struct TabState {
     pub wrap: Option<bool>,
     /// Encoding id (see `Encoding::id`) to save an unsaved tab with.
     pub encoding: Option<String>,
+    /// The unsaved text holds U+FFFD for bytes that didn't decode (Save warns).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub lossy: bool,
+    /// "lf" or "crlf": the ending new lines get (None: detect from the text).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_ending: Option<String>,
     /// Tabs shown in each pane: the highest stamp per group.
     pub stamp: u64,
     /// Another view of the buffer of tab `n` (earlier in `tabs`), which holds

@@ -768,7 +768,14 @@ impl StrataApp {
                 _ if source.is_some() => source.map(|k| self.new_view_of(k)),
                 (Some(name), path) => match std::fs::read(backups.join(name)) {
                     Ok(bytes) => {
-                        let mut d = Document::from_buffer(path.clone(), Buffer::from_bytes(&bytes));
+                        let mut buffer = Buffer::from_bytes(&bytes);
+                        buffer.lossy |= tab.lossy;
+                        match tab.line_ending.as_deref() {
+                            Some("crlf") => buffer.set_line_ending(LineEnding::CrLf),
+                            Some("lf") => buffer.set_line_ending(LineEnding::Lf),
+                            _ => {}
+                        }
+                        let mut d = Document::from_buffer(path.clone(), buffer);
                         d.restored_dirty = true;
                         d.encoding = tab.encoding.as_deref().and_then(crate::encoding::Encoding::from_id).unwrap_or_default();
                         d.disk_mtime = tab.disk_mtime;
@@ -900,7 +907,6 @@ impl StrataApp {
             });
             tabs.push(TabState {
                 path: d.path.clone(),
-                backup,
                 cursor: d.editor.primary().head,
                 selections: d.editor.selections().iter().map(|s| (s.anchor, s.head)).collect(),
                 primary: d.editor.selections().iter().position(|s| *s == d.editor.primary()).unwrap_or(0),
@@ -910,7 +916,10 @@ impl StrataApp {
                 group: d.group,
                 wrap: d.wrap,
                 encoding: Some(d.encoding.id().to_owned()),
+                lossy: backup.is_some() && d.editor.buffer.lossy,
+                line_ending: backup.is_some().then(|| if d.editor.buffer.line_ending() == LineEnding::CrLf { "crlf" } else { "lf" }.to_owned()),
                 stamp: d.stamp,
+                backup,
                 clone_of,
             });
         }
