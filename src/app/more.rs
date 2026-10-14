@@ -534,6 +534,7 @@ const LICENSES: &[Credit] = &[
     credit("url / idna / ICU4X (used by webbrowser)", "MIT or Apache-2.0; ICU4X: Unicode-3.0", &[]),
     credit("serde / serde_json", "MIT or Apache-2.0", &["serde", "serde_json"]),
     credit("log", "MIT or Apache-2.0", &["log"]),
+    credit("libc", "MIT or Apache-2.0", &["libc"]),
 ];
 
 /// Every crate in the build: (name, version, license), from

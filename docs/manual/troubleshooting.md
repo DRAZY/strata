@@ -35,7 +35,7 @@ Strata creates most of these only when it needs them.
 | `Themes/` | Your `.tmTheme` and `.sublime-color-scheme` color schemes. See [Appearance](appearance.md) |
 | `build_systems/` | Your build systems, as `.json` files. See [Build Systems](build.md) |
 
-If the folder's path is very long, the `strata.sock` file goes in your system's temporary folder instead.
+If the folder's path is very long, the `strata.sock` file goes in a folder only you can open, `strata-<your user id>`, inside `$XDG_RUNTIME_DIR` (Linux) or your system's temporary folder. Strata answers a `strata` command only when it runs as the same user.
 
 ### Who can read the folder
 

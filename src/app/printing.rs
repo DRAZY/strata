@@ -64,6 +64,7 @@ fn print_dir(config: Option<&Path>) -> std::io::Result<PathBuf> {
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     for n in 0..100u128 {
         let dir = base.join(format!("strata-print-{}-{:x}", std::process::id(), seed.wrapping_add(n)));
+        #[allow(unused_mut)]
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);

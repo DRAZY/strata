@@ -3263,6 +3263,7 @@ dependencies = [
  "flate2",
  "globset",
  "ignore",
+ "libc",
  "log",
  "muda",
  "objc2 0.6.5",

@@ -34,6 +34,10 @@ flate2 = "1.1.10"
 syntect = { version = "5.3.0", default-features = false, features = ["yaml-load", "dump-create", "dump-load", "parsing", "regex-fancy"] }
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
 
+# Checking who's on the other end of the single-instance socket (getpeereid / SO_PEERCRED).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21.2", default-features = false }
 # Finder / Dock "open documents" Apple Events (same versions muda and eframe use).
