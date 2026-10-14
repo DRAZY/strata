@@ -44,6 +44,7 @@ mod pdf;
 mod print;
 mod private;
 mod replace;
+mod safe_html;
 mod search;
 mod session;
 mod snippets;

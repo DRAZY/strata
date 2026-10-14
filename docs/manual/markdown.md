@@ -93,6 +93,7 @@ The exported page:
 - uses a clean, GitHub-like style with a readable column width, and switches between light and dark colors to match the reader's system setting.
 - includes tables, task lists, strikethrough and footnotes.
 - keeps images as links to their original paths. They aren't copied into the page, so keep the HTML file where those paths still work.
+- never runs scripts. HTML written in the Markdown keeps plain formatting tags such as `<b>`, `<br>`, `<details>`, images and tables, without event handlers or styles; anything else, such as `<script>`, `<iframe>` or `<style>`, appears as text. Links and images keep only web, mail and relative addresses, so a `javascript:` link becomes inert. Copy as HTML and printing work the same way.
 
 Code blocks are exported as plain monospace text, without syntax highlighting. Alerts keep their label (Note, Tip, Important, Warning or Caution) and their color, in light and dark mode.
 

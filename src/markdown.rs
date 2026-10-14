@@ -483,10 +483,23 @@ blockquote[class^=markdown-alert-]::before{display:block;margin:0 0 .4em;padding
 .markdown-alert-warning{border-left-color:var(--warning)}.markdown-alert-warning::before{content:\"Warning\";color:var(--warning)}
 .markdown-alert-caution{border-left-color:var(--caution)}.markdown-alert-caution::before{content:\"Caution\";color:var(--caution)}";
 
-/// Markdown `src` as HTML body markup (no page around it).
+/// Markdown `src` as HTML body markup (no page around it). Raw HTML in the
+/// Markdown and link targets go through `crate::safe_html`, so an exported
+/// page never carries a script.
 pub fn to_html_fragment(src: &str) -> String {
+    use crate::safe_html::{safe_url, sanitize};
+    fn neutral(url: pulldown_cmark::CowStr<'_>) -> pulldown_cmark::CowStr<'_> {
+        if safe_url(&url) { url } else { "#".into() }
+    }
+    let events = pulldown_cmark::Parser::new_ext(src, options()).map(|e| match e {
+        Event::Html(h) => Event::Html(sanitize(&h).into()),
+        Event::InlineHtml(h) => Event::InlineHtml(sanitize(&h).into()),
+        Event::Start(Tag::Link { link_type, dest_url, title, id }) => Event::Start(Tag::Link { link_type, dest_url: neutral(dest_url), title, id }),
+        Event::Start(Tag::Image { link_type, dest_url, title, id }) => Event::Start(Tag::Image { link_type, dest_url: neutral(dest_url), title, id }),
+        e => e,
+    });
     let mut body = String::new();
-    pulldown_cmark::html::push_html(&mut body, pulldown_cmark::Parser::new_ext(src, options()));
+    pulldown_cmark::html::push_html(&mut body, events);
     body
 }
 
@@ -1376,6 +1389,20 @@ mod tests {
         assert!(html.contains("type=\"checkbox\""));
         assert!(html.contains("class=\"language-rust\""));
         assert!(to_html_document("plain <b>", "a & b").contains("<title>a &amp; b</title>"));
+    }
+
+    #[test]
+    fn html_export_carries_no_scripts() {
+        let md = "# T\n\n<script>alert(1)</script>\n\n<div onclick=\"x()\">hi <b>there</b></div>\n\nText <img src=x onerror=alert(2)> and <iframe src=\"https://evil.example\"></iframe>.\n\n[click](javascript:alert(3)) [ok](https://example.com) ![p](javascript:alert(4))\n\n<a href=\"jav&#x61;script:alert(5)\">a</a>\n";
+        let html = to_html_fragment(md);
+        for bad in ["<script", "onclick", "onerror", "<iframe", "javascript:", "jav&#x61;script"] {
+            assert!(!html.to_ascii_lowercase().contains(bad), "{bad} in {html}");
+        }
+        assert!(html.contains("<b>there</b>") && html.contains("<div>"), "harmless HTML stays: {html}");
+        assert!(html.contains("href=\"https://example.com\""), "{html}");
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "a script shows as text: {html}");
+        // Copy as HTML and printing use the same path.
+        assert!(!crate::print::markdown_html(md, "t", &Default::default()).contains("<script"));
     }
 
     #[test]
