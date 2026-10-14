@@ -156,6 +156,8 @@ mod snippets_ui;
 mod spelling;
 mod textutil;
 mod theme_ui;
+#[cfg(test)]
+mod ui_tests;
 mod windows;
 
 pub use windows::Windows;
@@ -1131,7 +1133,13 @@ impl StrataApp {
                 }
             }
             Cmd::MoveToGroup(g) => self.move_to_pane(g as usize),
-            Cmd::ToggleSidebar => self.sidebar.visible = !self.sidebar.visible,
+            Cmd::ToggleSidebar => {
+                // Same test as the menu's check mark: is it on screen?
+                self.sidebar.visible = !self.sidebar.shown();
+                if self.sidebar.visible && !self.sidebar.shown() {
+                    self.status = "The side bar shows once a folder is open (File ▸ Open Folder…)".into();
+                }
+            }
             Cmd::Find => self.open_find(false),
             Cmd::Replace => self.open_find(true),
             Cmd::FindNext => self.find_step(true),
@@ -1139,6 +1147,7 @@ impl StrataApp {
             Cmd::FindInFiles => {
                 let prefill = self.selection_for_find_in_files();
                 self.sidebar.start_find_in_files(prefill);
+                self.cancel_editor_focus();
             }
             Cmd::ZoomIn => self.zoom(1.0),
             Cmd::ZoomOut => self.zoom(-1.0),
@@ -1162,7 +1171,18 @@ impl StrataApp {
         }
     }
 
+    /// A dialog that takes the keyboard is up (Rename, New File, Replace in
+    /// Files' question, Print), or a menu: window and editor commands wait,
+    /// and the dialog alone sees Esc and Enter.
+    fn modal_open(&self, ctx: &egui::Context) -> bool {
+        self.sidebar.modal_open() || self.print.is_open() || egui::Popup::is_any_open(ctx)
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.modal_open(ctx) {
+            self.keymap.modal_frame(ctx);
+            return;
+        }
         // The help window's own keys (Esc, back/forward) come first.
         self.help_keys(ctx);
         // Window and editor commands, from the keymap (see `keymap_ui`).
@@ -1191,7 +1211,16 @@ impl StrataApp {
         crate::build::BuildContext { file: d.path.clone(), folder, syntax: Some(d.highlighter.syntax_name().to_owned()) }
     }
 
+    /// Another widget (find bar, palette, a dialog) asks for the keyboard: an
+    /// editor focus still queued (say, from the palette closing) mustn't take it back.
+    fn cancel_editor_focus(&mut self) {
+        for d in &mut self.docs {
+            d.view.cancel_focus();
+        }
+    }
+
     fn open_palette(&mut self, ctx: &egui::Context, mode: palette::Mode, prefix: &str) {
+        self.cancel_editor_focus();
         let d = &mut self.docs[self.active];
         let sels = d.editor.selections().iter().map(|s| s.range()).collect();
         let primary = d.editor.selections().iter().position(|s| *s == d.editor.primary()).unwrap_or(0);
@@ -1463,6 +1492,7 @@ impl StrataApp {
         self.find.open = true;
         self.find.replace = replace;
         self.find.focus_query = true;
+        self.cancel_editor_focus();
         self.find.origin = p.start();
         self.find_opening();
     }
@@ -2085,9 +2115,14 @@ impl eframe::App for StrataApp {
             } else if self.terminal_has_keys(ctx) {
                 menus.iter_mut().for_each(|(_, items)| crate::terminal::strip_menu_keys(items));
             }
+            let modal = self.modal_open(ctx);
             let native = self.native_menu.as_mut().expect("checked");
             native.update(&menus);
             for act in native.poll() {
+                // A dialog is up: only the clipboard and undo items, which go to its text field.
+                if modal && !matches!(act, crate::menus::Act::Copy | crate::menus::Act::Cut | crate::menus::Act::Paste | crate::menus::Act::SelectAll | crate::menus::Act::Undo | crate::menus::Act::Redo) {
+                    continue;
+                }
                 self.run_act(ctx, act);
             }
         }
@@ -2301,6 +2336,10 @@ impl eframe::App for StrataApp {
         for d in &mut self.docs {
             (d.editor.auto_indent, d.editor.smart_indent) = (self.settings.auto_indent, self.settings.smart_indent);
             d.editor.indent_rules = crate::indent::rules_for(d.highlighter.syntax_name());
+        }
+        if self.sidebar.modal_open() || self.print.is_open() {
+            // The dialog's field keeps the keyboard.
+            self.cancel_editor_focus();
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.panes(ui));
         if self.sync_views() {

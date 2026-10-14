@@ -266,6 +266,24 @@ impl Sidebar {
         }
     }
 
+    /// A dialog of the sidebar's is up (a name prompt, or Replace in Files' question).
+    pub fn modal_open(&self) -> bool {
+        self.prompt.is_some() || self.confirm.is_some()
+    }
+
+    /// Ask for a new name for `path` (as its Rename… menu item does).
+    #[cfg(test)]
+    pub fn ask_rename(&mut self, path: &Path) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.prompt = Some(Prompt { kind: PromptKind::Rename, target: path.to_owned(), name, error: None });
+    }
+
+    /// The name typed in the open prompt, and its error.
+    #[cfg(test)]
+    pub fn prompt_state(&mut self) -> Option<(&mut String, Option<&str>)> {
+        self.prompt.as_mut().map(|p| (&mut p.name, p.error.as_deref()))
+    }
+
     /// The "Replace N occurrences…?" question is up.
     #[cfg(test)]
     pub fn confirming(&self) -> bool {

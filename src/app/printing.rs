@@ -27,6 +27,12 @@ pub(super) struct PrintDialog {
     rendered: bool,
 }
 
+impl PrintDialog {
+    pub fn is_open(&self) -> bool {
+        self.output.is_some()
+    }
+}
+
 impl Default for PrintDialog {
     fn default() -> Self {
         Self { output: None, opts: Options::default(), selection_only: false, rendered: true }
