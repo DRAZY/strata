@@ -353,6 +353,44 @@ fn trashed_files_close_their_tabs_but_keep_unsaved_text() {
 }
 
 #[test]
+fn idle_frames_skip_menus_title_and_git_marks() {
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    let titles = |out: &egui::FullOutput| out.viewport_output.get(&egui::ViewportId::ROOT).map_or(0, |v| v.commands.iter().filter(|c| matches!(c, egui::ViewportCommand::Title(_))).count());
+    let out = frame(&mut app, &ctx, vec![]);
+    assert_eq!(titles(&out), 1, "the first frame names the window");
+    app.menus_cache = None;
+    app.fresh_menus(&ctx);
+    let built = app.menus_cache.as_ref().map(|c| c.1);
+    let out = frame(&mut app, &ctx, vec![]);
+    assert_eq!(titles(&out), 0, "an unchanged title isn't sent again");
+    assert!(!app.fresh_menus(&ctx), "nothing happened: the menus are kept");
+    assert_eq!(app.menus_cache.as_ref().map(|c| c.1), built);
+    // Typing changes things (the title gets a dot, Undo comes alive).
+    frame(&mut app, &ctx, vec![Event::Text("x".into())]);
+    frame(&mut app, &ctx, vec![press(Key::A, Modifiers::NONE)]);
+    if cfg!(target_os = "macos") {
+        // (Elsewhere the in-window menu bar already rebuilt them during that frame.)
+        assert!(app.fresh_menus(&ctx), "input rebuilds them");
+    }
+    assert_ne!(app.menus_cache.as_ref().map(|c| c.1), built);
+    // A second later they are rebuilt anyway (background changes).
+    for _ in 0..5 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    let before = app.menus_cache.as_ref().map(|c| c.1);
+    app.fresh_menus(&ctx);
+    assert_ne!(app.menus_cache.as_ref().map(|c| c.1), before);
+    // Git marks: kept between frames, dropped when the gutter is turned off.
+    app.docs[0].git_changes = vec![(0..1, crate::git::LineChange::Added)];
+    frame(&mut app, &ctx, vec![]);
+    assert_eq!(app.docs[0].view.line_marks.len(), 1);
+    app.settings.git_gutter = false;
+    frame(&mut app, &ctx, vec![]);
+    assert!(app.docs[0].view.line_marks.is_empty());
+}
+
+#[test]
 fn cjk_file_names_load_the_cjk_fonts() {
     let loaded = |ctx: &Context| ctx.data(|d| d.get_temp::<bool>(egui::Id::new("strata-cjk-fonts")).is_some());
     let dir = temp_dir("cjk");

@@ -134,6 +134,14 @@ pub struct StrataApp {
     print: printing::PrintDialog,
     /// A folder-wide search running in the background (see `lookup`).
     lookup: lookup::Lookup,
+    /// The menu description as last built: (key mode, time built, menus).
+    /// Rebuilt after input, a menu action, or a second (see `fresh_menus`).
+    menus_cache: Option<(u8, f64, crate::menus::Menus)>,
+    menus_stale: bool,
+    /// The git gutter setting the tabs' line marks were made for.
+    git_marks_on: bool,
+    /// The window title last sent.
+    last_title: String,
 }
 
 mod autosave;
@@ -279,6 +287,10 @@ impl StrataApp {
             views: Default::default(),
             print: Default::default(),
             lookup: Default::default(),
+            menus_cache: None,
+            menus_stale: true,
+            git_marks_on: true,
+            last_title: String::new(),
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -296,6 +308,7 @@ impl StrataApp {
         while let Some((path, version, changes)) = self.git.poll() {
             for d in self.docs.iter_mut().filter(|d| d.path.as_ref() == Some(&path) && d.editor.version() == version) {
                 d.git_changes = changes.clone();
+                d.view.line_marks = git_marks(&d.git_changes, self.settings.git_gutter);
             }
         }
         let periodic = now - self.last_git_request > 3.0;
@@ -1460,6 +1473,42 @@ impl StrataApp {
         d.view.reveal();
     }
 
+    /// Bring `menus_cache` up to date if anything may have changed what the
+    /// menus show: this frame's input (keys, clicks, typing), a menu action,
+    /// the key mode (a chord, the terminal), or a second passing (builds,
+    /// git and the like change state in the background). Building them is
+    /// too much work for every frame. True if rebuilt.
+    fn fresh_menus(&mut self, ctx: &egui::Context) -> bool {
+        // macOS menus take their shortcut keys before Strata sees them: while
+        // a chord waits for its second key, or the terminal has the keyboard,
+        // they go without (mode 1, 2). In-window menus never take keys.
+        let mode = if !cfg!(target_os = "macos") {
+            0
+        } else if self.keymap.chord_pending() {
+            1
+        } else if self.terminal_has_keys(ctx) {
+            2
+        } else {
+            0
+        };
+        let now = ctx.input(|i| i.time);
+        let input = ctx.input(|i| i.events.iter().any(|e| !matches!(e, egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_) | egui::Event::PointerGone)));
+        let fresh = !self.menus_stale && !input && self.menus_cache.as_ref().is_some_and(|(m, t, _)| *m == mode && now - t < 1.0 && now >= *t);
+        if fresh {
+            return false;
+        }
+        let mut menus = self.menus();
+        match mode {
+            1 => menus.iter_mut().for_each(|(_, items)| crate::menus::strip_keys(items)),
+            #[cfg(target_os = "macos")]
+            2 => menus.iter_mut().for_each(|(_, items)| crate::terminal::strip_menu_keys(items)),
+            _ => {}
+        }
+        self.menus_cache = Some((mode, now, menus));
+        self.menus_stale = false;
+        true
+    }
+
     /// Tabs of `from` (a file, or files inside a folder) now at `to` follow it.
     pub(super) fn follow_rename(&mut self, from: &Path, to: &Path) {
         for d in &mut self.docs {
@@ -2334,16 +2383,15 @@ impl eframe::App for StrataApp {
         // Menu choices: native ones arrive between frames, synthesized input joins this frame.
         #[cfg(target_os = "macos")]
         if self.native_menu.is_some() {
-            let mut menus = self.menus();
-            if self.keymap.chord_pending() {
-                menus.iter_mut().for_each(|(_, items)| crate::menus::strip_keys(items));
-            } else if self.terminal_has_keys(ctx) {
-                menus.iter_mut().for_each(|(_, items)| crate::terminal::strip_menu_keys(items));
-            }
+            let rebuilt = self.fresh_menus(ctx);
             let modal = self.modal_open(ctx);
             let native = self.native_menu.as_mut().expect("checked");
-            native.update(&menus);
-            for act in native.poll() {
+            if rebuilt && let Some((_, _, menus)) = &self.menus_cache {
+                native.update(menus);
+            }
+            let acts = native.poll();
+            self.menus_stale |= !acts.is_empty();
+            for act in acts {
                 // A dialog is up: only the clipboard and undo items, which go to its text field.
                 if modal && !matches!(act, crate::menus::Act::Copy | crate::menus::Act::Cut | crate::menus::Act::Paste | crate::menus::Act::SelectAll | crate::menus::Act::Undo | crate::menus::Act::Redo) {
                     continue;
@@ -2452,21 +2500,11 @@ impl eframe::App for StrataApp {
             d.view.color_swatches = s.color_swatches;
             d.view.sticky_scroll = s.sticky_scroll && d.large.is_none();
             d.view.smooth_scroll = s.smooth_scroll;
-            d.view.line_marks = if s.git_gutter {
-                d.git_changes
-                    .iter()
-                    .map(|(r, c)| {
-                        let mark = match c {
-                            crate::git::LineChange::Added => crate::view::LineMark::Added,
-                            crate::git::LineChange::Modified => crate::view::LineMark::Modified,
-                            crate::git::LineChange::Deleted => crate::view::LineMark::Deleted,
-                        };
-                        (r.clone(), mark)
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
+            // Made when git's changes arrive (`update_git`); again only when the
+            // setting flips or a tab got changes some other way (a cloned view).
+            if s.git_gutter != self.git_marks_on || (s.git_gutter && d.view.line_marks.is_empty() != d.git_changes.is_empty()) {
+                d.view.line_marks = git_marks(&d.git_changes, s.git_gutter);
+            }
             d.view.caret_width = self.settings.caret_width.clamp(1.0, 6.0);
             d.view.caret_shape = match self.settings.caret_style.as_str() {
                 "block" => crate::view::CaretShape::Block,
@@ -2486,12 +2524,21 @@ impl eframe::App for StrataApp {
             d.view.line_spacing = (self.settings.line_height, self.settings.line_padding_top, self.settings.line_padding_bottom);
             d.view.minimap = minimap && d.large.is_none();
         }
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        self.git_marks_on = self.settings.git_gutter;
+        let title = self.title();
+        if title != self.last_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.last_title = title;
+        }
 
         self.title_bar(ui);
         if !cfg!(target_os = "macos") && self.distraction.is_none() {
-            let menus = self.menus();
-            if let Some(act) = egui::Panel::top("menubar").show(ui, |ui| crate::menus::menu_bar(ui, &menus)).inner {
+            self.fresh_menus(ctx);
+            let menus = self.menus_cache.take().expect("just built");
+            let chosen = egui::Panel::top("menubar").show(ui, |ui| crate::menus::menu_bar(ui, &menus.2)).inner;
+            self.menus_cache = Some(menus);
+            if let Some(act) = chosen {
+                self.menus_stale = true;
                 self.run_act(ctx, act);
             }
         }
@@ -2623,6 +2670,24 @@ impl eframe::App for StrataApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.dev_context_input(ctx, raw_input);
     }
+}
+
+/// The gutter's marks for git's line changes (none when the gutter is off).
+fn git_marks(changes: &crate::git::Changes, on: bool) -> Vec<(std::ops::Range<usize>, crate::view::LineMark)> {
+    if !on {
+        return Vec::new();
+    }
+    changes
+        .iter()
+        .map(|(r, c)| {
+            let mark = match c {
+                crate::git::LineChange::Added => crate::view::LineMark::Added,
+                crate::git::LineChange::Modified => crate::view::LineMark::Modified,
+                crate::git::LineChange::Deleted => crate::view::LineMark::Deleted,
+            };
+            (r.clone(), mark)
+        })
+        .collect()
 }
 
 /// Select `cols` (chars, clamped) on 0-based `line` and scroll to it.
