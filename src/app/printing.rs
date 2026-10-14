@@ -1,7 +1,8 @@
 //! File ▸ Print… and File ▸ Export ▸ HTML…/PDF…: a small dialog for the
 //! options, then the pages (see `crate::print`).
 //!
-//! Print writes a PDF to a temporary file and opens it in the system viewer
+//! Print writes a PDF to a new owner-only file in `<config>/Print` (deleted a
+//! day later, at the next print) and opens it in the system viewer
 //! (Preview on macOS), where the real print dialog, printer choice and page
 //! preview live. That works the same on every platform without a printing
 //! toolkit, and what gets printed is exactly what the PDF export saves.
@@ -43,6 +44,62 @@ fn open_with_default_app(path: &Path) -> std::io::Result<()> {
         std::process::Command::new("xdg-open")
     };
     cmd.arg(path).spawn().map(|_| ())
+}
+
+/// Print files older than this are deleted at the next print (the viewer has
+/// long since read them).
+const PRINT_FILE_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// The folder print files go in: `<config>/Print`, owner-only. Without a
+/// config folder, a new owner-only folder in the temporary folder (never a
+/// fixed, guessable name there: on Linux /tmp is shared).
+fn print_dir(config: Option<&Path>) -> std::io::Result<PathBuf> {
+    if let Some(config) = config {
+        let dir = config.join("Print");
+        crate::private::create_dir_all(&dir)?;
+        crate::private::restrict(&dir, true);
+        return Ok(dir);
+    }
+    let base = std::env::temp_dir();
+    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    for n in 0..100u128 {
+        let dir = base.join(format!("strata-print-{}-{:x}", std::process::id(), seed.wrapping_add(n)));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        match builder.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other("couldn't create a temporary folder"))
+}
+
+/// Write `bytes` to a new file in `dir` (`<stem>.<ext>`, or `<stem>-2.<ext>`…
+/// when taken; never an existing file or a symlink), after deleting print
+/// files older than `PRINT_FILE_AGE`.
+fn write_print_file(dir: &Path, stem: &str, ext: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    let now = std::time::SystemTime::now();
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let old = e.metadata().ok().filter(std::fs::Metadata::is_file).and_then(|m| m.modified().ok()).is_some_and(|t| now.duration_since(t).is_ok_and(|age| age > PRINT_FILE_AGE));
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    let stem: String = stem.chars().map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':') { '_' } else { c }).take(80).collect();
+    for n in 1..1000 {
+        let path = dir.join(if n == 1 { format!("{stem}.{ext}") } else { format!("{stem}-{n}.{ext}") });
+        match crate::private::options().write(true).create_new(true).open(&path) {
+            Ok(mut f) => {
+                std::io::Write::write_all(&mut f, bytes)?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other("too many print files"))
 }
 
 impl StrataApp {
@@ -171,9 +228,7 @@ impl StrataApp {
         let ext = if html { "html" } else { "pdf" };
         match output {
             Output::Viewer => {
-                let dir = std::env::temp_dir().join("strata-print");
-                let path = dir.join(format!("{stem}.{ext}"));
-                let written = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &bytes)).and_then(|()| open_with_default_app(&path));
+                let written = print_dir(self.config.as_deref()).and_then(|dir| write_print_file(&dir, &stem, ext, &bytes)).and_then(|path| open_with_default_app(&path));
                 self.status = match written {
                     Ok(()) => format!("Opened {name} as a PDF ({} pages) — print it from your PDF viewer", page_count(&bytes)),
                     Err(e) => format!("Couldn't print: {e}"),
@@ -210,6 +265,44 @@ mod tests {
     use super::*;
     use crate::buffer::Buffer;
     use crate::editor::Editor;
+
+    #[test]
+    fn print_files_are_private_unique_and_cleaned_up() {
+        let config = std::env::temp_dir().join(format!("strata-printdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&config);
+        let dir = print_dir(Some(&config)).unwrap();
+        assert_eq!(dir, config.join("Print"));
+        let a = write_print_file(&dir, "notes", "pdf", b"one").unwrap();
+        let b = write_print_file(&dir, "notes", "pdf", b"two").unwrap();
+        assert_ne!(a, b, "a second print never reuses (or follows) an existing file");
+        assert_eq!(std::fs::read(&a).unwrap(), b"one");
+        assert_eq!(b.file_name().unwrap(), "notes-2.pdf");
+        // A planted symlink at the next name is skipped, not written through.
+        #[cfg(unix)]
+        {
+            let target = config.join("target");
+            std::fs::write(&target, "keep").unwrap();
+            std::os::unix::fs::symlink(&target, dir.join("x.pdf")).unwrap();
+            let c = write_print_file(&dir, "x", "pdf", b"pdf").unwrap();
+            assert_eq!(c.file_name().unwrap(), "x-2.pdf");
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(std::fs::metadata(&c).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        // Day-old print files go at the next print.
+        let old = std::fs::File::options().write(true).open(&a).unwrap();
+        old.set_modified(std::time::SystemTime::now() - PRINT_FILE_AGE - std::time::Duration::from_secs(60)).unwrap();
+        drop(old);
+        write_print_file(&dir, "later", "pdf", b"x").unwrap();
+        assert!(!a.exists() && b.exists());
+        // No config folder: a fresh private folder each time, never a fixed name.
+        let (t1, t2) = (print_dir(None).unwrap(), print_dir(None).unwrap());
+        assert_ne!(t1, t2);
+        std::fs::remove_dir(t1).ok();
+        std::fs::remove_dir(t2).ok();
+        std::fs::remove_dir_all(config).ok();
+    }
 
     #[test]
     fn source_lines_are_highlighted_and_selections_print_their_lines() {

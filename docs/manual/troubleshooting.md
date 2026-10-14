@@ -28,6 +28,7 @@ Strata creates most of these only when it needs them.
 | `session.lock` | Marks which running Strata owns the session |
 | `Logs/` | The log: `strata.log`, plus `strata.1.log` and `strata.2.log` before it. See [Logs](#logs) |
 | `Crashes/` | A report for each time Strata crashed. See [If Strata crashes](#if-strata-crashes) |
+| `Print/` | PDFs made for File ▸ Print…, deleted after a day. See [Printing](printing.md) |
 | `strata.sock` (macOS, Linux) or `strata.port` (Windows) | How the `strata` command finds the running app. See [Command Line](cli.md) |
 | `Snippets/` | Your snippets. See [Snippets](snippets.md) |
 | `Syntaxes/` | Your `.sublime-syntax` grammars. See [Languages](languages.md) |
