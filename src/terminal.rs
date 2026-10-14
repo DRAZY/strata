@@ -182,7 +182,11 @@ fn ctrl_byte(key: Key) -> Option<u8> {
 
 /// The bytes a key press sends, or None when the key types text (that comes
 /// as a Text event) or isn't for the terminal. `app_cursor` is DECCKM.
-pub fn key_bytes(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
+/// `alt_meta`: Alt/Option plus a character key sends Esc + the key's
+/// character (Meta); otherwise the layout's composed text is typed instead
+/// (Option+L is @ on a German Mac). Alt with Enter, Backspace, arrows and
+/// other keys that type nothing always gets its Esc prefix or modifier code.
+pub fn key_bytes(key: Key, m: Modifiers, app_cursor: bool, alt_meta: bool) -> Option<Vec<u8>> {
     if MAC && m.mac_cmd {
         return None;
     }
@@ -235,7 +239,7 @@ pub fn key_bytes(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
         Key::Backspace => meta(if ctrl { b"\x08" } else { b"\x7f" }),
         Key::Escape => meta(b"\x1b"),
         _ if ctrl => meta(&[ctrl_byte(key)?]),
-        _ if alt => meta(key_char(key, shift)?.to_string().as_bytes()),
+        _ if alt && alt_meta => meta(key_char(key, shift)?.to_string().as_bytes()),
         _ => return None,
     })
 }
@@ -336,6 +340,12 @@ pub struct Terminal {
     scroll_acc: f32,
     bell: f64,
     focused: bool,
+    /// Text the input method is composing (shown at the cursor, not yet sent).
+    preedit: String,
+    /// Mouse buttons pressed inside the terminal and reported to the program
+    /// (left, middle, right), and the cell last reported, for drag/motion.
+    mouse_down: [bool; 3],
+    mouse_cell: Option<(usize, usize)>,
 }
 
 /// The user's shell: $SHELL, else zsh, else sh (PowerShell, else COMSPEC, on Windows).
@@ -398,7 +408,8 @@ impl Terminal {
         Ok(Self { term, sender, queue, thread,
             #[cfg(unix)]
             pid,
-            title: None, shell_name, exited: false, size, cell: (8.0, 16.0), scroll_acc: 0.0, bell: f64::NEG_INFINITY, focused: false })
+            title: None, shell_name, exited: false, size, cell: (8.0, 16.0), scroll_acc: 0.0, bell: f64::NEG_INFINITY, focused: false,
+            preedit: String::new(), mouse_down: [false; 3], mouse_cell: None })
     }
 
     pub fn title(&self) -> &str {
@@ -480,11 +491,37 @@ impl Terminal {
         let grid = t.grid();
         let mut out = String::new();
         for line in 0..grid.screen_lines() {
-            let row: String = (0..grid.columns()).map(|c| grid[Point::new(Line(line as i32), Column(c))].c).collect();
+            let row: String = (0..grid.columns())
+                .map(|c| &grid[Point::new(Line(line as i32), Column(c))])
+                .filter(|cell| !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
+                .map(|cell| cell.c)
+                .collect();
             out.push_str(row.trim_end());
             out.push('\n');
         }
         out
+    }
+
+    /// An input-method event (Chinese, Japanese, Korean…): track the
+    /// composition, and return committed text for the shell.
+    fn ime(&mut self, ime: egui::ImeEvent) -> Option<String> {
+        match ime {
+            egui::ImeEvent::Preedit { text, .. } if text != "\n" && text != "\r" => {
+                self.preedit = text;
+                None
+            }
+            egui::ImeEvent::Commit(text) => {
+                self.preedit.clear();
+                // A committed newline also arrives as an Enter key press.
+                (!text.is_empty() && text != "\n" && text != "\r").then_some(text)
+            }
+            #[allow(deprecated)]
+            egui::ImeEvent::Enabled | egui::ImeEvent::Disabled => {
+                self.preedit.clear();
+                None
+            }
+            _ => None,
+        }
     }
 
     fn selection_text(&self) -> Option<String> {
@@ -537,6 +574,14 @@ fn force_kill(pid: u32) {
 impl Terminal {
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+
+    pub fn preedit(&self) -> &str {
+        &self.preedit
+    }
+
+    pub fn cell_size(&self) -> (f32, f32) {
+        self.cell
     }
 }
 
@@ -596,6 +641,8 @@ pub struct Panel {
     pub allow_clipboard_read: bool,
     /// A program asked to read the clipboard and was refused (cleared by the app).
     pub clipboard_blocked: bool,
+    /// Alt/Option sends Esc + key instead of the layout's character (`terminal_option_as_meta`).
+    pub option_as_meta: bool,
 }
 
 impl Default for Panel {
@@ -628,6 +675,7 @@ impl Panel {
             tab_labels: Vec::new(),
             allow_clipboard_read: false,
             clipboard_blocked: false,
+            option_as_meta: !MAC,
         }
     }
 
@@ -814,10 +862,19 @@ impl Panel {
             }
         }
         if focused {
-            keyboard(ui, t);
+            keyboard(ui, t, self.option_as_meta);
+        } else {
+            t.preedit.clear();
         }
-        mouse(ui, t, &resp, area.min, cell);
-        paint(ui, t, theme, &font, area.min, cell, focused);
+        if mouse(ui, t, &resp, area.min, cell) {
+            // The program took the right-click: no context menu this time.
+            self.body = None;
+        }
+        let cursor = paint(ui, t, theme, &font, area.min, cell, focused);
+        if focused && let Some(cursor_rect) = cursor {
+            // Turns on the OS input method and puts its candidate window at the cursor.
+            ui.output_mut(|o| o.ime = Some(egui::output::IMEOutput { purpose: egui::IMEPurpose::Terminal, rect: area, cursor_rect, should_interrupt_composition: false }));
+        }
         if now - t.bell < 0.25 {
             ui.painter().rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(2.0, theme.ansi[3].gamma_multiply(0.6)), egui::StrokeKind::Inside);
         }
@@ -826,23 +883,34 @@ impl Panel {
 }
 
 /// Turn this frame's keyboard input into PTY bytes, and consume it.
-fn keyboard(ui: &egui::Ui, t: &Terminal) {
+/// `alt_meta` is the `terminal_option_as_meta` setting.
+fn keyboard(ui: &egui::Ui, t: &mut Terminal, alt_meta: bool) {
     let (events, mods) = ui.input(|i| (i.events.clone(), i.modifiers));
     let app_cursor = t.term.lock().mode().contains(TermMode::APP_CURSOR);
-    // Option/Alt sends ESC + key (from the Key event), so skip the composed text.
-    let meta = mods.alt && !mods.ctrl && !mods.mac_cmd;
+    // Alt as Meta sends ESC + key (from the Key event), so skip the composed text.
+    let meta = alt_meta && mods.alt && !mods.ctrl && !mods.mac_cmd;
+    // Windows reports AltGr as Ctrl+Alt: when that comes with text, the text
+    // is what was typed (AltGr+Q is @ on a German keyboard), not Ctrl+Alt+Q.
+    let altgr = !MAC && mods.ctrl && mods.alt && events.iter().any(|e| matches!(e, Event::Text(s) if !s.is_empty()));
     let mut out = Vec::new();
     for e in &events {
         match e {
-            Event::Text(text) if !meta => out.extend_from_slice(text.as_bytes()),
-            Event::Ime(egui::ImeEvent::Commit(text)) => out.extend_from_slice(text.as_bytes()),
+            Event::Text(text) if !meta && t.preedit.is_empty() => out.extend_from_slice(text.as_bytes()),
+            Event::Ime(ime) => {
+                if let Some(text) = t.ime(ime.clone()) {
+                    out.extend_from_slice(text.as_bytes());
+                }
+            }
+            // Keys mid-composition belong to the input method.
+            Event::Key { .. } if !t.preedit.is_empty() => {}
+            Event::Key { key, pressed: true, .. } if altgr && key_bytes(*key, Modifiers::NONE, false, false).is_none() => {}
             Event::Key { key, pressed: true, modifiers, .. } => {
                 if MAC && modifiers.mac_cmd && *key == Key::K && !modifiers.shift && !modifiers.alt {
                     t.clear();
                 } else if modifiers.shift && !modifiers.ctrl && matches!(key, Key::PageUp | Key::PageDown) {
                     // Shift+PgUp/PgDn page through the scrollback.
                     t.term.lock().scroll_display(if *key == Key::PageUp { Scroll::PageUp } else { Scroll::PageDown });
-                } else if let Some(b) = key_bytes(*key, *modifiers, app_cursor) {
+                } else if let Some(b) = key_bytes(*key, *modifiers, app_cursor, alt_meta) {
                     out.extend(b);
                 }
             }
@@ -869,20 +937,125 @@ fn keyboard(ui: &egui::Ui, t: &Terminal) {
     ui.ctx().input_mut(|i| i.events.retain(|e| !matches!(e, Event::Text(_) | Event::Key { .. } | Event::Copy | Event::Cut | Event::Paste(_) | Event::Ime(_))));
 }
 
-/// Selection, focus clicks, and the scroll wheel.
-fn mouse(ui: &egui::Ui, t: &mut Terminal, resp: &egui::Response, origin: egui::Pos2, cell: (f32, f32)) {
+/// A mouse event reported to a program.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum MouseAction {
+    Press,
+    Release,
+    /// The pointer moved to another cell (with a button held, or not).
+    Motion,
+}
+
+/// xterm's button numbers besides left (0), middle (1) and right (2): none
+/// (motion with no button held), wheel up, wheel down.
+const MOUSE_NONE: u8 = 3;
+const WHEEL_UP: u8 = 64;
+const WHEEL_DOWN: u8 = 65;
+
+/// The bytes that report a mouse event to a program that turned on mouse
+/// reporting, in the encoding it asked for: SGR (`ESC [ < b ; x ; y M/m`),
+/// UTF-8, or the classic X10 bytes (which can't address past column 223, so
+/// nothing is sent there). `col` and `line` count cells from 0.
+pub fn mouse_report(mode: TermMode, button: u8, action: MouseAction, m: Modifiers, col: usize, line: usize) -> Option<Vec<u8>> {
+    let mods = 4 * m.shift as u8 + 8 * m.alt as u8 + 16 * m.ctrl as u8;
+    let motion = if action == MouseAction::Motion { 32 } else { 0 };
+    let (x, y) = (col + 1, line + 1);
+    if mode.contains(TermMode::SGR_MOUSE) {
+        let end = if action == MouseAction::Release { 'm' } else { 'M' };
+        return Some(format!("\x1b[<{};{x};{y}{end}", button + mods + motion).into_bytes());
+    }
+    // The classic encodings say "a button was released", not which.
+    let b = if action == MouseAction::Release { MOUSE_NONE } else { button };
+    let values = [32 + (b + mods + motion) as usize, 32 + x, 32 + y];
+    let mut out = b"\x1b[M".to_vec();
+    for v in values {
+        if mode.contains(TermMode::UTF8_MOUSE) {
+            let c = char::from_u32(v as u32).filter(|_| v < 0x800)?;
+            out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+        } else {
+            out.push(u8::try_from(v).ok()?);
+        }
+    }
+    Some(out)
+}
+
+/// Selection, focus clicks, mouse reporting and the scroll wheel. Returns
+/// true when a right-click went to the program (so no context menu opens).
+fn mouse(ui: &egui::Ui, t: &mut Terminal, resp: &egui::Response, origin: egui::Pos2, cell: (f32, f32)) -> bool {
+    let (cols, rows) = (t.size.cols, t.size.rows);
     let to_point = |p: egui::Pos2, offset: usize| -> (Point, Side) {
         let x = ((p.x - origin.x) / cell.0).max(0.0);
-        let col = (x.floor() as usize).min(t.size.cols - 1);
-        let row = (((p.y - origin.y) / cell.1).floor().max(0.0) as usize).min(t.size.rows - 1);
+        let col = (x.floor() as usize).min(cols - 1);
+        let row = (((p.y - origin.y) / cell.1).floor().max(0.0) as usize).min(rows - 1);
         let side = if x.fract() < 0.5 { Side::Left } else { Side::Right };
         (Point::new(Line(row as i32 - offset as i32), Column(col)), side)
     };
-    let offset = t.term.lock().grid().display_offset();
+    let to_cell = |p: egui::Pos2| -> (usize, usize) {
+        let (p, _) = to_point(p, 0);
+        (p.column.0, p.line.0 as usize)
+    };
+    let (mode, offset) = {
+        let term = t.term.lock();
+        (*term.mode(), term.grid().display_offset())
+    };
+    let mods = ui.input(|i| i.modifiers);
+    // A program that asks for the mouse gets it; Shift keeps it for selecting.
+    let mouse_mode = mode.intersects(TermMode::MOUSE_MODE);
+    let reporting = mouse_mode && !mods.shift;
     if resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        ui.ctx().set_cursor_icon(if reporting { egui::CursorIcon::Default } else { egui::CursorIcon::Text });
     }
-    if let Some(pos) = resp.interact_pointer_pos() {
+
+    let mut right_reported = false;
+    if mouse_mode {
+        let ours = |p: egui::Pos2| resp.rect.contains(p) && ui.ctx().layer_id_at(p).is_none_or(|l| l == resp.layer_id);
+        for e in ui.input(|i| i.events.clone()) {
+            match e {
+                Event::PointerButton { pos, button, pressed, modifiers } => {
+                    let b = match button {
+                        egui::PointerButton::Primary => 0,
+                        egui::PointerButton::Middle => 1,
+                        egui::PointerButton::Secondary => 2,
+                        _ => continue,
+                    };
+                    let down = &mut t.mouse_down[b as usize];
+                    if pressed {
+                        if modifiers.shift || !ours(pos) {
+                            continue;
+                        }
+                        *down = true;
+                    } else if !std::mem::take(down) {
+                        // Pressed elsewhere, or with Shift: not the program's.
+                        continue;
+                    }
+                    right_reported |= b == 2;
+                    let (col, line) = to_cell(pos);
+                    t.mouse_cell = Some((col, line));
+                    let action = if pressed { MouseAction::Press } else { MouseAction::Release };
+                    t.write(mouse_report(mode, b, action, modifiers, col, line).unwrap_or_default());
+                }
+                Event::PointerMoved(pos) => {
+                    let held = t.mouse_down.iter().position(|d| *d);
+                    let wanted = match held {
+                        Some(_) => mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION),
+                        None => mode.contains(TermMode::MOUSE_MOTION) && reporting && ours(pos),
+                    };
+                    let c = to_cell(pos);
+                    if !wanted || t.mouse_cell == Some(c) {
+                        continue;
+                    }
+                    t.mouse_cell = Some(c);
+                    let button = held.map_or(MOUSE_NONE, |b| b as u8);
+                    t.write(mouse_report(mode, button, MouseAction::Motion, mods, c.0, c.1).unwrap_or_default());
+                }
+                _ => {}
+            }
+        }
+    } else {
+        t.mouse_down = [false; 3];
+    }
+
+    if let Some(pos) = resp.interact_pointer_pos().filter(|_| !reporting) {
         let kind = if resp.triple_clicked() {
             Some(SelectionType::Lines)
         } else if resp.double_clicked() {
@@ -899,7 +1072,10 @@ fn mouse(ui: &egui::Ui, t: &mut Terminal, resp: &egui::Response, origin: egui::P
             // Right-drags and right-clicks leave the selection alone (context menu).
             let start = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
             let (p, side) = to_point(start, offset);
-            t.term.lock().selection = Some(Selection::new(SelectionType::Simple, p, side));
+            let mut sel = Selection::new(SelectionType::Simple, p, side);
+            let (p, side) = to_point(pos, offset);
+            sel.update(p, side);
+            t.term.lock().selection = Some(sel);
         } else if resp.dragged_by(egui::PointerButton::Primary) {
             let (p, side) = to_point(pos, offset);
             if let Some(sel) = t.term.lock().selection.as_mut() {
@@ -911,79 +1087,135 @@ fn mouse(ui: &egui::Ui, t: &mut Terminal, resp: &egui::Response, origin: egui::P
     }
 
     if !resp.hovered() {
-        return;
+        return right_reported;
     }
     let dy = ui.input(|i| i.smooth_scroll_delta.y);
     if dy == 0.0 {
-        return;
+        return right_reported;
     }
     t.scroll_acc += dy / cell.1;
     let lines = t.scroll_acc.trunc() as i32;
     if lines == 0 {
-        return;
+        return right_reported;
     }
     t.scroll_acc -= lines as f32;
-    let mode = *t.term.lock().mode();
-    let mouse_mode = mode.intersects(TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION);
-    if mouse_mode && mode.contains(TermMode::SGR_MOUSE) {
-        let (p, _) = to_point(ui.input(|i| i.pointer.hover_pos()).unwrap_or(origin), 0);
-        let button = if lines > 0 { 64 } else { 65 };
-        let one = format!("\x1b[<{button};{};{}M", p.column.0 + 1, p.line.0 + 1);
-        t.write(one.repeat(lines.unsigned_abs() as usize));
-    } else if mode.contains(TermMode::ALT_SCREEN) && mode.contains(TermMode::ALTERNATE_SCROLL) {
+    let n = lines.unsigned_abs() as usize;
+    if reporting {
+        let (col, line) = to_cell(ui.input(|i| i.pointer.hover_pos()).unwrap_or(origin));
+        let button = if lines > 0 { WHEEL_UP } else { WHEEL_DOWN };
+        t.write(mouse_report(mode, button, MouseAction::Press, mods, col, line).unwrap_or_default().repeat(n));
+    } else if mode.contains(TermMode::ALT_SCREEN) && mode.contains(TermMode::ALTERNATE_SCROLL) && !mods.shift {
         // Full-screen programs (less, vim…) scroll with arrow keys.
         let key = if lines > 0 { Key::ArrowUp } else { Key::ArrowDown };
-        let one = key_bytes(key, Modifiers::NONE, mode.contains(TermMode::APP_CURSOR)).unwrap_or_default();
-        t.write(one.repeat(lines.unsigned_abs() as usize));
+        let one = key_bytes(key, Modifiers::NONE, mode.contains(TermMode::APP_CURSOR), false).unwrap_or_default();
+        t.write(one.repeat(n));
     } else {
         t.term.lock().scroll_display(Scroll::Delta(lines));
     }
+    right_reported
 }
 
-/// Paint the grid: backgrounds, then text in runs of same-styled cells, then the cursor.
-fn paint(ui: &egui::Ui, t: &Terminal, theme: &Theme, font: &FontId, origin: egui::Pos2, cell: (f32, f32), focused: bool) {
-    let (cols, rows) = (t.size.cols, t.size.rows);
+/// The visible cells, colored, with the cursor's cell and shape.
+fn screen_cells<L: EventListener>(term: &Term<L>, theme: &Theme, cols: usize, rows: usize) -> (Vec<Cell>, Option<(usize, usize)>, CursorShape) {
     let blank = Cell { c: ' ', extra: None, fg: theme.fg, bg: theme.bg, flags: Flags::empty() };
     let mut grid = vec![blank; cols * rows];
-    let (cursor, cursor_shape) = {
-        let term = t.term.lock();
-        let content = term.renderable_content();
-        let offset = content.display_offset;
-        let colors = content.colors;
-        let selection = content.selection;
-        for ic in content.display_iter {
-            let Some(vp) = alacritty_terminal::term::point_to_viewport(offset, ic.point) else { continue };
-            if vp.line >= rows || vp.column.0 >= cols {
-                continue;
-            }
-            let flags = ic.cell.flags;
-            let mut fg = theme.resolve(ic.cell.fg, colors);
-            let mut bg = theme.resolve(ic.cell.bg, colors);
-            if flags.contains(Flags::DIM) {
-                fg = mix(bg, fg, 0.66);
-            }
-            if flags.contains(Flags::INVERSE) {
-                std::mem::swap(&mut fg, &mut bg);
-            }
-            if flags.contains(Flags::HIDDEN) {
-                fg = bg;
-            }
-            if selection.is_some_and(|s| s.contains(ic.point)) {
-                bg = theme.selection;
-            }
-            let extra = ic.cell.zerowidth().map(|z| z.iter().collect::<String>().into_boxed_str());
-            grid[vp.line * cols + vp.column.0] = Cell { c: ic.cell.c, extra, fg, bg, flags };
+    let content = term.renderable_content();
+    let offset = content.display_offset;
+    let colors = content.colors;
+    let selection = content.selection;
+    for ic in content.display_iter {
+        let Some(vp) = alacritty_terminal::term::point_to_viewport(offset, ic.point) else { continue };
+        if vp.line >= rows || vp.column.0 >= cols {
+            continue;
         }
-        let c = content.cursor;
-        (alacritty_terminal::term::point_to_viewport(offset, c.point), c.shape)
-    };
+        let flags = ic.cell.flags;
+        let mut fg = theme.resolve(ic.cell.fg, colors);
+        let mut bg = theme.resolve(ic.cell.bg, colors);
+        if flags.contains(Flags::DIM) {
+            fg = mix(bg, fg, 0.66);
+        }
+        if flags.contains(Flags::INVERSE) {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+        if flags.contains(Flags::HIDDEN) {
+            fg = bg;
+        }
+        if selection.is_some_and(|s| s.contains(ic.point)) {
+            bg = theme.selection;
+        }
+        // The emulator marks where a tab started with a '\t' (so copying keeps
+        // it); on screen that cell is blank, like the ones the tab skipped.
+        let c = if ic.cell.c == '\t' { ' ' } else { ic.cell.c };
+        let extra = ic.cell.zerowidth().map(|z| z.iter().collect::<String>().into_boxed_str());
+        grid[vp.line * cols + vp.column.0] = Cell { c, extra, fg, bg, flags };
+    }
+    let c = content.cursor;
+    let cursor = alacritty_terminal::term::point_to_viewport(offset, c.point).filter(|p| p.line < rows && p.column.0 < cols).map(|p| (p.line, p.column.0));
+    (grid, cursor, c.shape)
+}
+
+/// Emoji skin-tone modifiers. The emulator gives each its own two cells after
+/// the emoji, but egui can't combine them with it (no text shaping), and alone
+/// they're a box or a color swatch, so those cells are left blank.
+fn is_emoji_modifier(c: char) -> bool {
+    ('\u{1F3FB}'..='\u{1F3FF}').contains(&c)
+}
+
+/// One piece of text drawn from `col` in the style of that cell.
+#[derive(Debug, PartialEq)]
+struct Run {
+    col: usize,
+    text: String,
+}
+
+/// A row's text, split so every piece starts at its own grid column: ASCII
+/// runs of one style share a galley; anything else (wide, combined, fallback
+/// glyphs) is placed cell by cell with its combining marks, variation
+/// selectors and joiners (which egui draws as nothing when it can't use them).
+fn text_runs(line: &[Cell]) -> Vec<Run> {
+    let style = |c: &Cell| (c.fg, c.flags & (Flags::BOLD | Flags::ITALIC | Flags::ALL_UNDERLINES | Flags::STRIKEOUT));
+    let mut runs = Vec::new();
+    let mut col = 0;
+    while col < line.len() {
+        let c = &line[col];
+        if c.flags.contains(Flags::WIDE_CHAR_SPACER) || (c.c == ' ' && c.extra.is_none() && !c.flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT)) {
+            col += 1;
+            continue;
+        }
+        let start = col;
+        let mut text = String::new();
+        if c.c.is_ascii() && c.extra.is_none() {
+            let s = style(c);
+            while col < line.len() && line[col].c.is_ascii() && line[col].extra.is_none() && style(&line[col]) == s {
+                text.push(line[col].c);
+                col += 1;
+            }
+        } else {
+            if !is_emoji_modifier(c.c) {
+                text.push(c.c);
+                text.push_str(c.extra.as_deref().unwrap_or_default());
+            }
+            col += if c.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
+        }
+        if !text.is_empty() {
+            runs.push(Run { col: start, text });
+        }
+    }
+    runs
+}
+
+/// Paint the grid: backgrounds, then text in runs of same-styled cells, then
+/// the cursor and any text being composed. Returns the cursor's rect.
+fn paint(ui: &egui::Ui, t: &Terminal, theme: &Theme, font: &FontId, origin: egui::Pos2, cell: (f32, f32), focused: bool) -> Option<Rect> {
+    let (cols, rows) = (t.size.cols, t.size.rows);
+    let (mut grid, cursor_cell, cursor_shape) = screen_cells(&t.term.lock(), theme, cols, rows);
     let painter = ui.painter();
     let x_of = |col: usize| origin.x + col as f32 * cell.0;
     let y_of = |row: usize| origin.y + row as f32 * cell.1;
+    let composing = !t.preedit.is_empty();
 
     // The cursor cell is drawn inverted when it's a focused block.
-    let cursor_cell = cursor.filter(|p| p.line < rows && p.column.0 < cols).map(|p| (p.line, p.column.0));
-    if let (Some((r, c)), true, CursorShape::Block) = (cursor_cell, focused, cursor_shape) {
+    if let (Some((r, c)), true, CursorShape::Block, false) = (cursor_cell, focused, cursor_shape, composing) {
         let cell = &mut grid[r * cols + c];
         cell.fg = theme.bg;
         cell.bg = theme.cursor;
@@ -1004,32 +1236,9 @@ fn paint(ui: &egui::Ui, t: &Terminal, theme: &Theme, font: &FontId, origin: egui
                 painter.rect_filled(Rect::from_min_max(pos2(x_of(start), y), pos2(x_of(col), y + cell.1)), 0.0, bg);
             }
         }
-        // Text: ASCII runs share a galley; anything else is placed cell by cell so
-        // wide and fallback-font glyphs stay on the grid.
-        let style = |c: &Cell| (c.fg, c.flags & (Flags::BOLD | Flags::ITALIC | Flags::ALL_UNDERLINES | Flags::STRIKEOUT));
-        let mut col = 0;
-        while col < cols {
-            let c = &line[col];
-            if c.flags.contains(Flags::WIDE_CHAR_SPACER) || (c.c == ' ' && !c.flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT)) {
-                col += 1;
-                continue;
-            }
-            let start = col;
-            let mut text = String::new();
-            if c.c.is_ascii() && c.extra.is_none() {
-                let s = style(c);
-                while col < cols && line[col].c.is_ascii() && line[col].extra.is_none() && style(&line[col]) == s {
-                    text.push(line[col].c);
-                    col += 1;
-                }
-            } else {
-                text.push(c.c);
-                if let Some(e) = &c.extra {
-                    text.push_str(e);
-                }
-                col += if c.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
-            }
-            if !c.c.is_ascii() {
+        for Run { col: start, text } in text_runs(line) {
+            let c = &line[start];
+            if !text.is_ascii() {
                 crate::fonts::ensure_cjk(ui.ctx(), &text);
             }
             let mut fmt = egui::TextFormat::simple(font.clone(), c.fg);
@@ -1050,24 +1259,38 @@ fn paint(ui: &egui::Ui, t: &Terminal, theme: &Theme, font: &FontId, origin: egui
         }
     }
 
-    if let Some((r, c)) = cursor_cell {
-        let wide = grid[r * cols + c].flags.contains(Flags::WIDE_CHAR);
-        let w = if wide { cell.0 * 2.0 } else { cell.0 };
-        let r = Rect::from_min_size(pos2(x_of(c), y_of(r)), vec2(w, cell.1));
-        match (focused, cursor_shape) {
-            (_, CursorShape::Hidden) => {}
-            (true, CursorShape::Block) => {}
-            (true, CursorShape::Beam) => {
-                painter.rect_filled(Rect::from_min_size(r.min, vec2(2.0, cell.1)), 0.0, theme.cursor);
-            }
-            (true, CursorShape::Underline) => {
-                painter.rect_filled(Rect::from_min_max(pos2(r.left(), r.bottom() - 2.0), r.max), 0.0, theme.cursor);
-            }
-            _ => {
-                painter.rect_stroke(r.shrink(0.5), 0.0, Stroke::new(1.0, theme.cursor), egui::StrokeKind::Inside);
-            }
+    let (r, c) = cursor_cell?;
+    let at = pos2(x_of(c), y_of(r));
+    if composing {
+        // Input-method text, underlined over the cursor until it's committed.
+        crate::fonts::ensure_cjk(ui.ctx(), &t.preedit);
+        let mut fmt = egui::TextFormat::simple(font.clone(), theme.fg);
+        fmt.underline = Stroke::new(1.0, theme.fg);
+        fmt.background = theme.bg;
+        let galley = painter.layout_job(egui::text::LayoutJob::single_section(t.preedit.clone(), fmt));
+        let w = galley.size().x;
+        painter.rect_filled(Rect::from_min_size(at, vec2(w, cell.1)), 0.0, theme.bg);
+        painter.galley(at, galley, theme.fg);
+        painter.rect_filled(Rect::from_min_size(at + vec2(w, 0.0), vec2(2.0, cell.1)), 0.0, theme.cursor);
+        return Some(Rect::from_min_size(at + vec2(w, 0.0), vec2(1.0, cell.1)));
+    }
+    let wide = grid[r * cols + c].flags.contains(Flags::WIDE_CHAR);
+    let w = if wide { cell.0 * 2.0 } else { cell.0 };
+    let rect = Rect::from_min_size(at, vec2(w, cell.1));
+    match (focused, cursor_shape) {
+        (_, CursorShape::Hidden) => {}
+        (true, CursorShape::Block) => {}
+        (true, CursorShape::Beam) => {
+            painter.rect_filled(Rect::from_min_size(rect.min, vec2(2.0, cell.1)), 0.0, theme.cursor);
+        }
+        (true, CursorShape::Underline) => {
+            painter.rect_filled(Rect::from_min_max(pos2(rect.left(), rect.bottom() - 2.0), rect.max), 0.0, theme.cursor);
+        }
+        _ => {
+            painter.rect_stroke(rect.shrink(0.5), 0.0, Stroke::new(1.0, theme.cursor), egui::StrokeKind::Inside);
         }
     }
+    Some(Rect::from_min_size(at, vec2(1.0, cell.1)))
 }
 
 /// Where a new terminal starts: the project folder, else the file's folder, else home.
@@ -1084,7 +1307,7 @@ mod tests {
     use super::*;
 
     fn bytes(key: Key, m: Modifiers) -> Vec<u8> {
-        key_bytes(key, m, false).unwrap_or_default()
+        key_bytes(key, m, false, true).unwrap_or_default()
     }
 
     #[test]
@@ -1095,7 +1318,7 @@ mod tests {
         assert_eq!(bytes(Key::Tab, Modifiers::SHIFT), b"\x1b[Z");
         assert_eq!(bytes(Key::Escape, Modifiers::NONE), b"\x1b");
         assert_eq!(bytes(Key::ArrowUp, Modifiers::NONE), b"\x1b[A");
-        assert_eq!(key_bytes(Key::ArrowUp, Modifiers::NONE, true).unwrap(), b"\x1bOA", "DECCKM");
+        assert_eq!(key_bytes(Key::ArrowUp, Modifiers::NONE, true, true).unwrap(), b"\x1bOA", "DECCKM");
         assert_eq!(bytes(Key::ArrowLeft, Modifiers::CTRL), b"\x1b[1;5D");
         assert_eq!(bytes(Key::ArrowRight, Modifiers::SHIFT), b"\x1b[1;2C");
         assert_eq!(bytes(Key::Home, Modifiers::NONE), b"\x1b[H");
@@ -1120,10 +1343,118 @@ mod tests {
         assert_eq!(bytes(Key::Backspace, Modifiers::ALT), b"\x1b\x7f");
         assert_eq!(bytes(Key::X, Modifiers::CTRL | Modifiers::ALT), b"\x1b\x18");
         // Plain letters type through Text events, not key bytes.
-        assert_eq!(key_bytes(Key::A, Modifiers::NONE, false), None);
+        assert_eq!(key_bytes(Key::A, Modifiers::NONE, false, true), None);
         if MAC {
-            assert_eq!(key_bytes(Key::C, Modifiers::MAC_CMD | Modifiers::COMMAND, false), None, "Cmd keys belong to the app");
+            assert_eq!(key_bytes(Key::C, Modifiers::MAC_CMD | Modifiers::COMMAND, false, true), None, "Cmd keys belong to the app");
         }
+    }
+
+    #[test]
+    fn option_types_text_unless_it_is_meta() {
+        let alt = Modifiers::ALT;
+        // As Meta: Esc + the key.
+        assert_eq!(key_bytes(Key::L, alt, false, true).unwrap(), b"\x1bl");
+        // Not Meta: the layout's character comes as text (Option+L is @ on a German Mac).
+        assert_eq!(key_bytes(Key::L, alt, false, false), None);
+        assert_eq!(key_bytes(Key::Num8, alt | Modifiers::SHIFT, false, false), None);
+        // Keys that type nothing keep their Alt meaning either way.
+        assert_eq!(key_bytes(Key::Backspace, alt, false, false).unwrap(), b"\x1b\x7f");
+        assert_eq!(key_bytes(Key::Enter, alt, false, false).unwrap(), b"\x1b\r");
+        assert_eq!(key_bytes(Key::ArrowLeft, alt, false, false).unwrap(), b"\x1b[1;3D");
+        assert_eq!(key_bytes(Key::X, Modifiers::CTRL | alt, false, false).unwrap(), b"\x1b\x18");
+    }
+
+    #[test]
+    fn mouse_reports_in_the_requested_encoding() {
+        use MouseAction::*;
+        let none = Modifiers::NONE;
+        let click = TermMode::MOUSE_REPORT_CLICK;
+        let sgr = click | TermMode::SGR_MOUSE;
+        // SGR: 1-based cell, M on press, m on release, real button on release.
+        assert_eq!(mouse_report(sgr, 0, Press, none, 4, 1).unwrap(), b"\x1b[<0;5;2M");
+        assert_eq!(mouse_report(sgr, 0, Release, none, 4, 1).unwrap(), b"\x1b[<0;5;2m");
+        assert_eq!(mouse_report(sgr, 2, Press, none, 0, 0).unwrap(), b"\x1b[<2;1;1M");
+        assert_eq!(mouse_report(sgr, 0, Motion, none, 9, 2).unwrap(), b"\x1b[<32;10;3M", "drag");
+        assert_eq!(mouse_report(sgr, MOUSE_NONE, Motion, none, 9, 2).unwrap(), b"\x1b[<35;10;3M", "hover");
+        assert_eq!(mouse_report(sgr, WHEEL_UP, Press, none, 0, 0).unwrap(), b"\x1b[<64;1;1M");
+        assert_eq!(mouse_report(sgr, WHEEL_DOWN, Press, Modifiers::CTRL, 0, 0).unwrap(), b"\x1b[<81;1;1M");
+        assert_eq!(mouse_report(sgr, 0, Press, Modifiers::ALT | Modifiers::SHIFT, 0, 0).unwrap(), b"\x1b[<12;1;1M");
+        assert_eq!(mouse_report(sgr, 1, Press, none, 300, 0).unwrap(), b"\x1b[<1;301;1M", "SGR has no column limit");
+        // Classic: three bytes offset by 32, and release is button 3.
+        assert_eq!(mouse_report(click, 0, Press, none, 4, 1).unwrap(), b"\x1b[M\x20\x25\x22");
+        assert_eq!(mouse_report(click, 2, Release, none, 4, 1).unwrap(), b"\x1b[M\x23\x25\x22");
+        assert_eq!(mouse_report(click, WHEEL_UP, Press, none, 0, 0).unwrap(), b"\x1b[M\x60\x21\x21");
+        assert_eq!(mouse_report(click, 0, Press, none, 222, 0).unwrap(), b"\x1b[M\x20\xff\x21");
+        assert_eq!(mouse_report(click, 0, Press, none, 223, 0), None, "past column 223");
+        // UTF-8 extends the range by encoding big values as two bytes.
+        let utf8 = click | TermMode::UTF8_MOUSE;
+        assert_eq!(mouse_report(utf8, 0, Press, none, 299, 0).unwrap(), "\x1b[M\u{20}\u{14c}\u{21}".as_bytes());
+    }
+
+    /// Feed `bytes` to a bare emulator and build the cells `paint` draws.
+    fn cells_for(bytes: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
+        use alacritty_terminal::event::VoidListener;
+        let mut term = Term::new(Config::default(), &Size { cols, rows }, VoidListener);
+        let mut parser: alacritty_terminal::vte::ansi::Processor = alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut term, bytes);
+        let theme = Theme::new(Color32::BLACK, Color32::WHITE, Color32::WHITE, Color32::GRAY);
+        screen_cells(&term, &theme, cols, rows).0
+    }
+
+    /// Each visible character and the column it's drawn at. ASCII runs are one
+    /// galley (one cell per char); other runs are one cell's text.
+    fn placed(runs: &[Run]) -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        for r in runs {
+            if r.text.is_ascii() {
+                out.extend(r.text.chars().enumerate().filter(|(_, c)| *c != ' ').map(|(i, c)| (r.col + i, c.to_string())));
+            } else {
+                out.push((r.col, r.text.clone()));
+            }
+        }
+        out
+    }
+
+    fn at(col: usize, s: &str) -> (usize, String) {
+        (col, s.to_owned())
+    }
+
+    #[test]
+    fn tabs_and_wide_chars_stay_on_the_grid() {
+        let cols = 30;
+        let grid = cells_for("A\tB 中文|\r\nname\tsize\tx\r\n".as_bytes(), cols, 3);
+        let runs = text_runs(&grid[..cols]);
+        assert!(runs.iter().all(|r| !r.text.contains('\t')), "no tab reaches egui's layout: {runs:?}");
+        // B after the tab stop at column 8, 中 at 10, 文 at 12, | at 14.
+        assert_eq!(placed(&runs), [at(0, "A"), at(8, "B"), at(10, "中"), at(12, "文"), at(14, "|")]);
+        let row = placed(&text_runs(&grid[cols..2 * cols]));
+        assert!(row.contains(&at(0, "n")) && row.contains(&at(8, "s")) && row.contains(&at(16, "x")), "{row:?}");
+    }
+
+    #[test]
+    fn combining_marks_and_emoji_sequences() {
+        let cols = 20;
+        // e + combining acute; heart + VS16; thumbs up + skin tone.
+        let grid = cells_for("e\u{301}x \u{2764}\u{fe0f} \u{1f44d}\u{1f3fd}|".as_bytes(), cols, 1);
+        let all = placed(&text_runs(&grid));
+        // The accent and the selector stay with their characters; the skin
+        // tone has its own two cells (7–8) from the emulator, drawn blank, and
+        // the bar lands after them.
+        assert_eq!(all, [at(0, "e\u{301}"), at(1, "x"), at(3, "\u{2764}\u{fe0f}"), at(5, "\u{1f44d}"), at(9, "|")]);
+        assert_eq!(grid[7].c, '\u{1f3fd}');
+        // A joiner sequence: each emoji in its own cells, the joiner kept with the one before.
+        let grid = cells_for("\u{1f468}\u{200d}\u{1f469}|".as_bytes(), cols, 1);
+        assert_eq!(placed(&text_runs(&grid)), [at(0, "\u{1f468}\u{200d}"), at(2, "\u{1f469}"), at(4, "|")]);
+    }
+
+    #[test]
+    fn monospace_runs_advance_exactly_one_cell_per_char() {
+        // ASCII runs are laid out as one galley: each glyph must land on its cell.
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        let font = FontId::monospace(14.0);
+        let (w, galley) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.layout_no_wrap("|1234567 ab".repeat(10), font.clone(), Color32::WHITE)));
+        assert!((galley.size().x - 110.0 * w).abs() < 0.5, "{} vs {}", galley.size().x, 110.0 * w);
     }
 
     #[test]
