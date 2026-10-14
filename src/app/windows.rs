@@ -62,6 +62,10 @@ pub(crate) struct Requests {
     pub reveal: Vec<(PathBuf, Option<Spot>)>,
     /// Snippets were saved: the other windows reload theirs.
     pub snippets_changed: bool,
+    /// Files or folders renamed (from, to) and moved to the Trash from this
+    /// window's side bar: the other windows' tabs and trees follow.
+    pub renamed: Vec<(PathBuf, PathBuf)>,
+    pub deleted: Vec<PathBuf>,
 }
 
 impl Link {
@@ -538,6 +542,14 @@ impl Windows {
                     }
                 }
             }
+            for s in self.slots.iter_mut().enumerate().filter(|(j, _)| *j != i).map(|(_, s)| s) {
+                for (from, to) in &r.renamed {
+                    s.app.follow_rename(from, to);
+                }
+                for gone in &r.deleted {
+                    s.app.follow_delete(gone);
+                }
+            }
             if let Some(k) = r.focus_window.filter(|&k| k < self.slots.len()) {
                 self.focus(k, ctx);
             }
@@ -895,6 +907,33 @@ mod tests {
         assert_eq!(first.docs[0].highlighter.theme_name(), "Strata Light", "a theme change shows at once");
         assert_eq!(first.docs[0].editor.tab_width, 8, "a new default indentation applies, as when settings.json changes");
         assert_eq!(first.recent_files, vec![dir.join("a.txt")]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn side_bar_rename_and_trash_reach_every_window() {
+        let dir = temp_dir("rename");
+        let (a, b, c) = (dir.join("a.txt"), dir.join("b.txt"), dir.join("c.txt"));
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&c, "c").unwrap();
+        let ctx = context();
+        let mut w = Windows::new(None);
+        w.root().open_path(a.clone(), false);
+        w.root().open_path(c.clone(), false);
+        w.open_new_window(0).unwrap();
+        w.slots[1].app.open_folder(dir.clone());
+        pass(&mut w, &ctx, 1, vec![], false);
+        // Rename a.txt to b.txt in the second window's side bar.
+        w.slots[1].app.sidebar.ask_rename(&a);
+        *w.slots[1].app.sidebar.prompt_state().unwrap().0 = "b.txt".into();
+        pass(&mut w, &ctx, 1, vec![], false);
+        pass(&mut w, &ctx, 1, vec![key(Key::Enter, Modifiers::NONE)], false);
+        assert!(b.exists() && !a.exists());
+        assert!(w.slots[0].app.has_open_file(&b), "the first window's tab followed the rename");
+        // Move c.txt to the Trash: the first window's (clean) tab closes.
+        w.slots[1].app.link.requests.deleted.push(c.clone());
+        pass(&mut w, &ctx, 1, vec![], false);
+        assert!(!w.slots[0].app.has_open_file(&c));
         std::fs::remove_dir_all(dir).ok();
     }
 

@@ -499,6 +499,7 @@ const LICENSES: &[Credit] = &[
     credit("muda", "Apache-2.0 or MIT", &["muda"]),
     credit("objc2 / block2 / objc2-foundation", "MIT", &["objc2", "block2", "objc2-foundation"]),
     credit("arboard", "MIT or Apache-2.0", &["arboard"]),
+    credit("windows-sys", "MIT or Apache-2.0", &["windows-sys"]),
     credit("serde / serde_json", "MIT or Apache-2.0", &["serde", "serde_json"]),
     credit("log", "MIT or Apache-2.0", &["log"]),
 ];

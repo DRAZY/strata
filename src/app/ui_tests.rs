@@ -331,6 +331,28 @@ fn full_screen_follows_the_window() {
 }
 
 #[test]
+fn trashed_files_close_their_tabs_but_keep_unsaved_text() {
+    let dir = temp_dir("trash");
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    let (clean, dirty, other) = (dir.join("sub/clean.txt"), dir.join("sub/dirty.txt"), dir.join("other.txt"));
+    for p in [&clean, &dirty, &other] {
+        std::fs::write(p, "text\n").unwrap();
+    }
+    let mut app = StrataApp::new(Some(other.clone()), None);
+    app.open_path(clean.clone(), false);
+    app.open_path(dirty.clone(), false);
+    app.doc().editor.insert_text("unsaved ");
+    // As if Move to Trash took the folder.
+    std::fs::remove_dir_all(dir.join("sub")).unwrap();
+    app.follow_delete(&dir.join("sub"));
+    assert!(!app.has_open_file(&clean), "a clean tab closes");
+    let i = app.docs.iter().position(|d| d.path.as_ref() == Some(&dirty)).expect("the edited tab stays");
+    assert!(app.docs[i].deleted && app.docs[i].is_dirty());
+    assert!(app.has_open_file(&other));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn cjk_file_names_load_the_cjk_fonts() {
     let loaded = |ctx: &Context| ctx.data(|d| d.get_temp::<bool>(egui::Id::new("strata-cjk-fonts")).is_some());
     let dir = temp_dir("cjk");

@@ -142,6 +142,8 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `show_tabs` | true/false | `true` | Show the tab bar. |
 | `show_status_bar` | true/false | `true` | Show the status bar. |
 | `markdown_preview` | true/false | `false` | Show the live Markdown preview beside the editor. See [Markdown](markdown.md). |
+| `sidebar_respect_gitignore` | true/false | `true` | The side bar's tree hides files and folders that `.gitignore` (and `.ignore`, `.git/info/exclude` and your global Git excludes) ignore, as Goto Anything and Find in Files do. See [Projects and Side Bar](projects.md#what-the-tree-shows). |
+| `file_exclude_patterns` | list of text | `[".git", ".DS_Store"]` | Names the side bar never shows, files or folders, as globs: for example `["*.pyc", "node_modules", ".git", ".DS_Store"]`. |
 
 ### Editing
 

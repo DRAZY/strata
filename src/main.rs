@@ -49,6 +49,7 @@ mod spell;
 mod shell_command;
 mod sidebar;
 mod terminal;
+mod trash;
 mod symbols;
 mod view;
 mod wrap;

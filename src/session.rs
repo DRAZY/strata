@@ -117,6 +117,10 @@ pub struct Settings {
     pub added_words: Vec<String>,
     /// Scopes spell check looks at (a Sublime scope selector).
     pub spelling_selector: String,
+    /// The side bar hides what .gitignore ignores.
+    pub sidebar_respect_gitignore: bool,
+    /// Names (globs) the side bar never shows.
+    pub file_exclude_patterns: Vec<String>,
 }
 
 impl Default for Settings {
@@ -177,6 +181,8 @@ impl Default for Settings {
             dictionary: crate::spell::DEFAULT_DICTIONARY.into(),
             added_words: Vec::new(),
             spelling_selector: crate::spell::DEFAULT_SELECTOR.into(),
+            sidebar_respect_gitignore: true,
+            file_exclude_patterns: vec![".git".into(), ".DS_Store".into()],
         }
     }
 }

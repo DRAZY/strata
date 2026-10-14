@@ -1460,6 +1460,35 @@ impl StrataApp {
         d.view.reveal();
     }
 
+    /// Tabs of `from` (a file, or files inside a folder) now at `to` follow it.
+    pub(super) fn follow_rename(&mut self, from: &Path, to: &Path) {
+        for d in &mut self.docs {
+            if let Some(rest) = d.path.as_ref().and_then(|p| p.strip_prefix(from).ok()) {
+                let new = if rest.as_os_str().is_empty() { to.to_owned() } else { to.join(rest) };
+                d.highlighter.detect(Some(&new), &d.editor.buffer.line_text(0));
+                d.path = Some(new);
+            }
+        }
+        self.sidebar.refresh();
+    }
+
+    /// `gone` (a file, or a folder) was moved to the Trash: its tabs close,
+    /// except those with unsaved changes, which stay marked deleted.
+    pub(super) fn follow_delete(&mut self, gone: &Path) {
+        let mut i = 0;
+        while i < self.docs.len() {
+            let inside = self.docs[i].path.as_ref().is_some_and(|p| p.starts_with(gone));
+            if inside && !self.docs[i].is_dirty() && self.close_tab(i) {
+                continue;
+            }
+            if inside {
+                self.docs[i].check_disk();
+            }
+            i += 1;
+        }
+        self.sidebar.refresh();
+    }
+
     /// macOS title bar: content runs under the system title bar, which would be
     /// see-through with the transparent window. Paint a solid strip with the title,
     /// drag to move, double-click to zoom. Hidden in full screen, where macOS hides it too.
@@ -2385,6 +2414,10 @@ impl eframe::App for StrataApp {
         if self.window_focused && !focused && self.settings.save_on_focus_lost {
             self.save_all();
         }
+        if !self.window_focused && focused {
+            // Back from another app, which may have changed the folders.
+            self.sidebar.refresh();
+        }
         self.window_focused = focused;
         if now - self.last_disk_check > 1.0 {
             self.last_disk_check = now;
@@ -2492,6 +2525,7 @@ impl eframe::App for StrataApp {
         self.markdown_panel(ui);
 
         if self.sidebar.shown() {
+            self.sidebar.set_filter(&sidebar::TreeFilter { respect_gitignore: self.settings.sidebar_respect_gitignore, exclude: self.settings.file_exclude_patterns.clone() });
             let current = self.docs[self.active].path.clone();
             let open = self.open_files_for_sidebar();
             let action = egui::Panel::left(self.link.id("sidebar"))
@@ -2513,15 +2547,15 @@ impl eframe::App for StrataApp {
                     self.close_tab(i);
                 }
                 Some(sidebar::Action::Renamed(from, to)) => {
-                    // Open tabs inside a renamed folder (or the file itself) follow it.
-                    for d in &mut self.docs {
-                        if let Some(rest) = d.path.as_ref().and_then(|p| p.strip_prefix(&from).ok()) {
-                            let new = if rest.as_os_str().is_empty() { to.clone() } else { to.join(rest) };
-                            d.highlighter.detect(Some(&new), &d.editor.buffer.line_text(0));
-                            d.path = Some(new);
-                        }
-                    }
+                    self.follow_rename(&from, &to);
                     self.status = format!("Renamed to {}", to.display());
+                    // The other windows' tabs and trees follow too.
+                    self.link.requests.renamed.push((from, to));
+                }
+                Some(sidebar::Action::Deleted(gone)) => {
+                    self.follow_delete(&gone);
+                    self.status = format!("Moved {} to the {}", gone.display(), crate::trash::trash_name());
+                    self.link.requests.deleted.push(gone);
                 }
                 Some(sidebar::Action::Status(s)) => self.status = s,
                 Some(sidebar::Action::ReplaceInFiles) => self.replace_in_files(Some(ui.ctx().clone())),

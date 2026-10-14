@@ -39,11 +39,18 @@ Each folder in the side bar is a tree of its own, in the order you added them; h
 
 A preview tab becomes a regular tab as soon as you edit it, save it, double-click its tab, or open the file again any other way. See [Panes, Windows and Tabs](panes.md#preview-tabs).
 
-The tree shows every file and folder except `.git` folders and `.DS_Store` files. Unlike Find in Files and Goto Anything, it doesn't hide `.gitignore`d or hidden files.
+### What the tree shows
+
+Like Goto Anything and Find in Files, the tree leaves out what `.gitignore` ignores (build output such as `target/` or `node_modules/`, say), along with `.git` folders and `.DS_Store` files. Hidden files (names starting with a dot) are shown. Two settings change this:
+
+- `sidebar_respect_gitignore` (default `true`): set it to `false` to see ignored files too.
+- `file_exclude_patterns` (default `[".git", ".DS_Store"]`): names, or globs like `*.pyc`, that are never shown.
+
+See [Settings](settings.md#window).
 
 ### Refreshing
 
-Strata reads each folder's contents when you first expand it and doesn't watch for changes made outside the app. To pick up new, renamed or deleted files, click the ⟳ button at the top right of the Files tab, or choose Project ▸ Refresh Folders ({{key:refresh_folder_list}}). Files you create or rename from the side bar menu show up right away.
+The tree keeps itself up to date: every couple of seconds Strata checks the folders you have expanded (only those, so a huge project costs nothing extra) and re-reads any whose contents changed, and it re-reads the tree whenever you come back to the window from another app. So files that a terminal, a build or Git creates, renames or deletes show up on their own. To re-read everything right away, click the ⟳ button at the top right of the Files tab, or choose Project ▸ Refresh Folders ({{key:refresh_folder_list}}).
 
 ### Right-click menu
 
@@ -53,15 +60,14 @@ Right-click a file, a folder, or a top folder's name:
 |---|---|
 | New File… | Ask for a name and create an empty file in that folder (the clicked file's folder, for a file), then open it. A name like `src/util.rs` also creates the missing folders. |
 | New Folder… | Ask for a name and create the folder. Nested names like `a/b/c` work. |
-| Rename… | Rename the file or folder. Open tabs of renamed files, or of files inside a renamed folder, follow the new name. Not offered for top folders. |
+| Rename… | Rename the file or folder. Open tabs of renamed files, or of files inside a renamed folder, follow the new name, in every window. Changing only the case of a name (`readme.md` to `README.md`) works too, also on disks that ignore case. Not offered for top folders. |
+| Move to Trash… | After asking, move the file or folder (and everything in it) to the Trash (the Recycle Bin on Windows), where you can put it back. Its tabs close, in every window; a tab with unsaved changes stays open, marked "Deleted on disk", so nothing you typed is lost. Not offered for top folders. |
 | Copy Path | Copy the full path to the clipboard. |
 | Reveal in Finder | Show the item in your file manager. On Windows it's called Show in Explorer, and on Linux Open Containing Folder. |
 | Find in Folder… | Switch to the Search tab with that folder (a file's own folder, for a file) in Where, so the search covers just it. |
 | Remove Folder from Project | On a top folder only: take it out of the side bar. Nothing on disk changes. |
 
-In the name dialog, press Enter to confirm or Esc to cancel. Strata won't overwrite an existing file or folder; the dialog shows the error instead.
-
-There's no Delete item: delete files in your file manager or the [terminal](terminal.md), then refresh.
+In the name dialog, press Enter to confirm or Esc to cancel. While a dialog is open, other shortcuts wait. Strata won't overwrite an existing file or folder, and it turns down names that can't work: an empty name, `.` or `..`, a `\` (use `/` between folders in New File and New Folder; a new name in Rename can't contain `/` at all), and on Windows the characters `< > : " | ? *`, names ending in a dot or space, and reserved names like `CON` or `NUL`. The dialog says what's wrong instead.
 
 ### Open Files
 
