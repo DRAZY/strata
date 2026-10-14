@@ -8,6 +8,7 @@
 
 use crate::document::Document;
 use crate::highlight::{self, Highlighter, Span};
+use crate::links::Target;
 use egui::epaint::text::VariationCoords;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align, Color32, CursorIcon, FontFamily, FontId, Galley, Layout, Rect, Sense, Stroke, Ui, UiBuilder, pos2, vec2};
@@ -513,6 +514,8 @@ pub fn to_html_document(src: &str, fallback_title: &str) -> String {
 pub enum Action {
     /// A relative link to a local text file: open it in a tab.
     Open(PathBuf),
+    /// A link to some other local file: show it in the file manager.
+    Reveal(PathBuf),
     Status(String),
 }
 
@@ -904,6 +907,7 @@ fn table(ui: &mut Ui, d: &mut Draw, aligns: &[Align], head: &[Inline], rows: &[V
     let total = vec2(widths.iter().sum::<f32>() + 2.0 * pad.x * ncols as f32, heights.iter().sum());
     let (rect, resp) = ui.allocate_exact_size(total, Sense::click());
     let p = ui.painter();
+    let mut hover_url = None;
     let mut y = rect.top();
     for (ri, (row, h)) in galleys.iter().zip(&heights).enumerate() {
         let row_rect = Rect::from_min_size(pos2(rect.left(), y), vec2(total.x, *h));
@@ -930,6 +934,7 @@ fn table(ui: &mut Ui, d: &mut Draw, aligns: &[Align], head: &[Inline], rows: &[V
                     if resp.clicked() {
                         d.clicked = Some(url.to_owned());
                     }
+                    hover_url = Some(url.to_owned());
                 }
             }
             p.galley(at, g.clone(), pal.fg);
@@ -953,6 +958,10 @@ fn table(ui: &mut Ui, d: &mut Draw, aligns: &[Align], head: &[Inline], rows: &[V
         p.vline(x, rect.y_range(), stroke);
     }
     p.rect_stroke(rect, 4.0, stroke, egui::StrokeKind::Inside);
+    // The real destination, whatever the link text says.
+    if let Some(url) = hover_url {
+        resp.on_hover_text_at_pointer(url);
+    }
 }
 
 // ---- the panel --------------------------------------------------------------------
@@ -1204,31 +1213,37 @@ impl Preview {
     }
 
     fn follow(&mut self, ctx: &egui::Context, url: &str, base: Option<&Path>) -> Option<Action> {
-        if let Some(anchor) = url.strip_prefix('#') {
-            let i = self.blocks.iter().position(|b| matches!(&b.block, Block::Heading { slug, .. } if slug == anchor))?;
-            self.scroll_to = self.tops.get(i).map(|y| y - MARGIN * 0.5);
-            ctx.request_repaint();
-            return None;
-        }
-        let scheme = url.split_once(':').is_some_and(|(s, _)| s.len() > 1 && s.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)));
-        if scheme {
-            ctx.open_url(egui::OpenUrl::new_tab(url));
-            return None;
-        }
-        let path = url.split('#').next().unwrap_or(url).replace("%20", " ");
-        let dir = base.and_then(Path::parent).map(Path::to_path_buf).unwrap_or_default();
-        let target = dir.join(path);
-        if !target.exists() {
-            return Some(Action::Status(format!("Link target not found: {}", target.display())));
-        }
-        let text_like = target.is_file() && std::fs::read(&target).map(|b| !b.iter().take(8000).any(|&c| c == 0)).unwrap_or(false);
-        if text_like {
-            Some(Action::Open(target))
-        } else {
-            ctx.open_url(egui::OpenUrl::new_tab(format!("file://{}", target.display())));
-            None
+        match crate::links::classify(url, base.and_then(Path::parent)) {
+            Target::Anchor(anchor) => {
+                let i = self.blocks.iter().position(|b| matches!(&b.block, Block::Heading { slug, .. } if *slug == anchor))?;
+                self.scroll_to = self.tops.get(i).map(|y| y - MARGIN * 0.5);
+                ctx.request_repaint();
+                None
+            }
+            Target::Web(u) => {
+                ctx.open_url(egui::OpenUrl::new_tab(u));
+                None
+            }
+            Target::Refused(msg) => Some(Action::Status(msg)),
+            Target::Local(target) => Some(local_link(&target)),
         }
     }
+}
+
+/// A link to a local file: text opens in Strata; anything else (an app, a
+/// script, an image) is shown in the file manager rather than launched.
+pub fn local_link(target: &Path) -> Action {
+    if !target.exists() {
+        return Action::Status(format!("Link target not found: {}", target.display()));
+    }
+    let text_like = target.is_file()
+        && std::fs::File::open(target)
+            .and_then(|f| {
+                let mut head = Vec::new();
+                std::io::Read::read_to_end(&mut std::io::Read::take(f, 8000), &mut head).map(|_| head)
+            })
+            .is_ok_and(|b| !b.contains(&0));
+    if text_like { Action::Open(target.to_path_buf()) } else { Action::Reveal(target.to_path_buf()) }
 }
 
 // ---- whole documents (the Help viewer) ---------------------------------------------
@@ -1449,6 +1464,16 @@ mod tests {
         assert!(matches!(preview.follow(&ctx, "missing.md", Some(&path)), Some(Action::Status(_))));
         assert_eq!(preview.follow(&ctx, "#lists", Some(&path)), None);
         assert!(preview.scroll_to.is_some());
+        // Other local files are shown in the file manager, never launched.
+        std::fs::write(dir.join("tool.bin"), b"\x7fELF\0\0\x01").unwrap();
+        assert_eq!(preview.follow(&ctx, "tool.bin", Some(&path)), Some(Action::Reveal(dir.join("tool.bin"))));
+        // Schemes other than http(s)/mailto are refused with the target named.
+        match preview.follow(&ctx, "file:///Applications/Calculator.app", Some(&path)) {
+            Some(Action::Status(s)) => assert!(s.contains("file:///Applications/Calculator.app"), "{s}"),
+            a => panic!("{a:?}"),
+        }
+        assert!(matches!(preview.follow(&ctx, "smb://host/share", Some(&path)), Some(Action::Status(_))));
+        assert_eq!(preview.follow(&ctx, "https://example.com", Some(&path)), None, "web links open in the browser");
         // Editing re-parses.
         doc.editor.insert_text("Intro\n\n");
         assert!(preview.refresh(&mut doc, 10.0));

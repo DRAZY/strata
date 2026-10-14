@@ -88,7 +88,11 @@ impl StrataApp {
                 }
                 Err(e) => self.status = format!("Could not read {}: {e}", report.display()),
             },
-            2 => ctx.open_url(egui::OpenUrl::new_tab(format!("{}/new", crash::ISSUES_URL))),
+            2 => {
+                if let Err(msg) = crate::links::open_web(ctx, &format!("{}/new", crash::ISSUES_URL)) {
+                    self.status = msg;
+                }
+            }
             _ => self.crash_notice = None,
         }
     }

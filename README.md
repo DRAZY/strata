@@ -449,7 +449,9 @@ setting at its default, the ones above included.
 Strata makes no network connections of its own: no telemetry, no update
 checks, no downloads, and Markdown images aren't fetched. A link you click (in
 the Markdown preview, the manual, or Help ▸ Report a Problem…) opens in your
-browser. The `strata` command talks to the running app over a local socket
+browser; only `http`, `https` and `mailto` links leave Strata (other local
+files are shown in the file manager, other schemes are refused; see
+`src/links.rs`). The `strata` command talks to the running app over a local socket
 (a localhost-only port with a random token on Windows). The terminal and build
 systems run the programs you choose, and Git integration only reads your local
 repository.

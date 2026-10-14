@@ -50,14 +50,15 @@ The preview updates on every edit. Very large files (more than about a quarter o
 
 ## Links
 
-Click a link in the preview to follow it:
+Click a link in the preview to follow it. Hover over a link first to see where it really goes; the tooltip shows the address, whatever the link text says.
 
 | Link | What happens |
 |---|---|
 | An anchor such as `#installation` | The preview scrolls to the heading with that anchor. Anchors are made the GitHub way: lowercase, spaces become hyphens, punctuation is dropped. |
-| A web address or any other link with a scheme (`https:`, `mailto:` …) | Opens in your default browser or app. |
+| A web or mail address (`http:`, `https:`, `mailto:`) | Opens in your default browser or mail app. |
 | A relative path to a text file, such as `docs/setup.md` | Opens the file in a tab. The path is relative to the Markdown file's folder. |
-| A relative path to anything else (an image, a PDF, a folder) | Opens in the system's default app. |
+| A relative path to anything else (an image, a PDF, an app, a folder) | Shown in Finder (Explorer on Windows, the file manager on Linux), not opened, so a link can't start a program. |
+| Any other kind of link (`file:`, `smb:`, `vnc:`, an app's own scheme …) or a network path (`//server/share`) | Not followed. The status bar shows the link so you can copy it and open it yourself if you trust it. |
 | A path that doesn't exist | The status bar says "Link target not found". |
 
 Links inside tables work the same way.

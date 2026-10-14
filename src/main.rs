@@ -32,6 +32,7 @@ mod keybindings;
 mod keys;
 mod menus;
 mod lang;
+mod links;
 mod logging;
 #[cfg(target_os = "macos")]
 mod mac_open;
