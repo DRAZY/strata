@@ -250,7 +250,7 @@ Symbols are found by recognizing common declaration patterns line by line, so th
 
 ### Goto Symbol in Project
 
-{{key:goto_symbol_in_project}} (Goto ▸ Goto Symbol in Project…) lists symbols from every file in the open folders, shown as `name · path:line`. Pick one to open that file at the symbol. It looks at up to 5,000 files with a recognized syntax (each up to 1 MB), skipping `.gitignore`d files. With no folder open, it acts like Go to Symbol.
+{{key:goto_symbol_in_project}} (Goto ▸ Goto Symbol in Project…) lists symbols from every file in the open folders, shown as `name · path:line`. Pick one to open that file at the symbol. It looks at up to 5,000 files with a recognized syntax (each up to 1 MB), skipping `.gitignore`d files. With no folder open, it acts like Go to Symbol. The files are read in the background: the status bar says "Searching the folder for symbols…" and the list opens when it's done; you can keep working meanwhile, and starting another search cancels this one.
 
 ## Go to Definition
 
@@ -260,7 +260,7 @@ Symbols are found by recognizing common declaration patterns line by line, so th
 2. then in the other open tabs,
 3. then in files in the open folders with the same file extension as the current file.
 
-If nothing is found, the status bar says "No definition found for …".
+The folder is searched in the background (the status bar says "Searching the folder for …"), so the window never freezes on a big project; a new search cancels one still running. If nothing is found, the status bar says "No definition found for …".
 
 ## Go to Reference
 

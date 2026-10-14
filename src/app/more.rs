@@ -3,7 +3,6 @@
 //! references and project symbols, build-system choice, macros, projects.
 
 use super::StrataApp;
-use crate::commands::Cmd;
 use crate::panes::Layout;
 use std::path::{Path, PathBuf};
 
@@ -295,36 +294,6 @@ impl StrataApp {
         self.status = format!("References to {word}: see the Search tab, or step with Find ▸ Find Results");
     }
 
-    /// Every symbol in the folder's files (bounded), offered in the palette.
-    pub(super) fn goto_symbol_in_project(&mut self, ctx: &egui::Context) {
-        let Some(walker) = self.walk_folders() else {
-            return self.run(ctx, Cmd::GotoSymbol);
-        };
-        let mut labels = Vec::new();
-        let mut spots = Vec::new();
-        for entry in walker.flatten().filter(|e| e.file_type().is_some_and(|t| t.is_file())).take(5_000) {
-            let p = entry.path();
-            let Some(syntax) = crate::highlight::syntax_for_path(p) else { continue };
-            if entry.metadata().map_or(true, |m| m.len() > 1_000_000) {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(p) else { continue };
-            let rel = self.sidebar.display_path(p);
-            for s in crate::symbols::symbols(&syntax, &text) {
-                labels.push(format!("{}  ·  {rel}:{}", s.name, s.line + 1));
-                spots.push((p.to_owned(), s.line));
-                if spots.len() >= 50_000 {
-                    break;
-                }
-            }
-        }
-        if spots.is_empty() {
-            self.status = "No symbols found in the folder".into();
-            return;
-        }
-        self.choose(ctx, Choosing::Symbol(spots), "Symbol in project", labels);
-    }
-
     // ---- build systems ---------------------------------------------------------------
 
     pub(super) fn run_build(&mut self) {
@@ -571,7 +540,7 @@ mod tests {
         app.close_group();
         assert_eq!(app.layout.groups(), 2);
         assert!(app.docs.iter().all(|d| d.group < 2));
-        app.run(&ctx, Cmd::LayoutRows3);
+        app.run(&ctx, crate::commands::Cmd::LayoutRows3);
         assert_eq!((app.layout.cols.len(), app.layout.rows.len()), (1, 3));
     }
 

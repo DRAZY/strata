@@ -132,6 +132,8 @@ pub struct StrataApp {
     views: clones::Views,
     /// File ▸ Print… options (see `printing`).
     print: printing::PrintDialog,
+    /// A folder-wide search running in the background (see `lookup`).
+    lookup: lookup::Lookup,
 }
 
 mod autosave;
@@ -150,6 +152,7 @@ mod help_ui;
 mod keymap_ui;
 mod large_files;
 mod launch;
+mod lookup;
 pub(crate) mod menu_model;
 mod more;
 mod terminal_ui;
@@ -275,6 +278,7 @@ impl StrataApp {
             crash_notice: None,
             views: Default::default(),
             print: Default::default(),
+            lookup: Default::default(),
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -1113,7 +1117,7 @@ impl StrataApp {
             }
             Cmd::JumpBack => self.jump(true),
             Cmd::JumpForward => self.jump(false),
-            Cmd::GotoDefinition => self.goto_definition(),
+            Cmd::GotoDefinition => self.goto_definition_in(Some(ctx.clone())),
             Cmd::OpenProject => self.open_project(),
             Cmd::SaveProjectAs => self.save_project_as(),
             Cmd::AddFolder => {
@@ -2327,6 +2331,7 @@ impl eframe::App for StrataApp {
         self.keymap.pasted = None;
         self.record_macro_input(ctx);
         self.build.poll(ctx);
+        self.poll_lookup(ctx);
         let typed_word = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t.chars().all(|c| c.is_alphanumeric() || c == '_'))));
         if self.completion.is_open() {
             let d = &mut self.docs[self.active];
