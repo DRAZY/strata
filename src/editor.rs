@@ -3411,7 +3411,8 @@ mod tests {
 
     #[test]
     fn line_commands_never_leave_the_caret_inside_a_crlf() {
-        let commands: &[(&str, fn(&mut Editor))] = &[
+        type Command = (&'static str, fn(&mut Editor));
+        let commands: &[Command] = &[
             ("sort", |e| e.sort_lines(true)),
             ("reverse", Editor::reverse_lines),
             ("unique", Editor::unique_lines),
