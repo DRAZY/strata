@@ -357,7 +357,7 @@ pub fn latest_report(config: &Path) -> Option<PathBuf> {
 
 /// Dev aid: `STRATA_DEV_PANIC=40` panics on the UI thread at frame 40;
 /// `thread:40` panics on a background thread instead (Strata should keep
-/// going). Inert unless set.
+/// going). Inert unless set, and in release builds (see `crate::dev`).
 pub struct DevPanic {
     at: Option<(bool, u64)>,
     frame: u64,
@@ -365,7 +365,7 @@ pub struct DevPanic {
 
 impl DevPanic {
     pub fn from_env() -> Self {
-        let spec = std::env::var("STRATA_DEV_PANIC").unwrap_or_default();
+        let spec = crate::dev::risky_var("STRATA_DEV_PANIC").unwrap_or_default();
         let (thread, n) = match spec.strip_prefix("thread:") {
             Some(n) => (true, n),
             None => (false, spec.as_str()),

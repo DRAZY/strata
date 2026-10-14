@@ -335,7 +335,7 @@ impl Windows {
             exiting: false,
             last_session_save: 0.0,
             session_key: 0,
-            dev_windows: std::env::var("STRATA_DEV_WINDOWS").ok().and_then(|n| n.parse().ok()),
+            dev_windows: crate::dev::var("STRATA_DEV_WINDOWS").and_then(|n| n.parse().ok()),
             confirm: Box::new(|app: &mut StrataApp, i| app.confirm_close(i)),
         };
         w.add(first, ViewportId::ROOT, builder(), None, None);

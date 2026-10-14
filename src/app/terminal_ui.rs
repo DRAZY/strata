@@ -56,7 +56,8 @@ impl StrataApp {
         let ctx = ui.ctx().clone();
         if !self.terminal_started {
             self.terminal_started = true;
-            let dev = std::env::var("STRATA_DEV_TERMINAL").ok();
+            // Dev aid: types a command into a new terminal (debug builds only; see `crate::dev`).
+            let dev = crate::dev::risky_var("STRATA_DEV_TERMINAL");
             if self.settings.terminal_visible || dev.is_some() {
                 self.new_terminal(&ctx);
                 if let (Some(cmd), Some(t)) = (dev, self.terminal.active_terminal()) {

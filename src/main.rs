@@ -13,6 +13,7 @@ mod crash;
 mod compare;
 mod ctxmenu;
 mod decor;
+mod dev;
 mod document;
 mod editor;
 mod encoding;

@@ -23,12 +23,12 @@ impl DevShot {
 
     /// Returns input to feed to the next frame.
     pub fn tick(&mut self, ctx: &egui::Context) -> Vec<egui::Event> {
-        let Some(path) = std::env::var_os("STRATA_SCREENSHOT").filter(|_| !self.off) else { return Vec::new() };
+        let Some(path) = crate::dev::var("STRATA_SCREENSHOT").filter(|_| !self.off) else { return Vec::new() };
         self.frames += 1;
         ctx.request_repaint();
         let typing = self.typing.get_or_insert_with(|| {
             // A literal backslash-t works too (easier to pass from a shell).
-            let text = std::env::var("STRATA_SCREENSHOT_TYPE").unwrap_or_default().replace("\\t", "\t");
+            let text = crate::dev::var("STRATA_SCREENSHOT_TYPE").unwrap_or_default().replace("\\t", "\t");
             let mut steps: Vec<egui::Event> = Vec::new();
             for (i, run) in text.split('\t').enumerate() {
                 if i > 0 {
@@ -42,7 +42,7 @@ impl DevShot {
             steps.reverse();
             steps
         });
-        if !typing.is_empty() || std::env::var_os("STRATA_SCREENSHOT_TYPE").is_some() {
+        if !typing.is_empty() || crate::dev::var("STRATA_SCREENSHOT_TYPE").is_some() {
             // Launched from a shell the window may stay in the background;
             // act focused so the editor takes the typing (and draws its caret).
             ctx.input_mut(|i| i.focused = true);
@@ -50,7 +50,7 @@ impl DevShot {
         // Give the window a few frames to settle and focus the editor first.
         let step = if self.frames >= 4 && self.frames.is_multiple_of(2) { typing.pop() } else { None };
         let pending = !typing.is_empty();
-        let delay: f64 = std::env::var("STRATA_SCREENSHOT_DELAY").ok().and_then(|d| d.parse().ok()).unwrap_or(0.0);
+        let delay: f64 = crate::dev::var("STRATA_SCREENSHOT_DELAY").and_then(|d| d.parse().ok()).unwrap_or(0.0);
         if self.frames >= 10 && !pending && ctx.input(|i| i.time) >= delay && !self.requested {
             self.requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));

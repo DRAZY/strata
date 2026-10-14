@@ -503,6 +503,14 @@ single-instance socket, so a test copy never talks to your everyday Strata;
 for the .app use `open --env STRATA_CONFIG_DIR=dir -a dist/Strata.app file`,
 with your installed Strata quit, since both copies share a bundle id).
 
+Which dev aids a build has (see `src/dev.rs`): the ones that only look
+(screenshots, first-frame panels, `STRATA_DEV_WINDOWS`, `STRATA_DEV_CONTEXT`)
+come with the `devtools` feature, on by default; release packages should be
+built with `--no-default-features` to leave them out. The ones that run or
+change things (`STRATA_DEV_PANIC`, `STRATA_DEV_TERMINAL`,
+`STRATA_DEV_REPLACE_STEP=run`, `STRATA_DEV_PALETTE="run:..."`) work only in
+debug builds, or in a release build made with `--features dev-hooks`.
+
 ## License
 
 Strata is released under the [MIT License](LICENSE). Bundled fonts, color
