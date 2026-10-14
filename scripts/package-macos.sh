@@ -1,19 +1,49 @@
 #!/usr/bin/env bash
-# Build Strata.app and a test DMG for Apple silicon.
-# Usage: scripts/package-macos.sh    → dist/Strata-<version>-arm64.dmg
+# Build Strata.app and its DMG.
+#
+#   scripts/package-macos.sh              → dist/Strata-<version>-universal.dmg
+#
+# Universal (Apple silicon + Intel) unless ARCH=arm64 or ARCH=x86_64.
+# Signing: with a "Developer ID Application" certificate in the keychain the
+# app and DMG are signed (hardened runtime, timestamp); otherwise ad-hoc.
+# Override with SIGN_IDENTITY="Developer ID Application: …" or SIGN_IDENTITY=-.
+# Notarization: NOTARIZE=1 submits the DMG with the `notarytool` keychain
+# profile NOTARY_PROFILE (default strata-notary), waits, and staples the
+# ticket to the app and the DMG. Set it up once with
+#   xcrun notarytool store-credentials strata-notary --apple-id … --team-id …
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TARGET=aarch64-apple-darwin
+ARCH=${ARCH:-universal}
+NOTARIZE=${NOTARIZE:-0}
+NOTARY_PROFILE=${NOTARY_PROFILE:-strata-notary}
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+# CFBundleVersion only ever goes up: the number of commits.
+BUILD=$(git rev-list --count HEAD 2>/dev/null || echo 1)
 DIST=dist
 APP="$DIST/Strata.app"
-DMG="$DIST/Strata-$VERSION-arm64.dmg"
+DMG="$DIST/Strata-$VERSION-$ARCH.dmg"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-echo "==> cargo build ($TARGET, release)"
-cargo build --release --target "$TARGET"
+if [ -z "${SIGN_IDENTITY:-}" ]; then
+  SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)
+  SIGN_IDENTITY=${SIGN_IDENTITY:--}
+fi
+
+case "$ARCH" in
+  universal) TARGETS="aarch64-apple-darwin x86_64-apple-darwin" ;;
+  arm64) TARGETS="aarch64-apple-darwin" ;;
+  x86_64) TARGETS="x86_64-apple-darwin" ;;
+  *) echo "ARCH must be universal, arm64 or x86_64" >&2; exit 1 ;;
+esac
+BINS=""
+for T in $TARGETS; do
+  echo "==> cargo build ($T, release)"
+  # Release builds leave out the screenshot/dev aids (the `devtools` feature).
+  cargo build --release --no-default-features --target "$T"
+  BINS="$BINS target/$T/release/strata"
+done
 
 echo "==> icon"
 # Quick Look renders SVG gradients; it fills transparent areas with white,
@@ -32,7 +62,8 @@ done
 
 echo "==> Strata.app"
 rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "target/$TARGET/release/strata" "$APP/Contents/MacOS/strata"
+# shellcheck disable=SC2086
+lipo -create $BINS -output "$APP/Contents/MacOS/strata"
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Strata.icns"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -46,12 +77,19 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key><string>Strata</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
-  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$BUILD</string>
   <key>CFBundleGetInfoString</key><string>Strata $VERSION, a fast, open-source code and text editor</string>
   <key>NSHumanReadableCopyright</key><string>© 2026 Strata contributors. MIT License.</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+  <!-- Programs run in Strata's terminal ask macOS for access as Strata. -->
+  <key>NSAppleEventsUsageDescription</key><string>Programs you run in Strata's terminal want to control another app.</string>
+  <key>NSDesktopFolderUsageDescription</key><string>Strata opens and saves the files you choose on your Desktop.</string>
+  <key>NSDocumentsFolderUsageDescription</key><string>Strata opens and saves the files you choose in Documents.</string>
+  <key>NSDownloadsFolderUsageDescription</key><string>Strata opens and saves the files you choose in Downloads.</string>
+  <key>NSRemovableVolumesUsageDescription</key><string>Strata opens and saves the files you choose on removable drives.</string>
+  <key>NSNetworkVolumesUsageDescription</key><string>Strata opens and saves the files you choose on network drives.</string>
   <!-- Open With ▸ Strata for text, code and any other file, plus folders.
        Alternate: offered, but never taken over as the default app. -->
   <key>CFBundleDocumentTypes</key>
@@ -81,8 +119,48 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc signature: required on Apple silicon, but not notarized.
-codesign --force --deep --sign - "$APP"
+if [ "$SIGN_IDENTITY" = "-" ]; then
+  echo "==> ad-hoc signature (no Developer ID certificate found; not for distribution)"
+  codesign --force --sign - "$APP"
+else
+  echo "==> signing as $SIGN_IDENTITY"
+  # Hardened runtime, no exceptions needed. The one entitlement lets programs
+  # in the terminal send Apple Events (osascript) after the usual prompt.
+  cat > "$WORK/entitlements.plist" <<ENT
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.automation.apple-events</key><true/>
+</dict>
+</plist>
+ENT
+  codesign --force --options runtime --timestamp --entitlements "$WORK/entitlements.plist" --sign "$SIGN_IDENTITY" "$APP"
+  codesign --verify --strict --verbose=1 "$APP"
+fi
+
+notarize() { # file
+  echo "==> notarizing $(basename "$1") (profile $NOTARY_PROFILE; this takes a few minutes)"
+  xcrun notarytool submit "$1" --keychain-profile "$NOTARY_PROFILE" --wait --output-format plist > "$WORK/notary.plist" || true
+  STATUS=$(/usr/libexec/PlistBuddy -c "Print :status" "$WORK/notary.plist" 2>/dev/null || echo "unknown")
+  ID=$(/usr/libexec/PlistBuddy -c "Print :id" "$WORK/notary.plist" 2>/dev/null || echo "")
+  if [ "$STATUS" != "Accepted" ]; then
+    echo "Notarization: $STATUS" >&2
+    cat "$WORK/notary.plist" >&2 || true
+    [ -n "$ID" ] && xcrun notarytool log "$ID" --keychain-profile "$NOTARY_PROFILE" >&2
+    exit 1
+  fi
+}
+
+if [ "$NOTARIZE" = "1" ]; then
+  [ "$SIGN_IDENTITY" != "-" ] || { echo "Notarizing needs a Developer ID signature" >&2; exit 1; }
+  # The app first, so the copy that goes in the DMG carries its own ticket
+  # (it then opens without a network check once dragged to Applications).
+  ditto -c -k --keepParent "$APP" "$WORK/Strata.zip"
+  notarize "$WORK/Strata.zip"
+  xcrun stapler staple "$APP"
+  spctl --assess --type execute --verbose=2 "$APP"
+fi
 
 echo "==> DMG"
 STAGE="$WORK/dmg"
@@ -97,4 +175,14 @@ if [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 26 ]; then
 else
   hdiutil create -volname "Strata $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 fi
+if [ "$SIGN_IDENTITY" != "-" ]; then
+  codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"
+fi
+
+if [ "$NOTARIZE" = "1" ]; then
+  notarize "$DMG"
+  xcrun stapler staple "$DMG"
+  spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+fi
+shasum -a 256 "$DMG" > "$DMG.sha256"
 echo "Built $DMG"
