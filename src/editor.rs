@@ -775,13 +775,21 @@ impl Editor {
         (self.current_id(), self.history.borrow().undo.last().map_or(0, |t| t.changes.len()))
     }
 
-    /// Sort, merge overlaps, and re-find the primary selection.
+    /// Sort, merge overlaps, and re-find the primary selection. Ends that
+    /// fall between the `\r` and `\n` of a line break move before the `\r`
+    /// (else Backspace or typing there would split the pair).
     fn normalize(&mut self, primary_head: usize) {
         let len = self.buffer.len_chars();
+        let b = &self.buffer;
+        let snap = |i: usize| {
+            let i = i.min(len);
+            if i > 0 && i < len && b.char(i) == '\n' && b.char(i - 1) == '\r' { i - 1 } else { i }
+        };
         for s in &mut self.sels {
-            s.anchor = s.anchor.min(len);
-            s.head = s.head.min(len);
+            s.anchor = snap(s.anchor);
+            s.head = snap(s.head);
         }
+        let primary_head = snap(primary_head);
         self.sels.sort_by_key(|s| (s.start(), s.end()));
         let mut merged: Vec<Selection> = Vec::with_capacity(self.sels.len());
         for s in self.sels.drain(..) {
@@ -3394,6 +3402,46 @@ mod tests {
 
     fn text(e: &Editor) -> String {
         e.buffer.slice(0..e.buffer.len_chars())
+    }
+
+    /// A lone `\r` or `\n` in text that only had `\r\n` breaks.
+    fn has_split_crlf(s: &str) -> bool {
+        s.replace("\r\n", "").contains(['\r', '\n'])
+    }
+
+    #[test]
+    fn line_commands_never_leave_the_caret_inside_a_crlf() {
+        let commands: &[(&str, fn(&mut Editor))] = &[
+            ("sort", |e| e.sort_lines(true)),
+            ("reverse", Editor::reverse_lines),
+            ("unique", Editor::unique_lines),
+            ("delete lines", Editor::delete_lines),
+            ("join", Editor::join_lines),
+            ("duplicate", Editor::duplicate_lines),
+            ("move up", |e| e.move_lines(true)),
+            ("move down", |e| e.move_lines(false)),
+        ];
+        for start in ["bb\r\naa\r\nbb\r\nc", "x\r\nyy\r\n\r\nyy\r\n", "a\r\n\r\nb"] {
+            let len = start.chars().count();
+            let inside = |e: &Editor, i: usize| i > 0 && i < e.buffer.len_chars() && e.buffer.char(i - 1) == '\r' && e.buffer.char(i) == '\n';
+            for (name, cmd) in commands {
+                for a in 0..=len {
+                    for b in a..=len {
+                        let mut e = ed(start);
+                        if inside(&e, a) || inside(&e, b) {
+                            continue;
+                        }
+                        e.select_ranges(&[a..b], 0);
+                        cmd(&mut e);
+                        for s in e.selections() {
+                            assert!(!inside(&e, s.anchor) && !inside(&e, s.head), "{name} on {start:?} with {a}..{b}: {s:?} in {:?}", text(&e));
+                        }
+                        e.backspace(false);
+                        assert!(!has_split_crlf(&text(&e)), "{name} then Backspace on {start:?} with {a}..{b}: {:?}", text(&e));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
