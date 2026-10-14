@@ -1241,7 +1241,8 @@ impl StrataApp {
     fn palette_context(&mut self) -> palette::Context {
         let d = &mut self.docs[self.active];
         palette::Context {
-            text: d.editor.text_snapshot(),
+            // Only `@` and `#` read it; a rope clone costs nothing up front.
+            text: palette::DocText::new(d.editor.buffer.snapshot()),
             syntax: d.highlighter.syntax_name().to_owned(),
             lines: d.editor.buffer.len_lines(),
             roots: self.sidebar.roots.clone(),
