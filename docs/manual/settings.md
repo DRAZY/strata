@@ -138,6 +138,7 @@ Every setting Strata reads, with its default value. Text values are written in q
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `window_opacity` | number | `1.0` | From 0.3 (see-through) to 1.0 (opaque). |
+| `help_in_own_window` | boolean | `true` | Open the documentation in its own window, so you can read along while you work in the editor. The Pop Out / Dock button in the help toolbar switches it. |
 | `show_tabs` | true/false | `true` | Show the tab bar. |
 | `show_status_bar` | true/false | `true` | Show the status bar. |
 | `markdown_preview` | true/false | `false` | Show the live Markdown preview beside the editor. See [Markdown](markdown.md). |

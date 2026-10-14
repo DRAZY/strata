@@ -173,11 +173,16 @@ impl Logger {
             if blocking {
                 return Some(m.lock().unwrap_or_else(|e| e.into_inner()));
             }
-            match m.try_lock() {
-                Ok(g) => Some(g),
-                Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
-                Err(TryLockError::WouldBlock) => None,
+            // Another thread mid-write lets go within microseconds; give it
+            // ~20 ms before deciding the lock is held by the panicking thread.
+            for _ in 0..20 {
+                match m.try_lock() {
+                    Ok(g) => return Some(g),
+                    Err(TryLockError::Poisoned(e)) => return Some(e.into_inner()),
+                    Err(TryLockError::WouldBlock) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                }
             }
+            None
         }
         if let Some(mut tail) = get(&self.tail, blocking) {
             Self::push_tail(&mut tail, line);

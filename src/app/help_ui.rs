@@ -1,5 +1,7 @@
-//! Help ▸ Documentation: the manual (see `help`) in a window over the editor,
-//! with contents, search, back/forward and links between pages.
+//! Help ▸ Documentation: the manual (see `help`) in its own native window
+//! (beside the editor, to read along while trying things) or docked as a
+//! window over the editor, with contents, search, back/forward and links
+//! between pages.
 //!
 //! While the help has the keyboard, Esc closes it (or clears the search),
 //! Find focuses its search box, Close File closes it, and Alt+←/→ go back
@@ -48,6 +50,12 @@ pub struct HelpState {
     render: DocRender,
     /// The window's rect last frame, to tell clicks inside from outside.
     rect: Option<egui::Rect>,
+    /// Showing in its own native window rather than over the editor.
+    pub detached: bool,
+    /// The toolbar's Pop Out / Dock button was pressed.
+    toggle_detached: bool,
+    /// Where the own window first opened (kept, so the builder doesn't move it).
+    position: Option<egui::Pos2>,
 }
 
 impl Default for HelpState {
@@ -73,6 +81,9 @@ impl Default for HelpState {
             headings: Vec::new(),
             render: DocRender::default(),
             rect: None,
+            detached: false,
+            toggle_detached: false,
+            position: None,
         }
     }
 }
@@ -147,6 +158,9 @@ impl StrataApp {
     pub(super) fn open_help(&mut self, page: Option<&str>, search: bool) {
         let h = &mut self.help;
         let page = page.unwrap_or_else(|| LAST_PAGE.with(|l| *l.borrow()));
+        if !h.open {
+            h.detached = self.settings.help_in_own_window;
+        }
         if !h.open || h.page != page {
             h.go(page, None);
         }
@@ -194,17 +208,27 @@ impl StrataApp {
     }
 
     /// Keys for the help, before the keymap sees them.
+    /// `ctx` input is the help's own window when `own_window` (it has the
+    /// keyboard while focused), else the editor window's.
     pub(super) fn help_keys(&mut self, ctx: &egui::Context) {
-        if !self.help.open {
+        self.help_keys_in(ctx, false);
+    }
+
+    fn help_keys_in(&mut self, ctx: &egui::Context, own_window: bool) {
+        if !self.help.open || self.help_in_own_window(ctx) != own_window {
             return;
         }
-        // A click inside the window gives it the keyboard; one outside takes it away.
-        let press = ctx.input(|i| i.events.iter().find_map(|e| match e {
-            egui::Event::PointerButton { pos, pressed: true, .. } => Some(*pos),
-            _ => None,
-        }));
-        if let (Some(p), Some(r)) = (press, self.help.rect) {
-            self.help.active = r.contains(p);
+        if own_window {
+            self.help.active = ctx.input(|i| i.viewport().focused.unwrap_or(false));
+        } else {
+            // A click inside the window gives it the keyboard; one outside takes it away.
+            let press = ctx.input(|i| i.events.iter().find_map(|e| match e {
+                egui::Event::PointerButton { pos, pressed: true, .. } => Some(*pos),
+                _ => None,
+            }));
+            if let (Some(p), Some(r)) = (press, self.help.rect) {
+                self.help.active = r.contains(p);
+            }
         }
         if !self.help.active || self.palette.open {
             return;
@@ -237,6 +261,17 @@ impl StrataApp {
         if !self.help.open {
             return;
         }
+        if std::mem::take(&mut self.help.toggle_detached) {
+            self.help.detached = !self.help.detached;
+            self.help.active = true;
+            self.help.focus_content = true;
+            self.settings.help_in_own_window = self.help.detached;
+            self.persist_settings();
+        }
+        if self.help_in_own_window(ctx) {
+            self.help_own_window(ctx);
+            return;
+        }
         let mut open = true;
         let screen = ctx.content_rect();
         let size = vec2((screen.width() - 80.0).clamp(320.0, 1040.0), (screen.height() - 90.0).clamp(240.0, 820.0));
@@ -265,6 +300,71 @@ impl StrataApp {
             self.help.rect = Some(r.response.rect);
         }
         if !open {
+            self.close_help();
+        }
+    }
+
+    /// Showing in a window of its own: chosen, and native windows exist
+    /// (without them, as in tests, it can only dock).
+    fn help_in_own_window(&self, ctx: &egui::Context) -> bool {
+        self.help.detached && !ctx.embed_viewports()
+    }
+
+    /// The help in a native window of its own, first placed beside the editor window.
+    fn help_own_window(&mut self, ctx: &egui::Context) {
+        let title = help::page(self.help.page).map_or_else(String::new, |p| p.title());
+        let size = vec2(880.0, 760.0);
+        if self.help.position.is_none() {
+            // To the right of the editor window, or its top-left corner when there's no room.
+            let main = ctx.input(|i| i.viewport().outer_rect);
+            let monitor = ctx.input(|i| i.viewport().monitor_size);
+            self.help.position = Some(match (main, monitor) {
+                (Some(r), Some(m)) if r.right() + 12.0 + size.x <= m.x => r.right_top() + vec2(12.0, 0.0),
+                (Some(r), _) => r.left_top() + vec2(40.0, 40.0),
+                _ => egui::pos2(80.0, 80.0),
+            });
+        }
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title(format!("Strata Help — {title}"))
+            .with_inner_size(size)
+            .with_min_inner_size(vec2(360.0, 240.0))
+            .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon-app.png")).expect("bundled icon"));
+        if let Some(p) = self.help.position {
+            builder = builder.with_position(p);
+        }
+        let id = egui::ViewportId::from_hash_of(self.link.id("help-own-window"));
+        let look = Look { font_size: (self.settings.font_size + 1.0).clamp(11.0, 22.0), ui_size: self.settings.ui_font_size.clamp(9.0, 24.0), ids: [self.link.id("help-toolbar"), self.link.id("help-toc")] };
+        let mut status = None;
+        let mut closed = false;
+        ctx.show_viewport_immediate(id, builder, |ui, _| {
+            let ctx = ui.ctx().clone();
+            if ctx.input(|i| i.viewport().close_requested()) {
+                closed = true;
+                return;
+            }
+            self.help_keys_in(&ctx, true);
+            if !self.help.open {
+                return;
+            }
+            // Keys the editor window's menu would otherwise take (on macOS the
+            // menu bar sends them to the focused editor window: see `help_takes`).
+            if !cfg!(target_os = "macos") {
+                if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::F)) {
+                    self.help.focus_search = true;
+                }
+                if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::W)) {
+                    closed = true;
+                    return;
+                }
+            }
+            let hl = &self.docs[self.active].highlighter;
+            let help = &mut self.help;
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(hl.background())).show(ui, |ui| status = contents(help, ui, hl, &look));
+        });
+        if let Some(s) = status {
+            self.status = s;
+        }
+        if closed {
             self.close_help();
         }
     }
@@ -331,6 +431,19 @@ fn contents(h: &mut HelpState, ui: &mut egui::Ui, hl: &crate::highlight::Highlig
                     && let Some(hit) = h.hits().first().cloned()
                 {
                     h.go(hit.page, hit.slug);
+                }
+                // Pop out into a window of its own, or dock back over the editor.
+                if !ui.ctx().embed_viewports() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (label, tip) = if h.detached {
+                            ("Dock", "Show the documentation inside the editor window")
+                        } else {
+                            ("Pop Out", "Open the documentation in its own window, to read along while you work")
+                        };
+                        if ui.add(egui::Button::new(RichText::new(label).size(ui_size)).min_size(vec2(0.0, 24.0))).on_hover_text(tip).clicked() {
+                            h.toggle_detached = true;
+                        }
+                    });
                 }
             });
         });

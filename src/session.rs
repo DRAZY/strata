@@ -47,6 +47,8 @@ pub struct Settings {
     pub git_gutter: bool,
     /// 0.3 (see-through) to 1.0 (opaque).
     pub window_opacity: f32,
+    /// Help ▸ Documentation opens in its own window (true) or inside the editor window.
+    pub help_in_own_window: bool,
     pub theme: String,
     /// "fixed" uses `theme`; "auto" follows the system's light or dark
     /// appearance with `light_theme` / `dark_theme`; "dark" / "light" pin one.
@@ -128,6 +130,7 @@ impl Default for Settings {
             caret_blink: "blink".into(),
             caret_width: 2.0,
             window_opacity: 1.0,
+            help_in_own_window: true,
             draw_white_space: "selection".into(),
             highlight_trailing_whitespace: true,
             bracket_colors: true,
