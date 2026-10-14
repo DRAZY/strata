@@ -82,7 +82,21 @@ Text uses the editor's monospace font at the editor's font size. Bold, italic, u
 
 The terminal keeps up to 10,000 lines of scrollback. As soon as you type, the view jumps back to the bottom and the selection is cleared.
 
-In full-screen programs such as `less` or `vim`, the wheel scrolls the program's own view instead of the scrollback. Programs that ask for mouse reporting receive wheel events. Mouse clicks are always used for selecting text and are not sent to programs.
+In full-screen programs such as `less` or `vim`, the wheel scrolls the program's own view instead of the scrollback.
+
+### Programs that use the mouse
+
+Some programs ask the terminal for the mouse: `htop`, `tmux` with `set -g mouse on`, `vim` with `:set mouse=a`, `less --mouse`, `mc` and others. While a program has asked for it, clicks, drags and the wheel go to the program, and the pointer is an arrow instead of a text cursor. Ctrl, Alt (Option) and Shift held with a click are passed on as well, except Shift:
+
+| Action | Result while a program uses the mouse |
+|---|---|
+| Click, drag, wheel | Sent to the program. |
+| Shift+drag, Shift+double-click, Shift+triple-click | Select text in the terminal, as usual. |
+| Shift+wheel | Scroll the terminal's own scrollback. |
+| Right-click | Sent to the program. |
+| Shift+right-click | Opens the terminal's right-click menu. |
+
+When the program stops using the mouse (for example, when you quit it), clicks select text again.
 
 ## Copy, paste and clear
 
@@ -104,7 +118,7 @@ Reading the clipboard the same way is blocked by default, because any program, o
 
 ## Right-click menu
 
-Right-click inside the terminal for:
+Right-click inside the terminal for the menu below (Shift+right-click while a program is using the mouse):
 
 | Item | What it does |
 |---|---|
@@ -133,7 +147,20 @@ On macOS, while the terminal has the keyboard, menu items whose shortcut isn't a
 
 ### Alt and Option as Meta
 
-The Alt key (Option on macOS) works as the Meta key: Alt+B sends Esc followed by B, which shells use for word movement and editing. On macOS this means Option can't type the special characters it normally types (such as accented letters), so use the editor for those and paste them.
+Shells and editors such as `emacs` use a Meta key: Meta+B sends Esc followed by B, which moves back a word. Whether Alt (Option on macOS) is that Meta key is the `terminal_option_as_meta` setting:
+
+| System | Default | What Alt or Option does |
+|---|---|---|
+| macOS | `false` | Option types what it types everywhere else on your keyboard layout: é, ©, and on many layouts @ [ ] { } \| \\ ~. Press Esc and then the key for Meta (Esc, B moves back a word). |
+| Windows and Linux | `true` | Alt is Meta: Alt+B sends Esc followed by B. AltGr still types the characters on your layout, such as @ and € on a German keyboard. |
+
+To make Option the Meta key on macOS (and give up typing those characters with it in the terminal), add `"terminal_option_as_meta": true` to your settings. Set it to `false` on Windows or Linux to have Alt type text instead. The editor isn't affected either way.
+
+Whatever the setting, Alt or Option with keys that don't type text still reaches the program: Option+Backspace sends Esc and then Backspace (deletes a word in most shells), and Option+arrows send the xterm codes for Alt+arrow. macOS can't tell the left Option key from the right one, so the setting covers both.
+
+### Input methods
+
+Chinese, Japanese, Korean and other input methods work in the terminal. The text you're composing appears underlined at the cursor, and the input method's candidate window opens next to it. Nothing is sent to the shell until you choose the text; then it's sent as if you had typed it.
 
 ### Making your own shortcuts work in the terminal
 
@@ -166,11 +193,17 @@ Strata saves these for you as you use the terminal. You can also set them in `se
 | `terminal_visible` | `false` | Whether the terminal panel was open. When it's `true` at launch, a shell starts in the first window. It changes each time you show or hide the panel. |
 | `terminal_height` | `240` | Height of the panel in points. It is saved when you finish resizing the panel. Values between 80 and 2000 are used. |
 
+These you set yourself in `settings.json`:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `terminal_option_as_meta` | `false` on macOS, `true` elsewhere | Alt (Option) is the Meta key: it sends Esc followed by the key instead of typing the character your keyboard layout gives. See [Alt and Option as Meta](#alt-and-option-as-meta). |
+| `terminal_allow_clipboard_read` | `false` | Let programs read the clipboard. See [Copy, paste and clear](#copy-paste-and-clear). |
+
 The terminal also follows `font_size` and `window_opacity`.
 
 ## Limitations
 
 - The terminal is always a panel at the bottom of the window. There are no split terminals, and terminal tabs can't be moved into editor panes or other windows.
 - Tabs can't be renamed or reordered.
-- Mouse clicks aren't passed to terminal programs; only the scroll wheel is.
 - Closing a tab or window doesn't warn about programs still running in it.

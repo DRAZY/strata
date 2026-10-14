@@ -67,6 +67,7 @@ impl StrataApp {
             }
         }
         self.terminal.clipboard = crate::terminal::Clipboard { read: self.settings.terminal_allow_clipboard_read, write: self.settings.terminal_allow_clipboard_write };
+        self.terminal.option_as_meta = self.settings.terminal_option_as_meta;
         let all_exited = self.terminal.poll(&ctx);
         let clip = std::mem::take(&mut self.terminal.clipboard_use);
         if clip.read_blocked {
@@ -117,17 +118,149 @@ mod tests {
     use crate::commands::Cmd;
     use egui::{Event, Key, Modifiers, Pos2, RawInput, Rect, vec2};
 
-    fn frame(app: &mut StrataApp, ctx: &egui::Context, events: Vec<Event>) {
+    fn frame(app: &mut StrataApp, ctx: &egui::Context, events: Vec<Event>) -> egui::PlatformOutput {
+        frame_held(app, ctx, events, Modifiers::NONE)
+    }
+
+    /// A frame with `modifiers` held down.
+    fn frame_held(app: &mut StrataApp, ctx: &egui::Context, mut events: Vec<Event>, modifiers: Modifiers) -> egui::PlatformOutput {
+        events.insert(0, Event::ModifiersChanged(modifiers));
         let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 700.0))), events, ..Default::default() };
         let mut out = ctx.run_ui(raw, |ui| {
             let mut frame = eframe::Frame::_new_kittest();
             eframe::App::ui(app, ui, &mut frame);
         });
         out.textures_delta.clear();
+        out.platform_output
     }
 
     fn key(key: Key, modifiers: Modifiers) -> Event {
         Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }
+    }
+
+    /// An app whose terminal runs `cmd` (echo off, so the screen shows only
+    /// what `cat -v` prints back), focused and ready.
+    fn shell_app(cmd: &str) -> (egui::Context, StrataApp) {
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(None, None);
+        frame(&mut app, &ctx, vec![]);
+        let shell = ("/bin/sh".to_owned(), vec!["-c".to_owned(), format!("stty -echo; echo READY; {cmd}")]);
+        app.terminal.tabs.push(crate::terminal::Terminal::spawn(Some(ctx.clone()), &std::env::temp_dir(), Some(shell), 80, 10).unwrap());
+        app.terminal.visible = true;
+        app.terminal.focus();
+        wait_for(&mut app, &ctx, "READY");
+        (ctx, app)
+    }
+
+    /// Run frames until the screen contains `needle`; returns the screen.
+    fn wait_for(app: &mut StrataApp, ctx: &egui::Context, needle: &str) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            frame(app, ctx, vec![]);
+            let screen = app.terminal.active_terminal().unwrap().screen_text();
+            if screen.contains(needle) || std::time::Instant::now() > deadline {
+                return screen;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn option_types_the_layout_character_unless_meta() {
+        let (ctx, mut app) = shell_app("cat -v");
+        // What macOS sends for Option+L on a German layout: the key, and "@" as text.
+        let option_l = || vec![key(Key::L, Modifiers::ALT), Event::Text("@".into()), key(Key::Enter, Modifiers::NONE)];
+        app.settings.terminal_option_as_meta = false;
+        frame_held(&mut app, &ctx, option_l(), Modifiers::ALT);
+        let screen = wait_for(&mut app, &ctx, "@");
+        assert!(screen.lines().any(|l| l == "@"), "{screen}");
+        app.settings.terminal_option_as_meta = true;
+        frame_held(&mut app, &ctx, option_l(), Modifiers::ALT);
+        let screen = wait_for(&mut app, &ctx, "^[l");
+        assert!(screen.lines().any(|l| l == "^[l"), "Meta sends Esc + l: {screen}");
+    }
+
+    #[test]
+    fn input_method_text_is_sent_when_committed() {
+        let (ctx, mut app) = shell_app("cat -v");
+        let preedit = |t: &str| Event::Ime(egui::ImeEvent::Preedit { text: t.into(), active_range_chars: None });
+        let out = frame(&mut app, &ctx, vec![preedit("n"), preedit("ni")]);
+        assert_eq!(app.terminal.active_terminal().unwrap().preedit(), "ni");
+        let body = app.terminal.body.as_ref().unwrap().rect;
+        assert!(out.ime.is_some_and(|i| body.contains(i.cursor_rect.min) && i.purpose == egui::IMEPurpose::Terminal), "the input method knows where the cursor is");
+        // Enter mid-composition belongs to the input method.
+        frame(&mut app, &ctx, vec![key(Key::Enter, Modifiers::NONE), Event::Ime(egui::ImeEvent::Commit("你好".into()))]);
+        assert!(app.terminal.active_terminal().unwrap().preedit().is_empty());
+        frame(&mut app, &ctx, vec![Event::Text("!".into()), key(Key::Enter, Modifiers::NONE)]);
+        let screen = wait_for(&mut app, &ctx, "你好");
+        assert!(screen.lines().any(|l| l == "你好!"), "{screen}");
+    }
+
+    #[test]
+    fn programs_that_ask_for_the_mouse_get_clicks() {
+        // 1000: report clicks; 1002: and drags; 1006: SGR encoding.
+        let (ctx, mut app) = shell_app("printf '\\033[?1002h\\033[?1006h'; cat -v");
+        let body = app.terminal.body.as_ref().unwrap().rect;
+        let (cw, ch) = app.terminal.active_terminal().unwrap().cell_size();
+        // The middle of cell (col 1, row 0), 1-based (2, 1), on "READY".
+        let p = body.min + vec2(6.0 + 1.5 * cw, 4.0 + 0.5 * ch);
+        let q = p + vec2(3.0 * cw, 0.0);
+        let button = |pos, button, pressed, modifiers| Event::PointerButton { pos, button, pressed, modifiers };
+        use egui::PointerButton::*;
+        // Shift+drag selects locally; nothing reaches the program.
+        let shift = Modifiers::SHIFT;
+        frame_held(&mut app, &ctx, vec![Event::PointerMoved(p), button(p, Primary, true, shift)], shift);
+        frame_held(&mut app, &ctx, vec![Event::PointerMoved(q)], shift);
+        frame_held(&mut app, &ctx, vec![button(q, Primary, false, shift)], shift);
+        assert!(app.terminal.has_selection(), "Shift+drag selects");
+        // A drag, then a Ctrl+right-click.
+        frame(&mut app, &ctx, vec![Event::PointerMoved(p), button(p, Primary, true, Modifiers::NONE)]);
+        frame(&mut app, &ctx, vec![Event::PointerMoved(q)]);
+        frame(&mut app, &ctx, vec![button(q, Primary, false, Modifiers::NONE)]);
+        frame_held(&mut app, &ctx, vec![button(p, Secondary, true, Modifiers::CTRL)], Modifiers::CTRL);
+        frame_held(&mut app, &ctx, vec![button(p, Secondary, false, Modifiers::CTRL)], Modifiers::CTRL);
+        assert!(app.terminal.body.is_none(), "the program took the right-click, so no context menu");
+        frame(&mut app, &ctx, vec![key(Key::Enter, Modifiers::NONE)]);
+        let screen = wait_for(&mut app, &ctx, "^[[<18;2;1m");
+        assert!(screen.contains("^[[<0;2;1M^[[<32;5;1M^[[<0;5;1m^[[<18;2;1M^[[<18;2;1m"), "{screen}");
+    }
+
+    /// Terminal scenes for eyeballing the renderer:
+    /// `STRATA_TERMINAL_SHOTS=<folder> cargo test --release terminal_shots`.
+    #[test]
+    fn terminal_shots() {
+        let Some(dir) = std::env::var_os("STRATA_TERMINAL_SHOTS").map(std::path::PathBuf::from) else { return };
+        let Some(mut sh) = super::super::headless::Shooter::new(900, 420, 2.0) else { return };
+        let file = std::env::temp_dir().join("strata-terminal-shot.txt");
+        let body: String = (1..=60).map(|i| format!("line {i}\tcol\t中文 {i}\n")).collect();
+        std::fs::write(&file, body).unwrap();
+        let scenes = [
+            ("tabs", "printf 'A\\tB 中文\\nname\\tsize\\tdate\\nab\\tc\\td\\n中文\\tX\\tY\\n|1234567|1234567|1234567|\\n\\033[4mun\\tder\\033[0m|\\n'; ls -l / | head -4; echo DONE; sleep 30".to_owned(), "DONE"),
+            ("emoji", "printf 'thumbs 👍🏽 |\\nfamily 👨\\342\\200\\215👩\\342\\200\\215👧 |\\nkeycap 1\\357\\270\\217\\342\\203\\243 |\\ncafe\\314\\201 |\\nheart ❤\\357\\270\\217 |\\nok 👍 |\\n'; echo DONE; sleep 30".to_owned(), "DONE"),
+            ("less", format!("less {}; sleep 30", file.display()), "line 5"),
+            ("ime", "printf 'typing: '; sleep 30".to_owned(), "typing"),
+        ];
+        for (name, cmd, marker) in scenes {
+            let ctx = egui::Context::default();
+            let mut app = StrataApp::new(None, None);
+            sh.run(&ctx, &mut app, 2, vec![]);
+            let shell = ("/bin/sh".to_owned(), vec!["-c".to_owned(), cmd]);
+            app.terminal.tabs.push(crate::terminal::Terminal::spawn(Some(ctx.clone()), &std::env::temp_dir(), Some(shell), 80, 12).unwrap());
+            app.terminal.visible = true;
+            app.terminal.focus();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                sh.run(&ctx, &mut app, 1, vec![]);
+                if app.terminal.active_terminal().unwrap().screen_text().contains(marker) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            // An input method composing Chinese at the cursor.
+            let events = if name == "ime" { vec![Event::Ime(egui::ImeEvent::Preedit { text: "ni hao 你好".into(), active_range_chars: None })] } else { vec![] };
+            sh.shoot(&ctx, &mut app, 3, events, &dir.join(format!("term_{name}.ppm")));
+        }
     }
 
     #[test]

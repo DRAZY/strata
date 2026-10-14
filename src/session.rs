@@ -109,6 +109,10 @@ pub struct Settings {
     pub terminal_allow_clipboard_read: bool,
     /// Let programs in the terminal set the clipboard (OSC 52); each time, the status bar says so.
     pub terminal_allow_clipboard_write: bool,
+    /// Alt/Option sends Esc + key (Meta) instead of typing the character the
+    /// keyboard layout gives. Off on macOS (Option types @, [, ], é… on many
+    /// layouts), on elsewhere.
+    pub terminal_option_as_meta: bool,
     /// Opening the find bar with a multi-line selection turns on In Selection.
     pub auto_find_in_selection: bool,
     /// Underline misspelled words in prose: comments, strings, Markdown, plain text.
@@ -175,6 +179,7 @@ impl Default for Settings {
             terminal_height: 240.0,
             terminal_allow_clipboard_read: false,
             terminal_allow_clipboard_write: true,
+            terminal_option_as_meta: !cfg!(target_os = "macos"),
             auto_find_in_selection: false,
             spell_check: false,
             dictionary: crate::spell::DEFAULT_DICTIONARY.into(),
