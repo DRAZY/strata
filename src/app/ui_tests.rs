@@ -5,7 +5,9 @@ use super::*;
 use egui::{Context, Event, Key, Modifiers, Pos2, RawInput};
 
 pub(super) fn frame_sized(app: &mut StrataApp, ctx: &Context, size: egui::Vec2, events: Vec<Event>) -> egui::FullOutput {
-    let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)), events, ..Default::default() };
+    // Time moves on (a quarter second a frame) so animations finish.
+    let time = Some(ctx.input(|i| i.time) + 0.25);
+    let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)), events, time, ..Default::default() };
     let mut out = ctx.run_ui(raw, |ui| {
         let mut frame = eframe::Frame::_new_kittest();
         eframe::App::ui(app, ui, &mut frame);
@@ -134,6 +136,145 @@ fn toggle_side_bar_check_matches_what_is_shown() {
     assert_eq!((app.sidebar.shown(), checked(&app)), (false, Some(false)));
     app.run(&ctx, Cmd::ToggleSidebar);
     assert_eq!((app.sidebar.shown(), checked(&app)), (true, Some(true)));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+fn tab_rects(ctx: &Context) -> Vec<(usize, Rect)> {
+    ctx.data(|d| d.get_temp::<Vec<(usize, Rect)>>(egui::Id::new("test-tab-rects"))).unwrap_or_default()
+}
+
+#[test]
+fn the_tab_strip_follows_the_current_tab_and_the_wheel() {
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    for n in 1..30 {
+        let mut d = Document::untitled();
+        d.title = Some(format!("a_fairly_long_tab_name_{n}.rs"));
+        app.push_doc(d);
+    }
+    let size = vec2(640.0, 400.0);
+    let visible = |ctx: &Context, i: usize| {
+        let r = tab_rects(ctx).into_iter().find(|(j, _)| *j == i).expect("tab drawn").1;
+        r.left() >= -0.5 && r.right() <= 640.0 + 0.5
+    };
+    for _ in 0..4 {
+        frame_sized(&mut app, &ctx, size, vec![]);
+    }
+    let last = app.docs.len() - 1;
+    assert_eq!(app.active, last);
+    assert!(visible(&ctx, last), "the newest (current) tab is scrolled into view");
+    app.activate(0);
+    for _ in 0..4 {
+        frame_sized(&mut app, &ctx, size, vec![]);
+    }
+    assert!(visible(&ctx, 0) && !visible(&ctx, last), "activating the first tab scrolls back");
+    // A vertical wheel over the strip scrolls it sideways.
+    let before = tab_rects(&ctx)[0].1.left();
+    let over = egui::pos2(300.0, 40.0);
+    frame_sized(&mut app, &ctx, size, vec![Event::PointerMoved(over)]);
+    frame_sized(&mut app, &ctx, size, vec![Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -200.0), modifiers: Modifiers::NONE, phase: egui::TouchPhase::Move }]);
+    for _ in 0..10 {
+        frame_sized(&mut app, &ctx, size, vec![]);
+    }
+    assert!(tab_rects(&ctx)[0].1.left() < before - 50.0, "{before} → {}", tab_rects(&ctx)[0].1.left());
+    // The overflow list is offered.
+    let overflow = egui::Id::new(("tab-strip", 0usize, app.link.id("tabs")));
+    assert!(ctx.data(|d| d.get_temp::<(Option<egui::Id>, bool, f32)>(overflow)).is_some_and(|(_, o, _)| o));
+}
+
+#[test]
+fn completions_near_the_bottom_open_above_the_caret() {
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    let mut body: String = (0..60).map(|i| format!("let identifier_number_{i} = {i};\n")).collect();
+    body += "ident";
+    app.docs[0].editor.insert_text(&body);
+    app.docs[0].view.reveal();
+    for _ in 0..4 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    app.run(&ctx, Cmd::ShowCompletions);
+    for _ in 0..3 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    let caret = app.docs[0].view.caret_rect().expect("caret on screen");
+    let popup = ctx.memory(|m| m.area_rect(egui::Id::new("completions"))).expect("the list is up");
+    assert!(popup.bottom() <= caret.top() + 0.5, "{popup:?} vs caret {caret:?}");
+    // At the top of a file it opens below.
+    let mut app = StrataApp::new(None, None);
+    app.docs[0].editor.insert_text("identifier_one identifier_two\nide");
+    let ctx = Context::default();
+    for _ in 0..4 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    app.run(&ctx, Cmd::ShowCompletions);
+    for _ in 0..3 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    let caret = app.docs[0].view.caret_rect().expect("caret on screen");
+    let popup = ctx.memory(|m| m.area_rect(egui::Id::new("completions"))).expect("the list is up");
+    assert!(popup.top() >= caret.bottom() - 0.5, "{popup:?} vs caret {caret:?}");
+}
+
+#[test]
+fn the_status_bar_drops_items_rather_than_overlap() {
+    let ctx = Context::default();
+    let fit_at = |width: f32| {
+        let mut fit = None;
+        let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 100.0))), ..Default::default() };
+        let _ = ctx.run_ui(raw, |ui| {
+            fit = Some(status_fit(ui, "Line 120, Column 40", true, false, false, Some("main"), Some("1,234 words")));
+        });
+        fit.unwrap()
+    };
+    let wide = fit_at(1400.0);
+    assert!(!wide.short_pos && wide.right.iter().all(|&r| r));
+    assert!(wide.left[StatusLeft::Conflict as usize] && wide.left[StatusLeft::Branch as usize] && wide.left[StatusLeft::Words as usize]);
+    let mid = fit_at(760.0);
+    assert!(mid.left[StatusLeft::Conflict as usize], "the warning outranks the word count");
+    assert!(!mid.left[StatusLeft::Words as usize]);
+    let narrow = fit_at(380.0);
+    assert!(narrow.right[0] && !narrow.right[4], "the syntax stays, the theme menu goes first");
+    assert!(narrow.left.iter().all(|&l| !l));
+    let tiny = fit_at(200.0);
+    assert!(tiny.short_pos && tiny.right == [true, false, false, false, false]);
+}
+
+/// Where the welcome hints were painted (their text's rects).
+fn welcome_rects(out: &egui::FullOutput) -> Vec<Rect> {
+    out.shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Text(t) if t.galley.text() == "Goto Anything" || t.galley.text() == "Strata" => Some(t.visual_bounding_rect().intersect(c.clip_rect)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn welcome_hints_stay_in_the_editor_area() {
+    let dir = temp_dir("welcome");
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    app.open_folder(dir.clone());
+    // A tall bottom panel (the build output) takes most of the height.
+    app.build.visible = true;
+    let mut out = frame(&mut app, &ctx, vec![]);
+    for _ in 0..3 {
+        out = frame(&mut app, &ctx, vec![]);
+    }
+    let panes = ctx.data(|d| d.get_temp::<Rect>(egui::Id::new(("panes-rect", app.link.id("panes"))))).unwrap();
+    let shown = welcome_rects(&out);
+    assert!(!shown.is_empty(), "the hints show in a roomy window");
+    for r in shown {
+        assert!(r.is_negative() || panes.contains_rect(r), "{r:?} outside the editor area {panes:?}");
+    }
+    // A small editor area: no hints at all.
+    let mut out = frame_sized(&mut app, &ctx, vec2(520.0, 340.0), vec![]);
+    for _ in 0..3 {
+        out = frame_sized(&mut app, &ctx, vec2(520.0, 340.0), vec![]);
+    }
+    assert!(welcome_rects(&out).is_empty());
     std::fs::remove_dir_all(dir).ok();
 }
 

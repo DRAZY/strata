@@ -1599,13 +1599,23 @@ impl StrataApp {
         let label = self.match_label();
         let mut action = None;
         let mut toggled = None;
+        // The fields give up width so the buttons always fit: the toggles' and
+        // buttons' widths are last frame's.
+        let widths = egui::Id::new("find-bar-widths");
+        let (toggles_w, buttons_w) = ui.ctx().data(|d| d.get_temp::<(f32, f32)>(widths)).unwrap_or((190.0, 300.0));
+        let gap = ui.spacing().item_spacing.x;
+        let field_w = (ui.available_width() - toggles_w - buttons_w - 4.0 * gap).clamp(80.0, 320.0);
+        let label_w = if field_w < 320.0 { 64.0 } else { 90.0 };
+        let mut measured = (toggles_w, buttons_w);
         // A grid keeps the Find and Replace fields in one column.
         egui::Grid::new("find-grid").num_columns(3).show(ui, |ui| {
-            toggled = find_options::search_toggles(ui, &self.find);
+            let r = ui.horizontal(|ui| find_options::search_toggles(ui, &self.find));
+            toggled = r.inner;
+            measured.0 = r.response.rect.width();
             let q = &mut self.find.query;
             let id = egui::Id::new("find-query");
             let field = crate::ctxmenu::text_field(ui, id, &mut q.text, |ui, text| {
-                ui.add_sized([320.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text("Find").font(egui::TextStyle::Monospace))
+                ui.add_sized([field_w, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text("Find").font(egui::TextStyle::Monospace))
             });
             if std::mem::take(&mut self.find.focus_query) {
                 field.request_focus();
@@ -1614,8 +1624,8 @@ impl StrataApp {
                 action = Some(if mods.alt { "all" } else if mods.shift { "prev" } else { "next" });
                 field.request_focus();
             }
-            ui.horizontal(|ui| {
-                ui.add_sized([90.0, 18.0], egui::Label::new(label));
+            let r = ui.horizontal(|ui| {
+                ui.add_sized([label_w, 18.0], egui::Label::new(label).truncate());
                 if ui.button("Previous").clicked() {
                     action = Some("prev");
                 }
@@ -1626,6 +1636,7 @@ impl StrataApp {
                     action = Some("all");
                 }
             });
+            measured.1 = r.response.rect.width();
             ui.end_row();
 
             if self.find.replace {
@@ -1634,14 +1645,14 @@ impl StrataApp {
                 let id = egui::Id::new("replace-text");
                 let hint = if regex { "Replace (\\1 or $1 for groups, \\n, \\t)" } else { "Replace" };
                 let field = crate::ctxmenu::text_field(ui, id, &mut self.find.replacement, |ui, text| {
-                    ui.add_sized([320.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text(hint).font(egui::TextStyle::Monospace))
+                    ui.add_sized([field_w, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text(hint).font(egui::TextStyle::Monospace))
                 });
                 if field.lost_focus() && enter {
                     action = Some(if mods.command { "replace-all" } else { "replace" });
                     field.request_focus();
                 }
                 ui.horizontal(|ui| {
-                    ui.add_space(90.0 + ui.spacing().item_spacing.x);
+                    ui.add_space(label_w + ui.spacing().item_spacing.x);
                     if ui.button("Replace").clicked() {
                         action = Some("replace");
                     }
@@ -1652,6 +1663,10 @@ impl StrataApp {
                 ui.end_row();
             }
         });
+        if measured != (toggles_w, buttons_w) {
+            ui.ctx().data_mut(|d| d.insert_temp(widths, measured));
+            ui.ctx().request_repaint();
+        }
         if let Some(cmd) = toggled {
             self.toggle_find_option(cmd);
         }
@@ -1699,6 +1714,73 @@ fn mix(from: Color32, to: Color32, t: f32) -> Color32 {
     Color32::from_rgb(m(from.r(), to.r()), m(from.g(), to.g()), m(from.b(), to.b()))
 }
 
+/// Status bar items on the left, most important first.
+#[derive(Clone, Copy)]
+enum StatusLeft {
+    Conflict,
+    Deleted,
+    Lossy,
+    Branch,
+    Words,
+}
+
+/// Which status bar items fit (see `status_fit`).
+struct StatusFit {
+    /// "12:5" instead of "Line 12, Column 5".
+    short_pos: bool,
+    left: [bool; 5],
+    /// Syntax, encoding, line endings, indentation, theme.
+    right: [bool; 5],
+    /// Each right item's width (with its separator) when last drawn.
+    right_widths: [f32; 5],
+}
+
+/// Choose the status bar items that fit its width, by priority: the cursor
+/// position and the syntax always; then the encoding, line endings,
+/// indentation and theme menus; then the warnings, the branch and the word
+/// count; the message gets what's left (at least a little).
+fn status_fit(ui: &egui::Ui, pos: &str, conflict: bool, deleted: bool, lossy: bool, branch: Option<&str>, words: Option<&str>) -> StatusFit {
+    let right_widths: [f32; 5] = ui.ctx().data(|d| d.get_temp(egui::Id::new("status-bar-widths"))).unwrap_or([100.0, 70.0, 40.0, 90.0, 70.0]);
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let gap = ui.spacing().item_spacing.x;
+    let text_w = |s: &str| ui.painter().layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE).size().x + gap;
+    let sep = 2.0 * gap + 6.0;
+    let message_min = 48.0;
+    let mut room = ui.available_width() - message_min - sep;
+    let (full, short) = (text_w(pos), text_w("0000:000"));
+    room -= short;
+    let mut right = [false; 5];
+    for (k, w) in right_widths.iter().enumerate() {
+        // The syntax menu stays even when it doesn't fit.
+        if k == 0 || *w <= room {
+            right[k] = true;
+            room -= w;
+        } else {
+            break;
+        }
+    }
+    let short_pos = full - short > room;
+    if !short_pos {
+        room -= full - short;
+    }
+    let button = 2.0 * ui.spacing().button_padding.x;
+    let wanted: [(bool, f32); 5] = [
+        (conflict, sep + text_w("Changed on disk") + text_w("Reload") + button),
+        (deleted, sep + text_w("Deleted on disk (save to recreate)")),
+        (lossy, sep + text_w("Decoding errors")),
+        (branch.is_some(), sep + branch.map_or(0.0, |b| text_w(&format!("⎇ {b}")))),
+        (words.is_some(), sep + words.map_or(0.0, text_w)),
+    ];
+    let mut left = [false; 5];
+    for (k, (on, w)) in wanted.into_iter().enumerate() {
+        if on && w <= room {
+            left[k] = true;
+            room -= w;
+        }
+    }
+    StatusFit { short_pos, left, right, right_widths }
+}
+
 enum TabAction {
     Activate(usize),
     Close(usize),
@@ -1741,14 +1823,18 @@ impl StrataApp {
         ctx.set_visuals_of(egui::Theme::Light, v);
     }
 
-    /// Hints over an empty window.
+    /// Hints over an empty window, centred in the editor area (not over the
+    /// side bar, terminal or other panels); left out when that area is small.
     fn welcome(&self, ctx: &egui::Context) {
-        let rect = ctx.content_rect();
+        let Some(rect) = ctx.data(|d| d.get_temp::<Rect>(egui::Id::new(("panes-rect", self.link.id("panes"))))) else { return };
+        if rect.width() < 360.0 || rect.height() < 260.0 {
+            return;
+        }
         // The background layer: above the editor, below windows like About.
-        let painter = ctx.layer_painter(egui::LayerId::background());
+        let painter = ctx.layer_painter(egui::LayerId::background()).with_clip_rect(rect);
         let hl = &self.docs[0].highlighter;
         let (fg, accent) = (hl.foreground(), hl.accent());
-        let center = rect.center() + vec2(if self.sidebar.shown() { 130.0 } else { 0.0 }, -60.0);
+        let center = rect.center() + vec2(0.0, -60.0);
         painter.text(center, egui::Align2::CENTER_CENTER, "Strata", FontId::proportional(40.0), accent.gamma_multiply(0.85));
         let rows = [
             ("Goto Anything", Cmd::GotoAnything),
@@ -1794,10 +1880,23 @@ impl StrataApp {
         let font = FontId::proportional(self.settings.ui_font_size.clamp(9.0, 24.0));
         let height = 32.0;
         let mut action = None;
-        egui::ScrollArea::horizontal().id_salt(("tabs", group)).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+        // Tabs that don't fit scroll (the mouse wheel scrolls them sideways);
+        // an arrow at the end then lists them all. The current tab is kept in view.
+        let memory = egui::Id::new(("tab-strip", group, self.link.id("tabs")));
+        let (last_shown, overflowed, last_w) = ui.ctx().data(|d| d.get_temp::<(Option<egui::Id>, bool, f32)>(memory)).unwrap_or_default();
+        let shown_id = shown.map(|i| self.docs[i].view.id);
+        // A new current tab, or the strip changed width (window resized, arrow shown).
+        let reveal = shown_id != last_shown || (bar.width() - last_w).abs() > 0.5;
+        let list_w = if overflowed { 26.0 } else { 0.0 };
+        let strip = Rect::from_min_max(bar.min, pos2(bar.max.x - list_w, bar.max.y));
+        let tabs = self.group_tabs(group);
+        let out = ui.scope_builder(egui::UiBuilder::new().max_rect(strip), |ui| {
+            ui.style_mut().always_scroll_the_only_direction = true;
+            // Not animated: a scroll retargeted mid-animation overshoots.
+            egui::ScrollArea::horizontal().id_salt(("tabs", group)).animated(false).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 1.0;
             ui.horizontal(|ui| {
-                for i in self.group_tabs(group) {
+                for &i in &tabs {
                     let name = &names[i];
                     let d = &self.docs[i];
                     let galley = ui.painter().layout_no_wrap(name.clone(), font.clone(), fg);
@@ -1841,6 +1940,9 @@ impl StrataApp {
                         ui.painter().circle_filled(pos2(rect.left() + 7.0, rect.center().y), 2.5, Color32::from_rgb(0xe5, 0x9e, 0x40));
                     }
 
+                    if active && reveal {
+                        resp.scroll_to_me(None);
+                    }
                     let resp = resp.on_hover_text(d.path.as_ref().map_or_else(|| "Unsaved new file".to_owned(), |p| p.display().to_string()));
                     if resp.middle_clicked() || (resp.clicked() && over_close) {
                         action = Some(TabAction::Close(i));
@@ -1862,7 +1964,46 @@ impl StrataApp {
                     self.focus_pane(group);
                 }
             });
-        });
+        })
+        })
+        .inner;
+        // The spacer after the tabs takes at least 40 points; past that, they overflow.
+        let overflowing = out.content_size.x > out.inner_rect.width() + 41.0 || (overflowed && out.content_size.x > out.inner_rect.width() + 1.0);
+        // Remember the strip's width as drawn: with the arrow, it is narrower.
+        let width = if overflowing == overflowed { bar.width() } else { -1.0 };
+        ui.ctx().data_mut(|d| d.insert_temp(memory, (shown_id, overflowing, width)));
+        if overflowing != overflowed {
+            ui.ctx().request_repaint();
+        }
+        if overflowed {
+            let at = Rect::from_min_max(pos2(strip.max.x, bar.min.y), bar.max);
+            let resp = ui.interact(at, memory.with("list"), Sense::click()).on_hover_text("All tabs in this pane");
+            if resp.hovered() {
+                ui.painter().rect_filled(at.shrink(3.0), 4.0, mix(ui.visuals().panel_fill, fg, 0.10));
+            }
+            // A down chevron.
+            let c = at.center();
+            let stroke = Stroke::new(1.4, fg.gamma_multiply(0.75));
+            ui.painter().line_segment([c + vec2(-4.0, -2.0), c + vec2(0.0, 2.0)], stroke);
+            ui.painter().line_segment([c + vec2(0.0, 2.0), c + vec2(4.0, -2.0)], stroke);
+            let mut chosen = None;
+            egui::Popup::menu(&resp).show(|ui| {
+                egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
+                    for &i in &tabs {
+                        let d = &self.docs[i];
+                        crate::fonts::ensure_cjk(ui.ctx(), &names[i]);
+                        let label = if d.is_dirty() { format!("● {}", names[i]) } else { names[i].clone() };
+                        if ui.selectable_label(Some(i) == shown, label).clicked() {
+                            chosen = Some(i);
+                            ui.close();
+                        }
+                    }
+                });
+            });
+            if let Some(i) = chosen {
+                action = Some(TabAction::Activate(i));
+            }
+        }
         action
     }
 
@@ -1906,6 +2047,7 @@ impl StrataApp {
     fn panes(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let area = ui.max_rect();
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(("panes-rect", self.link.id("panes"))), area));
         let cells = self.layout.cells(area);
         let names = self.display_names();
         for n in &names {
@@ -1966,6 +2108,8 @@ impl StrataApp {
                 ui.painter().hline(cell.x_range(), cell.top() + 0.5, Stroke::new(1.0, accent));
             }
         }
+        #[cfg(test)]
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("test-tab-rects"), tab_rects.clone()));
         self.drag_tab(&ctx, &tab_rects, &cells);
         for action in actions {
             match action {
@@ -1983,28 +2127,33 @@ impl StrataApp {
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         crate::fonts::ensure_cjk(ui.ctx(), &self.status);
+        let words = self.word_count();
+        let branch = self.docs[self.active].path.as_deref().and_then(|p| self.git.repo(p)).map(|r| r.branch);
+        let d = &self.docs[self.active];
+        let (line, col) = d.editor.cursor_line_col();
+        let cursors = d.editor.selections().len();
+        let selected: usize = d.editor.selections().iter().map(|s| s.end() - s.start()).sum();
+        let mut pos = format!("Line {line}, Column {col}");
+        if cursors > 1 {
+            pos.push_str(&format!("  ·  {cursors} cursors"));
+        }
+        if selected > 0 {
+            pos.push_str(&format!("  ·  {selected} selected"));
+        }
+        // Narrow windows: items drop out by priority rather than overlap.
+        let fit = status_fit(ui, &pos, d.conflict, d.deleted, d.editor.buffer.lossy, branch.as_deref(), words.as_deref());
         ui.horizontal(|ui| {
             let d = &mut self.docs[self.active];
-            let (line, col) = d.editor.cursor_line_col();
-            let cursors = d.editor.selections().len();
-            let selected: usize = d.editor.selections().iter().map(|s| s.end() - s.start()).sum();
-            let mut pos = format!("Line {line}, Column {col}");
-            if cursors > 1 {
-                pos.push_str(&format!("  ·  {cursors} cursors"));
-            }
-            if selected > 0 {
-                pos.push_str(&format!("  ·  {selected} selected"));
-            }
-            ui.label(pos);
-            if d.deleted {
+            ui.label(if fit.short_pos { format!("{line}:{col}") } else { pos });
+            if d.deleted && fit.left[StatusLeft::Deleted as usize] {
                 ui.separator();
                 ui.colored_label(Color32::from_rgb(0xe5, 0x9e, 0x40), "Deleted on disk (save to recreate)");
             }
-            if d.editor.buffer.lossy {
+            if d.editor.buffer.lossy && fit.left[StatusLeft::Lossy as usize] {
                 ui.separator();
                 ui.colored_label(Color32::from_rgb(0xe5, 0x9e, 0x40), "Decoding errors").on_hover_text(format!("Some bytes couldn't be read as {} and show as �. Try File ▸ Reopen with Encoding.", d.encoding.name()));
             }
-            if d.conflict {
+            if d.conflict && fit.left[StatusLeft::Conflict as usize] {
                 ui.separator();
                 ui.colored_label(Color32::from_rgb(0xe5, 0x9e, 0x40), "Changed on disk");
                 if ui.small_button("Reload").on_hover_text("Discard your edits and load the file from disk").clicked()
@@ -2012,16 +2161,23 @@ impl StrataApp {
                         self.status = format!("Could not reload: {e}");
                     }
             }
-            if let Some(branch) = self.docs[self.active].path.as_deref().and_then(|p| self.git.repo(p)).map(|r| r.branch) {
+            if let Some(branch) = branch.filter(|_| fit.left[StatusLeft::Branch as usize]) {
                 ui.separator();
                 ui.label(format!("⎇ {branch}"));
             }
-            if let Some(words) = self.word_count() {
+            if let Some(words) = words.filter(|_| fit.left[StatusLeft::Words as usize]) {
                 ui.separator();
                 ui.label(words);
             }
             ui.separator();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mut widths = fit.right_widths;
+                let edge = |ui: &egui::Ui| ui.min_rect().left();
+                let mut x = edge(ui);
+                let mut measure = |ui: &egui::Ui, k: usize| {
+                    widths[k] = x - edge(ui);
+                    x = edge(ui);
+                };
                 let d = &mut self.docs[self.active];
                 ui.menu_button(d.highlighter.syntax_name().to_owned(), |ui| {
                     egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
@@ -2034,63 +2190,78 @@ impl StrataApp {
                     });
                 });
                 ui.separator();
-                let enc = d.encoding;
-                let mut picked = None;
-                ui.menu_button(enc.name(), |ui| {
-                    ui.menu_button("Reopen with Encoding", |ui| {
-                        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                            for e in crate::encoding::Encoding::all() {
-                                if ui.selectable_label(*e == enc, e.name()).clicked() {
-                                    picked = Some((true, *e));
-                                    ui.close();
-                                }
-                            }
-                        });
-                    });
-                    ui.menu_button("Save with Encoding", |ui| {
-                        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                            for e in crate::encoding::Encoding::all() {
-                                if ui.selectable_label(*e == enc, e.name()).clicked() {
-                                    picked = Some((false, *e));
-                                    ui.close();
-                                }
-                            }
-                        });
-                    });
-                });
-                if let Some((reopen, e)) = picked {
-                    self.pending_encoding = Some((reopen, e));
-                }
-                ui.separator();
+                measure(ui, 0);
                 let d = &mut self.docs[self.active];
-                let ending = d.editor.buffer.line_ending();
-                ui.menu_button(if ending == LineEnding::Lf { "LF" } else { "CRLF" }, |ui| {
-                    ui.label(egui::RichText::new("Convert line endings").weak());
-                    for (e, label) in [(LineEnding::Lf, "LF (macOS, Linux)"), (LineEnding::CrLf, "CRLF (Windows)")] {
-                        if ui.selectable_label(ending == e, label).clicked() {
-                            d.set_line_ending(e);
-                            ui.close();
-                        }
+                if fit.right[1] {
+                    let enc = d.encoding;
+                    let mut picked = None;
+                    ui.menu_button(enc.name(), |ui| {
+                        ui.menu_button("Reopen with Encoding", |ui| {
+                            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                                for e in crate::encoding::Encoding::all() {
+                                    if ui.selectable_label(*e == enc, e.name()).clicked() {
+                                        picked = Some((true, *e));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        });
+                        ui.menu_button("Save with Encoding", |ui| {
+                            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                                for e in crate::encoding::Encoding::all() {
+                                    if ui.selectable_label(*e == enc, e.name()).clicked() {
+                                        picked = Some((false, *e));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        });
+                    });
+                    if let Some((reopen, e)) = picked {
+                        self.pending_encoding = Some((reopen, e));
                     }
-                });
-                ui.separator();
-                // Like Sublime, this shows and changes the current file's indentation.
-                let (old_tab, old_spaces) = (self.docs[self.active].editor.tab_width, self.docs[self.active].editor.use_spaces);
-                let (mut tab, mut spaces) = (old_tab, old_spaces);
-                ui.menu_button(format!("{}: {tab}", if spaces { "Spaces" } else { "Tab Size" }), |ui| {
-                    ui.checkbox(&mut spaces, "Indent using spaces");
                     ui.separator();
-                    for n in [2, 3, 4, 8] {
-                        ui.radio_value(&mut tab, n, format!("Width: {n}"));
-                    }
-                });
-                if (tab, spaces) != (old_tab, old_spaces) {
-                    let e = &mut self.docs[self.active].editor;
-                    e.tab_width = tab;
-                    e.use_spaces = spaces;
+                    measure(ui, 1);
                 }
-                ui.separator();
-                self.theme_menu_ui(ui);
+                if fit.right[2] {
+                    let d = &mut self.docs[self.active];
+                    let ending = d.editor.buffer.line_ending();
+                    ui.menu_button(if ending == LineEnding::Lf { "LF" } else { "CRLF" }, |ui| {
+                        ui.label(egui::RichText::new("Convert line endings").weak());
+                        for (e, label) in [(LineEnding::Lf, "LF (macOS, Linux)"), (LineEnding::CrLf, "CRLF (Windows)")] {
+                            if ui.selectable_label(ending == e, label).clicked() {
+                                d.set_line_ending(e);
+                                ui.close();
+                            }
+                        }
+                    });
+                    ui.separator();
+                    measure(ui, 2);
+                }
+                if fit.right[3] {
+                    // Like Sublime, this shows and changes the current file's indentation.
+                    let (old_tab, old_spaces) = (self.docs[self.active].editor.tab_width, self.docs[self.active].editor.use_spaces);
+                    let (mut tab, mut spaces) = (old_tab, old_spaces);
+                    ui.menu_button(format!("{}: {tab}", if spaces { "Spaces" } else { "Tab Size" }), |ui| {
+                        ui.checkbox(&mut spaces, "Indent using spaces");
+                        ui.separator();
+                        for n in [2, 3, 4, 8] {
+                            ui.radio_value(&mut tab, n, format!("Width: {n}"));
+                        }
+                    });
+                    if (tab, spaces) != (old_tab, old_spaces) {
+                        let e = &mut self.docs[self.active].editor;
+                        e.tab_width = tab;
+                        e.use_spaces = spaces;
+                    }
+                    ui.separator();
+                    measure(ui, 3);
+                }
+                if fit.right[4] {
+                    self.theme_menu_ui(ui);
+                    measure(ui, 4);
+                }
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("status-bar-widths"), widths));
                 // The message takes whatever room is left, cut short with … rather than overlapping.
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add(egui::Label::new(&self.status).truncate()).on_hover_text(&self.status);

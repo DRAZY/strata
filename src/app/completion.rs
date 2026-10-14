@@ -156,11 +156,24 @@ impl Completion {
         let font = egui::FontId::monospace(d.view.font_size.max(12.0) - 1.0);
         let row_h = font.size + 8.0;
         let mut chosen = None;
-        egui::Area::new(egui::Id::new("completions"))
+        // Below the caret, or above it when there's more room there: never over its line.
+        let id = egui::Id::new("completions");
+        let screen = ctx.content_rect();
+        let spacing = ctx.global_style().spacing.item_spacing.y;
+        let wanted = self.items.len() as f32 * (row_h + spacing) + 16.0;
+        let (below, above) = (screen.bottom() - caret.bottom() - 4.0, caret.top() - screen.top() - 4.0);
+        let up = wanted > below && above > below;
+        let room = if up { above } else { below };
+        let (pivot, at) = if up { (egui::Align2::LEFT_BOTTOM, caret.left_top() + vec2(-4.0, -2.0)) } else { (egui::Align2::LEFT_TOP, caret.left_bottom() + vec2(-4.0, 2.0)) };
+        let selected = self.selected;
+        egui::Area::new(id)
             .order(egui::Order::Foreground)
-            .fixed_pos(caret.left_bottom() + vec2(-4.0, 2.0))
+            .pivot(pivot)
+            .fixed_pos(at)
+            .constrain(false)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).inner_margin(4.0).show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height((room - 16.0).max(row_h)).show(ui, |ui| {
                     let char_w = font.size * 0.62;
                     let text_w = self.items.iter().map(|w| w.text().chars().count()).max().unwrap_or(8) as f32 * char_w;
                     let note = |item: &Item| match item {
@@ -182,7 +195,11 @@ impl Completion {
                         if resp.clicked() {
                             chosen = Some(i);
                         }
+                        if i == selected {
+                            resp.scroll_to_me(None);
+                        }
                     }
+                    });
                 });
             });
         if let Some(i) = chosen {
