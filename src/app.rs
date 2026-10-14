@@ -1997,10 +1997,10 @@ impl StrataApp {
             if d.conflict {
                 ui.separator();
                 ui.colored_label(Color32::from_rgb(0xe5, 0x9e, 0x40), "Changed on disk");
-                if ui.small_button("Reload").on_hover_text("Discard your edits and load the file from disk").clicked()
-                    && let Err(e) = d.reload_from_disk() {
-                        self.status = format!("Could not reload: {e}");
-                    }
+                // Asks first, like Revert; Undo brings the edits back.
+                if ui.small_button("Reload").on_hover_text("Discard your edits and load the file from disk (asks first)").clicked() {
+                    self.revert();
+                }
             }
             if let Some(branch) = self.docs[self.active].path.as_deref().and_then(|p| self.git.repo(p)).map(|r| r.branch) {
                 ui.separator();

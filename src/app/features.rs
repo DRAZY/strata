@@ -59,7 +59,7 @@ impl StrataApp {
             let ok = rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Warning)
                 .set_title("Revert File")
-                .set_description(format!("Discard your changes to {} and reload it from disk?", d.name()))
+                .set_description(format!("Discard your changes to {} and reload it from disk?\n\nUndo brings your changes back.", d.name()))
                 .set_buttons(rfd::MessageButtons::OkCancel)
                 .show();
             if ok != rfd::MessageDialogResult::Ok {

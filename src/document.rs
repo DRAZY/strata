@@ -301,13 +301,29 @@ impl Document {
         self.conflict || self.path.as_deref().and_then(mtime).is_some_and(|now| Some(now) != self.disk_mtime)
     }
 
-    /// Swap in new text, keeping the cursor on (about) the same spot.
+    /// Swap in new text, keeping the cursor on (about) the same spot. The
+    /// swap is one undo step (marked saved), so text a reload threw away is
+    /// an Undo away; read-only tabs and huge texts start a fresh history.
     pub fn reload(&mut self, buffer: Buffer) {
+        /// Above this many chars (old + new) the undo step would hold too much.
+        const UNDOABLE_CHARS: usize = 32 << 20;
         let head = self.editor.primary().head.min(buffer.len_chars());
-        let (tab_width, use_spaces) = (self.editor.tab_width, self.editor.use_spaces);
-        self.editor = Editor::new(buffer);
-        self.editor.tab_width = tab_width;
-        self.editor.use_spaces = use_spaces;
+        let len = self.editor.buffer.len_chars();
+        if self.editor.read_only || len + buffer.len_chars() > UNDOABLE_CHARS {
+            let (tab_width, use_spaces, read_only) = (self.editor.tab_width, self.editor.use_spaces, self.editor.read_only);
+            self.editor = Editor::new(buffer);
+            self.editor.tab_width = tab_width;
+            self.editor.use_spaces = use_spaces;
+            self.editor.read_only = read_only;
+        } else {
+            let new = buffer.slice(0..buffer.len_chars());
+            if *self.editor.text_snapshot() != new {
+                self.editor.replace_ranges(vec![(0..len, new)]);
+            }
+            self.editor.buffer.set_line_ending(buffer.line_ending());
+            self.editor.buffer.lossy = buffer.lossy;
+            self.editor.mark_saved();
+        }
         self.editor.select_ranges(&[head..head], 0);
         self.highlighter.invalidate_from(0);
         self.finder = Finder::default();
@@ -391,6 +407,43 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         assert!(bytes.starts_with(b"\xFF\xFEc\x00a\x00f\x00\xC8\x00"));
         assert_eq!(Document::open(path.clone()).unwrap().encoding, Encoding::UTF16LE_BOM);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("strata-doc-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn all(doc: &Document) -> String {
+        doc.editor.buffer.slice(0..doc.editor.buffer.len_chars())
+    }
+
+    #[test]
+    fn reloading_is_undoable() {
+        let dir = scratch("undo-reload");
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let mut doc = Document::open(path.clone()).unwrap();
+        doc.editor.select_ranges(&[3..3], 0);
+        doc.editor.insert_text(" my edits");
+        std::fs::write(&path, "theirs\r\n").unwrap();
+        doc.reload_from_disk().unwrap();
+        assert_eq!(all(&doc), "theirs\r\n");
+        assert_eq!(doc.editor.buffer.line_ending(), LineEnding::CrLf);
+        assert!(!doc.is_dirty());
+        // The discarded edits are one undo away (and unsaved again).
+        doc.editor.undo();
+        assert_eq!(all(&doc), "one my edits\n");
+        assert!(doc.is_dirty());
+        doc.editor.undo();
+        assert_eq!(all(&doc), "one\n", "older history is kept too");
+        doc.editor.redo();
+        doc.editor.redo();
+        assert_eq!(all(&doc), "theirs\r\n");
+        assert!(!doc.is_dirty());
         std::fs::remove_dir_all(dir).ok();
     }
 

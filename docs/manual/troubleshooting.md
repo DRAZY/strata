@@ -157,7 +157,7 @@ After you fix or add a file in these folders, restart Strata to load it.
 Strata checks the files you're looking at about once a second, and other open files when you switch to them.
 
 - If a file changes on disk and you have no unsaved edits in it, Strata reloads it and says so in the status bar.
-- If you do have unsaved edits, Strata keeps them and marks the tab with a small orange dot. The status bar says **Changed on disk** and offers a **Reload** button, which discards your edits and loads the file from disk.
+- If you do have unsaved edits, Strata keeps them and marks the tab with a small orange dot. The status bar says **Changed on disk** and offers a **Reload** button, which asks before discarding your edits and loading the file from disk. Undo brings the edits back.
 - If you save over a file that changed on disk, Strata asks first.
 - If a file is deleted on disk, its tab stays open and the status bar says **Deleted on disk (save to recreate)**. Saving writes it back.
 

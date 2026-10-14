@@ -55,7 +55,7 @@ When you click a file once in the side bar, it opens as a preview tab that the n
 | File ▸ Save | {{key:save}} | Saves the current file. A new file asks for a name first. |
 | File ▸ Save As… | {{key:save_as}} | Saves the current file under a new name. |
 | File ▸ Save All | {{key:save_all}} | Saves every modified file that already has a name. Untitled tabs are skipped. |
-| File ▸ Revert File | {{key:revert}} | Throws away unsaved changes and reloads the file from disk. Strata asks first. |
+| File ▸ Revert File | {{key:revert}} | Throws away unsaved changes and reloads the file from disk. Strata asks first, and Edit ▸ Undo brings the changes back. |
 
 Saves are atomic. Strata writes the new text to a temporary file next to the original, then swaps it into place. If something goes wrong partway (a full disk, say), the save fails and your old file is left intact. File permissions are kept, saving a symbolic link writes to the file it points to, and a file with several hard links keeps them all. Only when Strata can't create files in the folder at all does it write the file in place.
 
@@ -73,7 +73,7 @@ Strata may ask before saving in a few cases:
 Strata checks the files you're looking at about once a second, and also when you switch to a tab.
 
 - If a file changes on disk and you have no unsaved edits in it, Strata reloads it quietly and says so in the status bar.
-- If you do have unsaved edits, Strata never overwrites them. The tab gets an orange dot, and the status bar shows **Changed on disk** with a **Reload** button. Click Reload to discard your edits and load the disk version. If you save instead, Strata asks before replacing the other program's changes.
+- If you do have unsaved edits, Strata never overwrites them. The tab gets an orange dot, and the status bar shows **Changed on disk** with a **Reload** button. Click Reload to discard your edits and load the disk version (Strata asks first, and Undo brings your edits back). If you save instead, Strata asks before replacing the other program's changes.
 - If the file is deleted or moved away, the status bar shows **Deleted on disk (save to recreate)**. Your text stays in the tab as unsaved, so it isn't lost.
 
 ## Hot exit
