@@ -638,8 +638,14 @@ impl StrataApp {
     fn save_all(&mut self) {
         let mut failed = Vec::new();
         let mut saved = 0;
+        // Views of one buffer are saved once, through their first view: a
+        // second save would trim again and see the first one's write as an
+        // outside change.
+        self.sync_views();
         for i in 0..self.docs.len() {
-            if self.docs[i].is_dirty() && self.docs[i].path.is_some() {
+            let d = &self.docs[i];
+            let has_earlier_view = d.view_group.is_some() && (0..i).any(|k| self.docs[k].editor.shares_history(&d.editor));
+            if !has_earlier_view && d.is_dirty() && d.path.is_some() {
                 if self.save(i, false) {
                     saved += 1;
                 } else {
@@ -647,6 +653,7 @@ impl StrataApp {
                 }
             }
         }
+        self.sync_views();
         self.status = if failed.is_empty() {
             format!("Saved {saved} file{}", if saved == 1 { "" } else { "s" })
         } else {

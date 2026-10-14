@@ -38,6 +38,32 @@ fn hot_exit_keeps_decoding_errors_and_the_line_ending() {
 }
 
 #[test]
+fn save_all_saves_a_buffer_with_two_views_once() {
+    let dir = temp_dir("save-all-views");
+    let path = dir.join("a.txt");
+    std::fs::write(&path, "a  \nb\n").unwrap();
+    let mut app = StrataApp::new(Some(path.clone()), None);
+    app.settings.trim_trailing_white_space_on_save = true;
+    app.clone_file();
+    app.sync_views();
+    // Restored from hot exit as unsaved (no edits in the shared history).
+    for d in &mut app.docs {
+        d.restored_dirty = true;
+    }
+    let steps = app.docs[0].editor.history_len();
+    // Saving the second view would ask "changed by another program?" (a
+    // dialog fails the test) and trim a second time.
+    app.save_all();
+    assert_eq!(app.status, "Saved 1 file");
+    assert_eq!(app.docs[0].editor.history_len(), steps + 1, "the trim is one undo step");
+    app.sync_views();
+    assert!(app.docs.iter().all(|d| !d.is_dirty() && !d.changed_on_disk()));
+    assert_eq!(text(&app, 1), "a\nb\n");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nb\n");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn old_sessions_without_the_new_fields_still_load() {
     let tab: crate::session::TabState = serde_json::from_str(r#"{"path": "/x/a.txt", "backup": "1.txt"}"#).unwrap();
     assert!(!tab.lossy);
