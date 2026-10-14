@@ -103,15 +103,6 @@ impl StrataApp {
     }
 }
 
-/// `path` with the home folder written as `~`, so a report doesn't carry the user name.
-fn redact_home(text: &str) -> String {
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-    match home.map(|h| h.to_string_lossy().into_owned()).filter(|h| h.len() > 1) {
-        Some(h) => text.replace(h.trim_end_matches(['/', '\\']), "~"),
-        None => text.to_owned(),
-    }
-}
-
 /// The text of Help ▸ Report a Problem…: a template to fill in, system
 /// details, and the end of the log.
 pub fn problem_report(config: Option<&Path>, log: &[String]) -> String {
@@ -133,7 +124,7 @@ pub fn problem_report(config: Option<&Path>, log: &[String]) -> String {
         s.push('\n');
     }
     s.push_str("```\n");
-    redact_home(&s)
+    crash::redact_home(&s)
 }
 
 #[cfg(test)]

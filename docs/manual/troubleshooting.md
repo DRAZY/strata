@@ -129,7 +129,7 @@ If Strata quits unexpectedly, it first saves your unsaved tabs and writes a cras
 - **With hot exit off**, unsaved text goes in a new `backups.recovered-<time>/` folder, one `.txt` file per tab.
 - If even that fails, the session Strata saves every few seconds still has your work up to a few seconds before the crash.
 
-The crash report is a text file in the `Crashes` folder, named `strata-crash-<date>-<time>.txt` (UTC). It contains Strata's version, your system, where in Strata's code the crash happened, and the last 200 lines of the log. Like the log, it doesn't contain the text of your files.
+The crash report is a text file in the `Crashes` folder, named `strata-crash-<date>-<time>.txt` (UTC). It contains Strata's version, your system, where in Strata's code the crash happened, and the last 200 lines of the log. Like the log, it doesn't contain the text of your files: your home folder is written `~`, and the error message is cut short, with any text it quotes left out.
 
 The next time Strata starts, a notice in the corner says that it quit unexpectedly and what happened to your unsaved work:
 
