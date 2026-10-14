@@ -277,11 +277,13 @@ impl StrataApp {
         match self.distraction.take() {
             Some(sidebar) => {
                 self.sidebar.visible = sidebar;
-                self.fullscreen = false;
+                // Back to how the window was: still full screen if it was before.
+                self.fullscreen = self.fullscreen_before_distraction;
             }
             None => {
                 self.distraction = Some(self.sidebar.visible);
                 self.sidebar.visible = false;
+                self.fullscreen_before_distraction = self.fullscreen;
                 self.fullscreen = true;
             }
         }

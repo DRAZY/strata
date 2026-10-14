@@ -278,6 +278,58 @@ fn welcome_hints_stay_in_the_editor_area() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+fn frame_fullscreen(app: &mut StrataApp, ctx: &Context, full: bool) -> Vec<egui::ViewportCommand> {
+    let time = Some(ctx.input(|i| i.time) + 0.25);
+    let mut raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 600.0))), time, ..Default::default() };
+    raw.viewports.entry(egui::ViewportId::ROOT).or_default().fullscreen = Some(full);
+    let mut out = ctx.run_ui(raw, |ui| {
+        let mut frame = eframe::Frame::_new_kittest();
+        eframe::App::ui(app, ui, &mut frame);
+    });
+    out.textures_delta.clear();
+    out.viewport_output.remove(&egui::ViewportId::ROOT).map(|v| v.commands).unwrap_or_default()
+}
+
+#[test]
+fn full_screen_follows_the_window() {
+    use crate::menus::Item;
+    fn checked(app: &StrataApp) -> Option<bool> {
+        fn find(items: &[Item]) -> Option<Option<bool>> {
+            items.iter().find_map(|it| match it {
+                Item::Action { label, check, .. } if label == "Toggle Full Screen" => Some(*check),
+                Item::Sub(_, kids) => find(kids),
+                _ => None,
+            })
+        }
+        app.menus().iter().find_map(|(_, items)| find(items)).flatten()
+    }
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    frame_fullscreen(&mut app, &ctx, false);
+    assert_eq!(checked(&app), Some(false));
+    // Full screen from the window's own button: the menu sees it.
+    frame_fullscreen(&mut app, &ctx, true);
+    assert_eq!(checked(&app), Some(true));
+    // Toggle Full Screen now leaves it (the old flag would have asked for full screen again).
+    app.run(&ctx, Cmd::Fullscreen);
+    let cmds = frame_fullscreen(&mut app, &ctx, true);
+    assert!(cmds.contains(&egui::ViewportCommand::Fullscreen(false)), "{cmds:?}");
+    // Distraction-free from full screen, and back: still full screen.
+    frame_fullscreen(&mut app, &ctx, true);
+    app.run(&ctx, Cmd::DistractionFree);
+    frame_fullscreen(&mut app, &ctx, true);
+    app.run(&ctx, Cmd::DistractionFree);
+    let cmds = frame_fullscreen(&mut app, &ctx, true);
+    assert!(cmds.contains(&egui::ViewportCommand::Fullscreen(true)) && !cmds.contains(&egui::ViewportCommand::Fullscreen(false)), "{cmds:?}");
+    // From a normal window it ends in a normal window.
+    frame_fullscreen(&mut app, &ctx, false);
+    app.run(&ctx, Cmd::DistractionFree);
+    frame_fullscreen(&mut app, &ctx, true);
+    app.run(&ctx, Cmd::DistractionFree);
+    let cmds = frame_fullscreen(&mut app, &ctx, true);
+    assert!(cmds.contains(&egui::ViewportCommand::Fullscreen(false)), "{cmds:?}");
+}
+
 #[test]
 fn cjk_file_names_load_the_cjk_fonts() {
     let loaded = |ctx: &Context| ctx.data(|d| d.get_temp::<bool>(egui::Id::new("strata-cjk-fonts")).is_some());

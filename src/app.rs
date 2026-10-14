@@ -48,7 +48,11 @@ pub struct StrataApp {
     session_key: u64,
     /// Theme the window chrome was last styled for.
     chrome_theme: String,
+    /// The window is full screen, as the system last reported it (it can be
+    /// left with the green button or Esc, not only from the menu).
     fullscreen: bool,
+    /// Whether the window was full screen before distraction-free mode.
+    fullscreen_before_distraction: bool,
     /// Tab being dragged to a new position (or another pane).
     dragging_tab: Option<usize>,
     layout: Layout,
@@ -223,6 +227,7 @@ impl StrataApp {
             session_key: 0,
             chrome_theme: String::new(),
             fullscreen: false,
+            fullscreen_before_distraction: false,
             dragging_tab: None,
             layout: Layout::default(),
             focus_group: 0,
@@ -1159,6 +1164,10 @@ impl StrataApp {
             Cmd::Fullscreen => {
                 self.fullscreen = !self.fullscreen;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+                // Leaving full screen also leaves distraction-free mode, which needs it.
+                if !self.fullscreen && let Some(sidebar) = self.distraction.take() {
+                    self.sidebar.visible = sidebar;
+                }
             }
             Cmd::Settings => self.open_settings(),
             Cmd::KeyBindings => self.open_key_bindings(),
@@ -2280,6 +2289,10 @@ impl eframe::App for StrataApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
         let now = ctx.input(|i| i.time);
+        // The real full screen state: the window's button or the system may change it.
+        if let Some(full) = ctx.input(|i| i.viewport().fullscreen) {
+            self.fullscreen = full;
+        }
         // Views of one buffer catch up with last frame's late edits (menus, palette).
         if self.sync_views() {
             ctx.request_repaint();
