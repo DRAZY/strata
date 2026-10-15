@@ -147,7 +147,7 @@ Strata never sends anything by itself. To report a problem:
 1. Choose **Help ▸ Report a Problem…**. A new tab opens with a template, your Strata version and system, and the end of the log. Your home folder is shown as `~`.
 2. Fill in what happened and how to make it happen again.
 3. Read it through and remove anything you'd rather not share, such as file names.
-4. Copy it into a new issue at <https://github.com/strata-editor/strata/issues/new>. If it's about a crash, attach the crash report too.
+4. Copy it into a new issue at <https://github.com/DRAZY/strata/issues/new>. If it's about a crash, attach the crash report too.
 
 ## Fonts not found
 

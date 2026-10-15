@@ -27,7 +27,7 @@ use std::time::SystemTime;
 /// step by hand, in Cargo.toml (`repository`), README.md and
 /// docs/manual/troubleshooting.md; a test checks they agree.
 /// TODO(owner): point at the real repository.
-pub const ISSUES_URL: &str = "https://github.com/strata-editor/strata/issues";
+pub const ISSUES_URL: &str = "https://github.com/DRAZY/strata/issues";
 
 /// Longest panic message kept in a report or the log.
 pub const MAX_MESSAGE: usize = 300;

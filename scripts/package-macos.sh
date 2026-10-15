@@ -72,7 +72,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key><string>Strata</string>
   <key>CFBundleDisplayName</key><string>Strata</string>
-  <key>CFBundleIdentifier</key><string>io.github.strata-editor.strata</string>
+  <key>CFBundleIdentifier</key><string>io.github.drazy.strata</string>
   <key>CFBundleExecutable</key><string>strata</string>
   <key>CFBundleIconFile</key><string>Strata</string>
   <key>CFBundlePackageType</key><string>APPL</string>
