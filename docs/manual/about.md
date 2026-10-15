@@ -2,7 +2,7 @@
 
 Strata is a fast, open-source code and text editor for macOS and Windows, written in Rust and built for people who like to keep their hands on the keyboard.
 
-It opens in a blink, stays smooth on files of hundreds of megabytes, and gives you the tools you reach for every day without getting in the way. Strata is in alpha, so expect some rough edges and frequent improvements.
+It opens in a blink, stays smooth on files of hundreds of megabytes, and gives you the tools you reach for every day without getting in the way. This is the 1.0 release candidate.
 
 ## What Strata does
 
@@ -61,6 +61,16 @@ Strata is built on open-source projects, and it ships fonts, color schemes and s
 | macOS on Apple silicon | Supported |
 | Windows on x64 | Supported |
 | Linux | Not officially supported yet. The code has Linux support (settings live in `~/.config/strata`, for example), but it isn't tested or packaged |
+
+## Accessibility
+
+- **Keyboard only.** Everything can be done without a mouse: every command is in the [command palette](find.md#command-palette) and can have a shortcut ([Customizing Key Bindings](keybindings.md)), and there are commands to move between panes, tabs, the side bar and the panels.
+- **High contrast.** The High Contrast Dark and High Contrast Light [color schemes](appearance.md#color-schemes) are included, and every bundled scheme is checked for WCAG AA contrast. Text size can be changed for the editor and for the interface separately.
+- **Screen readers** can't read the editor area yet. Screen reader support is planned for after 1.0.
+
+## Not in 1.0
+
+These are planned for after 1.0: language servers (LSP), plugins, a Vim mode, official Linux support, opt-in automatic updates, and screen reader support in the editor.
 
 ## Getting help
 
