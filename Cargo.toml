@@ -35,7 +35,7 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 # Updates: checking the ed25519 signature and SHA-256 of a downloaded update
 # (pure Rust; the download itself goes through the system's curl, see src/update).
 ed25519-dalek = { version = "2.2.0", default-features = false }
-sha2 = { version = "0.10.9", default-features = false }
+sha2 = { version = "0.11.0", default-features = false }
 
 # Dev aids read from STRATA_* environment variables (see src/dev.rs).
 # `devtools` (default): screenshots and first-frame panels; build release
