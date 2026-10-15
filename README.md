@@ -26,10 +26,9 @@ command a keystroke away. Multiple cursors, Goto Anything, project-wide search
 and replace, split panes, a built-in terminal and a live Markdown preview are
 all there out of the box, with no accounts, no telemetry and nothing to set up.
 
-> **Status: release candidate.** 1.0.0-rc.1 is the first public release
-> candidate: Strata is used every day, but expect a few rough edges before
-> 1.0. Please [report problems](https://github.com/DRAZY/strata/issues) (Help ▸
-> Report a Problem… fills in the details). See [CHANGELOG.md](CHANGELOG.md) and
+> **Status: 1.0.** The first stable release. Please [report
+> problems](https://github.com/DRAZY/strata/issues) (Help ▸ Report a Problem…
+> fills in the details). See [CHANGELOG.md](CHANGELOG.md) and
 > [Not in 1.0](#not-in-10) for what's planned next.
 
 ## Features
@@ -129,7 +128,7 @@ area yet; that's on the [roadmap](docs/ROADMAP.md).
 ## Install
 
 Download Strata from the [**Releases**](https://github.com/DRAZY/strata/releases)
-page. 1.0.0-rc.1 is a release candidate, listed there as a pre-release.
+page.
 
 | Platform | File |
 |---|---|
@@ -145,8 +144,8 @@ choose **Strata ▸ Install Shell Command…**; see [Command line](#command-line
 **Windows.** Unzip the folder anywhere and run `Strata.exe`. It isn't
 code-signed yet, so the first run shows a SmartScreen warning: click **More
 info ▸ Run anyway**. Add the folder to `PATH` to use the `strata` command. The
-Windows build is part of the release candidate but hasn't been tested on real
-hardware yet; reports are very welcome.
+download is portable: nothing is installed, and settings live in
+`%APPDATA%\Strata`.
 
 **Linux.** The code builds for Linux, but it isn't an officially supported
 platform yet; build it from source (below).

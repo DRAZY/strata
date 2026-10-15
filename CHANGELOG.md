@@ -6,6 +6,30 @@ All notable changes to Strata are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-15
+
+Strata 1.0, the first stable release: a fast, open-source code and text editor
+for macOS and Windows. It contains everything in 1.0.0-rc.1 below, tested on
+macOS and on Windows.
+
+### Changed since 1.0.0-rc.1
+
+- The Windows build has been tried on real hardware.
+- Release builds from CI refuse to publish unless they can be signed.
+
+### Highlights
+
+- Multiple cursors, Goto Anything, the command palette, and find and replace
+  across whole projects with undo.
+- Split panes, multiple windows, several views of one file, and projects with
+  several folders.
+- A built-in terminal, live Markdown preview, side-by-side compare, build
+  systems, Git change bars and permalinks, spell check, printing and PDF.
+- About 190 languages, 35 color schemes, bundled coding fonts, EditorConfig
+  and per-language settings, and a Settings window.
+- Hot exit, atomic saves, crash recovery and fast large-file handling.
+- Signed, opt-in updates from inside the app (Help ▸ Check for Updates…).
+
 ## [1.0.0-rc.1] - 2026-10-15
 
 The first public release candidate. Everything below is new.
@@ -129,5 +153,6 @@ The first public release candidate. Everything below is new.
   Indic and other shaped scripts) and right-to-left text are not fully laid
   out.
 
-[Unreleased]: https://github.com/DRAZY/strata/compare/v1.0.0-rc.1...HEAD
+[Unreleased]: https://github.com/DRAZY/strata/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/DRAZY/strata/compare/v1.0.0-rc.1...v1.0.0
 [1.0.0-rc.1]: https://github.com/DRAZY/strata/releases/tag/v1.0.0-rc.1

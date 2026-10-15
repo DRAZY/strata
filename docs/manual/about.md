@@ -2,7 +2,7 @@
 
 Strata is a fast, open-source code and text editor for macOS and Windows, written in Rust and built for people who like to keep their hands on the keyboard.
 
-It opens in a blink, stays smooth on files of hundreds of megabytes, and gives you the tools you reach for every day without getting in the way. This is the 1.0 release candidate.
+It opens in a blink, stays smooth on files of hundreds of megabytes, and gives you the tools you reach for every day without getting in the way.
 
 ## What Strata does
 
