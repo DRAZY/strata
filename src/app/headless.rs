@@ -329,3 +329,7 @@ mod ui_shots {
         sh.shoot(&ctx, &mut app, 4, vec![], &dir.join("completion_bottom.ppm"));
     }
 }
+
+/// The README screenshots (see the module; the scenes need sh and git).
+#[cfg(unix)]
+mod readme_shots;

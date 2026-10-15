@@ -192,19 +192,11 @@ Strata stays responsive on files of hundreds of megabytes and on minified files 
 - Git change bars aren't shown for files with more than 200,000 lines.
 - Strata reads the whole file when it opens it (about a second for 500 MB).
 
-## macOS blocks the first launch
+## The first launch is blocked
 
-Test builds of Strata for macOS aren't notarized by Apple, so the first time you open one, macOS may block it. Any of these gets past it:
+**macOS.** Strata releases are signed with a Developer ID and notarized by Apple, so they open normally, after macOS asks once whether to open an app downloaded from the internet. If macOS says Strata "can't be opened" or "is damaged", the copy didn't come from the project's releases (a test build, or a download that was changed on the way): download it again from the releases page and check its checksum. Builds you make yourself with `scripts/package-macos.sh` are only notarized with `NOTARIZE=1`; to open an unnotarized build of your own, go to **System Settings ▸ Privacy & Security** after the first attempt and click **Open Anyway**.
 
-- Right-click (or Control-click) Strata.app in Finder, choose **Open**, then **Open** again.
-- On recent macOS versions, try to open Strata once, then go to **System Settings ▸ Privacy & Security** and click **Open Anyway**.
-- In a terminal, remove the quarantine flag:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/Strata.app
-```
-
-You only need to do this once.
+**Windows.** `Strata.exe` isn't code-signed yet, so on its first run Microsoft Defender SmartScreen may say "Windows protected your PC". Click **More info**, check that the file is the one you downloaded, then click **Run anyway**. You only need to do this once for each version.
 
 ## The strata command is missing
 

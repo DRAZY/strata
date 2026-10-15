@@ -18,15 +18,19 @@
   <img alt="Notarized" src="https://img.shields.io/badge/macOS-notarized-252532?style=for-the-badge&logo=apple&logoColor=white">
 </p>
 
+<p align="center"><img src="docs/screenshots/hero.png" width="900" alt="Strata in the Tokyo Night scheme: a Rust project in the side bar, a file with four cursors, git change bars in the gutter, the minimap and the status bar"></p>
+
 Strata is a native editor for macOS and Windows, written in Rust. It opens
 instantly, stays smooth on files of hundreds of megabytes, and keeps every
 command a keystroke away. Multiple cursors, Goto Anything, project-wide search
 and replace, split panes, a built-in terminal and a live Markdown preview are
 all there out of the box, with no accounts, no telemetry and nothing to set up.
 
-> **Status: 1.0 release candidate.** Screenshots will be added here; the
-> app's icon is `assets/icon.svg`. See [Not in 1.0](#not-in-10) for what's
-> planned next.
+> **Status: release candidate.** 1.0.0-rc.1 is the first public release
+> candidate: Strata is used every day, but expect a few rough edges before
+> 1.0. Please [report problems](https://github.com/DRAZY/strata/issues) (Help ▸
+> Report a Problem… fills in the details). See [CHANGELOG.md](CHANGELOG.md) and
+> [Not in 1.0](#not-in-10) for what's planned next.
 
 ## Features
 
@@ -78,9 +82,29 @@ all there out of the box, with no accounts, no telemetry and nothing to set up.
   syntaxes (`.sublime-syntax`) and color schemes (`.tmTheme`,
   `.sublime-color-scheme`); these widely shared formats mean existing
   collections work unchanged.
-- **Private by design**: Strata never connects to the network on its own. It
-  has no telemetry or update checks, and logs and crash reports stay on your
-  computer.
+- **Private by design**: no accounts and no telemetry. Strata contacts GitHub
+  only to check for and download updates, and only if you allow it; logs and
+  crash reports stay on your computer.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/light-split.png" alt="GitHub Light scheme with a TypeScript file and a Python file in two panes"><br><sub>Split panes in GitHub Light</sub></td>
+    <td width="50%"><img src="docs/screenshots/markdown.png" alt="A Markdown file beside its live preview with a table, task list and alert"><br><sub>Live Markdown preview</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/terminal.png" alt="The built-in terminal under the editor, showing a colored test run and a directory listing"><br><sub>Built-in terminal</sub></td>
+    <td><img src="docs/screenshots/command-palette.png" alt="The command palette listing Toggle commands with their shortcuts"><br><sub>Command palette</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/compare.png" alt="A file compared with its last Git commit, side by side with the added and changed lines marked"><br><sub>Compare with the last commit</sub></td>
+    <td><img src="docs/screenshots/settings.png" alt="The Settings window on the Appearance category"><br><sub>Settings window</sub></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="docs/screenshots/help.png" width="50%" alt="The built-in manual open at Find and Replace"><br><sub>The built-in manual</sub></td>
+  </tr>
+</table>
 
 ## Not in 1.0
 
@@ -99,20 +123,39 @@ area yet; that's on the [roadmap](docs/ROADMAP.md).
 
 ## Install
 
-**macOS (Apple silicon).** Download the `Strata-<version>-arm64.dmg` from the
-project's releases, open it and drag Strata to Applications. Test builds are
-ad-hoc signed but not notarized, so the first launch on a new Mac is blocked
-by Gatekeeper: right-click Strata.app and choose **Open**, or run
-`xattr -dr com.apple.quarantine /Applications/Strata.app` once.
+Download Strata from the [**Releases**](https://github.com/DRAZY/strata/releases)
+page. 1.0.0-rc.1 is a release candidate, listed there as a pre-release.
 
-**Windows (x64).** Build from source (below), or take the `strata.exe`
-artifact from a CI run. Add its folder to `PATH` to use the `strata` command.
+| Platform | File |
+|---|---|
+| macOS 11 or later, any Mac | `Strata-<version>-universal.dmg` |
+| macOS, Apple silicon only (smaller) | `Strata-<version>-arm64.dmg` |
+| Windows x64 | `Strata-<version>-windows-x64.zip` |
+
+**macOS.** Open the DMG and drag Strata to Applications. Releases are signed
+and notarized by Apple, so Strata opens normally (macOS asks once whether to
+open an app downloaded from the internet). To use Strata from a terminal,
+choose **Strata ▸ Install Shell Command…**; see [Command line](#command-line).
+
+**Windows.** Unzip the folder anywhere and run `Strata.exe`. It isn't
+code-signed yet, so the first run shows a SmartScreen warning: click **More
+info ▸ Run anyway**. Add the folder to `PATH` to use the `strata` command. The
+Windows build is part of the release candidate but hasn't been tested on real
+hardware yet; reports are very welcome.
 
 **Linux.** The code builds for Linux, but it isn't an officially supported
-platform yet.
+platform yet; build it from source (below).
 
-To use Strata from a terminal on macOS, choose **Strata ▸ Install Shell
-Command…**. See [Command line](#command-line).
+**Checksums.** Every file has a `.sha256` next to it. Download both into the
+same folder, then:
+
+```sh
+shasum -a 256 -c Strata-<version>-universal.dmg.sha256      # macOS: prints "OK"
+```
+
+```powershell
+Get-FileHash Strata-<version>-windows-x64.zip -Algorithm SHA256   # Windows: compare with the .sha256 file
+```
 
 ## Build from source
 
@@ -488,8 +531,10 @@ Reference; tests keep the two in step with `Settings`.
 
 ## Privacy
 
-Strata makes no network connections of its own: no telemetry, no update
-checks, no downloads, and Markdown images aren't fetched. A link you click (in
+Strata sends no telemetry. The only connections it makes on its own are to
+GitHub, to check for and download updates, and only if you allow it (it asks
+on the first launch; Help ▸ Check for Updates… checks by hand). Markdown
+images aren't fetched. A link you click (in
 the Markdown preview, the manual, or Help ▸ Report a Problem…) opens in your
 browser; only `http`, `https` and `mailto` links leave Strata (other local
 files are shown in the file manager, other schemes are refused; see
@@ -511,8 +556,11 @@ clean-room rules in [`docs/CLEAN_ROOM.md`](docs/CLEAN_ROOM.md).
 `cargo test` runs editor-core unit tests plus headless egui tests that drive
 the real widget and the whole window with simulated keys and clicks.
 
-CI (`.github/workflows/build.yml`) builds release binaries on an Apple silicon
-macOS runner and a Windows x64 runner.
+CI (`.github/workflows/build.yml`) runs clippy and the tests on macOS (Apple
+silicon) and Windows (x64), builds on Linux, and audits dependencies; tagged
+releases are built, notarized and drafted by `.github/workflows/release.yml`
+(see [RELEASING.md](RELEASING.md)). [CONTRIBUTING.md](CONTRIBUTING.md) has the
+details.
 
 **Logs and crash reports** (nothing is ever uploaded):
 

@@ -5,6 +5,11 @@
 //!
 //! Also records the git commit being built (`STRATA_GIT_HASH`, for crash
 //! reports). Packagers building outside git can set `STRATA_GIT_HASH` themselves.
+//!
+//! For Windows targets it embeds the app icon (`assets/strata.ico`, made from
+//! `assets/icon-app.png`) and the version details Explorer shows into
+//! Strata.exe: rc.exe with MSVC; when cross-building with mingw, winresource
+//! picks `x86_64-w64-mingw32-windres` and `-ar` by the target.
 
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -14,6 +19,7 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/syntaxes");
     println!("cargo:rerun-if-changed=build.rs");
     git_hash();
+    windows_resources();
     let out = std::env::var("OUT_DIR").unwrap();
     let out = Path::new(&out);
     // This script also reruns when the commit changes; the slow part only
@@ -89,4 +95,29 @@ fn git_hash() {
         }
     }
     println!("cargo:rustc-env=STRATA_GIT_HASH={hash}");
+}
+
+/// Icon and version info for Strata.exe (Windows targets only).
+fn windows_resources() {
+    println!("cargo:rerun-if-changed=assets/strata.ico");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon("assets/strata.ico")
+        .set("ProductName", "Strata")
+        .set("FileDescription", "Strata")
+        .set("CompanyName", "Strata contributors")
+        .set("LegalCopyright", "Copyright 2026 Strata contributors. MIT License.")
+        .set("OriginalFilename", "Strata.exe")
+        .set("InternalName", "strata");
+    if let Err(e) = res.compile() {
+        // A cross-check without the resource compiler (clippy for the MSVC
+        // target on a Mac, say) still checks the code; real builds must have it.
+        let cross_check = std::env::var("HOST").ok() != std::env::var("TARGET").ok() && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+        if !cross_check {
+            panic!("compile the Windows resources (icon, version info): {e}");
+        }
+        println!("cargo:warning=Strata.exe gets no icon or version info: {e}");
+    }
 }

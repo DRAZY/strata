@@ -1,0 +1,202 @@
+# Release: push a tag like v1.0.0 or v1.0.0-rc.1 (matching Cargo.toml's
+# version) and this builds the macOS DMGs (signed and notarized) and the
+# Windows zip, then opens a *draft* GitHub Release with them and the tag's
+# CHANGELOG.md section. Check the draft and publish it by hand.
+# Secrets and one-time setup: RELEASING.md.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  meta:
+    name: Check the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match Cargo.toml's version $version"
+            exit 1
+          fi
+          grep -q "^## \[$version\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # -rc.1, -beta.2 and other pre-release tags are published as prereleases.
+          case "$version" in *-*) echo "prerelease=true" ;; *) echo "prerelease=false" ;; esac >> "$GITHUB_OUTPUT"
+
+  macos:
+    name: macOS DMGs
+    needs: meta
+    runs-on: macos-14
+    env:
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # CFBundleVersion is the commit count
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: ImageMagick (the app icon)
+        run: brew list imagemagick >/dev/null 2>&1 || brew install imagemagick
+
+      - name: Signing keychain and notarization credentials
+        if: env.MACOS_CERT_P12 != ''
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/strata-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -f pkcs12 -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          # Searched first, so codesign and the packaging script find the identity.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)
+          [ -n "$IDENTITY" ] || { echo "::error::No Developer ID Application identity in MACOS_CERT_P12"; exit 1; }
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          xcrun notarytool store-credentials strata-notary \
+            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
+            --keychain "$KEYCHAIN"
+          rm -f "$RUNNER_TEMP/AuthKey.p8"
+          {
+            echo "SIGN_IDENTITY=$IDENTITY"
+            echo "NOTARIZE=1"
+            echo "NOTARY_KEYCHAIN=$KEYCHAIN"
+          } >> "$GITHUB_ENV"
+
+      - name: Without signing secrets
+        if: env.MACOS_CERT_P12 == ''
+        run: echo "::warning::MACOS_CERT_P12 isn't set; building ad-hoc signed, un-notarized DMGs (not for distribution)"
+
+      - name: Universal DMG
+        run: ARCH=universal scripts/package-macos.sh
+      - name: Apple silicon DMG
+        run: ARCH=arm64 scripts/package-macos.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            dist/*.dmg
+            dist/*.app.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+      - name: Remove the signing keychain
+        if: always()
+        run: |
+          if [ -n "${NOTARY_KEYCHAIN:-}" ]; then security delete-keychain "$NOTARY_KEYCHAIN" || true; fi
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/AuthKey.p8"
+
+  windows:
+    name: Windows zip
+    needs: meta
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --no-default-features
+      - name: Strata-<version>-windows-x64.zip
+        shell: pwsh
+        run: |
+          $name = "Strata-${{ needs.meta.outputs.version }}-windows-x64"
+          $stage = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Force -Path $stage, dist | Out-Null
+          Copy-Item target/release/strata.exe (Join-Path $stage "Strata.exe")
+          Copy-Item LICENSE (Join-Path $stage "LICENSE.txt")
+          Copy-Item README.md (Join-Path $stage "README.md")
+          Compress-Archive -Path $stage -DestinationPath "dist/$name.zip" -CompressionLevel Optimal
+          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          # The same format as shasum -a 256, so `shasum -a 256 -c` reads it.
+          [IO.File]::WriteAllText("dist/$name.zip.sha256", "$hash  $name.zip`n")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Draft the GitHub Release
+    needs: [meta, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # ─── PLACEHOLDER: Generate signed update manifest ──────────────────
+      # Generate signed update manifest (scripts/make-update-manifest.sh,
+      # secret STRATA_UPDATE_KEY): writes dist/latest.json, ed25519-signed,
+      # for the built-in updater (docs/UPDATES.md). To be wired in when the
+      # updater lands; until then this step only leaves a note in the log.
+      - name: Generate signed update manifest (placeholder)
+        env:
+          STRATA_UPDATE_KEY: ${{ secrets.STRATA_UPDATE_KEY }}
+        run: |
+          if [ -x scripts/make-update-manifest.sh ]; then
+            echo "::notice::scripts/make-update-manifest.sh exists but isn't wired into release.yml yet"
+          else
+            echo "::notice::No update manifest yet (scripts/make-update-manifest.sh)"
+          fi
+      # ───────────────────────────────────────────────────────────────────
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          v="${{ needs.meta.outputs.version }}"
+          awk -v v="$v" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on && /^\[[^]]+\]: / { next }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          {
+            echo
+            echo "### Downloads"
+            echo
+            echo "- **macOS (any Mac):** \`Strata-$v-universal.dmg\`"
+            echo "- **macOS (Apple silicon only, smaller):** \`Strata-$v-arm64.dmg\`"
+            echo "- **Windows (x64):** \`Strata-$v-windows-x64.zip\`"
+            echo
+            echo "Each file has a \`.sha256\` next to it: \`shasum -a 256 -c <file>.sha256\` (macOS) or \`Get-FileHash <file>\` (Windows)."
+          } >> notes.md
+          cat notes.md
+          ls -l dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: ${{ needs.meta.outputs.prerelease == 'true' }}
+          name: Strata ${{ needs.meta.outputs.version }}
+          body_path: notes.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.dmg
+            dist/*.app.zip
+            dist/*-windows-x64.zip
+            dist/*.sha256
