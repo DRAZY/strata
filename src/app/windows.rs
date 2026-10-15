@@ -1256,4 +1256,19 @@ mod tests {
         assert_eq!(Windows::new(None).emergency_save(), Rescue::Nothing, "nothing unsaved");
         std::fs::remove_dir_all(config).ok();
     }
+
+    #[test]
+    fn syntax_settings_reach_every_window() {
+        let dir = temp_dir("syntax-settings");
+        std::fs::write(dir.join("a.yml"), "a: 1\n").unwrap();
+        let ctx = context();
+        let mut w = Windows::new(None);
+        w.open_new_window(0).unwrap();
+        w.slots[0].app.open_path(dir.join("a.yml"), false);
+        w.slots[1].app.settings.syntax_settings.insert("yaml".into(), crate::doc_settings::Layer { tab_size: Some(6), ..Default::default() });
+        pass(&mut w, &ctx, 1, vec![], false);
+        pass(&mut w, &ctx, 0, vec![], false);
+        assert_eq!(w.slots[0].app.docs[0].editor.tab_width, 6);
+        std::fs::remove_dir_all(dir).ok();
+    }
 }

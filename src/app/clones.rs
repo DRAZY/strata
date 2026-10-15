@@ -97,6 +97,7 @@ impl StrataApp {
         doc.conflict = src.conflict;
         doc.deleted = src.deleted;
         doc.wrap = src.wrap;
+        doc.local = src.local.clone();
         doc.title = src.title.clone();
         doc.git_changes = src.git_changes.clone();
         doc.view_group = Some(group);

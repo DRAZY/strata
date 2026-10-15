@@ -142,6 +142,8 @@ pub struct StrataApp {
     git_marks_on: bool,
     /// The window title last sent.
     last_title: String,
+    /// `.editorconfig` files and the settings the tabs were resolved against.
+    doc_cfg: doc_settings::State,
 }
 
 mod autosave;
@@ -152,6 +154,7 @@ mod compare_ui;
 mod completion;
 mod context_menus;
 mod diagnostics;
+mod doc_settings;
 mod features;
 mod find_options;
 #[cfg(test)]
@@ -293,6 +296,7 @@ impl StrataApp {
             menus_stale: true,
             git_marks_on: true,
             last_title: String::new(),
+            doc_cfg: Default::default(),
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -332,8 +336,7 @@ impl StrataApp {
     /// Is word wrap on for tab `i`?
     fn wraps(&self, i: usize) -> bool {
         let d = &self.docs[i];
-        let prose = matches!(d.highlighter.syntax_name(), "Markdown" | "MultiMarkdown" | "Plain Text" | "reStructuredText" | "Textile" | "LaTeX");
-        d.can_wrap() && d.wrap.unwrap_or((self.settings.word_wrap || prose) && d.large.is_none())
+        d.can_wrap() && d.wrap.unwrap_or_else(|| self.wraps_by_default(i))
     }
 
     /// Use the macOS menu bar. Must run on the main thread (not in tests).
@@ -463,7 +466,6 @@ impl StrataApp {
         if !preview {
             self.remember_file(&path);
         }
-        let guessed = if self.settings.detect_indentation { doc.editor.guess_indentation() } else { None };
         // Replace an earlier preview, or a blank untitled tab, in the focused pane.
         let g = self.focus_group;
         let shown = self.group_active(g);
@@ -479,12 +481,8 @@ impl StrataApp {
         } else {
             self.push_doc(doc);
         }
-        // Follow the file's own indentation (tabs vs spaces, width).
-        if let Some((spaces, width)) = guessed {
-            let e = &mut self.docs[self.active].editor;
-            e.use_spaces = spaces;
-            e.tab_width = width;
-        }
+        // Its indentation (detected, or from .editorconfig) and settings, at once.
+        self.doc_settings(self.active);
     }
 
     /// Open (if needed) and select a find-in-files hit.
@@ -590,9 +588,10 @@ impl StrataApp {
         if !self.confirm_overwrite(i, &path) {
             return false;
         }
-        self.before_save(i);
+        self.before_save(i, &path);
         match self.docs[i].write_to(path.clone()) {
             Ok(()) => {
+                self.doc_cfg.cache.saved(&path);
                 self.git.invalidate(&path);
                 self.docs[i].git_version = None;
                 self.status = format!("Saved {}", path.display());
@@ -731,10 +730,7 @@ impl StrataApp {
 
     /// The default indentation, pushed to every open file (status bar, settings file).
     fn apply_indentation(&mut self) {
-        for d in &mut self.docs {
-            d.editor.tab_width = self.settings.tab_size;
-            d.editor.use_spaces = self.settings.translate_tabs_to_spaces;
-        }
+        self.reset_tab_indentation();
     }
 
     /// settings.json edited outside Strata: pick it up.
@@ -1394,6 +1390,11 @@ impl StrataApp {
         match id {
             "tx_uuid" => return self.insert_at_cursors(&uuid_v4()),
             "tx_date" => return self.insert_at_cursors(&now_string()),
+            "wrap_paragraph" => {
+                let width = wrap_paragraph_width(self.doc_settings(self.active));
+                self.docs[self.active].editor.wrap_paragraph(width);
+                return self.docs[self.active].view.reveal();
+            }
             _ => {}
         }
         let d = &mut self.docs[self.active];
@@ -1480,7 +1481,6 @@ impl StrataApp {
             "expand_word" => e.expand_to_word(),
             "expand_paragraph" => e.expand_to_paragraph(),
             "expand_indentation" => e.expand_to_indentation(),
-            "wrap_paragraph" => e.wrap_paragraph(wrap_paragraph_width(&self.settings)),
             "reindent" => e.reindent(),
             "to_spaces" => e.convert_indentation(true),
             "to_tabs" => e.convert_indentation(false),
@@ -2370,7 +2370,9 @@ impl StrataApp {
                     // Like Sublime, this shows and changes the current file's indentation.
                     let (old_tab, old_spaces) = (self.docs[self.active].editor.tab_width, self.docs[self.active].editor.use_spaces);
                     let (mut tab, mut spaces) = (old_tab, old_spaces);
+                    let source = self.indentation_source();
                     ui.menu_button(format!("{}: {tab}", if spaces { "Spaces" } else { "Tab Size" }), |ui| {
+                        ui.label(egui::RichText::new(source).weak());
                         ui.checkbox(&mut spaces, "Indent using spaces");
                         ui.separator();
                         for n in [2, 3, 4, 8] {
@@ -2518,20 +2520,23 @@ impl eframe::App for StrataApp {
             }
             ctx.request_repaint_after(std::time::Duration::from_secs(2));
         }
+        self.refresh_doc_settings(now);
         let minimap = self.minimap_shown();
         for i in 0..self.docs.len() {
             let wrap = self.wraps(i);
             let d = &mut self.docs[i];
             d.view.wrap = wrap;
-            d.view.wrap_column = self.settings.wrap_column;
+            // Per file: settings.json, the syntax's settings, .editorconfig.
+            let local = &d.local.effective;
+            d.view.wrap_column = local.wrap_column;
             d.view.opacity = self.settings.window_opacity.clamp(0.3, 1.0);
             let s = &self.settings;
-            d.view.show_whitespace = match s.draw_white_space.as_str() {
+            d.view.show_whitespace = match local.draw_white_space.as_str() {
                 "all" => crate::view::Whitespace::All,
                 "none" => crate::view::Whitespace::None,
                 _ => crate::view::Whitespace::Selection,
             };
-            d.view.highlight_trailing_whitespace = s.highlight_trailing_whitespace;
+            d.view.highlight_trailing_whitespace = local.highlight_trailing_whitespace;
             d.view.bracket_colors = s.bracket_colors && d.large.is_none();
             d.view.color_swatches = s.color_swatches;
             d.view.sticky_scroll = s.sticky_scroll && d.large.is_none();
@@ -2552,7 +2557,7 @@ impl eframe::App for StrataApp {
                 "solid" => crate::view::CaretBlink::Solid,
                 _ => crate::view::CaretBlink::Blink,
             };
-            d.view.rulers.clone_from(&self.settings.rulers);
+            d.view.rulers.clone_from(&d.local.effective.rulers);
             if d.preview && d.editor.version() > 0 {
                 d.preview = false;
             }
@@ -2648,7 +2653,7 @@ impl eframe::App for StrataApp {
         }
 
         for d in &mut self.docs {
-            (d.editor.auto_indent, d.editor.smart_indent) = (self.settings.auto_indent, self.settings.smart_indent);
+            (d.editor.auto_indent, d.editor.smart_indent) = (d.local.effective.auto_indent, d.local.effective.smart_indent);
             d.editor.indent_rules = crate::indent::rules_for(d.highlighter.syntax_name());
         }
         if self.sidebar.modal_open() || self.print.is_open() {
@@ -2662,8 +2667,9 @@ impl eframe::App for StrataApp {
         self.compare_actions(ctx);
         {
             let d = &mut self.docs[self.active];
-            if self.settings.auto_complete || self.completion.is_open() {
-                self.completion.after_edit(d, typed_word && self.settings.auto_complete, &self.snippets.lib);
+            let auto = d.local.effective.auto_complete;
+            if auto || self.completion.is_open() {
+                self.completion.after_edit(d, typed_word && auto, &self.snippets.lib);
             }
             self.completion.show(ctx, d);
         }
@@ -2739,7 +2745,7 @@ fn select_on_line(d: &mut Document, line: usize, cols: std::ops::Range<usize>) {
 
 /// Wrap Paragraph at Ruler's column: the first ruler, like Sublime, else
 /// `wrap_width` (80 when that is 0).
-fn wrap_paragraph_width(s: &Settings) -> usize {
+fn wrap_paragraph_width(s: &crate::doc_settings::Effective) -> usize {
     s.rulers.first().copied().filter(|&r| r > 0).unwrap_or(if s.wrap_width > 0 { s.wrap_width } else { 80 })
 }
 

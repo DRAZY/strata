@@ -14,6 +14,7 @@ mod compare;
 mod ctxmenu;
 mod decor;
 mod dev;
+mod doc_settings;
 mod document;
 mod editor;
 mod editorconfig;

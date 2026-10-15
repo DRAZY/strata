@@ -250,10 +250,6 @@ impl Properties {
         props
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.pairs.is_empty()
-    }
-
     fn get(&self, key: &str) -> Option<&str> {
         self.pairs.get(key).map(String::as_str)
     }
@@ -516,7 +512,7 @@ mod tests {
         assert_eq!(p.charset(), Some(Encoding::UTF8));
         let p = props(&[("/p", "[*]\ntrim_trailing_whitespace = true\n"), ("/p/q", "[*]\ntrim_trailing_whitespace = UNSET\n")], "/p/q/a");
         assert_eq!(p.trim_trailing_whitespace(), None);
-        assert!(p.is_empty());
+        assert!(p.pairs.is_empty());
     }
 
     #[test]

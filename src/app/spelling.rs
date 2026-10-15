@@ -49,11 +49,13 @@ impl StrataApp {
 
     /// Each frame: underline misspellings in the lines each pane shows.
     pub(super) fn update_spelling(&mut self, ctx: &egui::Context) {
-        if !self.settings.spell_check {
-            for d in &mut self.docs {
-                d.highlighter.set_prose_selector(None);
-                d.view.spell.clear();
-            }
+        let off: Vec<usize> = (0..self.docs.len()).filter(|&i| !self.spell_on(i)).collect();
+        for &i in &off {
+            let d = &mut self.docs[i];
+            d.highlighter.set_prose_selector(None);
+            d.view.spell.clear();
+        }
+        if off.len() == self.docs.len() {
             return;
         }
         let (selector, dict, problem) = self.with_speller(|sp| {
@@ -62,7 +64,7 @@ impl StrataApp {
             (sp.selector(), dict.ok().flatten(), problem)
         });
         self.report_once(problem);
-        let shown: Vec<usize> = (0..self.layout.groups()).filter_map(|g| self.group_active(g)).collect();
+        let shown: Vec<usize> = (0..self.layout.groups()).filter_map(|g| self.group_active(g)).filter(|&i| self.spell_on(i)).collect();
         for i in shown {
             let d = &mut self.docs[i];
             d.highlighter.set_prose_selector(selector.clone());
@@ -78,9 +80,9 @@ impl StrataApp {
     pub(super) fn run_spelling(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::ToggleSpellCheck => {
-                self.settings.spell_check = !self.settings.spell_check;
+                let on = self.toggle_spell_check();
                 self.persist_settings();
-                self.status = format!("Spell check {}", if self.settings.spell_check { "on" } else { "off" });
+                self.status = format!("Spell check {}", if on { "on" } else { "off" });
             }
             Cmd::NextMisspelling => self.step_misspelling(true),
             Cmd::PrevMisspelling => self.step_misspelling(false),
@@ -112,7 +114,7 @@ impl StrataApp {
     /// View ▸ Next / Prev Misspelling: select the next misspelled word
     /// after the selection (or before it), wrapping around the file.
     fn step_misspelling(&mut self, forward: bool) {
-        if !self.settings.spell_check {
+        if !self.spell_on(self.active) {
             self.status = format!("Spell check is off ({} turns it on)", Cmd::ToggleSpellCheck.shortcut_label().unwrap_or_else(|| "View ▸ Spell Check".into()));
             return;
         }
@@ -175,7 +177,7 @@ impl StrataApp {
     /// Suggestions, Ignore Word and Add Word for a misspelled word under
     /// the cursor (empty otherwise): the top of the editor's context menu.
     pub(super) fn spelling_items(&self, i: usize) -> Vec<Item> {
-        if !self.settings.spell_check || i != self.active || self.docs[i].editor.read_only {
+        if !self.spell_on(i) || i != self.active || self.docs[i].editor.read_only {
             return Vec::new();
         }
         let Some((range, word)) = self.misspelling_at_cursor(i) else { return Vec::new() };
@@ -199,9 +201,9 @@ impl StrataApp {
             .map(|&(name, label)| Item::new(format!("{name} — {label}"), Act::Named(format!("{DICTIONARY}{name}"))).checked(self.settings.dictionary == name))
             .collect();
         vec![
-            Item::cmd("Spell Check", Cmd::ToggleSpellCheck).checked(self.settings.spell_check),
-            Item::cmd("Next Misspelling", Cmd::NextMisspelling).enabled(self.settings.spell_check),
-            Item::cmd("Prev Misspelling", Cmd::PrevMisspelling).enabled(self.settings.spell_check),
+            Item::cmd("Spell Check", Cmd::ToggleSpellCheck).checked(self.spell_on(self.active)),
+            Item::cmd("Next Misspelling", Cmd::NextMisspelling).enabled(self.spell_on(self.active)),
+            Item::cmd("Prev Misspelling", Cmd::PrevMisspelling).enabled(self.spell_on(self.active)),
             Item::Sub("Dictionary".into(), dictionaries),
         ]
     }
