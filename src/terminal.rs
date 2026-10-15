@@ -561,9 +561,12 @@ fn hang_up(pid: u32) {
         fn kill(pid: i32, sig: i32) -> i32;
     }
     const SIGHUP: i32 = 1;
-    // The whole process group: the shell and the jobs it started.
+    // The whole process group: the shell and the jobs it started. And the
+    // shell itself, in case it hasn't made its own group yet (closed right
+    // after opening).
     unsafe {
         kill(-(pid as i32), SIGHUP);
+        kill(pid as i32, SIGHUP);
     }
 }
 
