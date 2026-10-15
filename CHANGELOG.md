@@ -6,6 +6,25 @@ All notable changes to Strata are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-15
+
+### Changed
+
+- Update checks: with automatic checks on, Strata now looks when it opens (if
+  the last check was over an hour ago) and every four hours while it stays
+  open, so a new release shows up during a working session. It's still a small
+  notice in the corner, never a pop-up.
+
+### Fixed
+
+- Windows: crash reports and Help ▸ Report a Problem hide your user folder
+  (`C:\Users\<name>`) like they do on macOS.
+- Windows: Copy Relative Path uses `\` separators.
+- Closing a window right after opening its terminal no longer leaves the
+  shell running in the background.
+- Updated the cryptography libraries that check update signatures
+  (ed25519-dalek 3, sha2 0.11).
+
 ## [1.0.0] - 2026-10-15
 
 Strata 1.0, the first stable release: a fast, open-source code and text editor
@@ -153,6 +172,7 @@ The first public release candidate. Everything below is new.
   Indic and other shaped scripts) and right-to-left text are not fully laid
   out.
 
-[Unreleased]: https://github.com/DRAZY/strata/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/DRAZY/strata/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/DRAZY/strata/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/DRAZY/strata/compare/v1.0.0-rc.1...v1.0.0
 [1.0.0-rc.1]: https://github.com/DRAZY/strata/releases/tag/v1.0.0-rc.1
