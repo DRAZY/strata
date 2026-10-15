@@ -145,13 +145,23 @@ fn sub(label: &str, items: Vec<Item>) -> Item {
 
 const SEP: fn() -> Item = || Item::Separator;
 
+/// View ▸ Interface Size (also under Font): the named sizes, the current
+/// one if it's none of them, and a point larger or smaller.
+fn ui_size_items(s: &crate::session::Settings) -> Vec<Item> {
+    let current = crate::fonts::ui_size(s.ui_font_size);
+    let mut items: Vec<Item> = crate::fonts::UI_SIZE_PRESETS.iter().map(|&(name, pt)| Item::new(format!("{name} ({pt} pt)"), Act::Named(format!("uisize:{pt}"))).checked(current == pt)).collect();
+    if !crate::fonts::UI_SIZE_PRESETS.iter().any(|&(_, pt)| pt == current) {
+        items.push(Item::new(format!("Custom ({current} pt)"), Act::Named(format!("uisize:{current}"))).checked(true));
+    }
+    items.extend([SEP(), c("Larger", Cmd::UiLarger), c("Smaller", Cmd::UiSmaller)]);
+    items
+}
+
 /// Settings, color scheme and fonts: under the app menu on macOS, the
 /// Preferences menu elsewhere.
 fn settings_owned(app: &StrataApp) -> Vec<Item> {
     let s = &app.settings;
     let face = |name: &str| if name.is_empty() { "Default".to_owned() } else { name.to_owned() };
-    let mut ui_sizes: Vec<Item> = (10..=18).map(|n| Item::new(format!("{n} pt"), Act::Named(format!("uisize:{n}"))).checked(s.ui_font_size == n as f32)).collect();
-    ui_sizes.extend([SEP(), c("Larger", Cmd::UiLarger), c("Smaller", Cmd::UiSmaller)]);
     let plain_spacing = s.line_padding_top == 0.0 && s.line_padding_bottom == 0.0;
     let spacing: Vec<Item> = [("Compact", 1.0), ("Comfortable", 1.2), ("Relaxed", 1.4), ("Spacious", 1.6)]
         .into_iter()
@@ -174,7 +184,7 @@ fn settings_owned(app: &StrataApp) -> Vec<Item> {
                 sub("Line Spacing", spacing),
                 SEP(),
                 Item::new(format!("Interface Font: {}…", face(&s.ui_font_face)), Act::Cmd(Cmd::SelectUiFont)),
-                sub("Interface Size", ui_sizes),
+                sub("Interface Size", ui_size_items(s)),
             ],
         ),
     ]
@@ -463,6 +473,7 @@ impl StrataApp {
                 c("Toggle Full Screen", Cmd::Fullscreen).checked(self.fullscreen),
                 c("Toggle Distraction Free", Cmd::DistractionFree).checked(self.distraction.is_some()),
                 c("Markdown Preview", Cmd::ToggleMarkdownPreview).checked(self.settings.markdown_preview),
+                sub("Interface Size", ui_size_items(&self.settings)),
                 SEP(),
                 sub(
                     "Layout",
@@ -851,7 +862,7 @@ impl StrataApp {
                     self.persist_settings();
                 }
                 n if n.starts_with("uisize:") => {
-                    self.settings.ui_font_size = n[7..].parse().unwrap_or(13.0);
+                    self.settings.ui_font_size = crate::fonts::ui_size(n[7..].parse().unwrap_or(crate::fonts::DEFAULT_UI_SIZE));
                     self.persist_settings();
                 }
                 n if n.starts_with("wrapcol:") => {

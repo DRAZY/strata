@@ -157,7 +157,7 @@ impl StrataApp {
         if ui.is_none() && !self.settings.ui_font_face.is_empty() {
             errors.push(format!("font \"{}\" not found", self.settings.ui_font_face));
         }
-        crate::fonts::apply_ui_size(ctx, self.settings.ui_font_size.clamp(9.0, 24.0));
+        crate::fonts::apply_ui_size(ctx, self.ui_size());
         if !errors.is_empty() {
             self.status = format!("Fonts: {}", errors.join("; "));
         }

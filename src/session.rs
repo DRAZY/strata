@@ -145,7 +145,7 @@ impl Default for Settings {
             font_size: 14.0,
             font_face: String::new(),
             ui_font_face: String::new(),
-            ui_font_size: 13.0,
+            ui_font_size: crate::fonts::DEFAULT_UI_SIZE,
             caret_style: "line".into(),
             caret_blink: "blink".into(),
             caret_width: 2.0,

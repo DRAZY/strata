@@ -65,7 +65,8 @@ impl StrataApp {
             .resizable(false)
             .title_bar(false)
             .show(ctx, |ui| {
-                ui.set_max_width(380.0);
+                let size = egui::TextStyle::Body.resolve(ui.style()).size;
+                ui.set_max_width((size * 28.0).max(380.0));
                 ui.strong("Strata quit unexpectedly last time.");
                 ui.label(crash.summary());
                 ui.add_space(4.0);

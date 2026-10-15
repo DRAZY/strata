@@ -16,8 +16,11 @@ use std::ops::Range;
 use std::sync::Arc;
 
 /// The toolbar row, then a row naming each side.
-const TOOLBAR_H: f32 = 28.0;
-const HEADER_H: f32 = TOOLBAR_H + 22.0;
+/// The header's text size (a point under the interface size) and its two rows' heights.
+fn header_metrics(ui: &Ui) -> (f32, f32, f32) {
+    let text = crate::fonts::secondary_size(egui::TextStyle::Body.resolve(ui.style()).size);
+    (text, (text + 16.0).max(28.0), (text + 10.0).max(22.0))
+}
 const OVERVIEW_W: f32 = 14.0;
 const DIVIDER_W: f32 = 6.0;
 /// Re-diff after typing pauses this long, unless diffing is cheap.
@@ -261,7 +264,8 @@ impl Compare {
         let now = ui.input(|i| i.time);
         let full = ui.available_rect_before_wrap();
         ui.allocate_rect(full, Sense::hover());
-        let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER_H));
+        let (_, toolbar_h, names_h) = header_metrics(ui);
+        let header = Rect::from_min_size(full.min, vec2(full.width(), toolbar_h + names_h));
         let body = Rect::from_min_max(pos2(full.left(), header.bottom()), full.max);
         let resp = ui.interact(body, id, Sense::click_and_drag());
         if std::mem::take(&mut self.wants_focus) || resp.clicked() || resp.drag_started() {
@@ -448,8 +452,10 @@ impl Compare {
         let (bg, fg) = (hl.background(), hl.foreground());
         ui.painter().rect_filled(rect, 0.0, blend(bg, fg, 0.05));
         ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, blend(bg, fg, 0.12)));
-        let small = FontId::proportional(12.0);
-        let names = Rect::from_min_max(pos2(rect.left(), rect.top() + TOOLBAR_H), rect.max);
+        let (text_size, toolbar_h, _) = header_metrics(ui);
+        let small = FontId::proportional(text_size);
+        let weak = ui.visuals().weak_text_color();
+        let names = Rect::from_min_max(pos2(rect.left(), rect.top() + toolbar_h), rect.max);
         ui.painter().rect_filled(names, 0.0, blend(bg, fg, 0.025));
         ui.painter().hline(rect.x_range(), names.top() + 0.5, Stroke::new(1.0, blend(bg, fg, 0.08)));
         let label = |ui: &Ui, r: Rect, text: &str, color: Color32| {
@@ -460,7 +466,7 @@ impl Compare {
             let g = ui.fonts_mut(|f| f.layout_job(job));
             ui.painter().galley(pos2(r.left() + 8.0, names.center().y - g.size().y / 2.0), g, color);
         };
-        label(ui, fixed, &format!("{}  ·  read-only", self.base_name), fg.gamma_multiply(0.65));
+        label(ui, fixed, &format!("{}  ·  read-only", self.base_name), weak);
         label(ui, edit, &self.right_name, fg);
         let (n, removed, added) = self.stats();
         let summary = if n == 0 {
@@ -469,12 +475,12 @@ impl Compare {
             let at = self.current.map(|c| format!("{} of ", c + 1)).unwrap_or_default();
             format!("{at}{n} change{}  ·  −{removed}  +{added}", if n == 1 { "" } else { "s" })
         };
-        let bar = Rect::from_min_size(rect.min, vec2(rect.width(), TOOLBAR_H));
+        let bar = Rect::from_min_size(rect.min, vec2(rect.width(), toolbar_h));
         let mut actions = Vec::new();
-        ui.painter().text(pos2(bar.left() + 8.0, bar.center().y), Align2::LEFT_CENTER, &summary, small.clone(), fg.gamma_multiply(0.85));
+        ui.painter().text(pos2(bar.left() + 8.0, bar.center().y), Align2::LEFT_CENTER, &summary, small.clone(), fg);
         ui.scope_builder(egui::UiBuilder::new().max_rect(bar.shrink2(vec2(8.0, 3.0))).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            ui.style_mut().override_font_id = Some(FontId::proportional(11.5));
+            ui.style_mut().override_font_id = Some(small.clone());
             let mut ws = self.ignore_ws;
             if ui.checkbox(&mut ws, "Ignore whitespace").changed() {
                 actions.push(HeaderAction::IgnoreWhitespace);

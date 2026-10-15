@@ -277,7 +277,7 @@ impl StrataApp {
         let size = vec2((screen.width() - 80.0).clamp(320.0, 1040.0), (screen.height() - 90.0).clamp(240.0, 820.0));
         let title = help::page(self.help.page).map_or_else(String::new, |p| p.title());
         let hl = &self.docs[self.active].highlighter;
-        let look = Look { font_size: (self.settings.font_size + 1.0).clamp(11.0, 22.0), ui_size: self.settings.ui_font_size.clamp(9.0, 24.0), ids: [self.link.id("help-toolbar"), self.link.id("help-toc")] };
+        let look = Look { font_size: (self.settings.font_size.max(self.ui_size()) + 1.0).clamp(11.0, 25.0), ui_size: self.ui_size(), ids: [self.link.id("help-toolbar"), self.link.id("help-toc")] };
         let id = self.link.id("help-window");
         let help = &mut self.help;
         let mut status = None;
@@ -333,7 +333,7 @@ impl StrataApp {
             builder = builder.with_position(p);
         }
         let id = egui::ViewportId::from_hash_of(self.link.id("help-own-window"));
-        let look = Look { font_size: (self.settings.font_size + 1.0).clamp(11.0, 22.0), ui_size: self.settings.ui_font_size.clamp(9.0, 24.0), ids: [self.link.id("help-toolbar"), self.link.id("help-toc")] };
+        let look = Look { font_size: (self.settings.font_size.max(self.ui_size()) + 1.0).clamp(11.0, 25.0), ui_size: self.ui_size(), ids: [self.link.id("help-toolbar"), self.link.id("help-toc")] };
         let mut status = None;
         let mut closed = false;
         ctx.show_viewport_immediate(id, builder, |ui, _| {
@@ -383,7 +383,7 @@ fn contents(h: &mut HelpState, ui: &mut egui::Ui, hl: &crate::highlight::Highlig
     {
         let bg = hl.background();
         let fg = ui.visuals().text_color();
-        let dim = fg.gamma_multiply(0.6);
+        let dim = ui.visuals().weak_text_color();
         let accent = hl.accent();
         let panel = ui.visuals().panel_fill;
         let rule = ui.visuals().widgets.noninteractive.bg_stroke;
@@ -449,7 +449,7 @@ fn contents(h: &mut HelpState, ui: &mut egui::Ui, hl: &crate::highlight::Highlig
         });
 
         // ---- contents
-        let toc_width = (ui_size * 15.0).clamp(150.0, 220.0);
+        let toc_width = (ui_size * 15.0).clamp(170.0, 290.0);
         let mut goto: Option<&'static str> = None;
         egui::Panel::left(look.ids[1])
             .resizable(false)
@@ -462,20 +462,20 @@ fn contents(h: &mut HelpState, ui: &mut egui::Ui, hl: &crate::highlight::Highlig
                         if p.section != section {
                             section = p.section;
                             ui.add_space(if ui.min_rect().height() > 1.0 { 10.0 } else { 2.0 });
-                            ui.label(RichText::new(section.to_uppercase()).size(ui_size * 0.78).color(dim).strong());
+                            ui.label(RichText::new(section.to_uppercase()).size(crate::fonts::fine_size(ui_size)).color(dim).strong());
                             ui.add_space(2.0);
                         }
                         let current = p.id == h.page && !h.results;
-                        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ui_size + 12.0), Sense::click());
+                        // A title too long for the column wraps, and its row grows to fit.
+                        let galley = ui.painter().layout(p.title(), egui::FontId::proportional(ui_size), fg, ui.available_width() - 14.0);
+                        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), (galley.size().y + 10.0).max(ui_size + 12.0)), Sense::click());
                         if current || resp.hovered() {
                             ui.painter().rect_filled(rect, 4.0, if current { mix(panel, accent, 0.18) } else { mix(panel, fg, 0.06) });
                         }
                         if current {
                             ui.painter().rect_filled(egui::Rect::from_min_size(rect.min + vec2(0.0, 4.0), vec2(2.5, rect.height() - 8.0)), 1.0, accent);
                         }
-                        let color = if current { fg } else { fg.gamma_multiply(0.82) };
-                        let galley = ui.painter().layout(p.title(), egui::FontId::proportional(ui_size), color, rect.width() - 14.0);
-                        ui.painter().galley(egui::pos2(rect.left() + 9.0, rect.center().y - galley.size().y / 2.0), galley, color);
+                        ui.painter().galley(egui::pos2(rect.left() + 9.0, rect.center().y - galley.size().y / 2.0), galley, fg);
                         if resp.clicked() {
                             goto = Some(p.id);
                         }
@@ -517,7 +517,7 @@ fn contents(h: &mut HelpState, ui: &mut egui::Ui, hl: &crate::highlight::Highlig
                             let w = ui.available_width();
                             let title = if hit.slug.is_some() { format!("{}  ›  {}", hit.page_title, hit.heading) } else { hit.page_title.clone() };
                             let tg = ui.painter().layout(title, egui::FontId::proportional(ui_size + 1.5), accent, w - 16.0);
-                            let sg = ui.painter().layout(hit.snippet.clone(), egui::FontId::proportional(ui_size), fg.gamma_multiply(0.75), w - 16.0);
+                            let sg = ui.painter().layout(hit.snippet.clone(), egui::FontId::proportional(ui_size), fg, w - 16.0);
                             let h = tg.size().y + sg.size().y + 18.0;
                             let (rect, r) = ui.allocate_exact_size(vec2(w, h), Sense::click());
                             if r.hovered() {

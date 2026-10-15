@@ -45,6 +45,7 @@ pub fn mark_shown(dir: &Path) {
 enum Pick {
     Scheme(&'static str),
     FontSize(f32),
+    UiSize(f32),
     Cmd(Cmd),
     Close,
 }
@@ -91,8 +92,8 @@ impl StrataApp {
         let area = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("panes-rect", self.link.id("panes"))))).unwrap_or_else(|| ctx.content_rect());
         let hl = &self.docs[self.active].highlighter;
         let (bg, accent) = (hl.background(), hl.accent());
-        let size = self.settings.ui_font_size.clamp(9.0, 24.0);
-        let width = (size * 34.0).clamp(380.0, 520.0).min(area.width() - 24.0);
+        let size = self.ui_size();
+        let width = (size * 34.0).clamp(380.0, 620.0).min(area.width() - 24.0);
         let s = &self.settings;
         let mode = s.theme_mode.trim().to_ascii_lowercase();
         let current = if matches!(mode.as_str(), "auto" | "system") { "Auto" } else if self.active_theme() == "Strata Light" { "Light" } else if self.active_theme() == "Strata Dark" { "Dark" } else { "" };
@@ -107,7 +108,7 @@ impl StrataApp {
             .show(ctx, |ui| {
                 frame.show(ui, |ui| {
                     ui.set_width(width);
-                    let dim = ui.visuals().text_color().gamma_multiply(0.65);
+                    let dim = ui.visuals().weak_text_color();
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Welcome to Strata").size(size * 1.7).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -123,14 +124,17 @@ impl StrataApp {
                     ui.label(RichText::new("Color scheme").size(size).strong());
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        let tile = vec2(((width - 24.0) / 3.0).min(150.0), 74.0);
+                        let tile = vec2(((width - 24.0) / 3.0).min((size * 11.0).max(150.0)), 74.0);
                         for (label, _, _) in SCHEMES {
                             ui.vertical(|ui| {
                                 let r = scheme_tile(ui, label, tile, label == current, accent);
                                 if r.clicked() {
                                     pick = Some(Pick::Scheme(label));
                                 }
-                                ui.add_sized(vec2(tile.x, size + 6.0), egui::Label::new(RichText::new(if label == "Auto" { "Auto (follow system)" } else { label }).size(size * 0.92)));
+                                ui.allocate_ui_with_layout(vec2(tile.x, size + 6.0), egui::Layout::top_down(egui::Align::Center), |ui| {
+                                    ui.set_width(tile.x);
+                                    ui.label(RichText::new(if label == "Auto" { "Auto (follow system)" } else { label }).size(size));
+                                });
                             });
                         }
                     });
@@ -145,6 +149,16 @@ impl StrataApp {
                         ui.label(RichText::new(format!("{} pt", crate::settings_meta::fmt_number(font_size as f64))).size(size).monospace());
                         if ui.add_enabled(font_size < 48.0, egui::Button::new(RichText::new("+").size(size))).on_hover_text("Larger").clicked() {
                             pick = Some(Pick::FontSize(font_size + 1.0));
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("Interface size").size(size).strong());
+                        ui.add_space(8.0);
+                        for (name, pt) in crate::fonts::UI_SIZE_PRESETS {
+                            if ui.add(egui::Button::selectable(size == pt, RichText::new(name).size(size))).on_hover_text(format!("Menus, panels and dialogs at {pt} pt")).clicked() {
+                                pick = Some(Pick::UiSize(pt));
+                            }
                         }
                     });
                     ui.add_space(14.0);
@@ -166,7 +180,7 @@ impl StrataApp {
                     ui.add_space(6.0);
                     ui.horizontal_wrapped(|ui| {
                         let mut link = |ui: &mut egui::Ui, label: String, cmd: Cmd| {
-                            if ui.link(RichText::new(label).size(size * 0.95)).clicked() {
+                            if ui.link(RichText::new(label).size(size)).clicked() {
                                 pick = Some(Pick::Cmd(cmd));
                             }
                         };
@@ -179,12 +193,13 @@ impl StrataApp {
                         link(ui, palette, Cmd::CommandPalette);
                     });
                     ui.add_space(4.0);
-                    ui.label(RichText::new("Help ▸ Welcome shows this again.").size(size * 0.85).color(dim));
+                    ui.label(RichText::new("Help ▸ Welcome shows this again.").size(crate::fonts::secondary_size(size)).color(dim));
                 });
             });
         match pick {
             Some(Pick::Scheme(label)) => self.welcome_scheme(ctx, label),
             Some(Pick::FontSize(v)) => self.change_setting(ctx, "font_size", Value::from(v as f64), true),
+            Some(Pick::UiSize(v)) => self.change_setting(ctx, "ui_font_size", Value::from(v as f64), true),
             Some(Pick::Cmd(cmd)) => {
                 if matches!(cmd, Cmd::OpenFolder | Cmd::SettingsWindow | Cmd::GettingStarted | Cmd::KeyboardShortcuts | Cmd::CommandPalette) {
                     self.first_run.open = false;

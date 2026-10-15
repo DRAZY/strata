@@ -325,7 +325,9 @@ impl Palette {
         let mut picked = enter.then_some(self.selected);
 
         let screen = ctx.content_rect();
-        let width = (screen.width() - 32.0).min(620.0);
+        // Sizes follow the interface size (`ui_font_size`).
+        let base = egui::TextStyle::Body.resolve(&ctx.global_style()).size;
+        let width = (screen.width() - 32.0).min((base * 44.0).max(620.0));
         let visuals = ctx.global_style().visuals.clone();
         let fg = visuals.text_color();
         let accent = visuals.selection.bg_fill;
@@ -348,7 +350,7 @@ impl Palette {
                     let id = egui::Id::new("palette-query");
                     crate::fonts::ensure_cjk(ui.ctx(), &self.text);
                     let field = crate::ctxmenu::text_field(ui, id, &mut self.text, |ui, text| {
-                        ui.add(egui::TextEdit::singleline(text).id(id).hint_text(hint).font(FontId::proportional(16.0)).desired_width(f32::INFINITY).margin(vec2(8.0, 6.0)))
+                        ui.add(egui::TextEdit::singleline(text).id(id).hint_text(hint).font(FontId::proportional((base + 2.0).max(16.0))).desired_width(f32::INFINITY).margin(vec2(8.0, 6.0)))
                     });
                     if std::mem::take(&mut self.focus) {
                         field.request_focus();
@@ -362,7 +364,7 @@ impl Palette {
                         ui.label(egui::RichText::new(format!("Only the first {} files are indexed", crate::files::FILE_LIMIT)).small().weak());
                     }
                     ui.add_space(4.0);
-                    let row_h = 26.0;
+                    let row_h = (base + 14.0).max(26.0);
                     egui::ScrollArea::vertical().max_height(row_h * 12.0).auto_shrink([false, true]).show(ui, |ui| {
                         for (i, row) in self.rows.iter().take(MAX_ROWS).enumerate() {
                             crate::fonts::ensure_cjk(ui.ctx(), &row.label);
@@ -376,15 +378,15 @@ impl Palette {
                             } else if resp.hovered() {
                                 ui.painter().rect_filled(rect, 4.0, accent.gamma_multiply(0.4));
                             }
-                            let galley = ui.painter().layout_job(highlighted(&row.label, &row.hits, fg, accent_text(&visuals)));
+                            let galley = ui.painter().layout_job(highlighted(&row.label, &row.hits, base, fg, accent_text(&visuals)));
                             ui.painter().galley(egui::pos2(rect.left() + 8.0, rect.center().y - galley.size().y / 2.0), galley, fg);
                             if !row.detail.is_empty() {
                                 ui.painter().text(
                                     egui::pos2(rect.right() - 8.0, rect.center().y),
                                     egui::Align2::RIGHT_CENTER,
                                     &row.detail,
-                                    FontId::proportional(12.0),
-                                    fg.gamma_multiply(0.55),
+                                    FontId::proportional(crate::fonts::secondary_size(base)),
+                                    visuals.weak_text_color(),
                                 );
                             }
                             if resp.clicked() {
@@ -539,8 +541,8 @@ fn rank_rows<T>(
 }
 
 /// The label with matched chars bold and tinted.
-fn highlighted(label: &str, hits: &[usize], fg: Color32, accent: Color32) -> LayoutJob {
-    let font = FontId::proportional(14.0);
+fn highlighted(label: &str, hits: &[usize], size: f32, fg: Color32, accent: Color32) -> LayoutJob {
+    let font = FontId::proportional(size);
     let normal = TextFormat::simple(font.clone(), fg);
     let mut hit = TextFormat::simple(font, accent);
     hit.underline = Stroke::new(1.0, accent.gamma_multiply(0.5));

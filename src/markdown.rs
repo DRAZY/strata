@@ -563,7 +563,8 @@ impl Palette {
             bg,
             fg,
             strong: mix(fg, extreme, 0.4),
-            dim: mix(fg, bg, 0.35),
+            // Quotes, list markers, labels: softer than the text, still AA on the page and in code blocks.
+            dim: [bg, mix(bg, fg, 0.07)].iter().fold(mix(fg, bg, 0.35), |c, &on| highlight::themes::ensure_contrast(c, on, 4.6)),
             heading: scope("markup.heading").or_else(|| scope("keyword")).unwrap_or(accent),
             link: scope("markup.underline.link").or_else(|| scope("entity.name.function")).unwrap_or(accent),
             code_fg: scope("markup.raw.inline").or_else(|| scope("string")).unwrap_or(fg),

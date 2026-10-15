@@ -203,7 +203,7 @@ impl StrataApp {
     fn update_notice(&mut self, ctx: &egui::Context, status: &Status) {
         let mut act = None;
         let current = self.update.updater.current().clone();
-        let size = self.settings.ui_font_size.clamp(9.0, 24.0);
+        let size = self.ui_size();
         // Release notes, parsed once per version.
         if let Status::Available { release, .. } = status {
             let v = release.version().to_string();
@@ -239,7 +239,7 @@ impl StrataApp {
                     ui.add_space(2.0);
                     egui::Frame::group(ui.style()).show(ui, |ui| {
                         egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
-                            if let Some(url) = render.show(ui, hl, size * 0.85, blocks).clicked {
+                            if let Some(url) = render.show(ui, hl, crate::fonts::secondary_size(size), blocks).clicked {
                                 act = Some(Act::Link(url));
                             }
                         });
@@ -385,13 +385,15 @@ impl StrataApp {
 /// The corner card every update notice uses.
 fn notice_window(ctx: &egui::Context, id: egui::Id, body: impl FnOnce(&mut egui::Ui)) {
     egui::Window::new("Strata update").id(id).anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -40.0]).collapsible(false).resizable(false).title_bar(false).show(ctx, |ui| {
-        ui.set_max_width(400.0);
+        // Wide enough for the buttons on one row at larger interface sizes.
+        let size = egui::TextStyle::Body.resolve(ui.style()).size;
+        ui.set_max_width((size * 30.0).max(400.0));
         body(ui);
     });
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::commands::Cmd;
     use crate::update::{Manifest, Release};

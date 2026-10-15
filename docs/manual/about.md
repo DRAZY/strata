@@ -15,7 +15,7 @@ It opens in a blink, stays smooth on files of hundreds of megabytes, and gives y
 | Projects | A [side bar](projects.md) with one or more folders, and project files that remember your folders and layout. |
 | Built-in tools | A [terminal](terminal.md), [build systems](build.md) with clickable errors, a live [Markdown preview](markdown.md), and [file comparison](compare.md). |
 | Languages | Syntax highlighting for about 190 [languages](languages.md) and file formats, with symbols and smart indentation for many of them. |
-| Look and feel | 35 [color schemes](appearance.md#color-schemes) that can follow your system's light or dark mode, bundled coding fonts, and a minimap. |
+| Look and feel | 35 [color schemes](appearance.md#color-schemes) that can follow your system's light or dark mode, bundled coding fonts, a minimap, and an [interface size](appearance.md#interface-size) of its own (View ▸ Interface Size) for easier reading. |
 | Writing | [Spell check](editing.md#spell-check) for comments, strings and prose, with US and UK English dictionaries built in. |
 | Git | [Change bars](git.md) in the gutter for lines changed since the last commit, the current branch in the status bar, and Compare with HEAD. |
 | Files | [Hot exit](welcome.md#hot-exit), so quitting never asks and nothing is lost; 40 [encodings](encodings.md); atomic saves; [printing and PDF export](printing.md); and a [large-file mode](troubleshooting.md#very-large-files). |

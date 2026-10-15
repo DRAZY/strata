@@ -428,3 +428,33 @@ fn cjk_file_names_load_the_cjk_fonts() {
     assert!(loaded(&ctx), "the status message asked for them");
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// Interface text is legible in every bundled scheme: body text and
+/// secondary ("weak") text meet WCAG AA (4.5:1) on every surface they're
+/// drawn on, high-contrast schemes keep AAA body text, and field
+/// placeholders (drawn in the weak color) clear 3:1.
+#[test]
+fn interface_text_meets_wcag_aa_in_every_scheme() {
+    use crate::highlight::themes::contrast;
+    let mut failures = Vec::new();
+    let names = crate::highlight::theme_names();
+    assert!(names.len() > 20, "{names:?}");
+    for name in names {
+        let mut hl = crate::highlight::Highlighter::for_editor();
+        hl.set_theme(name);
+        let v = chrome_visuals(&hl);
+        let (text, weak) = (v.text_color(), v.weak_text_color());
+        let body_min = if hl.kind().is_high_contrast() { 7.0 } else { WCAG_AA };
+        for (i, s) in chrome_surfaces(&v, hl.background()).into_iter().enumerate() {
+            for (what, color, min) in [("text", text, body_min), ("secondary text", weak, WCAG_AA), ("placeholder", weak, 3.0)] {
+                let c = contrast(color, s);
+                if c < min {
+                    failures.push(format!("{name}: {what} {color:?} on surface {i} {s:?}: {c:.2} < {min}"));
+                }
+            }
+        }
+        // Secondary text still reads as secondary next to body text.
+        assert_ne!(text, weak, "{name}");
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

@@ -333,3 +333,97 @@ mod ui_shots {
 /// The README screenshots (see the module; the scenes need sh and git).
 #[cfg(unix)]
 mod readme_shots;
+
+/// The interface at each text size, to check legibility by eye:
+/// `STRATA_LEGIBILITY_SHOTS=<folder> cargo test --release legibility_shots`
+/// writes `<scene>_<size>.ppm` for the default interface size and for
+/// `STRATA_LEGIBILITY_SIZES` (default "16,18").
+#[cfg(test)]
+mod legibility_shots {
+    use super::*;
+    use crate::settings_meta::Category;
+    use std::path::PathBuf;
+
+    fn app(sh: &mut Shooter, ctx: &Context, size: Option<f32>, scheme: &str, path: Option<PathBuf>) -> StrataApp {
+        let mut app = StrataApp::new(path, None);
+        app.settings.theme_mode = "fixed".into();
+        app.settings.theme = scheme.into();
+        app.settings.help_in_own_window = false;
+        if let Some(s) = size {
+            app.settings.ui_font_size = s;
+        }
+        app.apply_settings();
+        sh.run(ctx, &mut app, 3, vec![]);
+        app
+    }
+
+    fn right_click(at: Pos2) -> Vec<Event> {
+        let b = |pressed| Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
+        vec![Event::PointerMoved(at), b(true), b(false)]
+    }
+
+    #[test]
+    fn legibility_shots() {
+        let Some(dir) = std::env::var_os("STRATA_LEGIBILITY_SHOTS").map(PathBuf::from) else { return };
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let extra = std::env::var("STRATA_LEGIBILITY_SIZES").unwrap_or_else(|_| "16,18".into());
+        let mut sizes: Vec<Option<f32>> = vec![None];
+        sizes.extend(extra.split(',').filter_map(|s| s.trim().parse().ok()).map(Some));
+        let Some(mut sh) = Shooter::new(1280, 820, 2.0) else { return };
+        for size in sizes {
+            let tag = size.map_or("default".to_owned(), |s| format!("{s}"));
+            let shot = |name: &str| dir.join(format!("{name}_{tag}.ppm"));
+
+            for (scheme, light) in [("Strata Dark", "dark"), ("Strata Light", "light")] {
+                let ctx = Context::default();
+                let mut a = app(&mut sh, &ctx, size, scheme, Some(root.join("src/diff.rs")));
+                a.open_settings_window();
+                sh.shoot(&ctx, &mut a, 6, vec![], &shot(&format!("settings_appearance_{light}")));
+                a.settings_ui.category_for_shots(Category::Editor);
+                sh.shoot(&ctx, &mut a, 4, vec![], &shot(&format!("settings_editor_{light}")));
+                a.settings_ui.search = "interface".into();
+                sh.shoot(&ctx, &mut a, 4, vec![], &shot(&format!("settings_interface_{light}")));
+            }
+
+            // Help, docked.
+            let ctx = Context::default();
+            let mut a = app(&mut sh, &ctx, size, "Strata Light", Some(root.join("src/diff.rs")));
+            a.open_help(Some("find.md"), false);
+            sh.shoot(&ctx, &mut a, 6, vec![], &shot("help"));
+
+            // The side bar, tabs and status bar over a folder; then the palette; then a context menu.
+            let ctx = Context::default();
+            let mut a = app(&mut sh, &ctx, size, "Strata Dark", None);
+            a.open_folder(root.join("src/app"));
+            a.open_path(root.join("src/app/settings_ui.rs"), false);
+            a.open_path(root.join("src/app/help_ui.rs"), false);
+            sh.run(&ctx, &mut a, 4, vec![]);
+            a.status = "Saved help_ui.rs".into();
+            sh.shoot(&ctx, &mut a, 3, vec![], &shot("chrome"));
+            a.dev_palette = Some("cmd:toggle".into());
+            sh.shoot(&ctx, &mut a, 4, vec![], &shot("palette"));
+            sh.run(&ctx, &mut a, 1, vec![Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+            sh.run(&ctx, &mut a, 3, vec![]);
+            sh.run(&ctx, &mut a, 1, right_click(egui::pos2(700.0, 300.0)));
+            sh.shoot(&ctx, &mut a, 3, vec![], &shot("context_menu"));
+
+            // The update notice, and the welcome card on a first launch.
+            let ctx = Context::default();
+            let mut a = app(&mut sh, &ctx, size, "Strata Dark", Some(root.join("src/update/version.rs")));
+            a.update.updater().set_status(crate::update::Status::Available { release: super::super::update_ui::tests::release(Ok(())), manual: true });
+            sh.shoot(&ctx, &mut a, 6, vec![], &shot("update"));
+            let ctx = Context::default();
+            let mut a = app(&mut sh, &ctx, size, "Strata Light", None);
+            a.show_welcome(true);
+            sh.shoot(&ctx, &mut a, 6, vec![], &shot("welcome"));
+
+            // The find bar in a narrow window.
+            let mut narrow = Shooter::new(640, 420, 2.0).unwrap();
+            let ctx = Context::default();
+            let mut a = app(&mut narrow, &ctx, size, "Strata Light", Some(root.join("src/diff.rs")));
+            a.open_find(true);
+            narrow.shoot(&ctx, &mut a, 4, vec![Event::Text("budget".into())], &shot("find_640"));
+        }
+    }
+}

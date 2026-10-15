@@ -169,7 +169,7 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `font_face` | text | `""` | The editor font: a bundled font's name, an installed font's name, or the path to a font file. Empty means the built-in font (Hack). See [Fonts](appearance.md#fonts). |
 | `font_size` | number | `14` | Editor text size in points. Also used for the terminal and the Markdown preview. Zoom In and Zoom Out change it in 1-point steps between 8 and 48; Reset Zoom sets it back to 14. |
 | `ui_font_face` | text | `""` | The interface font, used for menus, tabs, the side bar and panels. Same values as `font_face`. Empty means the built-in font (Ubuntu). |
-| `ui_font_size` | number | `13` | Interface text size in points, from 9 to 24. |
+| `ui_font_size` | number | `14` | Interface text size in points, from 9 to 24: menus, panels, the Settings window and dialogs. View ▸ Interface Size offers Small (12), Default (14), Large (16) and Larger (18). |
 | `font_options` | list of text | `[]` | Styles to drop from syntax highlighting: `"no_italic"`, `"no_underline"`. `"no_bold"` is accepted but changes nothing, since code is never bold. |
 | `line_height` | number | `1.0` | Line height as a multiple of the font's own, from 0.8 to 3.0. |
 | `line_padding_top` | number | `0` | Extra space above each line, in points (0 to 40). |

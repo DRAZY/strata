@@ -268,14 +268,42 @@ fn definitions(editor: Option<&FontSource>, ui: Option<&FontSource>) -> (egui::F
     (defs, errors)
 }
 
-/// Interface text sizes, scaled from one base size.
+/// The interface size when settings.json doesn't set `ui_font_size`.
+pub const DEFAULT_UI_SIZE: f32 = 14.0;
+
+/// The interface sizes View ▸ Interface Size and Settings offer by name.
+pub const UI_SIZE_PRESETS: [(&str, f32); 4] = [("Small", 12.0), ("Default", DEFAULT_UI_SIZE), ("Large", 16.0), ("Larger", 18.0)];
+
+/// The smallest secondary text (descriptions, hints, shortcuts) gets,
+/// unless the interface itself is set smaller.
+const MIN_SECONDARY: f32 = 12.0;
+
+/// `ui_font_size` as drawn: the setting kept within 9 to 24 points.
+pub fn ui_size(setting: f32) -> f32 {
+    if setting.is_finite() { setting.clamp(9.0, 24.0) } else { DEFAULT_UI_SIZE }
+}
+
+/// Secondary text: a point under the interface size, never under 12 points
+/// (or the interface size, when that is smaller still).
+pub fn secondary_size(base: f32) -> f32 {
+    (base - 1.0).max(base.min(MIN_SECONDARY))
+}
+
+/// The smallest text Strata draws (settings.json keys, footnotes): two
+/// points under the interface size, never under 11 (or the interface size).
+pub fn fine_size(base: f32) -> f32 {
+    (base - 2.0).max(base.min(11.0))
+}
+
+/// Interface text sizes, all from one base size: egui's Small is
+/// `secondary_size`, headings are larger, everything else is the base.
 pub fn apply_ui_size(ctx: &Context, size: f32) {
     use egui::TextStyle;
     ctx.all_styles_mut(|style| {
         for (ts, font) in style.text_styles.iter_mut() {
             font.size = match ts {
-                TextStyle::Small => size * 0.78,
-                TextStyle::Heading => size * 1.45,
+                TextStyle::Small => secondary_size(size),
+                TextStyle::Heading => (size * 1.45).round(),
                 _ => size,
             };
         }
@@ -344,6 +372,26 @@ mod tests {
                 assert!((x(&lig) - x(&reference)).abs() < 0.5, "{name}: char {i} at {} instead of {}", x(&lig), x(&reference));
             }
         }
+    }
+
+    #[test]
+    fn secondary_text_stays_readable() {
+        assert_eq!(secondary_size(14.0), 13.0);
+        assert_eq!(secondary_size(18.0), 17.0);
+        assert_eq!(secondary_size(12.0), 12.0, "never under 12");
+        assert_eq!(secondary_size(13.0), 12.0);
+        assert_eq!(secondary_size(10.0), 10.0, "never over the base");
+        assert_eq!(fine_size(14.0), 12.0);
+        assert_eq!(fine_size(12.0), 11.0);
+        assert_eq!(fine_size(9.0), 9.0);
+        assert_eq!(ui_size(f32::NAN), DEFAULT_UI_SIZE);
+        assert_eq!(ui_size(40.0), 24.0);
+        let ctx = Context::default();
+        apply_ui_size(&ctx, 14.0);
+        let small = ctx.global_style().text_styles[&egui::TextStyle::Small].size;
+        let body = ctx.global_style().text_styles[&egui::TextStyle::Body].size;
+        assert_eq!((small, body), (13.0, 14.0));
+        assert!(UI_SIZE_PRESETS.iter().any(|&(n, s)| n == "Default" && s == DEFAULT_UI_SIZE));
     }
 
     #[test]

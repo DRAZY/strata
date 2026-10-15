@@ -240,7 +240,20 @@ The menu items are **Font ▸ Larger**, **Smaller** and **Reset Size**. Each ste
 
 ## Interface size
 
-`ui_font_size` sets the size of the interface text (default 13). Choose a size from **Font ▸ Interface Size** (10 pt to 18 pt), or step it with **Larger** and **Smaller** in the same menu, also in the palette as **Preferences: Interface Text Larger** ({{key:increase_ui_font_size}}) and **Preferences: Interface Text Smaller** ({{key:decrease_ui_font_size}}). The size stays between 9 and 24.
+`ui_font_size` sets the size of the interface text: menus, the side bar, tabs, the status bar, the Settings window, this manual's contents list, dialogs and notices. It's separate from the editor's font size, so you can make the interface easier to read without changing your code's layout. The default is 14 pt.
+
+**View ▸ Interface Size** (also under **Font ▸ Interface Size**) offers four sizes:
+
+| Size | Points |
+|------|--------|
+| Small | 12 |
+| Default | 14 |
+| Large | 16 |
+| Larger | 18 |
+
+The same four are on the **Interface font size** row of the Settings window and on the welcome card. **Larger** and **Smaller** in that menu step one point at a time, also in the palette as **Preferences: Interface Text Larger** ({{key:increase_ui_font_size}}) and **Preferences: Interface Text Smaller** ({{key:decrease_ui_font_size}}). Any size from 9 to 24 works in `settings.json`.
+
+Secondary text, such as setting descriptions, hints and shortcuts, is drawn one point smaller than the interface size, never under 12 pt, and in a color that keeps WCAG AA contrast (4.5:1) in every bundled color scheme. The manual's text is at least a point larger than the interface size too.
 
 ## Line spacing
 

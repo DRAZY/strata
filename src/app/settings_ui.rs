@@ -195,13 +195,14 @@ impl StrataApp {
 
     fn settings_look(&self) -> Look {
         let hl = &self.docs[self.active].highlighter;
-        Look { bg: hl.background(), accent: hl.accent(), ui_size: self.settings.ui_font_size.clamp(9.0, 24.0), active_theme: self.active_theme(), ids: [self.link.id("settings-top"), self.link.id("settings-categories")] }
+        Look { bg: hl.background(), accent: hl.accent(), ui_size: self.ui_size(), active_theme: self.active_theme(), ids: [self.link.id("settings-top"), self.link.id("settings-categories")] }
     }
 
     fn settings_docked(&mut self, ctx: &egui::Context) -> Vec<Change> {
         let mut open = true;
         let screen = ctx.content_rect();
-        let size = vec2((screen.width() - 80.0).clamp(360.0, 900.0), (screen.height() - 90.0).clamp(260.0, 680.0));
+        let ideal = window_size(self.ui_size());
+        let size = vec2((screen.width() - 80.0).clamp(360.0, ideal.x), (screen.height() - 90.0).clamp(260.0, ideal.y));
         let look = self.settings_look();
         let values = meta::values(&self.settings);
         let state = &mut self.settings_ui;
@@ -229,7 +230,7 @@ impl StrataApp {
     }
 
     fn settings_own_window(&mut self, ctx: &egui::Context) -> Vec<Change> {
-        let size = vec2(860.0, 640.0);
+        let size = window_size(self.ui_size());
         if self.settings_ui.position.is_none() {
             let main = ctx.input(|i| i.viewport().outer_rect);
             self.settings_ui.position = Some(main.map_or(egui::pos2(120.0, 100.0), |r| (r.center() - size / 2.0).max(r.left_top())));
@@ -345,6 +346,12 @@ impl StrataApp {
     }
 }
 
+/// The Settings window's opening size: room for the labels, two lines of
+/// description and the controls at the interface size.
+fn window_size(ui_size: f32) -> egui::Vec2 {
+    vec2((ui_size * 62.0 + 120.0).min(1200.0), (ui_size * 40.0 + 140.0).min(820.0))
+}
+
 /// Colors and sizes for drawing the form.
 struct Look {
     bg: Color32,
@@ -368,7 +375,7 @@ fn shown(state: &SettingsUi) -> Vec<&'static Meta> {
 fn contents(state: &mut SettingsUi, ui: &mut egui::Ui, values: &Map<String, Value>, look: &Look) -> Vec<Change> {
     let mut changes = Vec::new();
     let fg = ui.visuals().text_color();
-    let dim = fg.gamma_multiply(0.62);
+    let dim = ui.visuals().weak_text_color();
     let panel = ui.visuals().panel_fill;
     let rule = ui.visuals().widgets.noninteractive.bg_stroke;
     let size = look.ui_size;
@@ -383,7 +390,7 @@ fn contents(state: &mut SettingsUi, ui: &mut egui::Ui, values: &Map<String, Valu
                 .hint_text(format!("Search settings   {find}"))
                 .font(egui::FontId::proportional(size))
                 .background_color(look.bg)
-                .desired_width((ui.available_width() - 170.0).clamp(140.0, 440.0))
+                .desired_width((ui.available_width() - size * 13.0).clamp(140.0, size * 32.0))
                 .margin(egui::Margin::symmetric(8, 5));
             let r = ui.add(edit);
             if std::mem::take(&mut state.focus_search) {
@@ -408,7 +415,7 @@ fn contents(state: &mut SettingsUi, ui: &mut egui::Ui, values: &Map<String, Valu
             egui::Frame::new().fill(Color32::from_rgb(0xc0, 0x39, 0x2b).gamma_multiply(0.18)).corner_radius(4).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(RichText::new(e).size(size).strong());
-                ui.label(RichText::new("Settings can't be changed here until the file is fixed, so nothing in it is overwritten. Fix it and save; this window follows.").size(size * 0.92).color(dim));
+                ui.label(RichText::new("Settings can't be changed here until the file is fixed, so nothing in it is overwritten. Fix it and save; this window follows.").size(crate::fonts::secondary_size(size)).color(dim));
             });
         }
     });
@@ -417,7 +424,7 @@ fn contents(state: &mut SettingsUi, ui: &mut egui::Ui, values: &Map<String, Valu
     let query = state.search.trim().to_owned();
     egui::Panel::left(look.ids[1])
         .resizable(false)
-        .exact_size((size * 13.0).clamp(150.0, 210.0))
+        .exact_size((size * 13.5).clamp(160.0, 260.0))
         .frame(egui::Frame::new().fill(panel).inner_margin(egui::Margin { left: 8, right: 8, top: 10, bottom: 8 }).stroke(rule))
         .show(ui, |ui| {
             for c in Category::ALL {
@@ -427,7 +434,7 @@ fn contents(state: &mut SettingsUi, ui: &mut egui::Ui, values: &Map<String, Valu
                 }
                 let current = query.is_empty() && c == state.category;
                 let label = if query.is_empty() { c.label().to_owned() } else { format!("{}  ({count})", c.label()) };
-                let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), size + 14.0), Sense::click());
+                let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), size + 16.0), Sense::click());
                 if current || r.hovered() || r.has_focus() {
                     let fill = if current { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill };
                     ui.painter().rect_filled(rect, 4.0, fill);
@@ -435,7 +442,7 @@ fn contents(state: &mut SettingsUi, ui: &mut egui::Ui, values: &Map<String, Valu
                 if current {
                     ui.painter().rect_filled(egui::Rect::from_min_size(rect.left_top() + vec2(0.0, 4.0), vec2(3.0, rect.height() - 8.0)), 1.5, look.accent);
                 }
-                ui.painter().text(rect.left_center() + vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(size), if current { fg } else { fg.gamma_multiply(0.85) });
+                ui.painter().text(rect.left_center() + vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(size), fg);
                 if r.clicked() {
                     state.category = c;
                     state.search.clear();
@@ -483,14 +490,14 @@ fn contents(state: &mut SettingsUi, ui: &mut egui::Ui, values: &Map<String, Valu
 /// One setting: label, description, key, control, and Reset when changed.
 fn row(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, values: &Map<String, Value>, look: &Look, changes: &mut Vec<Change>) {
     let size = look.ui_size;
-    let fg = ui.visuals().text_color();
-    let dim = fg.gamma_multiply(0.62);
+    let dim = ui.visuals().weak_text_color();
+    let (secondary, fine) = (crate::fonts::secondary_size(size), crate::fonts::fine_size(size));
     let value = values.get(m.key).cloned().unwrap_or(Value::Null);
     let changed = !meta::is_default(values, m.key);
     let width = ui.available_width();
-    let control_w = (width * 0.42).clamp(170.0, 320.0);
+    let control_w = (width * 0.42).clamp(170.0, size * 24.0);
     let top = ui.cursor().top();
-    ui.add_space(6.0);
+    ui.add_space(10.0);
     let label_w = (width - control_w - 20.0).max(120.0);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(vec2(label_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -498,18 +505,20 @@ fn row(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, values: &Map
             ui.set_max_width(label_w);
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(m.label).size(size).strong());
-                if changed && ui.add(egui::Button::new(RichText::new("Reset").size(size * 0.85).color(look.accent)).frame(false)).on_hover_text(format!("Back to the default, {}", short(&meta::defaults()[m.key]))).clicked() {
+                if changed && ui.add(egui::Button::new(RichText::new("Reset").size(secondary).color(look.accent)).frame(false)).on_hover_text(format!("Back to the default, {}", short(&meta::defaults()[m.key]))).clicked() {
                     changes.push(Change::Reset(m.key));
                 }
             });
-            ui.add(egui::Label::new(RichText::new(meta::description(m.key)).size(size * 0.92).color(dim)).wrap());
+            ui.add_space(2.0);
+            ui.add(egui::Label::new(RichText::new(meta::description(m.key)).size(secondary).color(dim)).wrap());
             if let Some(note) = inactive_note(m.key, values) {
-                ui.label(RichText::new(note).size(size * 0.85).italics().color(dim));
+                ui.label(RichText::new(note).size(secondary).italics().color(dim));
             }
             if let Some(p) = meta::range_problem(m, &value) {
-                ui.label(RichText::new(p).size(size * 0.85).color(Color32::from_rgb(0xe0, 0x8a, 0x2e)));
+                ui.label(RichText::new(p).size(secondary).color(Color32::from_rgb(0xe0, 0x8a, 0x2e)));
             }
-            let key = ui.add(egui::Label::new(RichText::new(m.key).monospace().size(size * 0.8).color(fg.gamma_multiply(0.42))).sense(Sense::click()));
+            ui.add_space(2.0);
+            let key = ui.add(egui::Label::new(RichText::new(m.key).monospace().size(fine).color(dim)).sense(Sense::click()));
             if key.on_hover_text("The key in settings.json: click to copy").clicked() {
                 changes.push(Change::Copy(m.key));
             }
@@ -520,7 +529,7 @@ fn row(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, values: &Map
             control(state, ui, m, &value, look, changes);
         });
     });
-    ui.add_space(8.0);
+    ui.add_space(12.0);
     let bottom = ui.cursor().top();
     let left = ui.max_rect().left();
     if changed {
@@ -553,6 +562,16 @@ fn control(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, value: &
                 let v = (v / step).round() * step;
                 let value = if whole { Value::from(v.round() as u64) } else { serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number) };
                 changes.push(Change::Set { key, value, persist: !r.dragged() });
+            }
+            if key == "ui_font_size" {
+                ui.horizontal_wrapped(|ui| {
+                    for (name, pt) in crate::fonts::UI_SIZE_PRESETS {
+                        let on = crate::fonts::ui_size(v as f32) == pt;
+                        if ui.add(egui::Button::selectable(on, RichText::new(name).size(size))).on_hover_text(format!("{pt} pt")).clicked() && !on {
+                            changes.push(set(Value::from(pt as u64)));
+                        }
+                    }
+                });
             }
         }
         Control::MaybeNumber { min, max, none } => {
@@ -618,7 +637,7 @@ fn control(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, value: &
             let canonical = crate::highlight::theme_canonical_name(current).unwrap_or(current).to_owned();
             egui::ComboBox::from_id_salt(id).selected_text(RichText::new(&canonical).size(size)).width(w.min(260.0)).height(420.0).show_ui(ui, |ui| {
                 for (group, names) in crate::highlight::theme_groups() {
-                    ui.label(RichText::new(group.label()).size(size * 0.85).weak());
+                    ui.label(RichText::new(group.label()).size(crate::fonts::secondary_size(size)).weak());
                     for name in names {
                         ui.horizontal(|ui| {
                             swatch(ui, name, vec2(size * 1.6, size));
@@ -640,7 +659,7 @@ fn control(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, value: &
                 ui.horizontal_wrapped(|ui| {
                     for (i, item) in items.iter().enumerate() {
                         let text = item.as_str().map_or_else(|| item.to_string(), str::to_owned);
-                        if ui.add(egui::Button::new(RichText::new(format!("{text}  ×")).size(size * 0.92))).on_hover_text("Remove").clicked() {
+                        if ui.add(egui::Button::new(RichText::new(format!("{text}  ×")).size(size))).on_hover_text("Remove").clicked() {
                             remove = Some(i);
                         }
                     }
@@ -689,7 +708,7 @@ fn control(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, value: &
             if ui.button(RichText::new("Edit in settings.json").size(size)).clicked() {
                 changes.push(Change::OpenJson(Some(key)));
             }
-            ui.label(RichText::new(if n == 1 { "1 entry".to_owned() } else { format!("{n} entries") }).size(size * 0.85).weak());
+            ui.label(RichText::new(if n == 1 { "1 entry".to_owned() } else { format!("{n} entries") }).size(crate::fonts::secondary_size(size)).weak());
         }
     }
 }
@@ -697,17 +716,17 @@ fn control(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, value: &
 /// Settings set per language live in settings.json only.
 fn per_language_row(ui: &mut egui::Ui, values: &Map<String, Value>, look: &Look, changes: &mut Vec<Change>) {
     let size = look.ui_size;
-    let dim = ui.visuals().text_color().gamma_multiply(0.62);
-    ui.add_space(6.0);
+    let dim = ui.visuals().weak_text_color();
+    ui.add_space(10.0);
     let width = ui.available_width();
-    let control_w = (width * 0.42).clamp(170.0, 320.0);
+    let control_w = (width * 0.42).clamp(170.0, size * 24.0);
     let label_w = (width - control_w - 20.0).max(120.0);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(vec2(label_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
             ui.set_min_width(label_w);
             ui.set_max_width(label_w);
             ui.label(RichText::new("Per-language settings").size(size).strong());
-            ui.add(egui::Label::new(RichText::new("Settings for one language (indentation, wrapping, rulers…) are edited in settings.json.").size(size * 0.92).color(dim)).wrap());
+            ui.add(egui::Label::new(RichText::new("Settings for one language (indentation, wrapping, rulers…) are edited in settings.json.").size(crate::fonts::secondary_size(size)).color(dim)).wrap());
         });
         ui.add_space(8.0);
         if ui.button(RichText::new("Edit in settings.json").size(size)).clicked() {

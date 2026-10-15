@@ -59,7 +59,7 @@ pub(super) fn show(view: &mut BinaryView, ui: &mut Ui, hl: &Highlighter, font_si
             let rows = len.div_ceil(ROW as u64) as usize;
             let (fg, weak, accent) = (hl.foreground(), hl.foreground().gamma_multiply(0.5), hl.accent());
             ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                banner(ui, len, hl);
+                banner(ui, len);
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 egui::ScrollArea::both().id_salt(id.with("hex")).auto_shrink(false).show_rows(ui, row_h, rows, |ui, range| {
@@ -87,13 +87,13 @@ pub(super) fn show(view: &mut BinaryView, ui: &mut Ui, hl: &Highlighter, font_si
 }
 
 /// The strip above the hex view.
-fn banner(ui: &mut Ui, len: u64, hl: &Highlighter) {
+fn banner(ui: &mut Ui, len: u64) {
     let warn = Color32::from_rgb(0xe5, 0x9e, 0x40);
     egui::Frame::NONE.fill(warn.gamma_multiply(0.15)).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.label(RichText::new("Binary file — read-only").strong().color(warn));
-            ui.label(RichText::new(format!("· {} · not text, so it's shown as bytes and can't be edited or saved", crate::binary::size_label(len))).color(hl.foreground().gamma_multiply(0.7)));
+            ui.label(RichText::new(format!("· {} · not text, so it's shown as bytes and can't be edited or saved", crate::binary::size_label(len))).color(ui.visuals().weak_text_color()));
         });
     });
 }

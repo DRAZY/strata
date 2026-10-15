@@ -755,7 +755,8 @@ impl Sidebar {
         let mut field = |ui: &mut Ui, label: &str, text: &mut String, id: &str, hint: &str, focus: bool, history: Field| {
             crate::fonts::ensure_cjk(ui.ctx(), text);
             ui.horizontal(|ui| {
-                ui.add_sized([48.0, 18.0], egui::Label::new(RichText::new(label).small().weak()));
+                let small = egui::TextStyle::Small.resolve(ui.style()).size;
+                ui.add_sized([(small * 4.4).max(48.0), 18.0], egui::Label::new(RichText::new(label).small().weak()));
                 let id = egui::Id::new(id);
                 crate::find_history::keys(ui, id, history, text);
                 let r = crate::ctxmenu::text_field(ui, id, text, |ui, text| {
@@ -1007,9 +1008,9 @@ fn canonical(path: &Path) -> PathBuf {
 
 /// "  42  preview text" with the match highlighted.
 fn hit_text(ui: &Ui, line: usize, preview: &str, cols: &Range<usize>) -> LayoutJob {
-    let font = FontId::monospace(12.0);
+    let font = FontId::monospace(egui::TextStyle::Small.resolve(ui.style()).size);
     let fg = ui.visuals().text_color();
-    let dim = TextFormat::simple(font.clone(), fg.gamma_multiply(0.5));
+    let dim = TextFormat::simple(font.clone(), ui.visuals().weak_text_color());
     let normal = TextFormat::simple(font.clone(), fg);
     let mut hit = TextFormat::simple(font, ui.visuals().strong_text_color());
     hit.background = ui.visuals().selection.bg_fill;

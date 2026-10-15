@@ -122,8 +122,14 @@ Strata can be used entirely from the keyboard: every command is in the
 command palette and can have a shortcut, and focus moves between the editor,
 panes, side bar and panels without the mouse. High-contrast color schemes
 (High Contrast Dark and Light) are included, and every bundled scheme is
-checked for WCAG AA contrast. Screen readers aren't supported in the editor
-area yet; that's on the [roadmap](docs/ROADMAP.md).
+checked for WCAG AA contrast. Interface text (menus, Settings, Help, the side
+bar, dialogs) has its own size, `ui_font_size`, independent of the editor's:
+**View ▸ Interface Size** offers Small (12 pt), Default (14 pt), Large (16 pt)
+and Larger (18 pt), and the Settings window and welcome card offer the same.
+Secondary text (descriptions, hints, shortcuts) is drawn a point smaller and
+never under 12 pt, and in every bundled scheme it keeps WCAG AA contrast
+(4.5:1) against the surface it's on; a test checks this. Screen readers aren't
+supported in the editor area yet; that's on the [roadmap](docs/ROADMAP.md).
 
 ## Install
 
@@ -520,7 +526,7 @@ height; in `settings.json`:
 "font_face": "JetBrains Mono",   // a bundled or installed font's name, or a font file path
 "font_size": 14,
 "ui_font_face": "Inter",
-"ui_font_size": 13,
+"ui_font_size": 14,              // interface text: Small 12, Default 14, Large 16, Larger 18
 "line_height": 1.3,              // multiple of the font's own line height
 "line_padding_top": 0,           // extra points above / below each line
 "line_padding_bottom": 0,

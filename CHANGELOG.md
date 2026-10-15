@@ -6,6 +6,21 @@ All notable changes to Strata are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Easier-to-read interface text. The default interface size is now 14 pt (was
+  13); settings.json files that set `ui_font_size` keep their size.
+  Descriptions, hints and shortcuts are a point smaller than the interface
+  size (they were about three-quarters of it) and never under 12 pt, and the
+  Settings window's descriptions and `settings.json` keys are larger and
+  darker. Secondary text now meets WCAG AA contrast (4.5:1) in every bundled
+  color scheme, and a test keeps it that way.
+- **View ▸ Interface Size** offers Small (12 pt), Default (14 pt), Large
+  (16 pt) and Larger (18 pt); the Settings window and the welcome card offer
+  the same four. The Settings window opens larger to fit bigger text, and the
+  manual's contents, the command palette, the update notice and Compare's
+  header grow with the interface size.
+
 ## [1.0.2] - 2026-10-15
 
 ### Changed

@@ -767,6 +767,11 @@ impl StrataApp {
         }
     }
 
+    /// The interface text size in points (see `fonts::ui_size`).
+    pub(crate) fn ui_size(&self) -> f32 {
+        crate::fonts::ui_size(self.settings.ui_font_size)
+    }
+
     fn persist_settings(&mut self) {
         if let Some(dir) = &self.config {
             match self.settings.save(dir) {
@@ -1133,7 +1138,7 @@ impl StrataApp {
             }
             Cmd::UiLarger | Cmd::UiSmaller => {
                 let step = if cmd == Cmd::UiLarger { 1.0 } else { -1.0 };
-                self.settings.ui_font_size = (self.settings.ui_font_size + step).clamp(9.0, 24.0);
+                self.settings.ui_font_size = crate::fonts::ui_size(self.ui_size() + step);
                 self.persist_settings();
             }
             Cmd::CancelBuild => self.build.cancel(),
@@ -1612,10 +1617,12 @@ impl StrataApp {
         }
         let title = self.title();
         crate::fonts::ensure_cjk(ui.ctx(), &title);
+        // The interface size, kept within the 28-point strip macOS reserves.
+        let size = self.ui_size().min(16.0);
         egui::Panel::top("titlebar").exact_size(28.0).frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
             let rect = ui.max_rect();
             let resp = ui.interact(rect, egui::Id::new("titlebar"), Sense::click_and_drag());
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, title, FontId::proportional(13.0), ui.visuals().text_color().gamma_multiply(0.85));
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, title, FontId::proportional(size), ui.visuals().text_color());
             if resp.double_clicked() {
                 let zoomed = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!zoomed));
@@ -1876,6 +1883,60 @@ fn shade(c: Color32, f: f32) -> Color32 {
     Color32::from_rgb(s(c.r()), s(c.g()), s(c.b()))
 }
 
+/// The interface colors for the active scheme: panels a shade off the
+/// editor background, text a touch softer than the editor's.
+///
+/// Secondary text (egui's "weak": descriptions, hints, shortcuts, the
+/// settings keys) is pulled toward the panel only as far as WCAG AA allows:
+/// at least 4.5:1 against every surface it's drawn on, in every scheme.
+pub(crate) fn chrome_visuals(hl: &crate::highlight::Highlighter) -> egui::Visuals {
+    use crate::highlight::themes::ensure_contrast;
+    let (bg, fg, sel, light) = (hl.background(), hl.foreground(), hl.selection(), hl.is_light());
+    let high_contrast = hl.kind().is_high_contrast();
+    let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
+    // High contrast keeps the scheme's pure background and full-strength text and borders.
+    let panel = if high_contrast { bg } else if light { shade(bg, 0.94) } else { shade(bg, 0.82) };
+    // Chrome (tabs, sidebar, status bar, menus) stays solid; only the text areas see through.
+    v.panel_fill = panel;
+    v.window_fill = mix(panel, bg, 0.5);
+    v.extreme_bg_color = if light { shade(bg, 1.02) } else { shade(bg, 0.7) };
+    v.faint_bg_color = mix(panel, fg, 0.04);
+    v.selection.bg_fill = sel;
+    v.override_text_color = Some(if high_contrast { fg } else { mix(fg, panel, 0.12) });
+    // Selected rows (sidebar, menus) keep the text color on the selection.
+    v.selection.stroke = Stroke::new(1.0, fg);
+    v.hyperlink_color = hl.accent();
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, mix(panel, fg, if high_contrast { 0.5 } else { 0.10 }));
+    v.window_stroke = Stroke::new(1.0, mix(panel, fg, if high_contrast { 0.6 } else { 0.16 }));
+    v.widgets.inactive.weak_bg_fill = mix(panel, fg, 0.06);
+    v.widgets.hovered.weak_bg_fill = mix(panel, fg, 0.12);
+    v.widgets.active.weak_bg_fill = mix(panel, fg, 0.18);
+    // The surfaces text sits on: panels, windows, fields, the editor (the
+    // Settings and Help pages), stripes, button faces and selected rows.
+    let surfaces = chrome_surfaces(&v, bg);
+    let text = v.override_text_color.unwrap_or(fg);
+    let legible = |c: Color32, min: f32| (0..4).fold(c, |c, _| surfaces.iter().fold(c, |c, &s| ensure_contrast(c, s, min)));
+    let body_min = if high_contrast { 7.0 } else { WCAG_AA };
+    v.override_text_color = Some(legible(text, body_min));
+    v.weak_text_color = Some(legible(mix(text, panel, if high_contrast { 0.2 } else { 0.38 }), WCAG_AA + 0.05));
+    v
+}
+
+/// Every solid color interface text is drawn on, for `chrome_visuals` and
+/// its test. A see-through selection counts as it looks over the panel.
+pub(crate) fn chrome_surfaces(v: &egui::Visuals, editor_bg: Color32) -> [Color32; 8] {
+    let panel = v.panel_fill;
+    let over_panel = |c: Color32| {
+        let a = 1.0 - c.a() as f32 / 255.0;
+        let m = |top: u8, under: u8| (top as f32 + under as f32 * a).round().min(255.0) as u8;
+        Color32::from_rgb(m(c.r(), panel.r()), m(c.g(), panel.g()), m(c.b(), panel.b()))
+    };
+    [panel, v.window_fill, v.extreme_bg_color, over_panel(editor_bg), v.faint_bg_color, v.widgets.inactive.weak_bg_fill, v.widgets.hovered.weak_bg_fill, over_panel(v.selection.bg_fill)]
+}
+
+/// WCAG AA contrast for text.
+pub(crate) const WCAG_AA: f32 = 4.5;
+
 /// Blend toward `to` by `t` (0 = `from`).
 fn mix(from: Color32, to: Color32, t: f32) -> Color32 {
     let m = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
@@ -1966,26 +2027,7 @@ impl StrataApp {
             return;
         }
         self.chrome_theme = key;
-        let (bg, fg, sel, light) = (hl.background(), hl.foreground(), hl.selection(), hl.is_light());
-        let high_contrast = hl.kind().is_high_contrast();
-        let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
-        // High contrast keeps the scheme's pure background and full-strength text and borders.
-        let panel = if high_contrast { bg } else if light { shade(bg, 0.94) } else { shade(bg, 0.82) };
-        // Chrome (tabs, sidebar, status bar, menus) stays solid; only the text areas see through.
-        v.panel_fill = panel;
-        v.window_fill = mix(panel, bg, 0.5);
-        v.extreme_bg_color = if light { shade(bg, 1.02) } else { shade(bg, 0.7) };
-        v.faint_bg_color = mix(panel, fg, 0.04);
-        v.selection.bg_fill = sel;
-        v.override_text_color = Some(if high_contrast { fg } else { mix(fg, panel, 0.12) });
-        // Selected rows (sidebar, menus) keep the text color on the selection.
-        v.selection.stroke = Stroke::new(1.0, fg);
-        v.hyperlink_color = hl.accent();
-        v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, mix(panel, fg, if high_contrast { 0.5 } else { 0.10 }));
-        v.window_stroke = Stroke::new(1.0, mix(panel, fg, if high_contrast { 0.6 } else { 0.16 }));
-        v.widgets.inactive.weak_bg_fill = mix(panel, fg, 0.06);
-        v.widgets.hovered.weak_bg_fill = mix(panel, fg, 0.12);
-        v.widgets.active.weak_bg_fill = mix(panel, fg, 0.18);
+        let v = chrome_visuals(hl);
         // Both of egui's styles, so a system light/dark switch keeps these colors.
         ctx.set_visuals_of(egui::Theme::Dark, v.clone());
         ctx.set_visuals_of(egui::Theme::Light, v);
@@ -2001,7 +2043,9 @@ impl StrataApp {
         // The background layer: above the editor, below windows like About.
         let painter = ctx.layer_painter(egui::LayerId::background()).with_clip_rect(rect);
         let hl = &self.docs[0].highlighter;
-        let (fg, accent) = (hl.foreground(), hl.accent());
+        let accent = hl.accent();
+        let visuals = ctx.global_style().visuals.clone();
+        let (fg, weak, size) = (visuals.text_color(), visuals.weak_text_color(), self.ui_size());
         let center = rect.center() + vec2(0.0, -60.0);
         painter.text(center, egui::Align2::CENTER_CENTER, "Strata", FontId::proportional(40.0), accent.gamma_multiply(0.85));
         let rows = [
@@ -2013,11 +2057,11 @@ impl StrataApp {
             ("Documentation", Cmd::Documentation),
         ];
         for (i, (name, cmd)) in rows.into_iter().enumerate() {
-            let y = center.y + 54.0 + i as f32 * 26.0;
-            painter.text(pos2(center.x - 8.0, y), egui::Align2::RIGHT_CENTER, name, FontId::proportional(14.0), fg.gamma_multiply(0.55));
+            let y = center.y + 54.0 + i as f32 * (size + 12.0);
+            painter.text(pos2(center.x - 8.0, y), egui::Align2::RIGHT_CENTER, name, FontId::proportional(size), weak);
             // Unbound: say where to find it instead.
             let keys = cmd.shortcut_label().unwrap_or_else(|| if cmd == Cmd::Documentation { "Help menu".into() } else { String::new() });
-            painter.text(pos2(center.x + 8.0, y), egui::Align2::LEFT_CENTER, keys, FontId::proportional(14.0), fg.gamma_multiply(0.85));
+            painter.text(pos2(center.x + 8.0, y), egui::Align2::LEFT_CENTER, keys, FontId::proportional(size), fg);
         }
     }
 
@@ -2045,7 +2089,7 @@ impl StrataApp {
         ui.painter().rect_filled(bar, 0.0, ui.visuals().panel_fill);
         let shown = self.group_active(group);
         let focused = group == self.focus_group;
-        let font = FontId::proportional(self.settings.ui_font_size.clamp(9.0, 24.0));
+        let font = FontId::proportional(self.ui_size());
         let height = 32.0;
         let mut action = None;
         // Tabs that don't fit scroll (the mouse wheel scrolls them sideways);
@@ -2084,7 +2128,7 @@ impl StrataApp {
                         let accent = self.docs[i].highlighter.accent();
                         ui.painter().line_segment([rect.left_top() + vec2(6.0, 0.5), rect.right_top() + vec2(-6.0, 0.5)], Stroke::new(2.0, accent));
                     }
-                    let text_color = if active { fg } else { fg.gamma_multiply(0.6) };
+                    let text_color = if active { fg } else { ui.visuals().weak_text_color() };
                     let mut job = egui::text::LayoutJob::single_section(name.clone(), egui::TextFormat { font_id: font.clone(), color: text_color, italics: d.preview, ..Default::default() });
                     job.wrap.max_width = w - 44.0;
                     job.wrap.max_rows = 1;
@@ -2253,7 +2297,7 @@ impl StrataApp {
                     let hl = &self.docs[self.active].highlighter;
                     ui.painter().rect_filled(body, 0.0, hl.background().gamma_multiply(self.settings.window_opacity.clamp(0.3, 1.0)));
                     let hint = format!("Empty pane · drag a tab here, or {}", Cmd::MoveToGroup(g as u8).shortcut_label().unwrap_or_default());
-                    ui.painter().text(body.center(), egui::Align2::CENTER_CENTER, hint, FontId::proportional(13.0), hl.foreground().gamma_multiply(0.4));
+                    ui.painter().text(body.center(), egui::Align2::CENTER_CENTER, hint, FontId::proportional(self.ui_size()), ui.visuals().weak_text_color());
                     if resp.clicked() {
                         self.focus_pane(g);
                     }
