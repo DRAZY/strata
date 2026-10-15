@@ -1122,7 +1122,8 @@ mod tests {
         let running = || {
             std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().is_ok_and(|o| {
                 let stat = String::from_utf8_lossy(&o.stdout);
-                !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
+                // Z: zombie; E: exiting (macOS), waiting only to be reaped.
+                !stat.trim().is_empty() && !stat.contains(['Z', 'E'])
             })
         };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);

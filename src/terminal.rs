@@ -1596,7 +1596,8 @@ mod tests {
         let alive = |pid: u32| {
             std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().is_ok_and(|o| {
                 let stat = String::from_utf8_lossy(&o.stdout);
-                !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
+                // Z: zombie; E: exiting (macOS), waiting only to be reaped.
+                !stat.trim().is_empty() && !stat.contains(['Z', 'E'])
             })
         };
         // Generous: SIGKILL follows after 2 s, and a loaded machine can be slow to reap.
