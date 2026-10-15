@@ -150,21 +150,34 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # ─── PLACEHOLDER: Generate signed update manifest ──────────────────
-      # Generate signed update manifest (scripts/make-update-manifest.sh,
-      # secret STRATA_UPDATE_KEY): writes dist/latest.json, ed25519-signed,
-      # for the built-in updater (docs/UPDATES.md). To be wired in when the
-      # updater lands; until then this step only leaves a note in the log.
-      - name: Generate signed update manifest (placeholder)
+      # ---- Update feed (docs/UPDATES.md) ----
+      # latest.json lists each platform's update zip with its SHA-256 and an
+      # ed25519 signature made with STRATA_UPDATE_KEY; the app checks it with
+      # the public key built into it. The signer is a small example program in
+      # this repo, so this job needs Rust and the libraries the crate links.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux libraries for building the signer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libvulkan-dev libgtk-3-dev
+      - name: Sign updates and write latest.json
         env:
           STRATA_UPDATE_KEY: ${{ secrets.STRATA_UPDATE_KEY }}
         run: |
-          if [ -x scripts/make-update-manifest.sh ]; then
-            echo "::notice::scripts/make-update-manifest.sh exists but isn't wired into release.yml yet"
-          else
-            echo "::notice::No update manifest yet (scripts/make-update-manifest.sh)"
+          if [ -z "$STRATA_UPDATE_KEY" ]; then
+            echo "::warning::STRATA_UPDATE_KEY isn't set: no latest.json, so installed copies won't be offered this release"
+            exit 0
           fi
-      # ───────────────────────────────────────────────────────────────────
+          VERSION="${{ needs.meta.outputs.version }}"
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on && /^\[[^]]+\]: / { next }
+            on { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/update-notes.md"
+          [ -s "$RUNNER_TEMP/update-notes.md" ] || echo "See the release page for what's new." > "$RUNNER_TEMP/update-notes.md"
+          scripts/make-update-manifest.sh "$VERSION" "$RUNNER_TEMP/update-notes.md"
 
       - name: Release notes from CHANGELOG.md
         run: |
@@ -194,8 +207,9 @@ jobs:
           prerelease: ${{ needs.meta.outputs.prerelease == 'true' }}
           name: Strata ${{ needs.meta.outputs.version }}
           body_path: notes.md
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
           files: |
+            dist/latest.json
             dist/*.dmg
             dist/*.app.zip
             dist/*-windows-x64.zip
