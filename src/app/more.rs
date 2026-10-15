@@ -505,6 +505,7 @@ const LICENSES: &[Credit] = &[
     credit("serde / serde_json", "MIT or Apache-2.0", &["serde", "serde_json"]),
     credit("log", "MIT or Apache-2.0", &["log"]),
     credit("libc", "MIT or Apache-2.0", &["libc"]),
+    credit("winresource (Windows icon and version info, build only)", "MIT", &["winresource"]),
 ];
 
 /// Every crate in the build: (name, version, license), from
