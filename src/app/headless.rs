@@ -302,3 +302,6 @@ mod ui_shots {
         sh.shoot(&ctx, &mut app, 4, vec![], &dir.join("completion_bottom.ppm"));
     }
 }
+
+/// The README screenshots (see the module).
+mod readme_shots;
