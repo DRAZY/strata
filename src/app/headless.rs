@@ -303,5 +303,6 @@ mod ui_shots {
     }
 }
 
-/// The README screenshots (see the module).
+/// The README screenshots (see the module; the scenes need sh and git).
+#[cfg(unix)]
 mod readme_shots;
