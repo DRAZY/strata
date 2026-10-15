@@ -48,6 +48,7 @@ mod replace;
 mod safe_html;
 mod search;
 mod session;
+mod settings_meta;
 mod snippets;
 mod spell;
 mod shell_command;
