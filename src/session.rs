@@ -127,6 +127,10 @@ pub struct Settings {
     pub sidebar_respect_gitignore: bool,
     /// Names (globs) the side bar never shows.
     pub file_exclude_patterns: Vec<String>,
+    /// Settings for one syntax, by name: {"Python": {"tab_size": 4}} (see `doc_settings`).
+    pub syntax_settings: std::collections::BTreeMap<String, crate::doc_settings::Layer>,
+    /// Follow `.editorconfig` files.
+    pub editorconfig: bool,
 }
 
 impl Default for Settings {
@@ -191,6 +195,8 @@ impl Default for Settings {
             spelling_selector: crate::spell::DEFAULT_SELECTOR.into(),
             sidebar_respect_gitignore: true,
             file_exclude_patterns: vec![".git".into(), ".DS_Store".into()],
+            syntax_settings: Default::default(),
+            editorconfig: true,
         }
     }
 }

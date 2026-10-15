@@ -49,6 +49,10 @@ all there out of the box, with no accounts, no telemetry and nothing to set up.
 - **Big files**: a 95 MB, 1.6 million-line file opens highlighted in about
   0.6 s on an M-series Mac, and minified one-line files stay responsive.
 - **40 encodings**, atomic saves, **printing** and **PDF export**.
+- **EditorConfig and per-language settings**: `.editorconfig` files set
+  indentation, line endings, charset and save-time trimming per project;
+  `syntax_settings` gives each language its own tab size, wrap, rulers and
+  more.
 - **Plain-file configuration**: settings and key bindings are JSON files that
   apply as soon as you save. Add your own snippets (`.sublime-snippet`),
   syntaxes (`.sublime-syntax`) and color schemes (`.tmTheme`,

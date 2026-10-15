@@ -29,7 +29,7 @@ You only need the settings you want to change. Anything you leave out uses its d
 
 When you save `settings.json` in Strata, the new settings take effect immediately and the status bar says "Settings reloaded". Strata also notices when another program changes the file, within about a second. Every open window picks up the change.
 
-If the default indentation changed (`tab_size` or `translate_tabs_to_spaces`), it is applied to every open file.
+If the default indentation changed (`tab_size` or `translate_tabs_to_spaces`), it is applied to every open file, replacing indentation you set for a tab by hand. Files whose indentation was detected, or comes from a syntax's settings or an `.editorconfig`, keep it (see [Which setting wins](#which-setting-wins)).
 
 ### When the file has an error
 
@@ -53,7 +53,7 @@ Menus and commands that change a setting (View ▸ Editor Extras, the Color Sche
 
 Some things you change apply to one file only and are not settings:
 
-- **Tab width and spaces vs tabs** from **View ▸ Indentation** or the indentation menu in the status bar change the current file only. `tab_size` and `translate_tabs_to_spaces` are the defaults for new files and for files whose indentation can't be detected.
+- **Tab width and spaces vs tabs** from **View ▸ Indentation** or the indentation menu in the status bar change the current file only. `tab_size` and `translate_tabs_to_spaces` are the defaults for new files and for files whose indentation can't be detected. See [Which setting wins](#which-setting-wins).
 - **Word wrap** from **View ▸ Word Wrap** ({{key:toggle_word_wrap}}) turns wrapping on or off for the current file. `word_wrap` is the default for all files.
 - **Syntax** from **View ▸ Syntax** applies to the current file (see [Languages and Syntaxes](languages.md)).
 - **Encoding and line endings** belong to each file (see [Encodings and Line Endings](encodings.md)).
@@ -78,6 +78,71 @@ Many settings have a menu item, so you rarely need to edit the file for them:
 | Tools ▸ On Save | `trim_trailing_white_space_on_save`, `ensure_newline_at_eof_on_save`, `save_on_focus_lost` |
 | View ▸ Terminal, and resizing the terminal panel | `terminal_visible`, `terminal_height` |
 | View ▸ Spell Check, View ▸ Dictionary, and Add Word to Dictionary in the editor's right-click menu | `spell_check`, `dictionary`, `added_words` |
+
+## Settings for one syntax
+
+`syntax_settings` gives a language its own settings. Its keys are syntax names, as the status bar shows them (case doesn't matter), and each holds the settings that differ for that syntax:
+
+```json
+{
+  "syntax_settings": {
+    "Python": { "tab_size": 4, "rulers": [79] },
+    "YAML": { "tab_size": 2, "translate_tabs_to_spaces": true },
+    "Markdown": { "word_wrap": true, "spell_check": true },
+  },
+}
+```
+
+These settings can be set per syntax: `tab_size`, `translate_tabs_to_spaces`, `detect_indentation`, `word_wrap`, `wrap_column` (`0` wraps at the window edge), `wrap_width`, `rulers`, `trim_trailing_white_space_on_save`, `ensure_newline_at_eof_on_save`, `auto_indent`, `smart_indent`, `spell_check`, `auto_complete`, `draw_white_space` and `highlight_trailing_whitespace`. Other keys are ignored. A value of the wrong type is an error, as anywhere in the file.
+
+A tab picks up its syntax's settings when it opens and again whenever its syntax changes, for example from the syntax menu in the status bar.
+
+### Built-in syntax settings
+
+Strata comes with a few settings of its own for some syntaxes. Like a syntax's settings, they take precedence over the rest of `settings.json`, and your `syntax_settings` for that syntax take precedence over them:
+
+| Syntax | Built-in settings |
+|--------|-------------------|
+| Makefile | `"translate_tabs_to_spaces": false`, `"detect_indentation": false` (recipes must start with a tab) |
+| Go | `"translate_tabs_to_spaces": false` (gofmt indents with tabs) |
+| YAML | `"tab_size": 2`, `"translate_tabs_to_spaces": true` |
+| Markdown, MultiMarkdown, Plain Text, reStructuredText, Textile, LaTeX | `"word_wrap": true` |
+
+For example, `"syntax_settings": {"Markdown": {"word_wrap": false}}` stops Markdown files from wrapping.
+
+## EditorConfig
+
+Strata follows [EditorConfig](https://editorconfig.org) files, so a project's `.editorconfig` sets the indentation and line endings of the files in it. When a file opens, Strata reads every `.editorconfig` from the file's folder up to the top of the disk, stopping at one that says `root = true`. Sections whose glob matches the file apply; later sections, and files in nearer folders, take precedence. All of the spec's glob patterns work: `*`, `**`, `?`, `[abc]`, `[!abc]`, `{a,b}` and `{1..10}`.
+
+| Property | What Strata does |
+|----------|------------------|
+| `indent_style` | `space` or `tab`: indent with spaces or tabs. |
+| `indent_size`, `tab_width` | The indentation width. Strata has one width for indentation and tab stops: `indent_size` when it's a number, otherwise `tab_width`. |
+| `end_of_line` | `lf` or `crlf`: new files start with it, and saving converts the file's line breaks to it, unless you picked a line ending for that tab in the status bar. `cr` isn't supported and is ignored. |
+| `charset` | `utf-8`, `utf-8-bom`, `latin1`, `utf-16le` or `utf-16be` (UTF-16 is written with a byte order mark): the encoding of new files, and of a file saved somewhere for the first time. Existing files keep the encoding they were read in. |
+| `trim_trailing_whitespace` | `true` or `false`: overrides `trim_trailing_white_space_on_save`. |
+| `insert_final_newline` | `true` or `false`: overrides `ensure_newline_at_eof_on_save`. With `false`, Strata doesn't add a final newline, but doesn't remove one either. |
+| `max_line_length` | A number: a ruler at that column, the column Wrap Paragraph at Ruler uses, and the soft-wrap column when word wrap is on. `off` changes nothing. |
+
+A property set to `unset` is removed, as if no section had set it. Other properties are ignored.
+
+Strata notices within about a second when an `.editorconfig` is created, changed or deleted, and at once when you save one in Strata. Saving a file under a new name, or renaming it in the side bar, applies the `.editorconfig` settings of its new place. The status bar's indentation menu says when the indentation came from an `.editorconfig`, and which one.
+
+To ignore `.editorconfig` files, set `"editorconfig": false`.
+
+## Which setting wins
+
+Each file's settings come from several places. From lowest to highest precedence:
+
+1. Strata's defaults.
+2. Your `settings.json`.
+3. Strata's [built-in syntax settings](#built-in-syntax-settings).
+4. Your `syntax_settings` for the file's syntax.
+5. The indentation detected in the file, when `detect_indentation` is on (the width only when the file indents with spaces).
+6. `.editorconfig`.
+7. What you set for that tab: the indentation from the status bar, View ▸ Indentation or Guess Settings From Buffer; word wrap from View ▸ Word Wrap; the line ending from the status bar; spell check from View ▸ Spell Check.
+
+A choice made for a tab stays when its syntax changes or the settings change, except that a new `tab_size` or `translate_tabs_to_spaces` in `settings.json` replaces indentation set by hand. View ▸ Spell Check also saves the new state as `spell_check`; a tab whose syntax's settings say otherwise keeps the choice for itself.
 
 ## All settings
 
@@ -128,7 +193,7 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `git_gutter` | true/false | `true` | Show bars in the gutter for lines changed since the last Git commit. |
 | `minimap` | true/false | `true` | Show the minimap at the right edge of the editor. |
 | `rulers` | list of numbers | `[]` | Draw vertical guides at these columns, for example `[80, 100]`. |
-| `word_wrap` | true/false | `false` | Soft-wrap every file. Markdown, MultiMarkdown, Plain Text, reStructuredText, Textile and LaTeX files wrap even when this is off. View ▸ Word Wrap overrides it for one file. |
+| `word_wrap` | true/false | `false` | Soft-wrap every file. Markdown, MultiMarkdown, Plain Text, reStructuredText, Textile and LaTeX files wrap even when this is off (see [Built-in syntax settings](#built-in-syntax-settings)). View ▸ Word Wrap overrides it for one file. |
 | `wrap_column` | number or `null` | `null` | Wrap at this column instead of the window edge (`null` means the window edge). Lines still wrap at the window edge if it comes first. |
 | `large_file_mb` | number | `20` | Files bigger than this many megabytes open in large-file mode: as Plain Text, without the minimap, word wrap, bracket colors or sticky scroll. Choosing a syntax still highlights them. Files with a line longer than 10,000 characters always open this way. See [Very large files](troubleshooting.md#very-large-files). |
 | `large_file_warning_mb` | number | `500` | Ask before opening a file bigger than this many megabytes. Strata also asks before opening a file that looks binary. |
@@ -156,6 +221,8 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `smart_indent` | true/false | `true` | Language-aware indentation: indent after an opening bracket, a Python or YAML colon, or an opening tag, and line up closing brackets, `end`, `fi` and closing tags. Needs `auto_indent`. See [Languages and Syntaxes](languages.md#smart-indentation). |
 | `auto_complete` | true/false | `true` | Offer word completions while you type. {{key:auto_complete}} shows completions even when this is off. |
 | `wrap_width` | whole number | `80` | The column used by Edit ▸ Wrap ▸ Wrap Paragraph at Ruler ({{key:wrap_lines}}) when `rulers` is empty (otherwise the first ruler is used). |
+| `syntax_settings` | object | `{}` | Settings for one syntax, by name: for example `{"Python": {"tab_size": 4}, "Markdown": {"spell_check": true}}`. See [Settings for one syntax](#settings-for-one-syntax). |
+| `editorconfig` | true/false | `true` | Follow `.editorconfig` files. See [EditorConfig](#editorconfig). |
 
 ### Find and spelling
 

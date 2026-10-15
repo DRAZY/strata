@@ -119,6 +119,18 @@ Both are on by default. Set `"auto_indent": false` to turn off all automatic ind
 
 Each file has its own indentation: tabs or spaces, and a tab width. When you open a file, Strata looks at how it's already indented and follows that. If the file has no indented lines yet, it uses your settings.
 
+### Where a file's indentation comes from
+
+From lowest to highest precedence:
+
+1. `tab_size` and `translate_tabs_to_spaces` in your settings.
+2. Settings for the file's syntax: Strata's own (YAML indents with 2 spaces, Go and Makefiles with tabs) and then yours in `syntax_settings`.
+3. The file's own indentation, detected when it opens (unless `detect_indentation` is off for it).
+4. A project's `.editorconfig` (`indent_style`, `indent_size`, `tab_width`).
+5. What you choose for the tab in the status bar or under **View ▸ Indentation**, which stays when the syntax or settings change.
+
+The status bar's indentation menu says where the current file's indentation came from, for example "From .editorconfig". See [Settings for one syntax](settings.md#settings-for-one-syntax), [EditorConfig](settings.md#editorconfig) and [Which setting wins](settings.md#which-setting-wins).
+
 You can see and change the current file's indentation in the status bar (it reads, for example, "Spaces: 4" or "Tab Size: 4"), or under **View ▸ Indentation**:
 
 | Command | Shortcut | What it does |
@@ -352,4 +364,4 @@ Strata supports input methods for Chinese, Japanese, Korean and other languages.
 | Ensure Newline at End of File | `ensure_newline_at_eof_on_save` | Adds a line break at the end if the file doesn't end with one. |
 | Save When Window Loses Focus | `save_on_focus_lost` | Saves every modified file that has a name whenever you switch away from Strata. |
 
-All three are off by default. See [Settings](settings.md).
+All three are off by default. A syntax's settings and a project's `.editorconfig` (`trim_trailing_whitespace`, `insert_final_newline`, `end_of_line`) can change them for some files; see [Which setting wins](settings.md#which-setting-wins).

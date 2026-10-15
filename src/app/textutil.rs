@@ -208,9 +208,12 @@ impl StrataApp {
         }
     }
 
-    /// Sublime's save-time options: trim trailing whitespace, end with a newline.
-    pub(super) fn before_save(&mut self, i: usize) {
-        let (trim, newline) = (self.settings.trim_trailing_white_space_on_save, self.settings.ensure_newline_at_eof_on_save);
+    /// Sublime's save-time options: trim trailing whitespace, end with a
+    /// newline; and `.editorconfig`'s line ending and charset (see
+    /// `save_time_settings`), all as the file's settings at `path` say.
+    pub(super) fn before_save(&mut self, i: usize, path: &std::path::Path) {
+        let eff = self.save_time_settings(i, path);
+        let (trim, newline) = (eff.trim_trailing_white_space_on_save, eff.ensure_newline_at_eof_on_save);
         let e = &mut self.docs[i].editor;
         if trim {
             let sels: Vec<std::ops::Range<usize>> = e.selections().iter().map(|s| s.range()).collect();

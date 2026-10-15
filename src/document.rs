@@ -53,6 +53,8 @@ pub struct Document {
     pub word_count: Option<(u64, Option<String>)>,
     /// Opened in large-file mode (see `LargeFile`).
     pub large: Option<LargeFile>,
+    /// Settings resolved for this tab, and what was set for it alone (see `app::doc_settings`).
+    pub local: crate::doc_settings::Local,
 }
 
 /// A file opened in large-file mode, like Sublime's and VS Code's: it shows
@@ -128,6 +130,7 @@ impl Document {
             title: None,
             word_count: None,
             large: None,
+            local: Default::default(),
             view_group: None,
             compare: None,
         }
@@ -292,8 +295,10 @@ impl Document {
         true
     }
 
-    /// Convert every line break (one undo step); the cursor keeps its line and column.
+    /// Convert every line break (one undo step); the cursor keeps its line
+    /// and column. A choice for this tab, which `.editorconfig` then leaves alone.
     pub fn set_line_ending(&mut self, ending: LineEnding) {
+        self.local.chose_line_ending = true;
         let (line, col) = self.editor.cursor_line_col();
         let text = self.editor.text_snapshot();
         let lf = text.replace("\r\n", "\n");
