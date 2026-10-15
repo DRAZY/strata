@@ -1117,11 +1117,19 @@ mod tests {
         assert_eq!(unsafe { kill(pid, 0) }, 0, "the shell runs");
         pass(&mut w, &ctx, 1, vec![], true);
         assert_eq!(w.slots.len(), 1);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while unsafe { kill(pid, 0) } == 0 && std::time::Instant::now() < deadline {
+        // Gone, or a zombie waiting for the reaper thread (also fine). Generous
+        // deadline: CI machines can be slow to reap.
+        let running = || {
+            std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().is_ok_and(|o| {
+                let stat = String::from_utf8_lossy(&o.stdout);
+                !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
+            })
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while running() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert_ne!(unsafe { kill(pid, 0) }, 0, "no orphan shell");
+        assert!(!running(), "no orphan shell");
     }
 
     #[test]

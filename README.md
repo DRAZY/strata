@@ -5,17 +5,17 @@
 <p align="center"><strong>A fast, open-source code and text editor.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/DRAZY/strata/actions/workflows/build.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/DRAZY/strata/build.yml?branch=main&style=for-the-badge&label=build"></a>
-  <a href="https://github.com/DRAZY/strata/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/DRAZY/strata?style=for-the-badge&label=latest&color=1fb6a8"></a>
-  <a href="https://github.com/DRAZY/strata/releases"><img alt="Total downloads" src="https://img.shields.io/github/downloads/DRAZY/strata/total?style=for-the-badge&label=downloads&color=1fb6a8"></a>
-  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-1fb6a8?style=for-the-badge"></a>
-  <img alt="macOS and Windows" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows-252532?style=for-the-badge">
+  <a href="https://github.com/DRAZY/strata/actions/workflows/build.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/DRAZY/strata/build.yml?branch=main&label=build"></a>
+  <a href="https://github.com/DRAZY/strata/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/DRAZY/strata?label=latest&color=1fb6a8"></a>
+  <a href="https://github.com/DRAZY/strata/releases"><img alt="Total downloads" src="https://img.shields.io/github/downloads/DRAZY/strata/total?label=downloads&color=1fb6a8"></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-1fb6a8"></a>
+  <img alt="macOS and Windows" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows-252532">
   <br>
-  <a href="https://github.com/DRAZY/strata/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/DRAZY/strata?style=for-the-badge&color=f5c542"></a>
-  <img alt="Last commit" src="https://img.shields.io/github/last-commit/DRAZY/strata?style=for-the-badge&color=f5c542">
-  <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-B7410E?style=for-the-badge&logo=rust&logoColor=white">
-  <img alt="egui" src="https://img.shields.io/badge/egui-0.36-3b82f6?style=for-the-badge">
-  <img alt="Notarized" src="https://img.shields.io/badge/macOS-notarized-252532?style=for-the-badge&logo=apple&logoColor=white">
+  <a href="https://github.com/DRAZY/strata/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/DRAZY/strata?color=f5c542"></a>
+  <img alt="Last commit" src="https://img.shields.io/github/last-commit/DRAZY/strata?color=f5c542">
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-B7410E?logo=rust&logoColor=white">
+  <img alt="egui" src="https://img.shields.io/badge/egui-0.36-3b82f6">
+  <img alt="Notarized" src="https://img.shields.io/badge/macOS-notarized-252532?logo=apple&logoColor=white">
 </p>
 
 <p align="center"><img src="docs/screenshots/hero.png" width="900" alt="Strata in the Tokyo Night scheme: a Rust project in the side bar, a file with four cursors, git change bars in the gutter, the minimap and the status bar"></p>
