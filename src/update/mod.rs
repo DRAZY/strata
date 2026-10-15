@@ -500,7 +500,7 @@ pub(crate) mod tests {
         let Status::Available { release, manual: false } = wait(&u) else { panic!("{:?}", u.status()) };
         assert_eq!(release.version().to_string(), "1.1.0");
         assert_eq!(release.installable, Err("not here".into()), "found, but only the browser can install it");
-        assert!(!u.auto_check_due(Mode::Auto, true, state::CHECK_INTERVAL_SECS), "just checked");
+        assert!(!u.auto_check_due(Mode::Auto, false, state::CHECK_INTERVAL_SECS), "just checked");
         // Skipped: an automatic check stays quiet, a manual one offers it.
         u.skip(release.version());
         assert_eq!(u.status(), Status::Idle);

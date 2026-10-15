@@ -12,9 +12,6 @@ pub const FILE: &str = "update.json";
 /// While Strata is open, automatic checks happen this often (plus a small
 /// per-install offset, `jitter_secs`, so installs don't all ask at once).
 pub const CHECK_INTERVAL_SECS: u64 = 4 * 60 * 60;
-/// At launch, check unless the last check was more recent than this, so
-/// opening and closing Strata repeatedly doesn't ask GitHub every time.
-pub const LAUNCH_MIN_GAP_SECS: u64 = 60 * 60;
 
 /// A fixed offset of up to 15 minutes, different per install (from the
 /// config path), added to the interval.
@@ -104,12 +101,11 @@ impl Mode {
     }
 }
 
-/// Is an automatic check due? Only with `auto`: at launch when the last check
-/// is over an hour old, then every `interval` seconds while open. A last
-/// check in the future (the clock went back) counts as long ago.
+/// Is an automatic check due? Only with `auto`: every time Strata opens, then
+/// every `interval` seconds while it stays open. A last check in the future
+/// (the clock went back) counts as long ago.
 pub fn auto_check_due(mode: Mode, last_check: Option<u64>, now: u64, launch: bool, interval: u64) -> bool {
-    let gap = if launch { LAUNCH_MIN_GAP_SECS } else { interval };
-    mode == Mode::Auto && last_check.is_none_or(|t| t > now || now - t >= gap)
+    mode == Mode::Auto && (launch || last_check.is_none_or(|t| t > now || now - t >= interval))
 }
 
 /// Should a found version be offered? It must be newer than this one, and
@@ -125,16 +121,14 @@ mod tests {
 
     #[test]
     fn checks_at_launch_then_every_few_hours_and_only_when_on() {
-        let (hour, every) = (LAUNCH_MIN_GAP_SECS, CHECK_INTERVAL_SECS);
+        let every = CHECK_INTERVAL_SECS;
         let now = 1_800_000_000;
-        assert!(auto_check_due(Mode::Auto, None, now, true, every), "never checked");
-        assert!(auto_check_due(Mode::Auto, None, now, false, every), "never checked");
-        // At launch: over an hour since the last check.
-        assert!(!auto_check_due(Mode::Auto, Some(now - 60), now, true, every));
-        assert!(!auto_check_due(Mode::Auto, Some(now - hour + 1), now, true, every));
-        assert!(auto_check_due(Mode::Auto, Some(now - hour), now, true, every));
+        // Every launch checks, however recent the last check.
+        assert!(auto_check_due(Mode::Auto, None, now, true, every));
+        assert!(auto_check_due(Mode::Auto, Some(now - 60), now, true, every));
         // While open: every interval.
-        assert!(!auto_check_due(Mode::Auto, Some(now - hour), now, false, every));
+        assert!(auto_check_due(Mode::Auto, None, now, false, every), "never checked");
+        assert!(!auto_check_due(Mode::Auto, Some(now - 60), now, false, every));
         assert!(!auto_check_due(Mode::Auto, Some(now - every + 1), now, false, every));
         assert!(auto_check_due(Mode::Auto, Some(now - every), now, false, every));
         assert!(auto_check_due(Mode::Auto, Some(now + 3600), now, false, every), "clock went back");

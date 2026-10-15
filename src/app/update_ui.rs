@@ -69,7 +69,7 @@ impl StrataApp {
         self.settings.update_channel.trim().eq_ignore_ascii_case("prerelease")
     }
 
-    /// Automatic things (the first frame's tidy-up, daily checks, the ask
+    /// Automatic things (the first frame's tidy-up, automatic checks, the ask
     /// card) happen for real windows only: not in tests or screenshots.
     fn update_automatic(&self) -> bool {
         self.config.is_some() && !cfg!(test) && crate::dev::var("STRATA_SCREENSHOT").is_none()
@@ -106,7 +106,7 @@ impl StrataApp {
         }
     }
 
-    /// Each frame: daily checks, the ask card, and the notice.
+    /// Each frame: automatic checks, the ask card, and the notice.
     pub(super) fn update_ui(&mut self, ctx: &egui::Context) {
         self.update_start(ctx);
         let now = ctx.input(|i| i.time);

@@ -133,7 +133,7 @@ pub struct Settings {
     pub syntax_settings: std::collections::BTreeMap<String, crate::doc_settings::Layer>,
     /// Follow `.editorconfig` files.
     pub editorconfig: bool,
-    /// Checking GitHub for new versions: "ask" (once), "auto" (daily) or "off".
+    /// Checking GitHub for new versions: "ask" (once), "auto" (at launch and every 4 hours) or "off".
     pub update_check: String,
     /// "stable" releases only, or "prerelease" ones too.
     pub update_channel: String,
