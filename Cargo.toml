@@ -28,6 +28,10 @@ log = "0.4.34"
 spellbook = "0.4.2"
 # Compresses printed PDFs (already built for syntect and png).
 flate2 = "1.1.10"
+# Updates: checking the ed25519 signature and SHA-256 of a downloaded update
+# (pure Rust; the download itself goes through the system's curl, see src/update).
+ed25519-dalek = { version = "2.2.0", default-features = false }
+sha2 = { version = "0.10.9", default-features = false }
 
 # Dev aids read from STRATA_* environment variables (see src/dev.rs).
 # `devtools` (default): screenshots and first-frame panels; build release
@@ -57,4 +61,4 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 [target.'cfg(windows)'.dependencies]
 # Side bar Delete (the Recycle Bin) and putting restored windows on a monitor
 # (the version already in the build, through winit).
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_System_Threading"] }

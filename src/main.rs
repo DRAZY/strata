@@ -57,6 +57,7 @@ mod shell_command;
 mod sidebar;
 mod terminal;
 mod trash;
+mod update;
 mod symbols;
 mod view;
 mod wrap;
@@ -66,6 +67,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // Finishing an update: started by the previous version as it quits (see `update::helper`).
+    if let Some(code) = update::helper::run_if_helper() {
+        return code;
+    }
     let cwd = std::env::current_dir().unwrap_or_default();
     let (targets, wait, new_window) = match cli::parse(std::env::args_os().skip(1), &cwd) {
         Cli::Help => {
@@ -226,6 +231,8 @@ fn run(targets: Vec<Target>, new_window: bool, config: Option<PathBuf>) -> ExitC
     match result {
         Ok(()) => {
             log::info!("quit");
+            // In case eframe returned without `on_exit` (it does nothing twice).
+            update::Updater::global().on_exit();
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -339,6 +346,8 @@ impl eframe::App for Shell {
 
     fn on_exit(&mut self) {
         self.guarded(|s| s.windows.root().on_exit());
+        // Quitting to finish an update: start the helper that relaunches.
+        update::Updater::global().on_exit();
     }
 
     /// See-through windows need a transparent clear; the panels paint the color.
