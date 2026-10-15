@@ -24,6 +24,16 @@ jobs:
       prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
+      # Never publish unsigned builds: without the signing secrets, stop here
+      # (a release made by hand with scripts/package-macos.sh stays untouched).
+      - name: Signing secrets present
+        env:
+          HAVE_CERT: ${{ secrets.MACOS_CERT_P12 != '' && secrets.APPLE_API_KEY_P8 != '' && secrets.STRATA_UPDATE_KEY != '' }}
+        run: |
+          if [ "$HAVE_CERT" != "true" ]; then
+            echo "::error::Signing secrets aren't set (see RELEASING.md); not building a release from CI"
+            exit 1
+          fi
       - id: v
         run: |
           tag="${GITHUB_REF_NAME#v}"
