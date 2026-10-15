@@ -250,6 +250,8 @@ mod tests {
         app.settings.auto_complete = false;
         let d = &mut app.docs[0];
         d.editor = Editor::new(Buffer::from_str(src));
+        // New lines as `\n`, which a new file only gets by default off Windows.
+        d.editor.buffer.set_line_ending(crate::buffer::LineEnding::Lf);
         d.path = Some(PathBuf::from("/tmp/demo/main.rs"));
         d.highlighter.detect(d.path.as_deref(), "");
         let n = d.editor.buffer.len_chars();

@@ -137,14 +137,15 @@ mod tests {
 
     #[test]
     fn report_has_the_template_system_and_log_tail_without_the_home_folder() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/someone".into());
+        let Some(home) = crash::home_folders().into_iter().next() else { return };
         let config = Path::new(&home).join("Library/Application Support/Strata-test-report");
         let log: Vec<String> = (0..100).map(|i| format!("2026-10-13T00:00:00.000Z INFO  [app] line {i} {home}/x.rs")).collect();
         let text = problem_report(Some(&config), &log);
         assert!(text.contains("## What happened") && text.contains("## Steps to reproduce"));
         assert!(text.contains(&crash::version_line()) && text.contains(&crash::system_line()));
         assert!(text.contains("line 99 ~/x.rs") && !text.contains("line 39 "), "the last lines only");
-        assert!(text.contains("Settings folder: ~/Library/Application Support/Strata-test-report"));
+        let shown = Path::new("~").join("Library/Application Support/Strata-test-report");
+        assert!(text.contains(&format!("Settings folder: {}", shown.display())), "{text}");
         assert!(!text.contains(&format!("{home}/")), "home folder redacted");
         assert!(text.contains(crash::ISSUES_URL));
     }

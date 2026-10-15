@@ -1179,7 +1179,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::buffer::Buffer;
+    use crate::buffer::{Buffer, LineEnding};
 
     fn field(index: u32, body: Vec<Node>) -> Node {
         Node::Field { index, body }
@@ -1189,8 +1189,14 @@ mod tests {
         Node::Text(s.into())
     }
 
+    /// An editor on `src`, writing `\n` for new lines (as one-line text
+    /// would on macOS and Linux; Windows would pick `\r\n`).
     fn editor(src: &str, cursors: &[usize]) -> Editor {
-        let mut ed = Editor::new(Buffer::from_str(src));
+        let mut buffer = Buffer::from_str(src);
+        if !src.contains('\n') {
+            buffer.set_line_ending(LineEnding::Lf);
+        }
+        let mut ed = Editor::new(buffer);
         let ranges: Vec<Range<usize>> = cursors.iter().map(|&c| c..c).collect();
         ed.select_ranges(&ranges, 0);
         ed
@@ -1393,6 +1399,14 @@ if ${1:x} < 3 && y > 2 {
             ed.undo();
         }
         assert_eq!(all(&ed), "    fn", "the expansion is one undo step");
+    }
+
+    #[test]
+    fn new_lines_follow_the_files_line_ending() {
+        let mut ed = editor("    fn", &[6]);
+        ed.buffer.set_line_ending(LineEnding::CrLf);
+        expand(&mut ed, "fn ${1:name}() {\n\t$0\n}", "fn", None).unwrap();
+        assert_eq!(all(&ed), "    fn name() {\r\n        \r\n    }");
     }
 
     #[test]

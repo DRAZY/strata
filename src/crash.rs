@@ -123,13 +123,28 @@ pub fn tidy_message(msg: &str) -> String {
     out
 }
 
+/// The home folders paths may start with, the main one first: `USERPROFILE`
+/// on Windows (where `HOME`, if a Unix-style shell set it, comes second),
+/// `HOME` elsewhere. Without trailing separators; never a bare root.
+pub fn home_folders() -> Vec<String> {
+    let names: &[&str] = if cfg!(windows) { &["USERPROFILE", "HOME"] } else { &["HOME"] };
+    let mut homes: Vec<String> = Vec::new();
+    for name in names {
+        let Some(h) = std::env::var_os(name) else { continue };
+        let h = h.to_string_lossy().trim_end_matches(['/', '\\']).to_owned();
+        if h.len() > 1 && !h.ends_with(':') && !homes.contains(&h) {
+            homes.push(h);
+        }
+    }
+    homes
+}
+
 /// `text` with the home folder written `~`, for reports people share.
 pub fn redact_home(text: &str) -> String {
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-    match home.map(|h| h.to_string_lossy().into_owned()).filter(|h| h.len() > 1) {
-        Some(h) => text.replace(h.trim_end_matches(['/', '\\']), "~"),
-        None => text.to_owned(),
-    }
+    let mut homes = home_folders();
+    // The longest first, so one inside another doesn't leave a piece behind.
+    homes.sort_by_key(|h| std::cmp::Reverse(h.len()));
+    homes.iter().fold(text.to_owned(), |t, h| t.replace(h.as_str(), "~"))
 }
 
 pub fn payload_text(payload: &(dyn std::any::Any + Send)) -> String {
@@ -414,7 +429,7 @@ mod tests {
 
     #[test]
     fn reports_write_the_home_folder_as_tilde() {
-        let Some(home) = std::env::var_os("HOME").map(|h| h.to_string_lossy().into_owned()).filter(|h| h.len() > 1) else { return };
+        let Some(home) = home_folders().into_iter().next() else { return };
         let p = Panic { thread: "main".into(), message: "boom".into(), location: format!("{home}/src/x.rs:1:1"), backtrace: format!("at {home}/.cargo/registry/y.rs") };
         let text = report_text(&p, Some(&[format!("opened {home}/Documents/a.txt")]), SystemTime::now());
         assert!(!text.contains(&home), "{text}");
@@ -459,7 +474,7 @@ mod tests {
             format!("System: {}", system_line()),
             "Thread: ui-under-test".into(),
             "Panic: index out of bounds".into(),
-            "Location: src/crash.rs:".into(),
+            format!("Location: src{}crash.rs:", std::path::MAIN_SEPARATOR),
             "Backtrace:\n".into(),
             "Recent log:\n".into(),
             "opened /tmp/some/file.rs".into(),
