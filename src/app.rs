@@ -156,6 +156,7 @@ mod completion;
 mod context_menus;
 mod delayed_save;
 mod diagnostics;
+mod dock;
 mod features;
 mod file_links;
 mod find_options;
@@ -2523,6 +2524,7 @@ impl eframe::App for StrataApp {
             self.save_all();
         }
         self.delayed_save_tick(Some(ctx), now);
+        self.dock_frame(ctx);
         if !self.window_focused && focused {
             // Back from another app, which may have changed the folders.
             self.sidebar.refresh();

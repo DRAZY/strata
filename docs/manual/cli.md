@@ -110,7 +110,7 @@ Strata is a windowed program on Windows, so a terminal may not show the text pri
 Besides the command line, you can open files and folders in Strata from:
 
 - **Finder**: right-click a file or folder and choose **Open With ▸ Strata**. Strata is offered for text, code and most other files, and for folders, but it never makes itself the default app.
-- **The Dock**: drop files or folders on Strata's icon.
+- **The Dock**: drop files or folders on Strata's icon, or right-click it for New Window and your recent files and folders.
 - **Terminal**: `open -a Strata file.txt`.
 - **A Strata window**: drag files or folders onto it.
 
