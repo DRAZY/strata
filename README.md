@@ -14,7 +14,7 @@
   <a href="https://github.com/DRAZY/strata/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/DRAZY/strata?style=for-the-badge&color=f5c542"></a>
   <img alt="Last commit" src="https://img.shields.io/github/last-commit/DRAZY/strata?style=for-the-badge&color=f5c542">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-B7410E?style=for-the-badge&logo=rust&logoColor=white">
-  <img alt="egui" src="https://img.shields.io/github/cargo-toml/dependency-version/DRAZY/strata/egui?style=for-the-badge&label=egui&color=3b82f6">
+  <img alt="egui" src="https://img.shields.io/badge/egui-0.36-3b82f6?style=for-the-badge">
   <img alt="Notarized" src="https://img.shields.io/badge/macOS-notarized-252532?style=for-the-badge&logo=apple&logoColor=white">
 </p>
 
