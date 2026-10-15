@@ -2,6 +2,7 @@
 # Build Strata.app and its DMG.
 #
 #   scripts/package-macos.sh              → dist/Strata-<version>-universal.dmg
+#                                           and dist/Strata-<version>-universal.app.zip
 #
 # Universal (Apple silicon + Intel) unless ARCH=arm64 or ARCH=x86_64.
 # Signing: with a "Developer ID Application" certificate in the keychain the
@@ -11,18 +12,29 @@
 # profile NOTARY_PROFILE (default strata-notary), waits, and staples the
 # ticket to the app and the DMG. Set it up once with
 #   xcrun notarytool store-credentials strata-notary --apple-id … --team-id …
+# or, with an App Store Connect API key (what CI uses),
+#   xcrun notarytool store-credentials strata-notary --key AuthKey_….p8 --key-id … --issuer …
+# NOTARY_KEYCHAIN names the keychain holding that profile when it isn't the
+# login keychain (CI keeps it in a temporary one; see RELEASING.md).
+# The .app.zip next to the DMG is the app alone (stapled when notarized), for
+# the updater to download.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ARCH=${ARCH:-universal}
 NOTARIZE=${NOTARIZE:-0}
 NOTARY_PROFILE=${NOTARY_PROFILE:-strata-notary}
+NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+if [ -n "${NOTARY_KEYCHAIN:-}" ]; then
+  NOTARY_ARGS+=(--keychain "$NOTARY_KEYCHAIN")
+fi
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 # CFBundleVersion only ever goes up: the number of commits.
 BUILD=$(git rev-list --count HEAD 2>/dev/null || echo 1)
 DIST=dist
 APP="$DIST/Strata.app"
 DMG="$DIST/Strata-$VERSION-$ARCH.dmg"
+APP_ZIP="$DIST/Strata-$VERSION-$ARCH.app.zip"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
@@ -141,13 +153,13 @@ fi
 
 notarize() { # file
   echo "==> notarizing $(basename "$1") (profile $NOTARY_PROFILE; this takes a few minutes)"
-  xcrun notarytool submit "$1" --keychain-profile "$NOTARY_PROFILE" --wait --output-format plist > "$WORK/notary.plist" || true
+  xcrun notarytool submit "$1" "${NOTARY_ARGS[@]}" --wait --output-format plist > "$WORK/notary.plist" || true
   STATUS=$(/usr/libexec/PlistBuddy -c "Print :status" "$WORK/notary.plist" 2>/dev/null || echo "unknown")
   ID=$(/usr/libexec/PlistBuddy -c "Print :id" "$WORK/notary.plist" 2>/dev/null || echo "")
   if [ "$STATUS" != "Accepted" ]; then
     echo "Notarization: $STATUS" >&2
     cat "$WORK/notary.plist" >&2 || true
-    [ -n "$ID" ] && xcrun notarytool log "$ID" --keychain-profile "$NOTARY_PROFILE" >&2
+    [ -n "$ID" ] && xcrun notarytool log "$ID" "${NOTARY_ARGS[@]}" >&2
     exit 1
   fi
 }
@@ -161,6 +173,8 @@ if [ "$NOTARIZE" = "1" ]; then
   xcrun stapler staple "$APP"
   spctl --assess --type execute --verbose=2 "$APP"
 fi
+rm -f "$APP_ZIP"
+ditto -c -k --keepParent "$APP" "$APP_ZIP"
 
 echo "==> DMG"
 STAGE="$WORK/dmg"
@@ -184,5 +198,5 @@ if [ "$NOTARIZE" = "1" ]; then
   xcrun stapler staple "$DMG"
   spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 fi
-shasum -a 256 "$DMG" > "$DMG.sha256"
-echo "Built $DMG"
+(cd "$DIST" && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256" && shasum -a 256 "$(basename "$APP_ZIP")" > "$(basename "$APP_ZIP").sha256")
+echo "Built $DMG and $APP_ZIP"

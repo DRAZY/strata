@@ -27,5 +27,5 @@ cp LICENSE "$WORK/$NAME/LICENSE.txt"
 cp README.md "$WORK/$NAME/README.md"
 rm -f "$DIST/$NAME.zip"
 (cd "$WORK" && zip -qr9 "$OLDPWD/$DIST/$NAME.zip" "$NAME")
-shasum -a 256 "$DIST/$NAME.zip" > "$DIST/$NAME.zip.sha256"
+(cd "$DIST" && shasum -a 256 "$NAME.zip" > "$NAME.zip.sha256")
 echo "Built $DIST/$NAME.zip"

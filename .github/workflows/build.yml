@@ -1,32 +1,84 @@
+# CI: tests and clippy on macOS and Windows, a Linux build, and a dependency
+# audit, for every pull request and every push to main. (The README's badge
+# points at this file's name.) Releases are built by release.yml.
 name: build
 
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-14            # Apple silicon runner
-            target: aarch64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-    runs-on: ${{ matrix.os }}
+  macos:
+    name: macOS (Apple silicon)
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --target ${{ matrix.target }}
-      - run: cargo test --target ${{ matrix.target }}
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      # The package build: no dev aids (see src/dev.rs).
+      - run: cargo build --release --no-default-features
+
+  windows:
+    name: Windows (x64, MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release --no-default-features
       - uses: actions/upload-artifact@v4
         with:
-          name: strata-${{ matrix.target }}
-          path: |
-            target/${{ matrix.target }}/release/strata
-            target/${{ matrix.target }}/release/strata.exe
+          name: strata-windows-x64
+          path: target/release/strata.exe
           if-no-files-found: error
+
+  linux:
+    # Not an officially supported platform yet: it must build; its tests
+    # are run for information.
+    name: Linux (x64, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries (winit, wgpu, clipboard)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libgl1-mesa-dev libvulkan-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --all-targets
+      - run: cargo test
+        continue-on-error: true
+
+  audit:
+    # Fails on known vulnerabilities; "unmaintained" notices are only warnings.
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
