@@ -56,7 +56,14 @@ pub struct Document {
     /// The encoding was guessed (the file isn't Unicode) and is worth
     /// pointing out: see `encoding::Detected::worth_mentioning`.
     pub encoding_guessed: bool,
+    /// Not text: an image preview or a read-only hex view (see `binary`).
+    /// The editor is empty and read-only, the tab is never unsaved, and it
+    /// can't be saved.
+    pub binary: Option<Box<crate::binary::BinaryView>>,
 }
+
+/// Images are shrunk to fit this many pixels a side (what GPUs take).
+pub const MAX_IMAGE_SIDE: u32 = 8192;
 
 /// A file opened in large-file mode, like Sublime's and VS Code's: it shows
 /// as Plain Text, and the minimap, word wrap, bracket colors and sticky
@@ -132,6 +139,7 @@ impl Document {
             word_count: None,
             large: None,
             encoding_guessed: false,
+            binary: None,
             view_group: None,
             compare: None,
         }
@@ -146,7 +154,15 @@ impl Document {
 
     /// `open`, in large-file mode if the file has more than `large_bytes`
     /// bytes or a line longer than `LONG_LINE_BYTES`.
+    /// A file that isn't text opens in an image preview or the hex view.
     pub fn open_with(path: PathBuf, large_bytes: u64) -> std::io::Result<Self> {
+        if path.is_file()
+            && let Some(view) = crate::binary::BinaryView::open(&path, MAX_IMAGE_SIDE)?
+        {
+            let mut doc = Self::from_buffer(Some(path), Buffer::from_str(""));
+            doc.show_binary(view);
+            return Ok(doc);
+        }
         let bytes = if path.exists() { std::fs::read(&path)? } else { Vec::new() };
         let longest = longest_line(&bytes);
         let long_lines = longest > LONG_LINE_BYTES;
@@ -171,9 +187,16 @@ impl Document {
     /// Refuses (`ErrorKind::Other`) if the tab has unsaved changes — confirm
     /// and discard them first — or has no file. The cursor keeps its line
     /// and column where possible.
+    /// A binary tab becomes a text tab: asking for an encoding says it's text.
     pub fn reopen_with_encoding(&mut self, enc: Encoding) -> io::Result<()> {
         if self.is_dirty() {
             return Err(io::Error::other("the tab has unsaved changes"));
+        }
+        if self.binary.take().is_some() {
+            self.editor.read_only = false;
+            self.reload_as(enc)?;
+            self.highlighter.detect(self.path.as_deref(), &self.editor.buffer.line_text(0));
+            return Ok(());
         }
         self.reload_as(enc)
     }
@@ -181,7 +204,29 @@ impl Document {
     /// Discard the tab's text and load the file from disk in the current
     /// encoding (the "Reload" action for a conflicted tab).
     pub fn reload_from_disk(&mut self) -> io::Result<()> {
+        if self.binary.is_some() {
+            let path = self.path.clone().ok_or_else(|| io::Error::other("the tab has no file"))?;
+            let (now, len) = stamp(&path);
+            if let Some(view) = crate::binary::BinaryView::open(&path, MAX_IMAGE_SIDE)? {
+                self.show_binary(view);
+                (self.disk_mtime, self.disk_len) = (now, len);
+                self.deleted = false;
+                return Ok(());
+            }
+            // It's text now.
+            self.binary = None;
+            self.editor.read_only = false;
+        }
         self.reload_as(self.encoding)
+    }
+
+    /// Show `view` instead of text (read-only, plain).
+    fn show_binary(&mut self, view: crate::binary::BinaryView) {
+        self.binary = Some(Box::new(view));
+        self.editor = Editor::new(Buffer::from_str(""));
+        self.editor.read_only = true;
+        self.highlighter.set_syntax("Plain Text");
+        self.restored_dirty = false;
     }
 
     fn reload_as(&mut self, enc: Encoding) -> io::Result<()> {
@@ -206,7 +251,7 @@ impl Document {
     /// becomes unsaved so the change isn't lost silently; nothing is checked
     /// here — call `editor.buffer.check_encodable(enc)` to warn first.
     pub fn set_encoding(&mut self, enc: Encoding) {
-        if enc != self.encoding {
+        if enc != self.encoding && self.binary.is_none() {
             self.encoding = enc;
             if self.path.is_some() {
                 self.restored_dirty = true;
@@ -220,7 +265,7 @@ impl Document {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.restored_dirty || self.editor.is_dirty()
+        self.binary.is_none() && (self.restored_dirty || self.editor.is_dirty())
     }
 
     /// Untitled, unchanged and empty: safe to replace without asking.
@@ -290,6 +335,9 @@ impl Document {
         }
         if !self.differs_from(now, len) {
             return false;
+        }
+        if self.binary.is_some() {
+            return self.reload_from_disk().is_ok();
         }
         if self.is_dirty() {
             self.conflict = true;

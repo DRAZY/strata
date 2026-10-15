@@ -6,6 +6,7 @@
 mod app;
 mod brackets;
 mod build;
+mod binary;
 mod buffer;
 mod cli;
 mod commands;

@@ -131,7 +131,7 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `word_wrap` | true/false | `false` | Soft-wrap every file. Markdown, MultiMarkdown, Plain Text, reStructuredText, Textile and LaTeX files wrap even when this is off. View ▸ Word Wrap overrides it for one file. |
 | `wrap_column` | number or `null` | `null` | Wrap at this column instead of the window edge (`null` means the window edge). Lines still wrap at the window edge if it comes first. |
 | `large_file_mb` | number | `20` | Files bigger than this many megabytes open in large-file mode: as Plain Text, without the minimap, word wrap, bracket colors or sticky scroll. Choosing a syntax still highlights them. Files with a line longer than 10,000 characters always open this way. See [Very large files](troubleshooting.md#very-large-files). |
-| `large_file_warning_mb` | number | `500` | Ask before opening a file bigger than this many megabytes. Strata also asks before opening a file that looks binary. |
+| `large_file_warning_mb` | number | `500` | Ask before opening a text file bigger than this many megabytes. Binary files open in the hex view without asking (see [Binary files](encodings.md#binary-files)). |
 
 ### Window
 

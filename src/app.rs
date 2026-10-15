@@ -147,6 +147,7 @@ pub struct StrataApp {
 }
 
 mod autosave;
+mod binary_ui;
 #[cfg(test)]
 mod bench;
 mod clones;
@@ -588,6 +589,10 @@ impl StrataApp {
 
     /// True if the tab ends up saved.
     fn save(&mut self, i: usize, choose: bool) -> bool {
+        if self.docs[i].binary.is_some() {
+            self.status = format!("{} isn't text: it can't be saved from Strata", self.docs[i].name());
+            return false;
+        }
         let target = match (&self.docs[i].path, choose) {
             (Some(p), false) => Some(p.clone()),
             _ => self.save_dialog(i).save_file(),
@@ -2213,7 +2218,9 @@ impl StrataApp {
                     let is_active = i == self.active;
                     let d = &mut self.docs[i];
                     let matches = if find_open && is_active { std::mem::take(&mut d.finder.matches) } else { Vec::new() };
+                    let font_size = self.settings.font_size;
                     let resp = match d.compare.as_mut() {
+                        _ if d.binary.is_some() => binary_ui::show(d.binary.as_deref_mut().expect("checked"), ui, &d.highlighter, font_size, d.view.id),
                         Some(c) => compare_ui::show(c, ui, &mut d.editor, &mut d.highlighter, &mut d.view),
                         None => d.view.show(ui, &mut d.editor, &mut d.highlighter, &matches),
                     };
@@ -2277,7 +2284,8 @@ impl StrataApp {
         let (line, col) = d.editor.cursor_line_col();
         let cursors = d.editor.selections().len();
         let selected: usize = d.editor.selections().iter().map(|s| s.end() - s.start()).sum();
-        let mut pos = format!("Line {line}, Column {col}");
+        let binary = binary_ui::status(d);
+        let mut pos = binary.clone().unwrap_or_else(|| format!("Line {line}, Column {col}"));
         if cursors > 1 {
             pos.push_str(&format!("  ·  {cursors} cursors"));
         }
@@ -2288,7 +2296,7 @@ impl StrataApp {
         let fit = status_fit(ui, &pos, d.conflict, d.deleted, d.editor.buffer.lossy, branch.as_deref(), words.as_deref());
         ui.horizontal(|ui| {
             let d = &mut self.docs[self.active];
-            ui.label(if fit.short_pos { format!("{line}:{col}") } else { pos });
+            ui.label(if fit.short_pos && binary.is_none() { format!("{line}:{col}") } else { pos });
             if d.deleted && fit.left[StatusLeft::Deleted as usize] {
                 ui.separator();
                 ui.colored_label(Color32::from_rgb(0xe5, 0x9e, 0x40), "Deleted on disk (save to recreate)");

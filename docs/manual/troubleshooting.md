@@ -174,7 +174,7 @@ Strata stays responsive on files of hundreds of megabytes and on minified files 
 
 **Large-file mode.** A file bigger than 20 MB (the `large_file_mb` setting), or with a line longer than 10,000 characters, opens in large-file mode. The status bar says so when it opens. In this mode the file shows as Plain Text, and the minimap, word wrap, bracket colors and sticky scroll are off for it. To highlight it anyway, choose its syntax in the status bar's syntax menu (or **View ▸ Syntax**): highlighting then works in the background, a screenful at a time, so the editor never waits for it. **View ▸ Word Wrap** still turns wrapping on for that file, unless it has a line longer than 200,000 characters.
 
-**Asking first.** Opening a file bigger than 500 MB (the `large_file_warning_mb` setting) asks first, since all of it is read into memory. So does opening a file that looks binary (it has a NUL byte near the start and isn't UTF-16): shown as text it's gibberish, and saving it could damage it.
+**Asking first.** Opening a text file bigger than 500 MB (the `large_file_warning_mb` setting) asks first, since all of it is read into memory. Binary files don't ask: they open in a read-only hex view that reads only what it shows (see [Binary files](encodings.md#binary-files)).
 
 **What else stays fast, and how:**
 

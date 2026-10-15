@@ -235,6 +235,9 @@ impl StrataApp {
     pub(super) fn word_count(&mut self) -> Option<String> {
         use std::hash::{Hash, Hasher};
         let d = &mut self.docs[self.active];
+        if d.binary.is_some() {
+            return None;
+        }
         let e = &d.editor;
         let mut h = std::collections::hash_map::DefaultHasher::new();
         e.version().hash(&mut h);

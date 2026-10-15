@@ -125,4 +125,9 @@ When Strata restores unsaved tabs after a restart, each one keeps the encoding i
 
 ## Binary files
 
-Strata doesn't have a separate viewer for binary files. If you open one, it is shown as text: usually as Western (Windows 1252), since binary data is rarely valid UTF-8. Saving it from Strata is not recommended.
+Files that aren't text open in a viewer instead of the editor, and can't be edited or saved from Strata, so opening one never risks damaging it:
+
+- **Images** (PNG, JPEG, GIF, WebP, BMP and ICO) open in a preview, shrunk to fit the tab. Click the image to see it at 100% (scroll to look around), and click again to fit it. The status bar shows the format, the size in pixels and the file size. An animated GIF shows its first frame. SVG files are text and open in the editor.
+- **Other binary files** open in a hex view under a "Binary file — read-only" banner: each row shows the offset, 16 bytes in hexadecimal and the same bytes as ASCII (a dot for the rest). The view reads only the part of the file on screen, so even very large files open at once. The status bar shows the file size.
+
+Strata decides from the start of the file: an image's signature, or bytes text doesn't have (a zero byte, unless the file is UTF-16, or many control characters). If a text file is mistaken for binary, choose **File ▸ Reopen with Encoding** to open it as text in the encoding you pick.
