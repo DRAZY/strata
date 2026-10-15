@@ -23,7 +23,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Never publish unsigned builds: without the signing secrets, stop here
       # (a release made by hand with scripts/package-macos.sh stays untouched).
       - name: Signing secrets present
@@ -58,7 +58,7 @@ jobs:
       APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
       APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # CFBundleVersion is the commit count
       - uses: dtolnay/rust-toolchain@stable
@@ -104,7 +104,7 @@ jobs:
       - name: Apple silicon DMG
         run: ARCH=arm64 scripts/package-macos.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: |
@@ -124,7 +124,7 @@ jobs:
     needs: meta
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --no-default-features
@@ -141,7 +141,7 @@ jobs:
           $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
           # The same format as shasum -a 256, so `shasum -a 256 -c` reads it.
           [IO.File]::WriteAllText("dist/$name.zip.sha256", "$hash  $name.zip`n")
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: dist/*
@@ -154,8 +154,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -211,7 +211,7 @@ jobs:
           cat notes.md
           ls -l dist
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           draft: true
           prerelease: ${{ needs.meta.outputs.prerelease == 'true' }}
