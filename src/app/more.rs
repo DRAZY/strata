@@ -489,6 +489,7 @@ const LICENSES: &[Credit] = &[
     credit("regex", "MIT or Apache-2.0", &["regex"]),
     credit("ignore / globset", "MIT or Unlicense", &["ignore", "globset"]),
     credit("encoding_rs", "Apache-2.0 or MIT (data: BSD-3-Clause)", &["encoding_rs"]),
+    credit("chardetng (encoding detection)", "Apache-2.0 or MIT", &["chardetng"]),
     credit("alacritty_terminal", "Apache-2.0", &["alacritty_terminal"]),
     credit("vte", "Apache-2.0 or MIT", &[]),
     credit("pulldown-cmark", "MIT", &["pulldown-cmark"]),

@@ -183,6 +183,14 @@ mod tests {
         }
         shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join("spell.ppm"));
 
+        // A Shift_JIS file: opened with a guessed encoding, which the status bar points out.
+        let tmp = std::env::temp_dir().join("strata-shot-sjis.txt");
+        let text = "日本語のテキストファイルです。\nこれは文字コードの判定のためのテストです。\n".repeat(4);
+        std::fs::write(&tmp, encoding_rs::SHIFT_JIS.encode(&text).0).unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(Some(tmp), None);
+        shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join("encoding_hint.ppm"));
+
         // The About window over an empty editor.
         let ctx = Context::default();
         let mut app = StrataApp::new(None, None);

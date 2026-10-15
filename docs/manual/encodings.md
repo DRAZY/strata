@@ -9,11 +9,11 @@ When you open a file, Strata looks at its bytes in this order:
 1. **A byte order mark (BOM).** A file starting with a UTF-8, UTF-16 LE or UTF-16 BE byte order mark opens in that encoding, with BOM.
 2. **UTF-16 without a BOM.** Mostly-English text saved as UTF-16 has a zero byte in every other position. If the start of the file looks like that and the whole file decodes cleanly, it opens as UTF-16 LE or UTF-16 BE.
 3. **UTF-8.** If the file is valid UTF-8 (plain ASCII included), it opens as UTF-8.
-4. **Western (Windows 1252).** Anything else opens as Windows 1252, which has a character for every byte, so nothing is lost or replaced.
+4. **A guess among the older encodings.** Anything else is not Unicode, so Strata guesses its encoding from which bytes appear and how often, the way web browsers do for pages that don't name theirs. It recognizes Japanese (Shift_JIS, EUC-JP), Chinese (GBK, Big5), Korean (EUC-KR), Cyrillic (Windows 1251, KOI8), Greek, Hebrew, Arabic, Thai, Turkish, Central European and Western text. If the guessed encoding can't read every byte of the file, the file opens as **Western (Windows 1252)** instead, which has a character for every byte, so nothing is lost or replaced.
 
 A new file, and a file path that doesn't exist yet, starts as UTF-8.
 
-If the guess is wrong, for example a Cyrillic or Japanese file that opened as Windows 1252, use [Reopen with Encoding](#reopen-with-encoding) to read it again with the right one.
+When the encoding was guessed, and the guess is anything other than Western text, or the file has too few non-English characters to be sure, the status bar says so, for example "Opened as Japanese (Shift_JIS) — Reopen with Encoding…". If the text looks wrong, use [Reopen with Encoding](#reopen-with-encoding) to read it again with the right one.
 
 ## Supported encodings
 
@@ -27,7 +27,7 @@ These are the encodings in the menus, in menu order:
 | UTF-16 LE with BOM | |
 | UTF-16 BE | |
 | UTF-16 BE with BOM | |
-| Western (Windows 1252) | Used when a file isn't UTF-8 or UTF-16 |
+| Western (Windows 1252) | Used when no better guess reads the whole file |
 | Western (ISO 8859-1) | |
 | Western (ISO 8859-15) | |
 | Western (Mac Roman) | |

@@ -135,9 +135,34 @@ static ALL:[Encoding; 40] = [
 
 /// Pick an encoding for bytes read from disk and decode them.
 /// Order: byte order mark, BOM-less UTF-16 (ASCII-heavy text with NULs at
-/// every other byte), valid UTF-8, then Windows-1252, which maps every byte
-/// so nothing is ever replaced. Returns (text, encoding, lossy).
+/// every other byte), valid UTF-8, then a guess among the legacy encodings
+/// (see [`guess_legacy`]). Returns (text, encoding, lossy).
 pub fn decode_detect(bytes: &[u8]) -> (Cow<'_, str>, Encoding, bool) {
+    let d = detect(bytes);
+    (d.text, d.encoding, d.lossy)
+}
+
+/// What [`detect`] found.
+pub struct Detected<'a> {
+    pub text: Cow<'a, str>,
+    pub encoding: Encoding,
+    /// Malformed bytes were replaced with U+FFFD.
+    pub lossy: bool,
+    /// The bytes weren't Unicode, so the encoding is a guess from their
+    /// statistics: Some(confident). None for a BOM, UTF-16 or UTF-8.
+    pub guess: Option<bool>,
+}
+
+impl Detected<'_> {
+    /// Worth telling the user: a legacy encoding other than Windows 1252,
+    /// or any guess made with little to go on.
+    pub fn worth_mentioning(&self) -> bool {
+        self.guess.is_some_and(|confident| !confident || self.encoding != Encoding::WINDOWS_1252)
+    }
+}
+
+/// [`decode_detect`], also saying whether the encoding was guessed.
+pub fn detect(bytes: &[u8]) -> Detected<'_> {
     let enc = if bytes.starts_with(b"\xEF\xBB\xBF") {
         Encoding::UTF8_BOM
     } else if bytes.starts_with(b"\xFF\xFE") {
@@ -147,12 +172,41 @@ pub fn decode_detect(bytes: &[u8]) -> (Cow<'_, str>, Encoding, bool) {
     } else if let Some(enc) = sniff_utf16(bytes) {
         enc
     } else if let Ok(text) = std::str::from_utf8(bytes) {
-        return (Cow::Borrowed(text), Encoding::UTF8, false);
+        return Detected { text: Cow::Borrowed(text), encoding: Encoding::UTF8, lossy: false, guess: None };
     } else {
-        Encoding::WINDOWS_1252
+        let (encoding, confident) = guess_legacy(bytes);
+        let (text, lossy) = decode(bytes, encoding);
+        return Detected { text, encoding, lossy, guess: Some(confident) };
     };
     let (text, lossy) = decode(bytes, enc);
-    (text, enc, lossy)
+    Detected { text, encoding: enc, lossy, guess: None }
+}
+
+/// Fewer non-ASCII bytes than this is too little to tell legacy encodings apart.
+const GUESS_MIN_NON_ASCII: usize = 16;
+/// The detector looks at most this much of a file.
+const GUESS_SAMPLE: usize = 1 << 20;
+
+/// A legacy encoding for bytes that aren't UTF-8 (Shift_JIS, GBK, EUC-KR,
+/// Big5, KOI8-R, Windows 1251…), guessed by `chardetng` from the bytes'
+/// statistics, and whether the guess is a confident one. A guess that can't
+/// decode the file cleanly, or one Strata doesn't offer, becomes Windows
+/// 1252, which maps every byte so nothing is ever replaced.
+pub fn guess_legacy(bytes: &[u8]) -> (Encoding, bool) {
+    let sample = &bytes[..bytes.len().min(GUESS_SAMPLE)];
+    let mut detector = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Deny);
+    detector.feed(sample, sample.len() == bytes.len());
+    let guessed = detector.guess(None, chardetng::Utf8Detection::Deny);
+    let enough = sample.iter().filter(|b| !b.is_ascii()).count() >= GUESS_MIN_NON_ASCII;
+    let ours = ALL.iter().copied().find(|e| matches!(e.codec, Codec::Rs(c) if c == guessed));
+    // Bytes Windows 1252 leaves undefined say it's something else (0x81
+    // leads most Shift_JIS punctuation, say) that the detector ruled out.
+    let undefined_1252 = || sample.iter().any(|b| matches!(b, 0x81 | 0x8D | 0x8F | 0x90 | 0x9D));
+    match ours {
+        Some(enc) if enc == Encoding::WINDOWS_1252 => (enc, enough && !undefined_1252()),
+        Some(enc) if guessed.decode_without_bom_handling_and_without_replacement(bytes).is_some() => (enc, enough),
+        _ => (Encoding::WINDOWS_1252, false),
+    }
 }
 
 /// UTF-16 without a BOM: in the first few KB, at least a fifth of the
@@ -356,6 +410,63 @@ mod tests {
         let err = encode_to(chunks.iter().copied(), enc, &mut Vec::new()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(find_unencodable(chunks.iter().copied(), Encoding::from_id("gb18030").unwrap()).is_none());
+    }
+
+    /// `text` in the encoding `id`, a few times over (detection wants some text).
+    fn sample(id: &str, text: &str) -> Vec<u8> {
+        encode(&text.repeat(3), Encoding::from_id(id).unwrap())
+    }
+
+    #[test]
+    fn legacy_encodings_are_guessed() {
+        let cases = [
+            ("shift_jis", "日本語のテキストファイルです。これは文字コードの判定のためのテストです。\n"),
+            ("euc-jp", "日本語のテキストファイルです。これは文字コードの判定のためのテストです。\n"),
+            ("gbk", "这是一个简体中文的文本文件，用来测试编码检测是否正确。我们需要足够多的汉字。\n"),
+            ("big5", "這是一個繁體中文的文字檔案，用來測試編碼偵測是否正確。我們需要足夠多的漢字。\n"),
+            ("euc-kr", "이것은 한국어 텍스트 파일입니다. 인코딩 감지가 올바른지 확인하기 위한 테스트입니다.\n"),
+            ("koi8-r", "Это текстовый файл на русском языке. Проверяем, правильно ли определяется кодировка.\n"),
+            ("windows-1251", "Это текстовый файл на русском языке. Проверяем, правильно ли определяется кодировка.\n"),
+            ("windows-1253", "Αυτό είναι ένα αρχείο κειμένου στα ελληνικά. Ελέγχουμε αν η κωδικοποίηση εντοπίζεται σωστά.\n"),
+        ];
+        for (id, text) in cases {
+            let bytes = sample(id, text);
+            let d = detect(&bytes);
+            // KOI8-U is KOI8-R plus a few Ukrainian letters: the same Russian text.
+            let found = if id == "koi8-r" { d.encoding.id().replace("koi8-u", "koi8-r") } else { d.encoding.id().to_owned() };
+            assert_eq!(found, id, "{text}");
+            assert_eq!(d.text, text.repeat(3));
+            assert!(!d.lossy);
+            assert_eq!(d.guess, Some(true), "{id}");
+            assert!(d.worth_mentioning(), "{id}");
+        }
+    }
+
+    #[test]
+    fn western_text_stays_windows_1252_quietly() {
+        let bytes = sample("windows-1252", "Café crème, naïve façade, déjà vu — résumé of the piñata señor’s “quotes”.\n");
+        let d = detect(&bytes);
+        assert_eq!(d.encoding, Encoding::WINDOWS_1252);
+        assert_eq!(d.guess, Some(true));
+        assert!(!d.worth_mentioning());
+        // Two accented letters are too little to be sure of anything.
+        let d = detect(b"caf\xE9 na\xEFve\n");
+        assert_eq!(d.guess, Some(false));
+        assert!(d.worth_mentioning(), "a guess on little evidence is mentioned");
+        // Unicode isn't a guess.
+        assert_eq!(detect("日本語".as_bytes()).guess, None);
+        assert_eq!(detect(b"\xFF\xFEa\x00").guess, None);
+    }
+
+    #[test]
+    fn a_guess_that_cant_decode_cleanly_falls_back_to_windows_1252() {
+        // Shift_JIS text cut off after a lead byte.
+        let mut bytes = sample("shift_jis", "日本語のテキストファイルです。これは文字コードの判定のためのテストです。\n");
+        bytes.push(0x81);
+        let d = detect(&bytes);
+        assert_eq!(d.encoding, Encoding::WINDOWS_1252);
+        assert_eq!(d.guess, Some(false));
+        assert!(!d.lossy, "nothing is replaced");
     }
 
     #[test]

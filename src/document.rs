@@ -53,6 +53,9 @@ pub struct Document {
     pub word_count: Option<(u64, Option<String>)>,
     /// Opened in large-file mode (see `LargeFile`).
     pub large: Option<LargeFile>,
+    /// The encoding was guessed (the file isn't Unicode) and is worth
+    /// pointing out: see `encoding::Detected::worth_mentioning`.
+    pub encoding_guessed: bool,
 }
 
 /// A file opened in large-file mode, like Sublime's and VS Code's: it shows
@@ -128,6 +131,7 @@ impl Document {
             title: None,
             word_count: None,
             large: None,
+            encoding_guessed: false,
             view_group: None,
             compare: None,
         }
@@ -147,10 +151,15 @@ impl Document {
         let longest = longest_line(&bytes);
         let long_lines = longest > LONG_LINE_BYTES;
         let large = long_lines || bytes.len() as u64 > large_bytes;
-        let (buffer, encoding) = if bytes.is_empty() { (Buffer::from_str(""), Encoding::UTF8) } else { Buffer::decode(&bytes) };
+        let detected = crate::encoding::detect(&bytes);
+        let mut buffer = Buffer::from_str(&detected.text);
+        buffer.lossy = detected.lossy;
+        let (encoding, guessed) = (detected.encoding, detected.worth_mentioning());
+        drop(detected);
         drop(bytes);
         let mut doc = Self::from_buffer(Some(path), buffer);
         doc.encoding = encoding;
+        doc.encoding_guessed = guessed;
         if large {
             doc.large = Some(LargeFile { syntax: doc.highlighter.syntax_name().to_owned(), long_lines, longest_line: longest });
             doc.highlighter.set_syntax("Plain Text");
@@ -186,6 +195,7 @@ impl Document {
         let at = (b.line_start(line) + col - 1).min(b.line_end(line));
         self.editor.select_ranges(&[at..at], 0);
         self.encoding = enc;
+        self.encoding_guessed = false;
         (self.disk_mtime, self.disk_len) = (now, len);
         self.restored_dirty = false;
         self.deleted = false;

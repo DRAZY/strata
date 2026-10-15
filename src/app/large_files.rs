@@ -56,9 +56,14 @@ impl StrataApp {
     }
 }
 
-/// The status line after opening `doc`, saying what large-file mode turned off.
+/// The status line after opening `doc`: the encoding when it was a guess
+/// (and where to change it), and what large-file mode turned off.
 pub fn opened_status(doc: &Document, path: &Path) -> String {
-    let Some(large) = &doc.large else { return format!("Opened {}", path.display()) };
+    let guess = doc.encoding_guessed.then(|| format!("Opened as {} — Reopen with Encoding… (File menu, or the encoding in the status bar) if the text looks wrong", doc.encoding.name()));
+    let Some(large) = &doc.large else { return guess.unwrap_or_else(|| format!("Opened {}", path.display())) };
+    if let Some(guess) = guess {
+        return format!("{guess}. Large file: highlighting, minimap and word wrap are off");
+    }
     let why = if large.long_lines { "very long lines" } else { "large file" };
     let syntax = if large.syntax == "Plain Text" {
         String::new()
@@ -115,6 +120,32 @@ mod tests {
         app.open_path(path, false);
         let d = &app.docs[app.active];
         assert_eq!((d.highlighter.syntax_name(), d.large.is_none()), ("Rust", true));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_guessed_encoding_is_pointed_out() {
+        let dir = std::env::temp_dir().join(format!("strata-guess-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sjis = dir.join("sjis.txt");
+        let text = "日本語のテキストファイルです。これは文字コードの判定のためのテストです。\n".repeat(3);
+        std::fs::write(&sjis, encoding_rs::SHIFT_JIS.encode(&text).0).unwrap();
+        let mut app = StrataApp::new(None, None);
+        app.open_path(sjis.clone(), false);
+        let d = &app.docs[app.active];
+        assert_eq!(d.encoding.id(), "shift_jis");
+        assert_eq!(d.editor.buffer.line_text(0), text.lines().next().unwrap());
+        assert_eq!(app.status, "Opened as Japanese (Shift_JIS) — Reopen with Encoding… (File menu, or the encoding in the status bar) if the text looks wrong");
+        // Choosing an encoding means it's no longer a guess.
+        app.docs[app.active].reopen_with_encoding(crate::encoding::Encoding::from_id("euc-jp").unwrap()).unwrap();
+        assert!(!app.docs[app.active].encoding_guessed);
+
+        // Plain Western text and UTF-8 open quietly.
+        let latin = dir.join("latin.txt");
+        std::fs::write(&latin, "Café crème, naïve façade, déjà vu, résumé, piñata.\n".repeat(3).chars().map(|c| c as u8).collect::<Vec<u8>>()).unwrap();
+        app.open_path(latin.clone(), false);
+        assert_eq!(app.docs[app.active].encoding, crate::encoding::Encoding::WINDOWS_1252);
+        assert_eq!(app.status, format!("Opened {}", latin.display()));
         std::fs::remove_dir_all(dir).ok();
     }
 }
