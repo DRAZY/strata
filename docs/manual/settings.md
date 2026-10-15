@@ -1,10 +1,24 @@
 # Settings Reference
 
-Strata keeps your preferences in one file, `settings.json`. This page explains how that file works and lists every setting it accepts.
+Strata keeps your preferences in one file, `settings.json`. You can change them in the Settings window, or edit the file directly. This page explains both and lists every setting.
+
+## The Settings window
+
+Press {{key:settings}}, or choose **Strata ▸ Settings ▸ Settings…** on macOS (**Preferences ▸ Settings…** on Windows and Linux), or run **Preferences: Settings…** from the command palette.
+
+The window lists every setting by category: Appearance, Editor, Files & Saving, Find & Spelling, Terminal & Build, Side Bar, Help and Advanced. Each row has the setting's name, a short description, its control, and its key in `settings.json` (click the key to copy it). The search box at the top ({{key:show_find}}) looks through every category at once, matching names, keys and descriptions.
+
+- **Changes apply at once**, in every open window, and are saved to `settings.json` straight away, the same way a menu toggle is: only that setting is written, and your comments and the rest of the file are kept (see [When Strata writes the file](#when-strata-writes-the-file)).
+- **A bar in the margin** marks settings that differ from their default; **Reset** next to the name puts the default back.
+- **Numbers** stay within the range Strata uses. If `settings.json` holds a value outside it, the row says so.
+- **Color overrides** and other settings too structured for a form have an **Edit in settings.json** button that opens the file at that setting. Settings for one language at a time are edited in `settings.json` too.
+- **If `settings.json` has an error**, the window shows it and doesn't let you change anything until it's fixed, so the broken file is never overwritten. Fix the file and save it; the window follows.
+
+Use Tab to move between controls, and Esc to clear the search or close the window. On platforms with separate windows it opens in its own window; otherwise it opens over the editor.
 
 ## Opening settings.json
 
-Open it with **Strata ▸ Settings ▸ Settings** on macOS, or **Preferences ▸ Settings** on Windows and Linux. You can also run **Preferences: Settings** from the command palette, or press {{key:edit_settings}}.
+To edit the file itself, click **Open settings.json** in the Settings window, choose **Strata ▸ Settings ▸ Settings (JSON)** on macOS (**Preferences ▸ Settings (JSON)** on Windows and Linux), or run **Preferences: Settings (JSON)** from the command palette. To give it a shortcut, bind `edit_settings` in [Key Bindings](keybindings.md).
 
 The file lives in Strata's config folder, next to `keybindings.json`, your session and the `Themes`, `Syntaxes` and `Snippets` folders. On macOS that is `~/Library/Application Support/Strata`, on Windows `%APPDATA%\Strata`, and on Linux `~/.config/strata` (or `$XDG_CONFIG_HOME/strata`). [Troubleshooting](troubleshooting.md) has the details.
 
@@ -43,11 +57,11 @@ A value of the wrong type (for example `"font_size": "big"`) counts as an error 
 
 ### When Strata writes the file
 
-Menus and commands that change a setting (View ▸ Editor Extras, the Color Scheme menu, zooming, the font pickers and so on) save it to `settings.json` right away. When Strata writes the file:
+The Settings window, and menus and commands that change a setting (View ▸ Editor Extras, the Color Scheme menu, zooming, the font pickers and so on), save it to `settings.json` right away. When Strata writes the file:
 
 - Only the setting that changed is touched: its value is replaced where it is, or, if the file doesn't mention it yet, it is added after the last key. Comments, blank lines, the order of keys and keys Strata doesn't know are all kept, so you can keep notes or settings for other tools there.
 - Settings left at their defaults are not written out.
-- If the file doesn't exist yet (Preferences ▸ Settings creates it), it starts with every setting and its current value.
+- If the file doesn't exist yet (opening it from the menu creates it), it starts with every setting and its current value.
 
 ## Settings that are not in settings.json
 
@@ -62,7 +76,7 @@ Key bindings are kept in their own file, `keybindings.json` (see [Key Bindings](
 
 ## Settings changed from menus
 
-Many settings have a menu item, so you rarely need to edit the file for them:
+Every setting is in the Settings window, and many also have a menu item:
 
 | Menu | Settings |
 |------|----------|

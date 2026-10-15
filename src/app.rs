@@ -126,6 +126,10 @@ pub struct StrataApp {
     keymap: keymap_ui::KeymapState,
     /// Help ▸ Documentation (see `help_ui`).
     help: help_ui::HelpState,
+    /// Preferences ▸ Settings… (see `settings_ui`).
+    settings_ui: settings_ui::SettingsUi,
+    /// The welcome card (see `first_run`).
+    first_run: first_run::FirstRun,
     /// "Strata quit unexpectedly last time" (see `diagnostics`).
     crash_notice: Option<crate::crash::PreviousCrash>,
     /// Tabs sharing a buffer (see `clones`).
@@ -157,6 +161,7 @@ mod diagnostics;
 mod doc_settings;
 mod features;
 mod find_options;
+mod first_run;
 #[cfg(test)]
 mod headless;
 mod help_ui;
@@ -172,6 +177,7 @@ mod printing;
 mod replace_files;
 #[cfg(test)]
 mod save_safety;
+mod settings_ui;
 mod snippets_ui;
 mod spelling;
 mod textutil;
@@ -207,6 +213,7 @@ impl StrataApp {
         if app.docs.is_empty() {
             app.push_doc(Document::untitled());
         }
+        app.first_run_check();
         app.session_key = app.session_fingerprint();
 
         // Dev aids (pair with STRATA_SCREENSHOT): run find-in-files on the open folders
@@ -288,6 +295,8 @@ impl StrataApp {
             context: context_menus::ContextMenus::new(),
             link: windows::Link::default(),
             help: help_ui::HelpState::default(),
+            settings_ui: Default::default(),
+            first_run: Default::default(),
             crash_notice: None,
             views: Default::default(),
             print: Default::default(),
@@ -968,7 +977,7 @@ impl StrataApp {
     // ---- commands --------------------------------------------------------
 
     fn run(&mut self, ctx: &egui::Context, cmd: Cmd) {
-        if self.help_takes(cmd) {
+        if self.help_takes(cmd) || self.settings_takes(cmd) {
             return;
         }
         match cmd {
@@ -1214,6 +1223,8 @@ impl StrataApp {
                 }
             }
             Cmd::Settings => self.open_settings(),
+            Cmd::SettingsWindow => self.open_settings_window(),
+            Cmd::Welcome => self.show_welcome(false),
             Cmd::KeyBindings => self.open_key_bindings(),
             Cmd::CommandPalette => self.open_palette(ctx, palette::Mode::Commands, ""),
             Cmd::GotoAnything => self.open_palette(ctx, palette::Mode::Files, ""),
@@ -1238,6 +1249,8 @@ impl StrataApp {
         }
         // The help window's own keys (Esc, back/forward) come first.
         self.help_keys(ctx);
+        self.settings_keys(ctx);
+        self.first_run_keys(ctx);
         // Window and editor commands, from the keymap (see `keymap_ui`).
         self.dispatch_keys(ctx);
         if self.terminal_has_keys(ctx) {
@@ -2675,8 +2688,10 @@ impl eframe::App for StrataApp {
         }
         self.snippet_from_completion();
         self.help_window(ctx);
+        self.settings_window(ctx);
         self.print_dialog(ctx);
-        let dialog_open = self.palette.open || self.about_open || self.licenses_open || self.help.open;
+        self.first_run_card(ctx);
+        let dialog_open = self.palette.open || self.about_open || self.licenses_open || self.help.open || self.first_run.open;
         if self.docs.len() == 1 && self.docs[0].is_blank() && self.layout.groups() == 1 && !dialog_open {
             self.welcome(ctx);
         }
@@ -2691,6 +2706,11 @@ impl eframe::App for StrataApp {
                 "compare" => self.compare_with_file(self.active, Path::new(q)),
                 "p" => self.open_palette(ctx, palette::Mode::Files, q),
                 "about" => self.about_open = true,
+                "settings" => {
+                    self.open_settings_window();
+                    self.settings_ui.search = q.to_owned();
+                }
+                "welcome" => self.show_welcome(false),
                 "theme" => self.open_palette(ctx, palette::Mode::Theme, q),
                 "licenses" => self.licenses_open = true,
                 // "fif:query": Find in Files once the launch files are open.

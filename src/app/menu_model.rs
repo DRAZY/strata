@@ -158,7 +158,8 @@ fn settings_owned(app: &StrataApp) -> Vec<Item> {
         .map(|(label, h)| Item::new(format!("{label} ({h:.1}×)"), Act::Named(format!("linespacing:{h}"))).checked(plain_spacing && (s.line_height - h).abs() < 0.01))
         .collect();
     vec![
-        c("Settings", Cmd::Settings),
+        c("Settings…", Cmd::SettingsWindow),
+        c("Settings (JSON)", Cmd::Settings),
         c("Key Bindings", Cmd::KeyBindings),
         SEP(),
         sub("Color Scheme", app.theme_menu_items()),
@@ -720,6 +721,7 @@ impl StrataApp {
 
         let mut help = vec![
             c("Documentation", Cmd::Documentation),
+            c("Welcome", Cmd::Welcome),
             c("Getting Started", Cmd::GettingStarted),
             c("Keyboard Shortcuts", Cmd::KeyboardShortcuts),
             c("Search Documentation…", Cmd::SearchDocumentation),
@@ -742,7 +744,7 @@ impl StrataApp {
         use egui::Event;
         let cmd_mods = if MAC { Modifiers::MAC_CMD.plus(Modifiers::COMMAND) } else { Modifiers::CTRL.plus(Modifiers::COMMAND) };
         let key = |key: Key, modifiers: Modifiers| Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers };
-        let editor_focused = self.docs[self.active].view.has_focus(ctx);
+        let editor_focused = self.docs[self.active].view.has_focus(ctx) && !self.settings_has_keys(ctx);
         match act {
             // The editor's own commands, so they follow its key bindings; text fields get the keys.
             Act::Undo if editor_focused => self.run_editor("undo"),
@@ -751,16 +753,17 @@ impl StrataApp {
             Act::Cmd(cmd) => self.run(ctx, cmd),
             Act::Editor(id) => self.run_editor(id),
             // These go through egui's input so the focused widget (editor or a text field) gets them.
-            Act::Copy => self.pending_events.push(Event::Copy),
-            Act::Cut => self.pending_events.push(Event::Cut),
+            // (To the Settings window instead when it has the keyboard.)
+            Act::Copy => self.menu_input(ctx).push(Event::Copy),
+            Act::Cut => self.menu_input(ctx).push(Event::Cut),
             Act::Paste => {
                 if let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
-                    self.pending_events.push(Event::Paste(text));
+                    self.menu_input(ctx).push(Event::Paste(text));
                 }
             }
-            Act::Undo => self.pending_events.push(key(Key::Z, cmd_mods)),
-            Act::Redo => self.pending_events.push(if MAC { key(Key::Z, cmd_mods.plus(Modifiers::SHIFT)) } else { key(Key::Y, cmd_mods) }),
-            Act::SelectAll => self.pending_events.push(key(Key::A, cmd_mods)),
+            Act::Undo => self.menu_input(ctx).push(key(Key::Z, cmd_mods)),
+            Act::Redo => self.menu_input(ctx).push(if MAC { key(Key::Z, cmd_mods.plus(Modifiers::SHIFT)) } else { key(Key::Y, cmd_mods) }),
+            Act::SelectAll => self.menu_input(ctx).push(key(Key::A, cmd_mods)),
             Act::OpenRecent(p) => self.open_path(p, false),
             Act::OpenRecentFolder(p) => self.open_folder(p),
             Act::Syntax(s) => self.doc().highlighter.set_syntax(&s),

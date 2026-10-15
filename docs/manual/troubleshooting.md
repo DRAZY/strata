@@ -47,7 +47,7 @@ On Windows, `%APPDATA%` is already private to your account, so Strata doesn't ch
 
 Your settings live in `settings.json`. To go back to the defaults, do one of these:
 
-- **While Strata is running**: open **Preferences ▸ Settings** (**Strata ▸ Settings ▸ Settings** on macOS), delete everything in the file, and save. Strata reloads it and uses the default for every setting.
+- **While Strata is running**: open **Preferences ▸ Settings (JSON)** (**Strata ▸ Settings ▸ Settings (JSON)** on macOS), delete everything in the file, and save. Strata reloads it and uses the default for every setting.
 - **With Strata closed**: rename or delete `settings.json`. The next time you open Settings, Strata writes a new file with every setting at its default.
 
 Renaming the file while Strata is running doesn't reset anything until you restart, so quit Strata first.
