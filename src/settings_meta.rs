@@ -157,6 +157,7 @@ pub static SETTINGS: &[Meta] = &[
     m("theme_overrides_by_theme", Advanced, "Color overrides per scheme", Json),
 ];
 
+#[cfg(test)]
 pub fn meta(key: &str) -> Option<&'static Meta> {
     SETTINGS.iter().find(|m| m.key == key)
 }
@@ -193,13 +194,6 @@ pub fn set(s: &mut Settings, key: &str, value: Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Back to the default.
-pub fn reset(s: &mut Settings, key: &str) {
-    if let Some(d) = defaults().get(key) {
-        let _ = set(s, key, d.clone());
-    }
-}
-
 /// A problem with a value that is in the file but outside what Strata uses.
 pub fn range_problem(meta: &Meta, value: &Value) -> Option<String> {
     let (min, max) = match meta.control {
@@ -217,6 +211,7 @@ pub fn fmt_number(v: f64) -> String {
 
 /// What the manual says about a setting.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct Doc {
     /// "true/false", "number", "text", "list of text"…
     pub kind: String,
@@ -373,7 +368,7 @@ mod tests {
         assert!(set(&mut s, "no_such_setting", Value::Bool(true)).is_err());
         let v = values(&s);
         assert!(!is_default(&v, "font_size") && is_default(&v, "tab_size"));
-        reset(&mut s, "font_size");
+        set(&mut s, "font_size", defaults()["font_size"].clone()).unwrap();
         assert_eq!(s.font_size, 14.0);
     }
 

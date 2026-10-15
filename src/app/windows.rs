@@ -978,6 +978,23 @@ mod tests {
     }
 
     #[test]
+    fn a_change_in_the_settings_window_reaches_every_window() {
+        use super::super::settings_ui::Change;
+        let ctx = context();
+        let mut w = Windows::new(None);
+        w.open_new_window(0).unwrap();
+        w.slots[1].app.run(&ctx, Cmd::SettingsWindow);
+        let set = |key, value| Change::Set { key, value, persist: true };
+        w.slots[1].app.settings_change(&ctx, set("theme", serde_json::Value::from("Strata Light")));
+        w.slots[1].app.settings_change(&ctx, set("minimap", serde_json::Value::Bool(false)));
+        pass(&mut w, &ctx, 1, vec![], false);
+        pass(&mut w, &ctx, 0, vec![], false);
+        let first = &w.slots[0].app;
+        assert!(!first.settings.minimap);
+        assert_eq!(first.docs[0].highlighter.theme_name(), "Strata Light");
+    }
+
+    #[test]
     fn windows_off_every_monitor_come_back() {
         let r = |x: f32, y: f32| Rect::from_min_size(pos2(x, y), vec2(1000.0, 700.0));
         let size = vec2(1000.0, 680.0);
