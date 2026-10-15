@@ -165,6 +165,7 @@ mod keymap_ui;
 mod large_files;
 mod launch;
 mod lookup;
+mod macro_files;
 pub(crate) mod menu_model;
 mod more;
 mod terminal_ui;
@@ -1049,6 +1050,7 @@ impl StrataApp {
             Cmd::ToggleSpellCheck | Cmd::NextMisspelling | Cmd::PrevMisspelling => self.run_spelling(cmd),
             Cmd::CopyRelativePath => self.copy_relative_path(ctx, self.active),
             Cmd::CopyPermalink => self.copy_permalink(ctx, self.active),
+            Cmd::SaveMacro => self.save_macro(),
             Cmd::NextFindResult => self.step_find_result(true),
             Cmd::PrevFindResult => self.step_find_result(false),
             Cmd::CancelFindInFiles => self.sidebar.search.stop(),

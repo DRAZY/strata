@@ -50,6 +50,8 @@ pub enum Target {
     FoldLevel(u8),
     /// Select the pane's nth tab (0-based; 8 is always the last).
     Tab(u8),
+    /// Play a saved macro (see `app::macro_files`), by name.
+    MacroFile(&'static str),
 }
 
 /// View commands: (menu action name, public id, palette name).
@@ -160,6 +162,7 @@ impl Target {
             Target::View(name) => (VIEW_COMMANDS.iter().find(|v| v.0 == name).map_or(name, |v| v.1), None),
             Target::FoldLevel(n) => ("fold_by_level", Some(serde_json::json!({ "level": n }))),
             Target::Tab(n) => ("select_by_index", Some(serde_json::json!({ "index": n }))),
+            Target::MacroFile(name) => ("run_macro_file", Some(serde_json::json!({ "file": name }))),
         }
     }
 
@@ -172,6 +175,7 @@ impl Target {
             Target::FoldLevel(n) => format!("Code Folding: Fold Level {n}"),
             Target::Tab(8) => "View: Select Last Tab".to_owned(),
             Target::Tab(n) => format!("View: Select Tab {}", n + 1),
+            Target::MacroFile(name) => format!("Tools: Run Macro “{name}”"),
         }
     }
 
@@ -449,6 +453,28 @@ pub enum What {
     Run(Target),
 }
 
+/// A saved macro's name from `run_macro_file`'s `file`: a bare name, a file
+/// name, or a Sublime-style path whose last part is the name (so it always
+/// names a file in the Macros folder). None for something that isn't a name.
+pub fn saved_macro_name(file: &str) -> Option<&str> {
+    let last = file.rsplit(['/', '\\']).next()?;
+    let name = last.strip_suffix(".strata-macro").or_else(|| last.strip_suffix(".sublime-macro")).unwrap_or(last).trim();
+    (!name.is_empty() && name != "." && name != "..").then_some(name)
+}
+
+/// One `&'static` copy of each macro name keybindings.json mentions
+/// (targets are `Copy`; the names are few and live as long as the keymap).
+pub fn intern(name: &str) -> &'static str {
+    static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(n) = names.iter().find(|n| **n == name) {
+        return n;
+    }
+    let n: &'static str = Box::leak(name.to_owned().into_boxed_str());
+    names.push(n);
+    n
+}
+
 fn arg_str<'a>(args: &'a Map<String, Value>, k: &str) -> Option<&'a str> {
     args.get(k).and_then(Value::as_str)
 }
@@ -548,7 +574,11 @@ pub fn resolve(command: &str, args: &Map<String, Value>) -> Result<What, String>
                 "Add Line Before" => ed("line_before"),
                 "Delete to Hard EOL" => ed("delete_to_end"),
                 "Delete to Hard BOL" | "Delete to BOL" => ed("delete_to_start"),
-                _ => Err(format!("run_macro_file: \"{file}\" isn't one Strata knows")),
+                // Anything else is a macro saved with Tools ▸ Save Macro….
+                _ => match saved_macro_name(file) {
+                    Some(name) => Ok(What::Run(Target::MacroFile(intern(name)))),
+                    None => Err(format!("run_macro_file: \"{file}\" isn't a macro name")),
+                },
             };
         }
         "move_to" => {
