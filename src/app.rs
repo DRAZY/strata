@@ -142,6 +142,8 @@ pub struct StrataApp {
     git_marks_on: bool,
     /// The window title last sent.
     last_title: String,
+    /// Auto save after a delay (see `delayed_save`).
+    delayed_save: delayed_save::DelayedSave,
 }
 
 mod autosave;
@@ -151,6 +153,7 @@ mod clones;
 mod compare_ui;
 mod completion;
 mod context_menus;
+mod delayed_save;
 mod diagnostics;
 mod features;
 mod find_options;
@@ -293,6 +296,7 @@ impl StrataApp {
             menus_stale: true,
             git_marks_on: true,
             last_title: String::new(),
+            delayed_save: Default::default(),
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -2505,6 +2509,7 @@ impl eframe::App for StrataApp {
         if self.window_focused && !focused && self.settings.save_on_focus_lost {
             self.save_all();
         }
+        self.delayed_save_tick(Some(ctx), now);
         if !self.window_focused && focused {
             // Back from another app, which may have changed the folders.
             self.sidebar.refresh();

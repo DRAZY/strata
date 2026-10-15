@@ -91,6 +91,8 @@ pub struct Settings {
     pub ensure_newline_at_eof_on_save: bool,
     /// Save modified files when the window loses focus.
     pub save_on_focus_lost: bool,
+    /// Save edited files after this many milliseconds without typing (0: off).
+    pub auto_save_delay_ms: u64,
     /// Offer word completions while typing (Ctrl+Space always works).
     pub auto_complete: bool,
     /// Detect tabs vs spaces (and the width) from each file when it opens.
@@ -176,6 +178,7 @@ impl Default for Settings {
             trim_trailing_white_space_on_save: false,
             ensure_newline_at_eof_on_save: false,
             save_on_focus_lost: false,
+            auto_save_delay_ms: 0,
             hot_exit: true,
             large_file_mb: (crate::document::LARGE_FILE_BYTES >> 20) as f64,
             large_file_warning_mb: 500.0,
