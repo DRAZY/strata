@@ -6,6 +6,15 @@ All notable changes to Strata are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-15
+
+### Changed
+
+- With automatic updates on, Strata now checks every time it opens, then
+  every four hours while it stays open. A new version appears as a small
+  notice with **Install and Relaunch**, **Later** and **Skip This Version**.
+- The setting now reads "Automatically (at launch and every 4 hours)".
+
 ## [1.0.1] - 2026-10-15
 
 ### Changed
@@ -172,7 +181,8 @@ The first public release candidate. Everything below is new.
   Indic and other shaped scripts) and right-to-left text are not fully laid
   out.
 
-[Unreleased]: https://github.com/DRAZY/strata/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/DRAZY/strata/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/DRAZY/strata/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/DRAZY/strata/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/DRAZY/strata/compare/v1.0.0-rc.1...v1.0.0
 [1.0.0-rc.1]: https://github.com/DRAZY/strata/releases/tag/v1.0.0-rc.1
