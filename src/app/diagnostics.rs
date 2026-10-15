@@ -104,13 +104,15 @@ impl StrataApp {
 }
 
 /// The text of Help ▸ Report a Problem…: a template to fill in, system
-/// details, and the end of the log.
+/// details, and the end of the log. Its headings and labels match the fields
+/// of the bug report form (.github/ISSUE_TEMPLATE/bug_report.yml), so it can
+/// be pasted there section by section.
 pub fn problem_report(config: Option<&Path>, log: &[String]) -> String {
     let mut s = String::new();
     s.push_str("<!-- Nothing has been sent. Fill this in, check it for anything private, then copy it into a new issue at\n");
     s.push_str(&format!("     {}/new — or attach it to an email. -->\n\n", crash::ISSUES_URL));
     s.push_str("## What happened\n\n\n\n## Steps to reproduce\n\n1.\n2.\n\n## What you expected\n\n\n\n## System\n\n");
-    s.push_str(&format!("- {}\n- {}\n", crash::version_line(), crash::system_line()));
+    s.push_str(&format!("- Version: {}\n- Operating system: {}\n", crash::version_line(), crash::system_line()));
     if let Some(config) = config {
         s.push_str(&format!("- Settings folder: {}\n", config.display()));
         if let Some(report) = crash::latest_report(config) {

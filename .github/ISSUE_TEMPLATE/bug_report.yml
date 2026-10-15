@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in Strata doesn't work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. **Help ▸ Report a Problem…** in Strata fills in a template with the same sections, your version and system, and the end of the log: copy each part into the fields below.
+
+        Security problems: please don't file them here. Use **Security ▸ Report a vulnerability** instead (see SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What went wrong? Screenshots help.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps that makes it happen. Attach or paste a sample file if it depends on one (check it for anything private first).
+      placeholder: |
+        1. Open a file…
+        2. Press…
+        3. See…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: From **Help ▸ About Strata** (or the report's System section), for example "Strata 1.0.0-rc.1 (commit 1a2b3c4d5e6f)".
+      placeholder: Strata 1.0.0-rc.1 (commit …)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: For example "macOS 15.1 (aarch64)" or "Windows 11 23H2 (x86_64)".
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Recent log
+      description: The end of the log, from the report or **Help ▸ Show Latest Log**. Paths are shown, file contents never are; your home folder appears as `~` in the report. If Strata crashed, attach the crash report the next launch offered.
+      render: text
+    validations:
+      required: false

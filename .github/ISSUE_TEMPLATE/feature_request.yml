@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest something Strata could do, or do better.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check the open issues and the roadmap first, in case it's already planned. One idea per request, please.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you're trying to do
+      description: The task or problem, rather than the solution. "I often need to…"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like Strata to do
+      description: "How it could work: commands, settings, keys, what you'd see."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and workarounds
+      description: What you do today, and anything else you considered.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Mockups, examples from other tools you use (described in your own words), links to public documentation.
+    validations:
+      required: false

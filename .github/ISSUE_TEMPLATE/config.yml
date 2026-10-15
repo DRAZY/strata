@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/DRAZY/strata/security/advisories/new
+    about: Please report security problems privately, not as a public issue.
+  - name: User manual
+    url: https://github.com/DRAZY/strata/tree/main/docs/manual
+    about: The manual is also built into the app (Help ▸ Documentation), with a Troubleshooting and FAQ page.
