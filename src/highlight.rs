@@ -291,11 +291,34 @@ pub fn load_themes(dir: Option<&Path>) -> (Registry, Vec<String>) {
 
 /// User customizations (settings `theme_overrides`, `font_options`) and a
 /// generation number bumped whenever they change.
+#[cfg(not(test))]
 static ADJUST: LazyLock<RwLock<(u64, Adjustments)>> = LazyLock::new(|| RwLock::new((0, Adjustments::default())));
 /// Schemes with the current adjustments applied, by name, with the
 /// generation they were built for.
 type AdjustedCache = HashMap<String, (u64, Arc<Scheme>)>;
+#[cfg(not(test))]
 static ADJUSTED: LazyLock<Mutex<AdjustedCache>> = LazyLock::new(Default::default);
+
+// Tests run in parallel threads, each with its own app: give each thread its
+// own customizations so one test's overrides can't leak into another's.
+#[cfg(test)]
+thread_local! {
+    static ADJUST_T: &'static RwLock<(u64, Adjustments)> = Box::leak(Box::new(RwLock::new((0, Adjustments::default()))));
+    static ADJUSTED_T: &'static Mutex<AdjustedCache> = Box::leak(Box::default());
+}
+#[cfg(test)]
+struct PerThread<T: 'static>(&'static std::thread::LocalKey<&'static T>);
+#[cfg(test)]
+impl<T> std::ops::Deref for PerThread<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.0.with(|t| *t)
+    }
+}
+#[cfg(test)]
+static ADJUST: PerThread<RwLock<(u64, Adjustments)>> = PerThread(&ADJUST_T);
+#[cfg(test)]
+static ADJUSTED: PerThread<Mutex<AdjustedCache>> = PerThread(&ADJUSTED_T);
 
 /// Replace the user's customizations. Returns true if they changed (every
 /// highlighter then picks up the new colors on its next `set_theme`).

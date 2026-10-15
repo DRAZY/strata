@@ -148,7 +148,7 @@ in this step's environment; it's never written to disk or printed.
 
 `cargo test update` covers manifest parsing, the URL policy, semver order,
 signatures (valid, wrong key, tampered file, forged hash), the swap and
-rollback with temporary folders, the helper's rollback, scheduling (24 hours,
+rollback with temporary folders, the helper's rollback, scheduling (launch and every 4 hours,
 skipped versions, `ask`/`auto`/`off`), cancelling a download, and the UI
 buttons. `STRATA_HEADLESS_SHOTS=<dir> cargo test --release update_headless_shots`
 renders the notices.

@@ -231,8 +231,9 @@ impl Updater {
     }
 
     /// Is an automatic check due now?
-    pub fn auto_check_due(&self, mode: Mode) -> bool {
-        mode == Mode::Auto && !self.status().busy() && state::auto_check_due(mode, self.saved().last_check, state::now_secs())
+    /// `launch`: the first look after Strata started (a shorter gap applies).
+    pub fn auto_check_due(&self, mode: Mode, launch: bool, interval: u64) -> bool {
+        mode == Mode::Auto && !self.status().busy() && state::auto_check_due(mode, self.saved().last_check, state::now_secs(), launch, interval)
     }
 
     /// Check for a new version in the background. `manual` checks report
@@ -494,12 +495,12 @@ pub(crate) mod tests {
         let dir = temp("check");
         let u = updater(FakeNet::with(&[(manifest::STABLE_FEED, feed.into_bytes())]), "1.0.0", Err("not here".into()));
         u.set_config(Some(dir.clone()));
-        assert!(u.auto_check_due(Mode::Auto) && !u.auto_check_due(Mode::Ask));
+        assert!(u.auto_check_due(Mode::Auto, true, state::CHECK_INTERVAL_SECS) && !u.auto_check_due(Mode::Ask, true, state::CHECK_INTERVAL_SECS));
         u.check(false, false);
         let Status::Available { release, manual: false } = wait(&u) else { panic!("{:?}", u.status()) };
         assert_eq!(release.version().to_string(), "1.1.0");
         assert_eq!(release.installable, Err("not here".into()), "found, but only the browser can install it");
-        assert!(!u.auto_check_due(Mode::Auto), "checked today");
+        assert!(!u.auto_check_due(Mode::Auto, true, state::CHECK_INTERVAL_SECS), "just checked");
         // Skipped: an automatic check stays quiet, a manual one offers it.
         u.skip(release.version());
         assert_eq!(u.status(), Status::Idle);

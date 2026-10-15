@@ -9,8 +9,19 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const FILE: &str = "update.json";
-/// Automatic checks happen at most this often.
-pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+/// While Strata is open, automatic checks happen this often (plus a small
+/// per-install offset, `jitter_secs`, so installs don't all ask at once).
+pub const CHECK_INTERVAL_SECS: u64 = 4 * 60 * 60;
+/// At launch, check unless the last check was more recent than this, so
+/// opening and closing Strata repeatedly doesn't ask GitHub every time.
+pub const LAUNCH_MIN_GAP_SECS: u64 = 60 * 60;
+
+/// A fixed offset of up to 15 minutes, different per install (from the
+/// config path), added to the interval.
+pub fn jitter_secs(seed: &str) -> u64 {
+    let h = seed.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
+    h % (15 * 60)
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
@@ -93,10 +104,12 @@ impl Mode {
     }
 }
 
-/// Is an automatic check due? Only with `auto`, at most once a day. A last
+/// Is an automatic check due? Only with `auto`: at launch when the last check
+/// is over an hour old, then every `interval` seconds while open. A last
 /// check in the future (the clock went back) counts as long ago.
-pub fn auto_check_due(mode: Mode, last_check: Option<u64>, now: u64) -> bool {
-    mode == Mode::Auto && last_check.is_none_or(|t| t > now || now - t >= CHECK_INTERVAL_SECS)
+pub fn auto_check_due(mode: Mode, last_check: Option<u64>, now: u64, launch: bool, interval: u64) -> bool {
+    let gap = if launch { LAUNCH_MIN_GAP_SECS } else { interval };
+    mode == Mode::Auto && last_check.is_none_or(|t| t > now || now - t >= gap)
 }
 
 /// Should a found version be offered? It must be newer than this one, and
@@ -111,18 +124,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn checks_at_most_daily_and_only_when_on() {
-        let day = CHECK_INTERVAL_SECS;
+    fn checks_at_launch_then_every_few_hours_and_only_when_on() {
+        let (hour, every) = (LAUNCH_MIN_GAP_SECS, CHECK_INTERVAL_SECS);
         let now = 1_800_000_000;
-        assert!(auto_check_due(Mode::Auto, None, now), "never checked");
-        assert!(!auto_check_due(Mode::Auto, Some(now - 60), now));
-        assert!(!auto_check_due(Mode::Auto, Some(now - day + 1), now));
-        assert!(auto_check_due(Mode::Auto, Some(now - day), now));
-        assert!(auto_check_due(Mode::Auto, Some(now + 3600), now), "clock went back");
+        assert!(auto_check_due(Mode::Auto, None, now, true, every), "never checked");
+        assert!(auto_check_due(Mode::Auto, None, now, false, every), "never checked");
+        // At launch: over an hour since the last check.
+        assert!(!auto_check_due(Mode::Auto, Some(now - 60), now, true, every));
+        assert!(!auto_check_due(Mode::Auto, Some(now - hour + 1), now, true, every));
+        assert!(auto_check_due(Mode::Auto, Some(now - hour), now, true, every));
+        // While open: every interval.
+        assert!(!auto_check_due(Mode::Auto, Some(now - hour), now, false, every));
+        assert!(!auto_check_due(Mode::Auto, Some(now - every + 1), now, false, every));
+        assert!(auto_check_due(Mode::Auto, Some(now - every), now, false, every));
+        assert!(auto_check_due(Mode::Auto, Some(now + 3600), now, false, every), "clock went back");
         for mode in [Mode::Ask, Mode::Off] {
-            assert!(!auto_check_due(mode, None, now));
-            assert!(!auto_check_due(mode, Some(now - 10 * day), now));
+            for launch in [true, false] {
+                assert!(!auto_check_due(mode, None, now, launch, every));
+                assert!(!auto_check_due(mode, Some(now - 10 * every), now, launch, every));
+            }
         }
+        // The offset is under 15 minutes and stable per install.
+        assert!(jitter_secs("/a") < 15 * 60);
+        assert_eq!(jitter_secs("/a"), jitter_secs("/a"));
         assert_eq!(Mode::parse("auto"), Mode::Auto);
         assert_eq!(Mode::parse(" OFF "), Mode::Off);
         assert_eq!(Mode::parse("ask"), Mode::Ask);

@@ -17,6 +17,8 @@ pub struct UpdateUi {
     render: DocRender,
     /// When this window last looked at whether an automatic check is due.
     last_poll: f64,
+    /// The launch check has been considered.
+    polled: bool,
     /// Quit was asked for to relaunch: (time, frames drawn since). Frames
     /// still coming a while later mean the quit was cancelled.
     quitting: Option<(f64, u32)>,
@@ -35,7 +37,7 @@ impl Default for UpdateUi {
         let updater = Updater::for_tests();
         #[cfg(not(test))]
         let updater = Updater::global();
-        Self { updater, notes: None, render: DocRender::default(), last_poll: f64::NEG_INFINITY, quitting: None, installed_hidden: false, ask_done: false, force_ask: false }
+        Self { updater, notes: None, render: DocRender::default(), last_poll: f64::NEG_INFINITY, polled: false, quitting: None, installed_hidden: false, ask_done: false, force_ask: false }
     }
 }
 
@@ -111,11 +113,18 @@ impl StrataApp {
         let first = self.link.index == 0;
         let u = self.update.updater.clone();
         let mode = Mode::parse(&self.settings.update_check);
-        if first && self.update_automatic() && now - self.update.last_poll > 60.0 {
-            self.update.last_poll = now;
-            if u.auto_check_due(mode) {
-                u.check(self.prerelease_channel(), false);
+        if first && self.update_automatic() && mode == Mode::Auto {
+            if now - self.update.last_poll > 60.0 {
+                let launch = !self.update.polled;
+                self.update.last_poll = now;
+                self.update.polled = true;
+                let seed = self.config.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                if u.auto_check_due(mode, launch, crate::update::state::CHECK_INTERVAL_SECS + crate::update::state::jitter_secs(&seed)) {
+                    u.check(self.prerelease_channel(), false);
+                }
             }
+            // An idle window draws no frames: wake once a minute to look.
+            ctx.request_repaint_after(std::time::Duration::from_secs(60));
         }
         self.update_relaunch(ctx, now);
         // The crash notice has the corner first.
@@ -174,7 +183,7 @@ impl StrataApp {
         let mut act = None;
         notice_window(ctx, self.link.id("update-ask"), |ui| {
             ui.strong("Check for updates automatically?");
-            ui.label("Strata will contact GitHub about once a day to see whether a new version is out. No other data is sent.");
+            ui.label("When Strata opens and every few hours while it's open, it will ask GitHub whether a new version is out. No other data is sent.");
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if ui.button("Turn On").clicked() {
@@ -332,7 +341,7 @@ impl StrataApp {
                 self.update.ask_done = true;
                 let on = matches!(act, Act::TurnOn);
                 self.change_setting(ctx, "update_check", Value::from(if on { "auto" } else { "off" }), true);
-                self.status = if on { "Strata will check for updates about once a day".into() } else { "Strata won't check for updates (Help ▸ Check for Updates… still works)".into() };
+                self.status = if on { "Strata will check for updates when it opens and every few hours".into() } else { "Strata won't check for updates (Help ▸ Check for Updates… still works)".into() };
             }
             Act::Install => match release {
                 Some(r) if r.installable.is_ok() => u.install(),
