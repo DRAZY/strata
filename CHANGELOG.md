@@ -6,7 +6,15 @@ All notable changes to Strata are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-15
+
 ### Changed
+
+- Update checks: with automatic updates on, Strata checks every time it opens,
+  then every 4 hours while it stays open. Choose 1, 2, 4, 6 or 12 hours in
+  Settings ▸ Help (`update_check_interval_hours`), or **Manually only** to check
+  just from Help ▸ Check for Updates…. A new version appears as a small notice
+  with **Install and Relaunch**, **Later** and **Skip This Version**.
 
 - Easier-to-read interface text. The default interface size is now 14 pt (was
   13); settings.json files that set `ui_font_size` keep their size.
@@ -20,15 +28,6 @@ All notable changes to Strata are recorded here. The format follows
   the same four. The Settings window opens larger to fit bigger text, and the
   manual's contents, the command palette, the update notice and Compare's
   header grow with the interface size.
-
-## [1.0.2] - 2026-10-15
-
-### Changed
-
-- With automatic updates on, Strata now checks every time it opens, then
-  every four hours while it stays open. A new version appears as a small
-  notice with **Install and Relaunch**, **Later** and **Skip This Version**.
-- The setting now reads "Automatically (at launch and every 4 hours)".
 
 ## [1.0.1] - 2026-10-15
 

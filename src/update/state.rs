@@ -9,9 +9,14 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const FILE: &str = "update.json";
-/// While Strata is open, automatic checks happen this often (plus a small
-/// per-install offset, `jitter_secs`, so installs don't all ask at once).
-pub const CHECK_INTERVAL_SECS: u64 = 4 * 60 * 60;
+
+/// Seconds between automatic checks for the `update_check_interval_hours`
+/// setting: 1, 2, 4, 6 or 12 hours (anything else is rounded to the nearest).
+pub fn interval_secs(hours: u32) -> u64 {
+    const CHOICES: [u32; 5] = [1, 2, 4, 6, 12];
+    let h = CHOICES.into_iter().min_by_key(|c| c.abs_diff(hours)).unwrap_or(4);
+    u64::from(h) * 60 * 60
+}
 
 /// A fixed offset of up to 15 minutes, different per install (from the
 /// config path), added to the interval.
@@ -121,7 +126,7 @@ mod tests {
 
     #[test]
     fn checks_at_launch_then_every_few_hours_and_only_when_on() {
-        let every = CHECK_INTERVAL_SECS;
+        let every = interval_secs(4);
         let now = 1_800_000_000;
         // Every launch checks, however recent the last check.
         assert!(auto_check_due(Mode::Auto, None, now, true, every));
@@ -138,6 +143,9 @@ mod tests {
                 assert!(!auto_check_due(mode, Some(now - 10 * every), now, launch, every));
             }
         }
+        // The interval setting: the five choices, others rounded to one.
+        assert_eq!([1, 2, 4, 6, 12].map(interval_secs), [3600, 7200, 14400, 21600, 43200]);
+        assert_eq!((interval_secs(0), interval_secs(5), interval_secs(100)), (3600, 14400, 43200));
         // The offset is under 15 minutes and stable per install.
         assert!(jitter_secs("/a") < 15 * 60);
         assert_eq!(jitter_secs("/a"), jitter_secs("/a"));

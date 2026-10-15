@@ -590,14 +590,18 @@ fn control(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, value: &
             });
         }
         Control::Choice(options) => {
-            let current = value.as_str().unwrap_or_default();
+            // Numeric settings (e.g. hours) offered as a list keep their JSON number type.
+            let numeric = value.is_number();
+            let shown_num = value.as_f64().map(|n| n.to_string()).unwrap_or_default();
+            let current = if numeric { shown_num.as_str() } else { value.as_str().unwrap_or_default() };
+            let choice_value = |v: &str| if numeric { v.parse::<u64>().map_or_else(|_| Value::from(v), Value::from) } else { Value::from(v) };
             let label = options.iter().find(|(v, _)| v.eq_ignore_ascii_case(current)).map_or(current, |(_, l)| *l);
             let short = options.len() <= 3 && options.iter().map(|(_, l)| l.len()).sum::<usize>() <= 24;
             if short {
                 ui.horizontal(|ui| {
                     for (v, l) in options {
                         if ui.add(egui::Button::selectable(v.eq_ignore_ascii_case(current), RichText::new(*l).size(size))).clicked() {
-                            changes.push(set(Value::from(*v)));
+                            changes.push(set(choice_value(v)));
                         }
                     }
                 });
@@ -605,7 +609,7 @@ fn control(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, value: &
                 egui::ComboBox::from_id_salt(id).selected_text(RichText::new(label).size(size)).width(w.min(260.0)).show_ui(ui, |ui| {
                     for (v, l) in options {
                         if ui.selectable_label(v.eq_ignore_ascii_case(current), RichText::new(*l).size(size)).clicked() {
-                            changes.push(set(Value::from(*v)));
+                            changes.push(set(choice_value(v)));
                         }
                     }
                 });

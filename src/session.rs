@@ -133,8 +133,11 @@ pub struct Settings {
     pub syntax_settings: std::collections::BTreeMap<String, crate::doc_settings::Layer>,
     /// Follow `.editorconfig` files.
     pub editorconfig: bool,
-    /// Checking GitHub for new versions: "ask" (once), "auto" (at launch and every 4 hours) or "off".
+    /// Checking GitHub for new versions: "ask" (once), "auto" (at launch and
+    /// every `update_check_interval_hours`) or "off" (only Help ▸ Check for Updates…).
     pub update_check: String,
+    /// With automatic checks: hours between checks while Strata stays open (1, 2, 4, 6 or 12).
+    pub update_check_interval_hours: u32,
     /// "stable" releases only, or "prerelease" ones too.
     pub update_channel: String,
 }
@@ -205,6 +208,7 @@ impl Default for Settings {
             syntax_settings: Default::default(),
             editorconfig: true,
             update_check: "ask".into(),
+            update_check_interval_hours: 4,
             update_channel: "stable".into(),
         }
     }

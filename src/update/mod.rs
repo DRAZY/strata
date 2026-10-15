@@ -495,12 +495,12 @@ pub(crate) mod tests {
         let dir = temp("check");
         let u = updater(FakeNet::with(&[(manifest::STABLE_FEED, feed.into_bytes())]), "1.0.0", Err("not here".into()));
         u.set_config(Some(dir.clone()));
-        assert!(u.auto_check_due(Mode::Auto, true, state::CHECK_INTERVAL_SECS) && !u.auto_check_due(Mode::Ask, true, state::CHECK_INTERVAL_SECS));
+        assert!(u.auto_check_due(Mode::Auto, true, state::interval_secs(4)) && !u.auto_check_due(Mode::Ask, true, state::interval_secs(4)));
         u.check(false, false);
         let Status::Available { release, manual: false } = wait(&u) else { panic!("{:?}", u.status()) };
         assert_eq!(release.version().to_string(), "1.1.0");
         assert_eq!(release.installable, Err("not here".into()), "found, but only the browser can install it");
-        assert!(!u.auto_check_due(Mode::Auto, false, state::CHECK_INTERVAL_SECS), "just checked");
+        assert!(!u.auto_check_due(Mode::Auto, false, state::interval_secs(4)), "just checked");
         // Skipped: an automatic check stays quiet, a manual one offers it.
         u.skip(release.version());
         assert_eq!(u.status(), Status::Idle);

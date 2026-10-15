@@ -228,7 +228,8 @@ Every setting Strata reads, with its default value. Text values are written in q
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `update_check` | text | `"ask"` | Whether Strata checks GitHub for a new version: `"auto"` (when Strata opens, then every four hours while it runs), `"off"`, or `"ask"` (Strata asks once whether to turn checks on). Help ▸ Check for Updates… works whatever this is. See [Updates](about.md#updates). |
+| `update_check` | text | `"ask"` | Whether Strata checks GitHub for a new version: `"auto"` (every time Strata opens, then every `update_check_interval_hours` while it runs), `"off"` (manually only), or `"ask"` (Strata asks once whether to turn checks on). Help ▸ Check for Updates… works whatever this is. See [Updates](about.md#updates). |
+| `update_check_interval_hours` | whole number | `4` | With `update_check` set to `"auto"`: how many hours Strata waits between checks while it stays open: `1`, `2`, `4`, `6` or `12`. Strata also checks every time it opens. |
 | `update_channel` | text | `"stable"` | Which versions to offer: `"stable"` releases only, or `"prerelease"` to also offer prereleases (release candidates and betas). |
 
 ### Editing

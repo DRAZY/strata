@@ -153,7 +153,8 @@ pub static SETTINGS: &[Meta] = &[
     m("file_exclude_patterns", SideBar, "Hidden names", Words),
     // Help
     m("help_in_own_window", Help, "Documentation in its own window", Toggle),
-    m("update_check", Help, "Check for updates", Choice(&[("ask", "Ask me"), ("auto", "Automatically (at launch and every 4 hours)"), ("off", "Never")])),
+    m("update_check", Help, "Check for updates", Choice(&[("ask", "Ask me"), ("auto", "Automatically"), ("off", "Manually only")])),
+    m("update_check_interval_hours", Help, "Check every", Choice(&[("1", "1 hour"), ("2", "2 hours"), ("4", "4 hours"), ("6", "6 hours"), ("12", "12 hours")])),
     m("update_channel", Help, "Updates to offer", Choice(&[("stable", "Releases"), ("prerelease", "Releases and prereleases")])),
     // Advanced
     m("editorconfig", Editor, "Follow .editorconfig files", Toggle),
@@ -345,7 +346,9 @@ mod tests {
                 Number { whole: true, .. } => kind == "whole number",
                 Number { .. } => kind == "number",
                 MaybeNumber { .. } => kind.starts_with("number or"),
-                Choice(_) | Text | Font { .. } | Scheme => kind == "text",
+                // A list of numbers (hours) keeps its number type.
+                Choice(_) => kind == "text" || kind == "whole number",
+                Text | Font { .. } | Scheme => kind == "text",
                 Words | Flags(_) => kind == "list of text",
                 Columns => kind == "list of numbers",
                 Json => kind == "object",
@@ -361,7 +364,7 @@ mod tests {
             // Choices offered are the values the manual names.
             if let Choice(options) = m.control {
                 for (value, _) in options {
-                    assert!(doc.text.contains(&format!("\"{value}\"")) || doc.default.contains(value), "`{}`: the manual doesn't mention {value:?}", m.key);
+                    assert!(doc.text.contains(&format!("\"{value}\"")) || [format!("{value},"), format!(" {value} "), format!(" {value}.")].iter().any(|w| doc.text.contains(w.as_str())) || doc.default.contains(value), "`{}`: the manual doesn't mention {value:?}", m.key);
                 }
             }
             if let Number { min, max, .. } = m.control {

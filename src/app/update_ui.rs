@@ -119,7 +119,7 @@ impl StrataApp {
                 self.update.last_poll = now;
                 self.update.polled = true;
                 let seed = self.config.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-                if u.auto_check_due(mode, launch, crate::update::state::CHECK_INTERVAL_SECS + crate::update::state::jitter_secs(&seed)) {
+                if u.auto_check_due(mode, launch, crate::update::state::interval_secs(self.settings.update_check_interval_hours) + crate::update::state::jitter_secs(&seed)) {
                     u.check(self.prerelease_channel(), false);
                 }
             }
