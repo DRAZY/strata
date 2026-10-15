@@ -19,6 +19,7 @@ mod editor;
 mod encoding;
 mod files;
 mod find;
+mod find_history;
 mod fold;
 mod fonts;
 mod fuzzy;

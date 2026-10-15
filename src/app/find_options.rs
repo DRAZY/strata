@@ -210,6 +210,15 @@ impl StrataApp {
         self.docs[self.active].editor.select_ranges(&ranges, 0);
     }
 
+    /// Keep the find bar's text (and replacement) in the find history.
+    pub(super) fn remember_search(&self, replace: bool) {
+        use crate::find_history::{Field, record};
+        record(Field::Find, &self.find.query.text);
+        if replace {
+            record(Field::Replace, &self.find.replacement);
+        }
+    }
+
     /// The session's copy of the find bar.
     pub(super) fn find_options(&self) -> FindOptions {
         let f = &self.find;

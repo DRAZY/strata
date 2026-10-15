@@ -775,6 +775,7 @@ impl StrataApp {
         self.recent_files = session.recent_files.clone();
         self.recent_projects = session.recent_projects.clone();
         self.recent_folders = session.recent_folders.clone();
+        crate::find_history::restore(&session.find_history);
         // This is the first window; `Windows` takes the others from here.
         let mut unreadable = session.window_states().first().map(|w| self.restore_window(&dir, w)).unwrap_or_default();
         unreadable.extend(self.restore_other_windows(&dir, &session));
@@ -887,7 +888,7 @@ impl StrataApp {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (self.active, &self.sidebar.roots, self.sidebar.visible, self.layout.cols.len(), self.layout.rows.len()).hash(&mut h);
-        (&self.recent_files, &self.recent_folders, self.find_options()).hash(&mut h);
+        (&self.recent_files, &self.recent_folders, self.find_options(), crate::find_history::generation()).hash(&mut h);
         for d in &self.docs {
             (&d.path, d.is_dirty(), d.editor.version(), d.group, d.stamp).hash(&mut h);
             for s in d.editor.selections() {
@@ -1639,6 +1640,7 @@ impl StrataApp {
         if self.find.query.text.is_empty() {
             return self.open_find(self.find.open && self.find.replace);
         }
+        self.remember_search(false);
         self.refresh_matches();
         let d = &self.docs[self.active];
         let p = d.editor.primary();
@@ -1660,6 +1662,7 @@ impl StrataApp {
 
     /// Every match becomes a cursor; the bar closes so you can type.
     fn find_all(&mut self) {
+        self.remember_search(false);
         self.refresh_matches();
         let d = &mut self.docs[self.active];
         if d.finder.matches.is_empty() {
@@ -1674,6 +1677,7 @@ impl StrataApp {
     }
 
     fn replace_one(&mut self) {
+        self.remember_search(true);
         self.refresh_matches();
         let (q, rep) = (self.find.query.clone(), self.find.replacement.clone());
         let d = self.doc();
@@ -1699,6 +1703,7 @@ impl StrataApp {
     }
 
     fn replace_all(&mut self) {
+        self.remember_search(true);
         // The same replacement syntax as Replace in Files (`\1`, `$1`, `${name}`, `\n`, `\t`).
         let Ok(r) = crate::replace::Replacer::new(&self.find.query, &self.find.replacement) else { return };
         let edits = self.replace_all_edits(&r);
@@ -1742,6 +1747,7 @@ impl StrataApp {
             measured.0 = r.response.rect.width();
             let q = &mut self.find.query;
             let id = egui::Id::new("find-query");
+            crate::find_history::keys(ui, id, crate::find_history::Field::Find, &mut q.text);
             let field = crate::ctxmenu::text_field(ui, id, &mut q.text, |ui, text| {
                 ui.add_sized([field_w, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text("Find").font(egui::TextStyle::Monospace))
             });
@@ -1771,6 +1777,7 @@ impl StrataApp {
                 toggled = toggled.or(find_options::replace_toggles(ui, &self.find));
                 let regex = self.find.query.regex;
                 let id = egui::Id::new("replace-text");
+                crate::find_history::keys(ui, id, crate::find_history::Field::Replace, &mut self.find.replacement);
                 let hint = if regex { "Replace (\\1 or $1 for groups, \\n, \\t)" } else { "Replace" };
                 let field = crate::ctxmenu::text_field(ui, id, &mut self.find.replacement, |ui, text| {
                     ui.add_sized([field_w, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text(hint).font(egui::TextStyle::Monospace))

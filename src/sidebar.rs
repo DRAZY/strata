@@ -751,11 +751,13 @@ impl Sidebar {
             ui.toggle_value(&mut self.query.case_sensitive, "Aa").on_hover_text("Case sensitive");
             ui.toggle_value(&mut self.query.whole_word, "\"ab\"").on_hover_text("Whole word");
         });
-        let mut field = |ui: &mut Ui, label: &str, text: &mut String, id: &str, hint: &str, focus: bool| {
+        use crate::find_history::Field;
+        let mut field = |ui: &mut Ui, label: &str, text: &mut String, id: &str, hint: &str, focus: bool, history: Field| {
             crate::fonts::ensure_cjk(ui.ctx(), text);
             ui.horizontal(|ui| {
                 ui.add_sized([48.0, 18.0], egui::Label::new(RichText::new(label).small().weak()));
                 let id = egui::Id::new(id);
+                crate::find_history::keys(ui, id, history, text);
                 let r = crate::ctxmenu::text_field(ui, id, text, |ui, text| {
                     ui.add(egui::TextEdit::singleline(text).id(id).hint_text(hint).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY))
                 });
@@ -773,9 +775,9 @@ impl Sidebar {
         } else {
             ("Find in folders", "folder, *.rs, -*.min.js, <open files>")
         };
-        field(ui, "Find", &mut self.query.text, "find-in-files", find_hint, fq);
-        field(ui, "Where", &mut self.where_text, "find-in-files-where", where_hint, false);
-        field(ui, "Replace", &mut self.replacement, "find-in-files-replace", "Replace with", fr);
+        field(ui, "Find", &mut self.query.text, "find-in-files", find_hint, fq, Field::FilesFind);
+        field(ui, "Where", &mut self.where_text, "find-in-files-where", where_hint, false, Field::FilesWhere);
+        field(ui, "Replace", &mut self.replacement, "find-in-files-replace", "Replace with", fr, Field::FilesReplace);
         ui.horizontal(|ui| {
             find |= ui.add_enabled(!busy, egui::Button::new("Find")).clicked();
             replace = ui
@@ -791,6 +793,13 @@ impl Sidebar {
                 }
             }
         });
+        if (find || replace) && !busy {
+            crate::find_history::record(Field::FilesFind, &self.query.text);
+            crate::find_history::record(Field::FilesWhere, &self.where_text);
+            if replace {
+                crate::find_history::record(Field::FilesReplace, &self.replacement);
+            }
+        }
         if find && !busy {
             self.report = None;
             self.pending_replace = false;
