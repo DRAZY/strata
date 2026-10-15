@@ -295,7 +295,8 @@ impl Settings {
     fn settings_text(&self, path: &Path) -> std::io::Result<Option<String>> {
         use serde_json::Value;
         let broken = || std::io::Error::other("settings.json has errors; fix them first so your settings aren't overwritten");
-        let Value::Object(ours) = serde_json::to_value(self)? else { return Err(broken()) };
+        let Value::Object(mut ours) = serde_json::to_value(self)? else { return Err(broken()) };
+        ours.values_mut().for_each(tidy_numbers);
         let original = match std::fs::read_to_string(path) {
             Ok(text) if !text.trim().is_empty() => text,
             _ => return Ok(Some(serde_json::to_string_pretty(&ours)? + "\n")),
@@ -313,6 +314,24 @@ impl Settings {
             }
         }
         Ok((text != original).then_some(text))
+    }
+}
+
+/// f32 settings written as typed: 1.2, not 1.2000000476837158.
+fn tidy_numbers(v: &mut serde_json::Value) {
+    use serde_json::Value;
+    match v {
+        Value::Number(n) => {
+            if let Some(x) = n.as_f64().filter(|_| n.is_f64())
+                && (x as f32) as f64 == x
+                && let Some(tidy) = format!("{}", x as f32).parse::<f64>().ok().and_then(serde_json::Number::from_f64)
+            {
+                *n = tidy;
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(tidy_numbers),
+        Value::Object(o) => o.values_mut().for_each(tidy_numbers),
+        _ => {}
     }
 }
 
