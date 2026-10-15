@@ -238,10 +238,13 @@ pub fn process_alive(_pid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::super::state::Pending;
     use super::*;
+    #[cfg(unix)]
     use std::cell::Cell;
 
+    #[cfg(unix)] // used by the unix-only tests below
     fn temp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("strata-helper-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -249,6 +252,7 @@ mod tests {
         d
     }
 
+    #[cfg(unix)]
     /// The old process is alive for `alive_for` checks; "launching" runs a
     /// shell command standing in for the new version.
     struct Fake {
@@ -256,6 +260,7 @@ mod tests {
         script: String,
     }
 
+    #[cfg(unix)]
     impl World for Fake {
         fn alive(&self, _pid: u32) -> bool {
             let n = self.alive_for.get();
@@ -270,6 +275,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn setup(tag: &str) -> (PathBuf, Plan) {
         let dir = temp(tag);
         let target = dir.join("Strata.app");
