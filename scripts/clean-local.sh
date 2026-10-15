@@ -9,6 +9,8 @@
 # only copy. Never touches source files, settings or anything outside the repo.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# cargo may not be on PATH in a fresh shell.
+command -v cargo >/dev/null || { [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"; }
 
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 before=$(du -sk . | cut -f1)
