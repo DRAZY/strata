@@ -46,4 +46,4 @@ These are planned, in no particular order. None of them is in 1.0.
 
 ## Contributing
 
-Contributions follow the clean-room rules in [CLEAN_ROOM.md](CLEAN_ROOM.md).
+Contributions must be original work; see [CONTRIBUTING.md](../CONTRIBUTING.md).

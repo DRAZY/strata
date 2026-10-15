@@ -4,13 +4,10 @@ Thanks for helping. Bug reports, fixes, documentation and new features are all
 welcome. For anything bigger than a small fix, please open an issue first so we
 can agree on the approach before you spend time on it.
 
-## Clean-room policy
+## Original work
 
-Strata is a clean-room editor. Before contributing, read
-[`docs/CLEAN_ROOM.md`](docs/CLEAN_ROOM.md): no decompiled or disassembled code,
-no files copied out of other editors' app bundles, and no third-party branding.
-Openly licensed grammars, color schemes and fonts are fine when their license
-allows it and they are credited in Help ▸ Licenses.
+Contributions must be your own original work: don't copy code, assets or text from other editors or projects whose licenses don't allow it. Openly licensed grammars, color schemes and fonts are fine when their
+license allows it and they are credited in Help ▸ Licenses.
 
 ## Building and testing
 
@@ -95,7 +92,7 @@ temporary folder, so no personal paths appear. Keep README images under
       `[Unreleased]` in `CHANGELOG.md`.
 - [ ] New dependencies are credited and `scripts/third-party-licenses.sh` was
       run.
-- [ ] The change follows [`docs/CLEAN_ROOM.md`](docs/CLEAN_ROOM.md).
+- [ ] The change is your own original work (see [Original work](#original-work)).
 
 By contributing, you agree that your contributions are licensed under the
 [MIT License](LICENSE). Please also follow our

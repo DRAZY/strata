@@ -563,8 +563,8 @@ Strata is written in Rust on [egui](https://github.com/emilk/egui)/eframe
 two-face for highlighting, alacritty_terminal for the terminal, pulldown-cmark
 for Markdown, spellbook for spell check, encoding_rs and chardetng for
 encodings and image for image previews. [`docs/ROADMAP.md`](docs/ROADMAP.md)
-has what's in 1.0 and what comes next. Contributions must follow the
-clean-room rules in [`docs/CLEAN_ROOM.md`](docs/CLEAN_ROOM.md).
+has what's in 1.0 and what comes next. Contributions must be original work;
+see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 `cargo test` runs editor-core unit tests plus headless egui tests that drive
 the real widget and the whole window with simulated keys and clicks.
