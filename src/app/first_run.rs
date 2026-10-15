@@ -210,9 +210,10 @@ impl StrataApp {
 fn scheme_tile(ui: &mut egui::Ui, label: &str, size: egui::Vec2, selected: bool, accent: Color32) -> egui::Response {
     let (rect, r) = ui.allocate_exact_size(size, Sense::click());
     let painter = ui.painter_at(rect.expand(3.0));
-    let draw = |area: egui::Rect, name: &str| {
+    let radius = 6.0;
+    let draw = |area: egui::Rect, name: &str, corners: egui::CornerRadius| {
         let Some(p) = super::settings_ui::preview(name) else { return };
-        painter.rect_filled(area, 0.0, p.bg);
+        painter.rect_filled(area, corners, p.bg);
         // A few lines of "code".
         let line = |y: f32, parts: &[(f32, Color32)]| {
             let mut x = area.left() + 10.0;
@@ -228,14 +229,14 @@ fn scheme_tile(ui: &mut egui::Ui, label: &str, size: egui::Vec2, selected: bool,
         line(t + 28.0, &[(0.12, p.bg), (0.6, p.syntax[2])]);
         line(t + 42.0, &[(0.3, p.fg)]);
     };
-    let radius = 6.0;
+    let all = egui::CornerRadius::same(radius as u8);
     match label {
-        "Dark" => draw(rect, "Strata Dark"),
-        "Light" => draw(rect, "Strata Light"),
+        "Dark" => draw(rect, "Strata Dark", all),
+        "Light" => draw(rect, "Strata Light", all),
         _ => {
             let (l, rr) = rect.split_left_right_at_fraction(0.5);
-            draw(l, "Strata Dark");
-            draw(rr, "Strata Light");
+            draw(l, "Strata Dark", egui::CornerRadius { ne: 0, se: 0, ..all });
+            draw(rr, "Strata Light", egui::CornerRadius { nw: 0, sw: 0, ..all });
         }
     }
     let stroke = if selected {

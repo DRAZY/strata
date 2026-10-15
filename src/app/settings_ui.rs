@@ -67,6 +67,13 @@ impl Default for SettingsUi {
     }
 }
 
+impl SettingsUi {
+    #[cfg(test)]
+    pub fn category_for_shots(&mut self, c: Category) {
+        self.category = c;
+    }
+}
+
 /// What the form asks for, carried out after drawing.
 #[derive(Debug, PartialEq)]
 pub(super) enum Change {
@@ -206,7 +213,8 @@ impl StrataApp {
             .default_size(size)
             .min_size(vec2(360.0, 240.0))
             .max_size(screen.size() - vec2(16.0, 16.0))
-            .default_pos(screen.center() - size / 2.0)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(screen.center())
             .constrain(true)
             .resizable(true)
             .frame(egui::Frame::window(&ctx.global_style()).fill(look.bg).inner_margin(0))
@@ -419,7 +427,15 @@ fn contents(state: &mut SettingsUi, ui: &mut egui::Ui, values: &Map<String, Valu
                 }
                 let current = query.is_empty() && c == state.category;
                 let label = if query.is_empty() { c.label().to_owned() } else { format!("{}  ({count})", c.label()) };
-                let r = ui.add_sized(vec2(ui.available_width(), size + 12.0), egui::Button::selectable(current, RichText::new(label).size(size)).frame_when_inactive(false));
+                let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), size + 14.0), Sense::click());
+                if current || r.hovered() || r.has_focus() {
+                    let fill = if current { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill };
+                    ui.painter().rect_filled(rect, 4.0, fill);
+                }
+                if current {
+                    ui.painter().rect_filled(egui::Rect::from_min_size(rect.left_top() + vec2(0.0, 4.0), vec2(3.0, rect.height() - 8.0)), 1.5, look.accent);
+                }
+                ui.painter().text(rect.left_center() + vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(size), if current { fg } else { fg.gamma_multiply(0.85) });
                 if r.clicked() {
                     state.category = c;
                     state.search.clear();
@@ -474,8 +490,11 @@ fn row(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, values: &Map
     let control_w = (width * 0.42).clamp(170.0, 320.0);
     let top = ui.cursor().top();
     ui.add_space(6.0);
+    let label_w = (width - control_w - 20.0).max(120.0);
     ui.horizontal_top(|ui| {
-        ui.allocate_ui_with_layout(vec2((width - control_w - 16.0).max(120.0), 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+        ui.allocate_ui_with_layout(vec2(label_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_min_width(label_w);
+            ui.set_max_width(label_w);
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(m.label).size(size).strong());
                 if changed && ui.add(egui::Button::new(RichText::new("Reset").size(size * 0.85).color(look.accent)).frame(false)).on_hover_text(format!("Back to the default, {}", short(&meta::defaults()[m.key]))).clicked() {
@@ -494,7 +513,9 @@ fn row(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, values: &Map
                 changes.push(Change::Copy(m.key));
             }
         });
-        ui.allocate_ui_with_layout(vec2(control_w, 0.0), egui::Layout::top_down(egui::Align::Max), |ui| {
+        ui.add_space(8.0);
+        ui.allocate_ui_with_layout(vec2(control_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_max_width(control_w);
             control(state, ui, m, &value, look, changes);
         });
     });
@@ -518,7 +539,7 @@ fn control(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, value: &
     match m.control {
         Control::Toggle => {
             let mut on = value.as_bool().unwrap_or(false);
-            if toggle(ui, &mut on).changed() {
+            if toggle(ui, &mut on, look.accent).changed() {
                 changes.push(set(Value::Bool(on)));
             }
         }
@@ -535,20 +556,17 @@ fn control(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, value: &
         }
         Control::MaybeNumber { min, max, none } => {
             ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut v = value.as_f64();
-                    if let Some(mut n) = v {
-                        let r = ui.add(egui::DragValue::new(&mut n).range(min..=max).speed(1.0).fixed_decimals(0).update_while_editing(false));
-                        if r.changed() && !r.dragged() || r.drag_stopped() {
-                            changes.push(set(Value::from(n.round() as u64)));
-                        }
+                let v = value.as_f64();
+                let mut edge = v.is_none();
+                if ui.checkbox(&mut edge, RichText::new(none).size(size)).changed() {
+                    changes.push(set(if edge { Value::Null } else { Value::from(80) }));
+                }
+                if let Some(mut n) = v {
+                    let r = ui.add(egui::DragValue::new(&mut n).range(min..=max).speed(1.0).fixed_decimals(0).update_while_editing(false));
+                    if r.changed() && !r.dragged() || r.drag_stopped() {
+                        changes.push(set(Value::from(n.round() as u64)));
                     }
-                    let mut edge = v.is_none();
-                    if ui.checkbox(&mut edge, RichText::new(none).size(size)).changed() {
-                        v = if edge { None } else { Some(80.0) };
-                        changes.push(set(v.map_or(Value::Null, |n| Value::from(n as u64))));
-                    }
-                });
+                }
             });
         }
         Control::Choice(options) => {
@@ -557,16 +575,14 @@ fn control(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, value: &
             let short = options.len() <= 3 && options.iter().map(|(_, l)| l.len()).sum::<usize>() <= 24;
             if short {
                 ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        for (v, l) in options.iter().rev() {
-                            if ui.add(egui::Button::selectable(v.eq_ignore_ascii_case(current), RichText::new(*l).size(size))).clicked() {
-                                changes.push(set(Value::from(*v)));
-                            }
+                    for (v, l) in options {
+                        if ui.add(egui::Button::selectable(v.eq_ignore_ascii_case(current), RichText::new(*l).size(size))).clicked() {
+                            changes.push(set(Value::from(*v)));
                         }
-                    });
+                    }
                 });
             } else {
-                egui::ComboBox::from_id_salt(id).selected_text(RichText::new(label).size(size)).width(w.min(240.0)).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt(id).selected_text(RichText::new(label).size(size)).width(w.min(260.0)).show_ui(ui, |ui| {
                     for (v, l) in options {
                         if ui.selectable_label(v.eq_ignore_ascii_case(current), RichText::new(*l).size(size)).clicked() {
                             changes.push(set(Value::from(*v)));
@@ -584,7 +600,7 @@ fn control(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, value: &
         Control::Font { editor } => {
             let current = value.as_str().unwrap_or_default().to_owned();
             let shown = if current.is_empty() { "Default (built-in)".to_owned() } else { current.clone() };
-            egui::ComboBox::from_id_salt(id).selected_text(RichText::new(shown).size(size)).width(w.min(240.0)).height(360.0).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt(id).selected_text(RichText::new(shown).size(size)).width(w.min(260.0)).height(360.0).show_ui(ui, |ui| {
                 let fonts = state.fonts[usize::from(!editor)].get_or_insert_with(|| crate::fonts::font_choices(editor).into_iter().map(|f| f.name).collect());
                 if ui.selectable_label(current.is_empty(), RichText::new("Default (built-in)").size(size)).clicked() {
                     changes.push(set(Value::from("")));
@@ -599,7 +615,7 @@ fn control(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, value: &
         Control::Scheme => {
             let current = value.as_str().unwrap_or_default();
             let canonical = crate::highlight::theme_canonical_name(current).unwrap_or(current).to_owned();
-            egui::ComboBox::from_id_salt(id).selected_text(RichText::new(&canonical).size(size)).width(w.min(240.0)).height(420.0).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt(id).selected_text(RichText::new(&canonical).size(size)).width(w.min(260.0)).height(420.0).show_ui(ui, |ui| {
                 for (group, names) in crate::highlight::theme_groups() {
                     ui.label(RichText::new(group.label()).size(size * 0.85).weak());
                     for name in names {
@@ -613,22 +629,22 @@ fn control(state: &mut SettingsUi, ui: &mut egui::Ui, m: &'static Meta, value: &
                     }
                 }
             });
-            swatch(ui, &canonical, vec2(w.min(240.0), 6.0));
+            swatch(ui, &canonical, vec2(w.min(260.0) + ui.spacing().icon_width + ui.spacing().button_padding.x * 2.0, 6.0));
         }
         Control::Words | Control::Columns => {
             let numbers = m.control == Control::Columns;
             let items: Vec<Value> = value.as_array().cloned().unwrap_or_default();
             let mut remove = None;
-            ui.horizontal_wrapped(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center).with_main_wrap(true), |ui| {
-                    for (i, item) in items.iter().enumerate().rev() {
+            if !items.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    for (i, item) in items.iter().enumerate() {
                         let text = item.as_str().map_or_else(|| item.to_string(), str::to_owned);
                         if ui.add(egui::Button::new(RichText::new(format!("{text}  ×")).size(size * 0.92))).on_hover_text("Remove").clicked() {
                             remove = Some(i);
                         }
                     }
                 });
-            });
+            }
             if let Some(i) = remove {
                 let mut items = items.clone();
                 items.remove(i);
@@ -682,17 +698,20 @@ fn per_language_row(ui: &mut egui::Ui, values: &Map<String, Value>, look: &Look,
     let size = look.ui_size;
     let dim = ui.visuals().text_color().gamma_multiply(0.62);
     ui.add_space(6.0);
+    let width = ui.available_width();
+    let control_w = (width * 0.42).clamp(170.0, 320.0);
+    let label_w = (width - control_w - 20.0).max(120.0);
     ui.horizontal_top(|ui| {
-        let width = ui.available_width();
-        ui.allocate_ui_with_layout(vec2((width - 200.0).max(120.0), 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+        ui.allocate_ui_with_layout(vec2(label_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_min_width(label_w);
+            ui.set_max_width(label_w);
             ui.label(RichText::new("Per-language settings").size(size).strong());
             ui.add(egui::Label::new(RichText::new("Settings for one language (indentation, wrapping, rulers…) are edited in settings.json.").size(size * 0.92).color(dim)).wrap());
         });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            if ui.button(RichText::new("Edit in settings.json").size(size)).clicked() {
-                changes.push(Change::OpenJson(values.contains_key(SYNTAX_SETTINGS).then_some(SYNTAX_SETTINGS)));
-            }
-        });
+        ui.add_space(8.0);
+        if ui.button(RichText::new("Edit in settings.json").size(size)).clicked() {
+            changes.push(Change::OpenJson(values.contains_key(SYNTAX_SETTINGS).then_some(SYNTAX_SETTINGS)));
+        }
     });
     ui.add_space(8.0);
 }
@@ -761,7 +780,7 @@ fn add_field(ui: &mut egui::Ui, drafts: &mut HashMap<&'static str, String>, key:
 }
 
 /// An on/off switch. Space or Enter flips it when it has the keyboard.
-fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+fn toggle(ui: &mut egui::Ui, on: &mut bool, accent: Color32) -> egui::Response {
     let h = ui.spacing().interact_size.y * 0.9;
     let size = vec2(h * 1.8, h);
     let (rect, mut r) = ui.allocate_exact_size(size, Sense::click());
@@ -775,10 +794,12 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
         let visuals = ui.style().interact_selectable(&r, *on);
         let rect = rect.expand(visuals.expansion);
         let radius = 0.5 * rect.height();
-        let fill = if *on { ui.visuals().selection.bg_fill } else { visuals.bg_fill };
+        let off = ui.visuals().widgets.inactive.bg_fill;
+        let fill = if ui.is_enabled() { off.lerp_to_gamma(accent, t) } else { off };
         ui.painter().rect(rect, radius, fill, visuals.bg_stroke, egui::StrokeKind::Inside);
         let x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
-        ui.painter().circle(egui::pos2(x, rect.center().y), 0.75 * radius, visuals.fg_stroke.color, visuals.fg_stroke);
+        let knob = if *on { Color32::WHITE } else { ui.visuals().text_color().gamma_multiply(0.8) };
+        ui.painter().circle_filled(egui::pos2(x, rect.center().y), 0.72 * radius, knob);
         if r.has_focus() {
             ui.painter().rect_stroke(rect.expand(2.0), radius + 2.0, ui.visuals().selection.stroke, egui::StrokeKind::Outside);
         }

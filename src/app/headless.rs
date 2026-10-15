@@ -188,6 +188,40 @@ mod tests {
         let mut app = StrataApp::new(None, None);
         app.about_open = true;
         shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join("about.ppm"));
+
+        // The Settings window (docked: no native windows here), dark and light,
+        // a category and a search; a changed setting shows its Reset.
+        for (scheme, tag) in [("Strata Dark", "dark"), ("Strata Light", "light")] {
+            let ctx = Context::default();
+            let mut app = StrataApp::new(Some(root.join("src/diff.rs")), None);
+            app.settings.theme = scheme.into();
+            app.settings.font_size = 15.0;
+            app.settings.rulers = vec![80, 100];
+            app.apply_settings();
+            // Frames first: the first ones lay out at the wrong scale.
+            shooter.run(&ctx, &mut app, 3, vec![]);
+            app.open_settings_window();
+            shooter.shoot(&ctx, &mut app, 6, vec![], &dir.join(format!("settings_{tag}.ppm")));
+            app.settings_ui.search = "save".into();
+            shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join(format!("settings_search_{tag}.ppm")));
+            app.settings_ui.search = "wrap".into();
+            shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join(format!("settings_wrap_{tag}.ppm")));
+            app.settings_ui.search.clear();
+            app.settings.added_words = vec!["Strata".into(), "egui".into()];
+            app.settings_ui.category_for_shots(crate::settings_meta::Category::Find);
+            shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join(format!("settings_find_{tag}.ppm")));
+        }
+
+        // The welcome card on a first launch, dark and light.
+        for (scheme, tag) in [("Strata Dark", "dark"), ("Strata Light", "light")] {
+            let ctx = Context::default();
+            let mut app = StrataApp::new(None, None);
+            app.settings.theme = scheme.into();
+            app.apply_settings();
+            shooter.run(&ctx, &mut app, 3, vec![]);
+            app.show_welcome(true);
+            shooter.shoot(&ctx, &mut app, 6, vec![], &dir.join(format!("welcome_{tag}.ppm")));
+        }
     }
 }
 

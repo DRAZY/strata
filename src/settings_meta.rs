@@ -277,7 +277,16 @@ pub fn plain(md: &str) -> String {
         rest = &rest[end + 1..];
     }
     out.push_str(rest);
-    out.replace("**", "").replace('`', "")
+    // Emphasis marks go; code spans lose their backticks but keep a `*` inside.
+    let mut code = false;
+    out.chars()
+        .filter(|&c| {
+            if c == '`' {
+                code = !code;
+            }
+            c != '`' && (code || c != '*')
+        })
+        .collect()
 }
 
 /// The manual's description of `key`, as plain text.
@@ -385,6 +394,7 @@ mod tests {
     #[test]
     fn markdown_becomes_plain_text() {
         assert_eq!(plain("See [Fonts](appearance.md#fonts) and `x`, **⌘ ,**."), "See Fonts and x, ⌘ ,.");
+        assert_eq!(plain("Wrap (*no shortcut*), for example `[\"*.pyc\"]`."), "Wrap (no shortcut), for example [\"*.pyc\"].");
         assert_eq!(fmt_number(1.0), "1");
         assert_eq!(fmt_number(0.35), "0.35");
         let rows = doc_rows("| Setting | Type |\n| `a` | text | `\"x|y\"` | Hi [b](c.md). |\n");
