@@ -16,6 +16,7 @@ mod decor;
 mod dev;
 mod document;
 mod editor;
+mod editorconfig;
 mod encoding;
 mod files;
 mod find;
