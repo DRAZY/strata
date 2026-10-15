@@ -82,9 +82,14 @@ all there out of the box, with no accounts, no telemetry and nothing to set up.
   syntaxes (`.sublime-syntax`) and color schemes (`.tmTheme`,
   `.sublime-color-scheme`); these widely shared formats mean existing
   collections work unchanged.
-- **Private by design**: no accounts and no telemetry. Strata contacts GitHub
-  only to check for and download updates, and only if you allow it; logs and
-  crash reports stay on your computer.
+- **Private by design**: no accounts, no telemetry. Strata only contacts
+  GitHub to check for and download updates, and only if you allow it (or when
+  you choose Help ▸ Check for Updates…); it sends nothing else. Logs and crash
+  reports stay on your computer.
+- **Signed updates**: a new version is offered in the app and installs with
+  one click; every download is checked against an ed25519 signature (and, on
+  macOS, Strata's Developer ID) before it replaces anything, and the previous
+  version comes back if the new one doesn't start.
 
 ## Screenshots
 
@@ -109,8 +114,8 @@ all there out of the box, with no accounts, no telemetry and nothing to set up.
 ## Not in 1.0
 
 Planned for after 1.0 (details in [`docs/ROADMAP.md`](docs/ROADMAP.md)):
-language servers (LSP), plugins, a Vim mode, official Linux support, opt-in
-automatic updates (Sparkle on macOS) and screen reader support in the editor.
+language servers (LSP), plugins, a Vim mode, official Linux support and
+screen reader support in the editor.
 
 ## Accessibility
 
@@ -531,10 +536,13 @@ Reference; tests keep the two in step with `Settings`.
 
 ## Privacy
 
-Strata sends no telemetry. The only connections it makes on its own are to
-GitHub, to check for and download updates, and only if you allow it (it asks
-on the first launch; Help ▸ Check for Updates… checks by hand). Markdown
-images aren't fetched. A link you click (in
+Strata has no telemetry and no accounts. Its only network connections of its
+own are update checks and downloads from GitHub, and only if you allow them
+(Strata asks once; the `update_check` setting) or choose Help ▸ Check for
+Updates…; they send nothing but the request itself. Updates are fetched with
+the system's `curl` (HTTPS only) and verified against an ed25519 key built
+into the app before anything is installed; see [docs/UPDATES.md](docs/UPDATES.md).
+Markdown images aren't fetched. A link you click (in
 the Markdown preview, the manual, or Help ▸ Report a Problem…) opens in your
 browser; only `http`, `https` and `mailto` links leave Strata (other local
 files are shown in the file manager, other schemes are refused; see

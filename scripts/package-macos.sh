@@ -2,7 +2,7 @@
 # Build Strata.app and its DMG.
 #
 #   scripts/package-macos.sh              → dist/Strata-<version>-universal.dmg
-#                                           and dist/Strata-<version>-universal.app.zip
+#                                           and Strata-<version>-universal.app.zip (for updates)
 #
 # Universal (Apple silicon + Intel) unless ARCH=arm64 or ARCH=x86_64.
 # Signing: with a "Developer ID Application" certificate in the keychain the
@@ -49,11 +49,14 @@ case "$ARCH" in
   x86_64) TARGETS="x86_64-apple-darwin" ;;
   *) echo "ARCH must be universal, arm64 or x86_64" >&2; exit 1 ;;
 esac
+# An Intel-only build updates to the universal one.
+case "$ARCH" in arm64) DIST_KEY=macos-arm64 ;; *) DIST_KEY=macos-universal ;; esac
 BINS=""
 for T in $TARGETS; do
   echo "==> cargo build ($T, release)"
   # Release builds leave out the screenshot/dev aids (the `devtools` feature).
-  cargo build --release --no-default-features --target "$T"
+  # STRATA_DIST: which update download this build asks for (src/update/manifest.rs).
+  STRATA_DIST="$DIST_KEY" cargo build --release --no-default-features --target "$T"
   BINS="$BINS target/$T/release/strata"
 done
 
@@ -175,6 +178,14 @@ if [ "$NOTARIZE" = "1" ]; then
 fi
 rm -f "$APP_ZIP"
 ditto -c -k --keepParent "$APP" "$APP_ZIP"
+
+# The in-app updater downloads this: the signed (and stapled) app, zipped
+# with ditto so it unpacks with its signature intact. See docs/UPDATES.md.
+echo "==> update zip"
+UPDATE_ZIP="$DIST/Strata-$VERSION-$ARCH.app.zip"
+rm -f "$UPDATE_ZIP"
+ditto -c -k --keepParent "$APP" "$UPDATE_ZIP"
+shasum -a 256 "$UPDATE_ZIP" > "$UPDATE_ZIP.sha256"
 
 echo "==> DMG"
 STAGE="$WORK/dmg"

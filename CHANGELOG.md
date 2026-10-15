@@ -20,7 +20,8 @@ The first public release candidate. Everything below is new.
 - Word completions while typing, snippets in the `.sublime-snippet` format
   (fields, mirrors, variables, transforms) with built-ins for common
   languages.
-- Code folding, bookmarks, Emacs-style mark and yank, macros.
+- Code folding, bookmarks, Emacs-style mark and yank, macros that you can save
+  and bind to keys.
 - Spell check for comments, strings and prose with bundled US and UK English
   dictionaries, suggestions and a personal word list.
 - Text tools: JSON format and minify, Base64, URL and HTML encoding, UUIDs and
@@ -36,6 +37,7 @@ The first public release candidate. Everything below is new.
 - Find in Files and Replace in Files across whole folders, respecting
   `.gitignore`, with include and exclude patterns and an undo for the whole
   replacement.
+- Search history: ↑ and ↓ in the find, replace and Find in Files fields.
 
 ### Layout & Windows
 
@@ -57,7 +59,8 @@ The first public release candidate. Everything below is new.
   commit, side by side and still editable.
 - Build systems (Cargo, Python, Node, Go, C/C++, Make and more) with clickable
   errors, plus your own as JSON.
-- Git change bars in the gutter and the current branch in the status bar.
+- Git change bars in the gutter and the current branch in the status bar;
+  Copy Permalink (GitHub, GitLab, Bitbucket) and Copy Relative Path.
 - Printing and PDF export with syntax colors.
 - A built-in manual (Help ▸ Documentation) with search, and a generated
   Keyboard Shortcuts page.
@@ -91,8 +94,11 @@ The first public release candidate. Everything below is new.
 
 - Large files: a 95 MB, 1.6 million-line file opens highlighted in about
   0.6 s on an M-series Mac; minified one-line files stay responsive.
-- 40 encodings, detected on open, with Reopen with Encoding and Save with
-  Encoding; LF and CRLF line endings.
+- 40 encodings, detected on open (including legacy ones such as Shift_JIS,
+  GBK and KOI8), with Reopen with Encoding and Save with Encoding; LF and CRLF
+  line endings.
+- Optional auto save after a pause in typing.
+- Images open in a preview, and other binary files in a read-only hex view.
 - Atomic saves that keep symlinks and permissions and refuse text the chosen
   encoding can't hold.
 - Files changed or deleted on disk are noticed and reloaded or flagged.
@@ -105,7 +111,8 @@ The first public release candidate. Everything below is new.
 
 - macOS 11 or later, as a universal (Apple silicon and Intel) or Apple
   silicon DMG, signed with a Developer ID and notarized; native menu bar,
-  Finder Open With and Dock drops, and a `strata` shell command.
+  Finder Open With and Dock drops, recent files in the Dock menu, and a
+  `strata` shell command.
 - Windows (x64), as a portable zip with the app icon and version
   details embedded in `Strata.exe`.
 - The `strata` command opens files at a line and column, hands them to a

@@ -32,6 +32,10 @@ flate2 = "1.1.10"
 chardetng = "1.0.0"
 # Image previews (already in the build for eframe and arboard; these formats added).
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
+# Updates: checking the ed25519 signature and SHA-256 of a downloaded update
+# (pure Rust; the download itself goes through the system's curl, see src/update).
+ed25519-dalek = { version = "2.2.0", default-features = false }
+sha2 = { version = "0.10.9", default-features = false }
 
 # Dev aids read from STRATA_* environment variables (see src/dev.rs).
 # `devtools` (default): screenshots and first-frame panels; build release
@@ -64,4 +68,4 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 [target.'cfg(windows)'.dependencies]
 # Side bar Delete (the Recycle Bin) and putting restored windows on a monitor
 # (the version already in the build, through winit).
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_System_Threading"] }

@@ -26,6 +26,7 @@ Strata creates most of these only when it needs them.
 | `backups/` | The text of unsaved tabs, one `.txt` file per tab |
 | `backups.recovered-<time>/` | Backups set aside because a session couldn't be restored. `<time>` is when it happened, in seconds since 1970 |
 | `session.lock` | Marks which running Strata owns the session |
+| `update.json` | When Strata last checked for updates, a version you skipped, and an update waiting to finish. See [Updates](about.md#updates) |
 | `Logs/` | The log: `strata.log`, plus `strata.1.log` and `strata.2.log` before it. See [Logs](#logs) |
 | `Crashes/` | A report for each time Strata crashed. See [If Strata crashes](#if-strata-crashes) |
 | `Print/` | PDFs made for File ▸ Print…, deleted after a day. See [Printing](printing.md) |
@@ -142,7 +143,7 @@ If something goes wrong in the background, such as a search or a build, Strata l
 
 ### Report a problem
 
-Strata never sends anything by itself. To report a problem:
+Strata never sends logs, crash reports or anything about your work by itself. To report a problem:
 
 1. Choose **Help ▸ Report a Problem…**. A new tab opens with a template, your Strata version and system, and the end of the log. Your home folder is shown as `~`.
 2. Fill in what happened and how to make it happen again.
@@ -197,6 +198,15 @@ Strata stays responsive on files of hundreds of megabytes and on minified files 
 **macOS.** Strata releases are signed with a Developer ID and notarized by Apple, so they open normally, after macOS asks once whether to open an app downloaded from the internet. If macOS says Strata "can't be opened" or "is damaged", the copy didn't come from the project's releases (a test build, or a download that was changed on the way): download it again from the releases page and check its checksum. Builds you make yourself with `scripts/package-macos.sh` are only notarized with `NOTARIZE=1`; to open an unnotarized build of your own, go to **System Settings ▸ Privacy & Security** after the first attempt and click **Open Anyway**.
 
 **Windows.** `Strata.exe` isn't code-signed yet, so on its first run Microsoft Defender SmartScreen may say "Windows protected your PC". Click **More info**, check that the file is the one you downloaded, then click **Run anyway**. You only need to do this once for each version.
+
+## Updates
+
+- **"Couldn't check for updates."** Strata couldn't reach GitHub, or GitHub had no update information. Check your connection and choose **Help ▸ Check for Updates…** again. Strata uses the system's `curl` and its proxy settings (the `https_proxy` environment variable).
+- **"Couldn't install the update."** The message says which check failed. A download that doesn't match its signature or checksum is deleted and nothing changes; try again later, or choose **Download in Browser** to get the release from its page.
+- **Download… instead of Install and Relaunch** means Strata can't write where it's installed. Move it somewhere you can write to (on macOS, your Applications folder) and open it from there.
+- **The new version didn't start.** Strata puts the previous version back by itself and says so when it opens. What happened is in `update-helper.log` in the [log folder](#logs); please [report it](#report-a-problem).
+
+See [Updates](about.md#updates) for how updates work.
 
 ## The strata command is missing
 

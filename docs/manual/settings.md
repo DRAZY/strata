@@ -224,6 +224,13 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `sidebar_respect_gitignore` | true/false | `true` | The side bar's tree hides files and folders that `.gitignore` (and `.ignore`, `.git/info/exclude` and your global Git excludes) ignore, as Goto Anything and Find in Files do. See [Projects and Side Bar](projects.md#what-the-tree-shows). |
 | `file_exclude_patterns` | list of text | `[".git", ".DS_Store"]` | Names the side bar never shows, files or folders, as globs: for example `["*.pyc", "node_modules", ".git", ".DS_Store"]`. |
 
+### Updates
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `update_check` | text | `"ask"` | Whether Strata checks GitHub for a new version: `"auto"` (about once a day), `"off"`, or `"ask"` (Strata asks once whether to turn checks on). Help ▸ Check for Updates… works whatever this is. See [Updates](about.md#updates). |
+| `update_channel` | text | `"stable"` | Which versions to offer: `"stable"` releases only, or `"prerelease"` to also offer prereleases (release candidates and betas). |
+
 ### Editing
 
 | Setting | Type | Default | Description |

@@ -18,7 +18,8 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 echo "==> cargo build ($TARGET, release)"
-cargo build --release --no-default-features --target "$TARGET"
+# STRATA_DIST: which update download this build asks for (src/update/manifest.rs).
+STRATA_DIST=windows-x64 cargo build --release --no-default-features --target "$TARGET"
 
 echo "==> $NAME.zip"
 mkdir -p "$WORK/$NAME" "$DIST"

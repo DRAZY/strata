@@ -153,6 +153,8 @@ pub static SETTINGS: &[Meta] = &[
     m("file_exclude_patterns", SideBar, "Hidden names", Words),
     // Help
     m("help_in_own_window", Help, "Documentation in its own window", Toggle),
+    m("update_check", Help, "Check for updates", Choice(&[("ask", "Ask me"), ("auto", "Automatically (daily)"), ("off", "Never")])),
+    m("update_channel", Help, "Updates to offer", Choice(&[("stable", "Releases"), ("prerelease", "Releases and prereleases")])),
     // Advanced
     m("editorconfig", Editor, "Follow .editorconfig files", Toggle),
     m("syntax_settings", Advanced, "Settings per language", Json),

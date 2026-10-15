@@ -508,6 +508,8 @@ const LICENSES: &[Credit] = &[
     credit("log", "MIT or Apache-2.0", &["log"]),
     credit("libc", "MIT or Apache-2.0", &["libc"]),
     credit("winresource (Windows icon and version info, build only)", "MIT", &["winresource"]),
+    credit("ed25519-dalek / curve25519-dalek (update signatures)", "BSD-3-Clause", &["ed25519-dalek"]),
+    credit("sha2 (RustCrypto, update checksums)", "MIT or Apache-2.0", &["sha2"]),
 ];
 
 /// Every crate in the build: (name, version, license), from

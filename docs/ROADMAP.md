@@ -25,7 +25,9 @@ in the app today.
 - **Customizing**: about 190 languages, 35 color schemes with light/dark
   following, bundled fonts, JSON settings and key bindings that apply on save,
   user syntaxes, color schemes and snippets in widely shared formats.
-- **Platforms**: macOS on Apple silicon and Windows on x64.
+- **Platforms**: macOS (Apple silicon and Intel, signed and notarized) and
+  Windows on x64.
+- **Updates**: opt-in, signed in-app updates from GitHub Releases.
 
 ## After 1.0
 
@@ -38,8 +40,6 @@ These are planned, in no particular order. None of them is in 1.0.
   operators and registers).
 - **Linux as an official platform**: the code builds and mostly runs on
   Linux today, but it isn't tested, packaged or supported yet.
-- **Automatic updates** with Sparkle on macOS, **opt-in**: Strata never goes
-  online on its own, so update checks stay off unless you turn them on.
 - **Accessibility**: screen reader support for the editor area. Keyboard-only
   use is fully supported and high-contrast color schemes are included in 1.0,
   but screen readers can't read the text in the editor yet.
