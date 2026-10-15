@@ -149,6 +149,11 @@ pub enum Cmd {
     ToggleSpellCheck,
     NextMisspelling,
     PrevMisspelling,
+    // See `app/file_links.rs`.
+    CopyRelativePath,
+    CopyPermalink,
+    // See `app/macro_files.rs`.
+    SaveMacro,
 }
 
 impl Cmd {
@@ -297,6 +302,9 @@ impl Cmd {
         Cmd::ToggleSpellCheck,
         Cmd::NextMisspelling,
         Cmd::PrevMisspelling,
+        Cmd::CopyRelativePath,
+        Cmd::CopyPermalink,
+        Cmd::SaveMacro,
     ];
 
     pub fn name(self) -> &'static str {
@@ -445,6 +453,9 @@ impl Cmd {
             Cmd::ToggleSpellCheck => "View: Toggle Spell Check",
             Cmd::NextMisspelling => "View: Next Misspelling",
             Cmd::PrevMisspelling => "View: Previous Misspelling",
+            Cmd::CopyRelativePath => "File: Copy Relative Path",
+            Cmd::CopyPermalink => "File: Copy Permalink",
+            Cmd::SaveMacro => "Tools: Save Macro…",
         }
     }
 
@@ -598,6 +609,7 @@ impl Cmd {
             Cmd::ToggleSpellCheck => &[(NONE, Key::F6)],
             Cmd::NextMisspelling => &[(CTRL, Key::F6)],
             Cmd::PrevMisspelling => &[(CTRL_SHIFT, Key::F6)],
+            Cmd::CopyRelativePath | Cmd::CopyPermalink | Cmd::SaveMacro => &[],
         }
     }
 
@@ -754,6 +766,9 @@ impl Cmd {
             Cmd::ToggleSpellCheck => "toggle_spell_check",
             Cmd::NextMisspelling => "next_misspelling",
             Cmd::PrevMisspelling => "prev_misspelling",
+            Cmd::CopyRelativePath => "copy_relative_path",
+            Cmd::CopyPermalink => "copy_permalink",
+            Cmd::SaveMacro => "save_macro",
         }
     }
 }

@@ -139,6 +139,7 @@ impl StrataApp {
             Target::Editor(id) => self.run_editor(id),
             Target::View(name) => self.run_act(ctx, Act::Named(name.into())),
             Target::FoldLevel(n) => self.run_act(ctx, Act::Named(format!("fold_level:{n}"))),
+            Target::MacroFile(name) => self.run_macro_file(name),
             Target::Tab(n) => {
                 let tabs = self.group_tabs(self.focus_group);
                 if let Some(&i) = if n == 8 { tabs.last() } else { tabs.get(n as usize) } {

@@ -644,6 +644,8 @@ impl StrataApp {
                 SEP(),
                 c(if self.macro_recording.is_some() { "Stop Recording Macro" } else { "Record Macro" }, Cmd::RecordMacro),
                 c("Playback Macro", Cmd::PlaybackMacro).enabled(!self.macro_last.is_empty()),
+                c("Save Macro…", Cmd::SaveMacro).enabled(!self.macro_last.is_empty() && self.config.is_some()),
+                sub("Macros", self.saved_macro_items()),
                 SEP(),
                 sub("Developer", vec![c("New Snippet…", Cmd::NewSnippet)]),
                 SEP(),
@@ -883,6 +885,7 @@ impl StrataApp {
                 n if n.starts_with("window:") => self.link.requests.focus_window = n[7..].parse().ok(),
                 "crlf" => self.doc().set_line_ending(crate::buffer::LineEnding::CrLf),
                 n if n.starts_with("spell:") => self.spell_act(n),
+                n if n.starts_with(super::macro_files::RUN_PREFIX) => self.run_macro_file(&n[super::macro_files::RUN_PREFIX.len()..]),
                 _ => {}
             },
         }

@@ -259,6 +259,18 @@ A macro records:
 
 It does not record commands you pick from a menu or the command palette, mouse clicks, or window commands such as Save. Strata keeps the last macro until you record another one or quit.
 
+### Saved macros
+
+To keep a macro, choose **Tools ▸ Save Macro…** after recording it and give it a name. It's saved as `<name>.strata-macro` (a small JSON file) in the `Macros` folder of Strata's config folder, next to `settings.json`. Saved macros are listed in **Tools ▸ Macros**; choose one to play it at every cursor.
+
+To give a saved macro a key, add a binding to `keybindings.json` with the `run_macro_file` command and the macro's name:
+
+```json
+{ "keys": ["ctrl+alt+w"], "command": "run_macro_file", "args": {"file": "Wrap in Quotes"} }
+```
+
+The key then shows next to the macro in Tools ▸ Macros. See [Customizing Key Bindings](keybindings.md).
+
 ## Bookmarks
 
 Bookmarks mark lines you want to come back to. A bookmarked line shows a marker in the gutter. These commands are under **Goto ▸ Bookmarks**, which also lists every bookmark in the file so you can jump to one.

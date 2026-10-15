@@ -28,6 +28,10 @@ log = "0.4.34"
 spellbook = "0.4.2"
 # Compresses printed PDFs (already built for syntect and png).
 flate2 = "1.1.10"
+# Guessing the encoding of files that aren't Unicode (Shift_JIS, GBK, KOI8…).
+chardetng = "1.0.0"
+# Image previews (already in the build for eframe and arboard; these formats added).
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 
 # Dev aids read from STRATA_* environment variables (see src/dev.rs).
 # `devtools` (default): screenshots and first-frame panels; build release

@@ -153,3 +153,5 @@ Project ▸ Open Recent lists up to 15 recent projects, then your recent folders
 **Clear Items** ({{key:clear_recent_files}}, "File: Clear Recent Items") empties the recent files, the recent folders, the recent projects and the list of closed tabs. It does the same from either Open Recent menu.
 
 Files opened as previews don't count as recently opened. The recent lists are shared by every window and kept between sessions.
+
+On macOS, right-click (or Control-click) Strata's Dock icon for **New Window** and the ten most recent files and folders.

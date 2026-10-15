@@ -1,6 +1,6 @@
-//! Opening big files: a confirmation above `large_file_warning_mb` or for a
-//! file that looks binary, and large-file mode (see `document::LargeFile`)
-//! above `large_file_mb`.
+//! Opening big files: a confirmation above `large_file_warning_mb` (text
+//! only: binary files open in the hex view, see `binary`), and large-file
+//! mode (see `document::LargeFile`) above `large_file_mb`.
 
 use super::StrataApp;
 use crate::document::Document;
@@ -8,23 +8,16 @@ use std::path::Path;
 
 const MB: f64 = 1024.0 * 1024.0;
 
-/// Why `path` deserves a question before it opens: too big (over
-/// `warn_bytes`) or binary (a NUL byte near the start, unless the text is
-/// UTF-16). None for files that open without asking, or don't exist yet.
+/// Why `path` deserves a question before it opens: a text file too big
+/// (over `warn_bytes`) to read quickly. None for files that open without
+/// asking, binary ones included (the hex view reads only what it shows), or
+/// that don't exist yet.
 pub fn open_warning(path: &Path, warn_bytes: u64) -> Option<String> {
     let len = std::fs::metadata(path).ok()?.len();
-    if len > warn_bytes {
-        return Some(format!(
-            "{} is {:.0} MB. Opening it reads all of it into memory and may take a while.",
-            name(path),
-            len as f64 / MB
-        ));
+    if len <= warn_bytes || crate::binary::head(path).is_ok_and(|h| crate::binary::classify(&h) == crate::binary::Kind::Binary) {
+        return None;
     }
-    let mut head = vec![0; 8192];
-    let n = std::io::Read::read(&mut std::fs::File::open(path).ok()?, &mut head).ok()?;
-    head.truncate(n);
-    let utf16 = crate::encoding::decode_detect(&head).1.id().starts_with("utf-16");
-    (!utf16 && head.contains(&0)).then(|| format!("{} looks like a binary file. Opened as text it shows as gibberish, and saving it could damage it.", name(path)))
+    Some(format!("{} is {:.0} MB. Opening it reads all of it into memory and may take a while.", name(path), len as f64 / MB))
 }
 
 fn name(path: &Path) -> String {
@@ -56,9 +49,14 @@ impl StrataApp {
     }
 }
 
-/// The status line after opening `doc`, saying what large-file mode turned off.
+/// The status line after opening `doc`: the encoding when it was a guess
+/// (and where to change it), and what large-file mode turned off.
 pub fn opened_status(doc: &Document, path: &Path) -> String {
-    let Some(large) = &doc.large else { return format!("Opened {}", path.display()) };
+    let guess = doc.encoding_guessed.then(|| format!("Opened as {} — Reopen with Encoding… (File menu, or the encoding in the status bar) if the text looks wrong", doc.encoding.name()));
+    let Some(large) = &doc.large else { return guess.unwrap_or_else(|| format!("Opened {}", path.display())) };
+    if let Some(guess) = guess {
+        return format!("{guess}. Large file: highlighting, minimap and word wrap are off");
+    }
     let why = if large.long_lines { "very long lines" } else { "large file" };
     let syntax = if large.syntax == "Plain Text" {
         String::new()
@@ -73,7 +71,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn huge_and_binary_files_ask_first() {
+    fn huge_text_files_ask_first() {
         let dir = std::env::temp_dir().join(format!("strata-large-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let text = dir.join("a.txt");
@@ -82,10 +80,11 @@ mod tests {
         assert!(open_warning(&text, 100).unwrap().contains("a.txt is 0 MB"));
         let bin = dir.join("a.bin");
         std::fs::write(&bin, b"\x7fELF\x02\x01\x01\x00\x00\x00").unwrap();
-        assert!(open_warning(&bin, 1 << 20).unwrap().contains("binary"));
+        assert_eq!(open_warning(&bin, 1 << 20), None, "binary files open in the hex view");
+        assert_eq!(open_warning(&bin, 2), None, "however big");
         let utf16 = dir.join("u.txt");
         std::fs::write(&utf16, "plain text\r\n".encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>()).unwrap();
-        assert_eq!(open_warning(&utf16, 1 << 20), None, "UTF-16 has NULs but isn't binary");
+        assert!(open_warning(&utf16, 2).is_some(), "UTF-16 has NULs but is text");
         assert_eq!(open_warning(&dir.join("new.txt"), 0), None, "a new file just opens");
         std::fs::remove_dir_all(dir).ok();
     }
@@ -115,6 +114,32 @@ mod tests {
         app.open_path(path, false);
         let d = &app.docs[app.active];
         assert_eq!((d.highlighter.syntax_name(), d.large.is_none()), ("Rust", true));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_guessed_encoding_is_pointed_out() {
+        let dir = std::env::temp_dir().join(format!("strata-guess-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sjis = dir.join("sjis.txt");
+        let text = "日本語のテキストファイルです。これは文字コードの判定のためのテストです。\n".repeat(3);
+        std::fs::write(&sjis, encoding_rs::SHIFT_JIS.encode(&text).0).unwrap();
+        let mut app = StrataApp::new(None, None);
+        app.open_path(sjis.clone(), false);
+        let d = &app.docs[app.active];
+        assert_eq!(d.encoding.id(), "shift_jis");
+        assert_eq!(d.editor.buffer.line_text(0), text.lines().next().unwrap());
+        assert_eq!(app.status, "Opened as Japanese (Shift_JIS) — Reopen with Encoding… (File menu, or the encoding in the status bar) if the text looks wrong");
+        // Choosing an encoding means it's no longer a guess.
+        app.docs[app.active].reopen_with_encoding(crate::encoding::Encoding::from_id("euc-jp").unwrap()).unwrap();
+        assert!(!app.docs[app.active].encoding_guessed);
+
+        // Plain Western text and UTF-8 open quietly.
+        let latin = dir.join("latin.txt");
+        std::fs::write(&latin, "Café crème, naïve façade, déjà vu, résumé, piñata.\n".repeat(3).chars().map(|c| c as u8).collect::<Vec<u8>>()).unwrap();
+        app.open_path(latin.clone(), false);
+        assert_eq!(app.docs[app.active].encoding, crate::encoding::Encoding::WINDOWS_1252);
+        assert_eq!(app.status, format!("Opened {}", latin.display()));
         std::fs::remove_dir_all(dir).ok();
     }
 }

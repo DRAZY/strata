@@ -183,6 +183,33 @@ mod tests {
         }
         shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join("spell.ppm"));
 
+        // A Shift_JIS file: opened with a guessed encoding, which the status bar points out.
+        let tmp = std::env::temp_dir().join("strata-shot-sjis.txt");
+        let text = "日本語のテキストファイルです。\nこれは文字コードの判定のためのテストです。\n".repeat(4);
+        std::fs::write(&tmp, encoding_rs::SHIFT_JIS.encode(&text).0).unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(Some(tmp), None);
+        shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join("encoding_hint.ppm"));
+
+        // An image preview (shrunk to fit; the left part transparent) and the hex view.
+        let tmp = std::env::temp_dir().join("strata-shot-image.png");
+        let img = image::RgbaImage::from_fn(3200, 2000, |x, y| {
+            let (fx, fy) = (x as f32 / 3200.0, y as f32 / 2000.0);
+            let ring = (((fx - 0.6).powi(2) + (fy - 0.5).powi(2)).sqrt() * 40.0).sin() * 0.5 + 0.5;
+            image::Rgba([(255.0 * fx) as u8, (200.0 * ring) as u8, (255.0 * (1.0 - fy)) as u8, if x < 600 { (255.0 * x as f32 / 600.0) as u8 } else { 255 }])
+        });
+        img.save(&tmp).unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(Some(tmp), None);
+        shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join("image_preview.ppm"));
+        let tmp = std::env::temp_dir().join("strata-shot-hex.bin");
+        let mut bytes = b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0\x02\0>\0\x01\0\0\0".to_vec();
+        bytes.extend((0..4000u32).map(|i| if i % 7 == 0 { b"Strata hex view "[(i / 7 % 16) as usize] } else { (i * 37 % 256) as u8 }));
+        std::fs::write(&tmp, bytes).unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(Some(tmp), None);
+        shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join("hex_view.ppm"));
+
         // The About window over an empty editor.
         let ctx = Context::default();
         let mut app = StrataApp::new(None, None);

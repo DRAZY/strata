@@ -24,9 +24,9 @@ command a keystroke away. Multiple cursors, Goto Anything, project-wide search
 and replace, split panes, a built-in terminal and a live Markdown preview are
 all there out of the box, with no accounts, no telemetry and nothing to set up.
 
-> **Status: alpha.** Strata is usable every day, but expect rough edges and
-> frequent changes. Screenshots will be added here; the app's icon is
-> `assets/icon.svg`.
+> **Status: 1.0 release candidate.** Screenshots will be added here; the
+> app's icon is `assets/icon.svg`. See [Not in 1.0](#not-in-10) for what's
+> planned next.
 
 ## Features
 
@@ -62,7 +62,9 @@ all there out of the box, with no accounts, no telemetry and nothing to set up.
   tab and unsaved change comes back next time.
 - **Big files**: a 95 MB, 1.6 million-line file opens highlighted in about
   0.6 s on an M-series Mac, and minified one-line files stay responsive.
-- **40 encodings**, atomic saves, **printing** and **PDF export**.
+- **40 encodings** with detection of legacy ones (Shift_JIS, GBK, KOI8…),
+  atomic saves, opt-in auto save, **printing** and **PDF export**. Images open
+  in a preview and other binary files in a read-only hex view.
 - **EditorConfig and per-language settings**: `.editorconfig` files set
   indentation, line endings, charset and save-time trimming per project;
   `syntax_settings` gives each language its own tab size, wrap, rulers and
@@ -79,6 +81,21 @@ all there out of the box, with no accounts, no telemetry and nothing to set up.
 - **Private by design**: Strata never connects to the network on its own. It
   has no telemetry or update checks, and logs and crash reports stay on your
   computer.
+
+## Not in 1.0
+
+Planned for after 1.0 (details in [`docs/ROADMAP.md`](docs/ROADMAP.md)):
+language servers (LSP), plugins, a Vim mode, official Linux support, opt-in
+automatic updates (Sparkle on macOS) and screen reader support in the editor.
+
+## Accessibility
+
+Strata can be used entirely from the keyboard: every command is in the
+command palette and can have a shortcut, and focus moves between the editor,
+panes, side bar and panels without the mouse. High-contrast color schemes
+(High Contrast Dark and Light) are included, and every bundled scheme is
+checked for WCAG AA contrast. Screen readers aren't supported in the editor
+area yet; that's on the [roadmap](docs/ROADMAP.md).
 
 ## Install
 
@@ -486,9 +503,10 @@ repository.
 Strata is written in Rust on [egui](https://github.com/emilk/egui)/eframe
 (GPU rendering through wgpu), with ropey for the text buffer, syntect and
 two-face for highlighting, alacritty_terminal for the terminal, pulldown-cmark
-for Markdown, spellbook for spell check and encoding_rs for encodings.
-`docs/FEATURES.md` has the feature spec and roadmap. Contributions must follow
-the clean-room rules in [`docs/CLEAN_ROOM.md`](docs/CLEAN_ROOM.md).
+for Markdown, spellbook for spell check, encoding_rs and chardetng for
+encodings and image for image previews. [`docs/ROADMAP.md`](docs/ROADMAP.md)
+has what's in 1.0 and what comes next. Contributions must follow the
+clean-room rules in [`docs/CLEAN_ROOM.md`](docs/CLEAN_ROOM.md).
 
 `cargo test` runs editor-core unit tests plus headless egui tests that drive
 the real widget and the whole window with simulated keys and clicks.

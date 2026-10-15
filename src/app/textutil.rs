@@ -213,7 +213,9 @@ impl StrataApp {
     /// `save_time_settings`), all as the file's settings at `path` say.
     pub(super) fn before_save(&mut self, i: usize, path: &std::path::Path) {
         let eff = self.save_time_settings(i, path);
-        let (trim, newline) = (eff.trim_trailing_white_space_on_save, eff.ensure_newline_at_eof_on_save);
+        // An auto save trims for itself, sparing the lines being typed on.
+        let trim = eff.trim_trailing_white_space_on_save && !self.delayed_save.trimmed;
+        let newline = eff.ensure_newline_at_eof_on_save;
         let e = &mut self.docs[i].editor;
         if trim {
             let sels: Vec<std::ops::Range<usize>> = e.selections().iter().map(|s| s.range()).collect();
@@ -238,6 +240,9 @@ impl StrataApp {
     pub(super) fn word_count(&mut self) -> Option<String> {
         use std::hash::{Hash, Hasher};
         let d = &mut self.docs[self.active];
+        if d.binary.is_some() {
+            return None;
+        }
         let e = &d.editor;
         let mut h = std::collections::hash_map::DefaultHasher::new();
         e.version().hash(&mut h);

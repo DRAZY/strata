@@ -49,7 +49,7 @@ pub type Changes = Vec<(Range<usize>, LineChange)>;
 // ---------------------------------------------------------------------------
 
 /// Folder to run git in for `path` (a file or a folder).
-fn work_dir(path: &Path) -> Option<&Path> {
+pub(crate) fn work_dir(path: &Path) -> Option<&Path> {
     if path.is_dir() { Some(path) } else { path.parent().filter(|p| p.is_dir()) }
 }
 
@@ -105,7 +105,7 @@ fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     status.success().then_some(out)
 }
 
-fn git_line(dir: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git_line(dir: &Path, args: &[&str]) -> Option<String> {
     let out = git(dir, args)?;
     let s = String::from_utf8_lossy(&out).trim().to_owned();
     (!s.is_empty()).then_some(s)

@@ -55,13 +55,21 @@ To see the whole file next to its last committed version, choose File ▸ Compar
 
 To see what you've changed since you last saved (rather than since the last commit), right-click in the editor and choose Show Unsaved Changes…. Strata opens a read-only tab named "Unsaved changes: …" with a unified diff of the file on disk against the text in the editor. This works for any saved file, in a repository or not, and is available when the file has unsaved changes.
 
+## Copy Permalink
+
+To share a link to the code you're looking at, right-click in the editor or on its tab and choose Copy Permalink (or run "File: Copy Permalink" from the command palette). Strata copies a web link to the file on GitHub, GitLab or Bitbucket, at the commit you have checked out, pointing at the cursor's line or the selected lines, for example `https://github.com/owner/repo/blob/<commit>/src/main.rs#L12-L20`.
+
+The link uses the repository's remote: the current branch's upstream remote, else `origin`, else the first one. SSH (`git@github.com:owner/repo.git`) and HTTPS remotes both work, and a user name or token in the remote's address is left out of the link. Self-hosted servers work when their name contains github, gitlab or bitbucket. The link points at the last commit, so lines you've changed since may not match, and others can open it once that commit is pushed.
+
+Copy Relative Path, next to it, copies the file's path inside its side bar folder (`src/main.rs`).
+
 ## How it works
 
 Strata runs the `git` command-line program in the background to find the repository, the branch and each file's committed text, so Git must be installed and on your search path. Without it, Strata works normally but shows no change bars or branch.
 
 The work happens in the background and never makes the editor wait. Strata compares a file again shortly after each edit, right after you save, and every few seconds while the file is visible, so commits, checkouts and branch switches made in a terminal show up on their own within a few seconds.
 
-Strata never asks for passwords and doesn't contact remote servers; it only reads your local repository.
+Strata never asks for passwords and doesn't contact remote servers; it only reads your local repository (Copy Permalink reads the remote's address from it).
 
 ## What isn't supported
 

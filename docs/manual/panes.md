@@ -74,6 +74,8 @@ Right-click a tab for:
 | New File | Open an untitled tab in this pane. |
 | Open File… | Open files into this pane. |
 | Copy File Path | Copy the file's full path. |
+| Copy Relative Path | Copy the file's path inside the side bar folder that holds it, such as `src/main.rs`. Available when the file is in an open folder. |
+| Copy Permalink | Copy a GitHub, GitLab or Bitbucket link to the file at the current commit, at the cursor's line or the selected lines. Available when the file is in a Git repository with such a remote. See [Git Integration](git.md#copy-permalink). |
 | Reveal in Side Bar | Show the file in the side bar's folder tree. Available when the file is inside the open folder. |
 | Reveal in Finder | Show the file in your file manager (Show in Explorer on Windows, Open Containing Folder on Linux). |
 

@@ -91,6 +91,8 @@ pub struct Settings {
     pub ensure_newline_at_eof_on_save: bool,
     /// Save modified files when the window loses focus.
     pub save_on_focus_lost: bool,
+    /// Save edited files after this many milliseconds without typing (0: off).
+    pub auto_save_delay_ms: u64,
     /// Offer word completions while typing (Ctrl+Space always works).
     pub auto_complete: bool,
     /// Detect tabs vs spaces (and the width) from each file when it opens.
@@ -180,6 +182,7 @@ impl Default for Settings {
             trim_trailing_white_space_on_save: false,
             ensure_newline_at_eof_on_save: false,
             save_on_focus_lost: false,
+            auto_save_delay_ms: 0,
             hot_exit: true,
             large_file_mb: (crate::document::LARGE_FILE_BYTES >> 20) as f64,
             large_file_warning_mb: 500.0,
@@ -354,6 +357,9 @@ pub struct Session {
     pub recent_files: Vec<PathBuf>,
     pub recent_folders: Vec<PathBuf>,
     pub recent_projects: Vec<PathBuf>,
+    /// Find bar and Find in Files history (see `find_history`).
+    #[serde(skip_serializing_if = "crate::find_history::FindHistory::is_empty")]
+    pub find_history: crate::find_history::FindHistory,
     /// Every window, first one first. Empty in sessions saved before Strata
     /// had several windows: the fields above are then the one window.
     pub windows: Vec<WindowState>,
@@ -425,10 +431,11 @@ impl Session {
         dir.join("backups")
     }
 
-    /// A session of these windows; the first is also written the old way.
+    /// A session of these windows (and the find history every window
+    /// shares); the first window is also written the old way.
     pub fn of_windows(windows: Vec<WindowState>) -> Self {
         let first = windows.first().cloned().unwrap_or_default();
-        Self { folder: first.folder, sidebar_visible: first.sidebar_visible, active: first.active, tabs: first.tabs, layout: first.layout, windows, ..Default::default() }
+        Self { folder: first.folder, sidebar_visible: first.sidebar_visible, active: first.active, tabs: first.tabs, layout: first.layout, windows, find_history: crate::find_history::snapshot(), ..Default::default() }
     }
 
     /// The windows to reopen. An old single-window session is one window.

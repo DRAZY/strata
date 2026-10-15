@@ -148,18 +148,24 @@ pub struct StrataApp {
     last_title: String,
     /// `.editorconfig` files and the settings the tabs were resolved against.
     doc_cfg: doc_settings::State,
+    /// Auto save after a delay (see `delayed_save`).
+    delayed_save: delayed_save::DelayedSave,
 }
 
 mod autosave;
+mod binary_ui;
 #[cfg(test)]
 mod bench;
 mod clones;
 mod compare_ui;
 mod completion;
 mod context_menus;
+mod delayed_save;
 mod diagnostics;
 mod doc_settings;
+mod dock;
 mod features;
+mod file_links;
 mod find_options;
 mod first_run;
 #[cfg(test)]
@@ -169,6 +175,7 @@ mod keymap_ui;
 mod large_files;
 mod launch;
 mod lookup;
+mod macro_files;
 pub(crate) mod menu_model;
 mod more;
 mod terminal_ui;
@@ -306,6 +313,7 @@ impl StrataApp {
             git_marks_on: true,
             last_title: String::new(),
             doc_cfg: Default::default(),
+            delayed_save: Default::default(),
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -589,6 +597,10 @@ impl StrataApp {
 
     /// True if the tab ends up saved.
     fn save(&mut self, i: usize, choose: bool) -> bool {
+        if self.docs[i].binary.is_some() {
+            self.status = format!("{} isn't text: it can't be saved from Strata", self.docs[i].name());
+            return false;
+        }
         let target = match (&self.docs[i].path, choose) {
             (Some(p), false) => Some(p.clone()),
             _ => self.save_dialog(i).save_file(),
@@ -780,6 +792,7 @@ impl StrataApp {
         self.recent_files = session.recent_files.clone();
         self.recent_projects = session.recent_projects.clone();
         self.recent_folders = session.recent_folders.clone();
+        crate::find_history::restore(&session.find_history);
         // This is the first window; `Windows` takes the others from here.
         let mut unreadable = session.window_states().first().map(|w| self.restore_window(&dir, w)).unwrap_or_default();
         unreadable.extend(self.restore_other_windows(&dir, &session));
@@ -892,7 +905,7 @@ impl StrataApp {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (self.active, &self.sidebar.roots, self.sidebar.visible, self.layout.cols.len(), self.layout.rows.len()).hash(&mut h);
-        (&self.recent_files, &self.recent_folders, self.find_options()).hash(&mut h);
+        (&self.recent_files, &self.recent_folders, self.find_options(), crate::find_history::generation()).hash(&mut h);
         for d in &self.docs {
             (&d.path, d.is_dirty(), d.editor.version(), d.group, d.stamp).hash(&mut h);
             for s in d.editor.selections() {
@@ -1046,6 +1059,9 @@ impl StrataApp {
             Cmd::ReplaceNext => self.replace_one(),
             Cmd::ToggleFindRegex | Cmd::ToggleFindCase | Cmd::ToggleFindWholeWord | Cmd::ToggleFindInSelection | Cmd::ToggleFindWrap | Cmd::ToggleFindPreserveCase | Cmd::ToggleFindHighlight => self.toggle_find_option(cmd),
             Cmd::ToggleSpellCheck | Cmd::NextMisspelling | Cmd::PrevMisspelling => self.run_spelling(cmd),
+            Cmd::CopyRelativePath => self.copy_relative_path(ctx, self.active),
+            Cmd::CopyPermalink => self.copy_permalink(ctx, self.active),
+            Cmd::SaveMacro => self.save_macro(),
             Cmd::NextFindResult => self.step_find_result(true),
             Cmd::PrevFindResult => self.step_find_result(false),
             Cmd::CancelFindInFiles => self.sidebar.search.stop(),
@@ -1652,6 +1668,7 @@ impl StrataApp {
         if self.find.query.text.is_empty() {
             return self.open_find(self.find.open && self.find.replace);
         }
+        self.remember_search(false);
         self.refresh_matches();
         let d = &self.docs[self.active];
         let p = d.editor.primary();
@@ -1673,6 +1690,7 @@ impl StrataApp {
 
     /// Every match becomes a cursor; the bar closes so you can type.
     fn find_all(&mut self) {
+        self.remember_search(false);
         self.refresh_matches();
         let d = &mut self.docs[self.active];
         if d.finder.matches.is_empty() {
@@ -1687,6 +1705,7 @@ impl StrataApp {
     }
 
     fn replace_one(&mut self) {
+        self.remember_search(true);
         self.refresh_matches();
         let (q, rep) = (self.find.query.clone(), self.find.replacement.clone());
         let d = self.doc();
@@ -1712,6 +1731,7 @@ impl StrataApp {
     }
 
     fn replace_all(&mut self) {
+        self.remember_search(true);
         // The same replacement syntax as Replace in Files (`\1`, `$1`, `${name}`, `\n`, `\t`).
         let Ok(r) = crate::replace::Replacer::new(&self.find.query, &self.find.replacement) else { return };
         let edits = self.replace_all_edits(&r);
@@ -1755,6 +1775,7 @@ impl StrataApp {
             measured.0 = r.response.rect.width();
             let q = &mut self.find.query;
             let id = egui::Id::new("find-query");
+            crate::find_history::keys(ui, id, crate::find_history::Field::Find, &mut q.text);
             let field = crate::ctxmenu::text_field(ui, id, &mut q.text, |ui, text| {
                 ui.add_sized([field_w, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text("Find").font(egui::TextStyle::Monospace))
             });
@@ -1784,6 +1805,7 @@ impl StrataApp {
                 toggled = toggled.or(find_options::replace_toggles(ui, &self.find));
                 let regex = self.find.query.regex;
                 let id = egui::Id::new("replace-text");
+                crate::find_history::keys(ui, id, crate::find_history::Field::Replace, &mut self.find.replacement);
                 let hint = if regex { "Replace (\\1 or $1 for groups, \\n, \\t)" } else { "Replace" };
                 let field = crate::ctxmenu::text_field(ui, id, &mut self.find.replacement, |ui, text| {
                     ui.add_sized([field_w, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text(hint).font(egui::TextStyle::Monospace))
@@ -2210,7 +2232,9 @@ impl StrataApp {
                     let is_active = i == self.active;
                     let d = &mut self.docs[i];
                     let matches = if find_open && is_active { std::mem::take(&mut d.finder.matches) } else { Vec::new() };
+                    let font_size = self.settings.font_size;
                     let resp = match d.compare.as_mut() {
+                        _ if d.binary.is_some() => binary_ui::show(d.binary.as_deref_mut().expect("checked"), ui, &d.highlighter, font_size, d.view.id),
                         Some(c) => compare_ui::show(c, ui, &mut d.editor, &mut d.highlighter, &mut d.view),
                         None => d.view.show(ui, &mut d.editor, &mut d.highlighter, &matches),
                     };
@@ -2274,7 +2298,8 @@ impl StrataApp {
         let (line, col) = d.editor.cursor_line_col();
         let cursors = d.editor.selections().len();
         let selected: usize = d.editor.selections().iter().map(|s| s.end() - s.start()).sum();
-        let mut pos = format!("Line {line}, Column {col}");
+        let binary = binary_ui::status(d);
+        let mut pos = binary.clone().unwrap_or_else(|| format!("Line {line}, Column {col}"));
         if cursors > 1 {
             pos.push_str(&format!("  ·  {cursors} cursors"));
         }
@@ -2285,7 +2310,7 @@ impl StrataApp {
         let fit = status_fit(ui, &pos, d.conflict, d.deleted, d.editor.buffer.lossy, branch.as_deref(), words.as_deref());
         ui.horizontal(|ui| {
             let d = &mut self.docs[self.active];
-            ui.label(if fit.short_pos { format!("{line}:{col}") } else { pos });
+            ui.label(if fit.short_pos && binary.is_none() { format!("{line}:{col}") } else { pos });
             if d.deleted && fit.left[StatusLeft::Deleted as usize] {
                 ui.separator();
                 ui.colored_label(Color32::from_rgb(0xe5, 0x9e, 0x40), "Deleted on disk (save to recreate)");
@@ -2513,6 +2538,8 @@ impl eframe::App for StrataApp {
         if self.window_focused && !focused && self.settings.save_on_focus_lost {
             self.save_all();
         }
+        self.delayed_save_tick(Some(ctx), now);
+        self.dock_frame(ctx);
         if !self.window_focused && focused {
             // Back from another app, which may have changed the folders.
             self.sidebar.refresh();

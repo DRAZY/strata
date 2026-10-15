@@ -16,7 +16,8 @@ To keep this project legally clean:
 - Sublime's name, logo, or trademarked branding.
 
 ## Provenance of the initial spec
-The initial feature inventory (docs/FEATURES.md) came from public knowledge of
+The initial feature inventory (an early feature list, since replaced by
+docs/ROADMAP.md) came from public knowledge of
 the editor plus non-code bundle metadata: the Info.plist file-type list and the
 names of bundled language packages. No code was decompiled.
 

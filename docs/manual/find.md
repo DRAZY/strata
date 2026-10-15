@@ -59,6 +59,7 @@ Words joined by `-` or `_` are matched part by part when the found text and the 
 | Shift+Enter | Find the previous match. |
 | Alt+Enter (⌥↩ on macOS) | Find All: put a cursor on every match and close the bar, so you can edit them all at once. |
 | Esc | Close the find bar and return to the editor. |
+| ↑ and ↓ | Go back through earlier searches and return to what you typed. The Replace field has its own history of replacements. |
 
 Outside the bar, {{key:find_next}} and {{key:find_prev}} (Find ▸ Find Next and Find Previous) step through matches of the last search. Both wrap around the end of the file. If nothing has been searched yet, Find Next opens the find bar.
 
@@ -136,6 +137,8 @@ The Search tab has its own `.*`, `Aa` and `"ab"` toggles (separate from the find
 | Replace | The replacement text, for Replace in Files. |
 
 Press Enter in any of the fields, or click Find, to search. Results stream in while the search runs; a spinner and a Stop button show while it's busy. Find ▸ Cancel Find in Files ({{key:cancel_find_in_files}}) also stops it.
+
+Each field remembers what you searched with it: press ↑ and ↓ in a field to go back through its last 50 entries (and return to what you typed). These histories, and the find bar's, are kept across restarts and shared by all windows.
 
 ### The Where field
 

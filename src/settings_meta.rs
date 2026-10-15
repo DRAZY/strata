@@ -132,6 +132,7 @@ pub static SETTINGS: &[Meta] = &[
     m("trim_trailing_white_space_on_save", Files, "Trim trailing whitespace on save", Toggle),
     m("ensure_newline_at_eof_on_save", Files, "Newline at end of file on save", Toggle),
     m("save_on_focus_lost", Files, "Save when Strata loses focus", Toggle),
+    m("auto_save_delay_ms", Files, "Auto save delay (ms, 0 = off)", num(0.0, 60000.0, 250.0)),
     m("large_file_mb", Files, "Large-file mode above (MB)", num(1.0, 100_000.0, 1.0)),
     m("large_file_warning_mb", Files, "Ask before opening files above (MB)", num(1.0, 1_000_000.0, 10.0)),
     // Find & Spelling

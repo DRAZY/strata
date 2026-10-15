@@ -141,6 +141,7 @@ impl StrataApp {
         items.extend(ctxmenu::clipboard_items(writable, true, writable));
         items.push(Item::Separator);
         items.extend(self.file_items(d.path.as_ref()));
+        items.extend(self.file_link_items(i));
         items.push(Item::Separator);
         let symbol = i == self.active && self.word_at_cursor().is_some();
         items.push(Item::cmd("Goto Definition", Cmd::GotoDefinition).enabled(symbol));
@@ -225,6 +226,8 @@ impl StrataApp {
                     self.status = format!("Copied {}", p.display());
                 }
             }
+            Act::Named(n) if n == super::file_links::COPY_RELATIVE => self.copy_relative_path(ctx, i),
+            Act::Named(n) if n == super::file_links::COPY_PERMALINK => self.copy_permalink(ctx, i),
             Act::Named(n) if n == REVEAL_SIDEBAR => {
                 if let Some(p) = path
                     && !self.sidebar.reveal(&p)
@@ -297,6 +300,7 @@ impl StrataApp {
         // Copy File Path first, as in Sublime's tab menu.
         files.rotate_right(2);
         items.extend(files);
+        items.extend(self.file_link_items(i));
         items
     }
 

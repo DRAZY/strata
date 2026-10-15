@@ -210,7 +210,7 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `word_wrap` | true/false | `false` | Soft-wrap every file. Markdown, MultiMarkdown, Plain Text, reStructuredText, Textile and LaTeX files wrap even when this is off (see [Built-in syntax settings](#built-in-syntax-settings)). View ▸ Word Wrap overrides it for one file. |
 | `wrap_column` | number or `null` | `null` | Wrap at this column instead of the window edge (`null` means the window edge). Lines still wrap at the window edge if it comes first. |
 | `large_file_mb` | number | `20` | Files bigger than this many megabytes open in large-file mode: as Plain Text, without the minimap, word wrap, bracket colors or sticky scroll. Choosing a syntax still highlights them. Files with a line longer than 10,000 characters always open this way. See [Very large files](troubleshooting.md#very-large-files). |
-| `large_file_warning_mb` | number | `500` | Ask before opening a file bigger than this many megabytes. Strata also asks before opening a file that looks binary. |
+| `large_file_warning_mb` | number | `500` | Ask before opening a text file bigger than this many megabytes. Binary files open in the hex view without asking (see [Binary files](encodings.md#binary-files)). |
 
 ### Window
 
@@ -257,6 +257,7 @@ The default `spelling_selector` is `"source string.quoted - punctuation - meta.p
 | `trim_trailing_white_space_on_save` | true/false | `false` | Remove spaces and tabs at the ends of lines when saving. |
 | `ensure_newline_at_eof_on_save` | true/false | `false` | Add a line break at the end of the file when saving, if it doesn't end with one. |
 | `save_on_focus_lost` | true/false | `false` | Save every modified file that has a name when the Strata window loses focus. |
+| `auto_save_delay_ms` | number | `0` | Auto save: after this many milliseconds without typing (for example `1000`), save the files you edited. `0` turns it off. Only files Save would write without asking are saved: never an untitled tab, a read-only file, a file changed or deleted by another program, one with decoding errors, or text its encoding can't store. The trim and newline options above apply (trimming skips the lines with a cursor, so a space you just typed stays), and the status bar says "Auto-saved". |
 | `hot_exit` | true/false | `true` | Quit without asking: open tabs, including unsaved text, come back next time. When `false`, Strata asks about unsaved changes on quit and starts with a fresh window. |
 
 ### Build and terminal

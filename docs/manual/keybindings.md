@@ -153,8 +153,8 @@ These commands need `args`, or do something different depending on them.
 | `build` | `{"select": true}` | Build With (choose a build system). Without it, Build |
 | `toggle_setting` | `{"setting": "word_wrap"}` | Toggle word wrap. Only `word_wrap` is supported |
 | `set_layout` | `cols`, `rows` and `cells` | The standard layouts: single, 2 to 4 columns, 2 or 3 rows, and the 4-pane grid |
-| `run_macro_file` | `{"file": "res://Packages/Default/Delete Line.sublime-macro"}` | The standard line macros: Delete Line, Add Line, Add Line Before, Delete to Hard EOL, Delete to Hard BOL, Delete to BOL |
-| `edit_settings` | a `base_file` ending in `.sublime-keymap` | Open Key Bindings. Without it, open `settings.json` |
+| `run_macro_file` | `{"file": "My Macro"}` | Play a macro saved with Tools ▸ Save Macro… (see [Saved macros](editing.md#saved-macros)). Sublime's standard line macros (`{"file": "res://Packages/Default/Delete Line.sublime-macro"}`) run the matching commands: Delete Line, Add Line, Add Line Before, Delete to Hard EOL, Delete to Hard BOL, Delete to BOL |
+| `edit_settings` | a `base_file` ending in `.sublime-keymap` | Open Key Bindings. Without it, open Settings |
 
 Pane and tab numbers in `args` start at 0.
 
