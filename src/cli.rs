@@ -128,11 +128,23 @@ mod tests {
         assert_eq!(target("src/a.rs:12:5".as_ref(), cwd), Target { path: "/work/src/a.rs".into(), line: Some(12), col: Some(5) });
         assert_eq!(target("/abs/./x/../a.rs:3".as_ref(), cwd), Target { path: "/abs/a.rs".into(), line: Some(3), col: None });
         // Not numbers: part of the name.
-        assert_eq!(target("a:b".as_ref(), cwd), Target::plain("/work/a:b".into()));
+        // (`ab`: a single letter before the colon is a drive on Windows.)
+        assert_eq!(target("ab:c".as_ref(), cwd), Target::plain("/work/ab:c".into()));
         assert_eq!(target("a.rs:".as_ref(), cwd), Target::plain("/work/a.rs:".into()));
         assert_eq!(target(":12".as_ref(), cwd), Target::plain("/work/:12".into()));
         // Line 0 means the first line.
         assert_eq!(target("a:0:0".as_ref(), cwd).line, Some(1));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn drive_letters_are_not_line_numbers() {
+        let cwd = Path::new(r"D:\work");
+        assert_eq!(target(r"C:\src\a.rs:12:3".as_ref(), cwd), Target { path: r"C:\src\a.rs".into(), line: Some(12), col: Some(3) });
+        assert_eq!(target(r"C:\src\a.rs:12".as_ref(), cwd), Target { path: r"C:\src\a.rs".into(), line: Some(12), col: None });
+        assert_eq!(target(r"C:\src\a.rs".as_ref(), cwd), Target::plain(r"C:\src\a.rs".into()));
+        assert_eq!(target("C:/src/a.rs:7".as_ref(), cwd), Target { path: r"C:\src\a.rs".into(), line: Some(7), col: None });
+        assert_eq!(target(r"src\a.rs:12:5".as_ref(), cwd), Target { path: r"D:\work\src\a.rs".into(), line: Some(12), col: Some(5) });
     }
 
     #[test]

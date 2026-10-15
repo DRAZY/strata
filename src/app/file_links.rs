@@ -15,7 +15,9 @@ pub(super) const COPY_PERMALINK: &str = "ctx:copy_permalink";
 /// `path` relative to the deepest of `roots` holding it.
 pub fn relative_path(roots: &[PathBuf], path: &Path) -> Option<String> {
     let root = roots.iter().filter(|r| path.starts_with(r)).max_by_key(|r| r.components().count())?;
-    let rel = path.strip_prefix(root).ok()?;
+    // Rebuilt from its parts: written with the system's separator however
+    // the path was spelled (`src/x.rs` from the command line on Windows).
+    let rel: PathBuf = path.strip_prefix(root).ok()?.iter().collect();
     (!rel.as_os_str().is_empty()).then(|| rel.display().to_string())
 }
 

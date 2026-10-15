@@ -1543,16 +1543,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("strata-keys-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(FILE_NAME);
-        std::fs::write(&path, r#"[ { "keys": ["ctrl+alt+p"], "command": "command_palette" } ]"#).unwrap();
+        // A key no default uses on any system, so loading it says nothing.
+        let key = (CTRL_ALT.plus(Modifiers::SHIFT), Key::F24);
+        std::fs::write(&path, r#"[ { "keys": ["ctrl+alt+shift+f24"], "command": "command_palette" } ]"#).unwrap();
         let mut file = KeymapFile::new(Some(&dir));
         assert_eq!(file.load(true), None);
-        assert_eq!(current().strokes(Target::Cmd(Cmd::CommandPalette)), [(CTRL_ALT, Key::P)]);
+        assert_eq!(current().strokes(Target::Cmd(Cmd::CommandPalette)), [key]);
         assert_eq!(file.poll(), None, "unchanged");
 
-        std::fs::write(&path, "[ { \"keys\": [\"ctrl+alt+p\"],\n \"command\": \"save\" ").unwrap();
+        std::fs::write(&path, "[ { \"keys\": [\"ctrl+alt+shift+f24\"],\r\n \"command\": \"save\" ").unwrap();
         let msg = file.poll().expect("noticed the change");
         assert!(msg.contains("line 2") && msg.contains("keeping the previous key bindings"), "{msg}");
-        assert_eq!(current().strokes(Target::Cmd(Cmd::CommandPalette)), [(CTRL_ALT, Key::P)], "still the last good keymap");
+        assert_eq!(current().strokes(Target::Cmd(Cmd::CommandPalette)), [key], "still the last good keymap");
 
         std::fs::remove_file(&path).unwrap();
         assert!(file.poll().unwrap().contains("defaults"));

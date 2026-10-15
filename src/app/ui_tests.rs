@@ -56,9 +56,12 @@ fn shortcuts_wait_while_a_dialog_is_up() {
     assert!(!app.palette.open, "nor did Cmd+Shift+P open the palette");
     frame(&mut app, &ctx, vec![press(Key::F, primary())]);
     assert!(!app.find.open);
-    // Typing goes to the name field, not the editor.
+    // Typing goes to the name field, not the editor. (What the shortcuts
+    // did to the field itself is egui's: off macOS Ctrl+W deletes a word.)
+    let name = |app: &mut StrataApp| app.sidebar.prompt_state().map(|(n, _)| n.clone());
+    let before = name(&mut app).expect("the rename dialog is up");
     frame(&mut app, &ctx, vec![Event::Text("x".into())]);
-    assert_eq!(app.sidebar.prompt_state().map(|(n, _)| n.clone()).as_deref(), Some("b.txtx"));
+    assert_eq!(name(&mut app), Some(format!("{before}x")));
     assert_eq!(app.docs[app.active].editor.buffer.line_text(0), "b");
     // One Esc closes the dialog only.
     app.open_find(false);
@@ -376,11 +379,12 @@ fn idle_frames_skip_menus_title_and_git_marks() {
         assert!(app.fresh_menus(&ctx), "input rebuilds them");
     }
     assert_ne!(app.menus_cache.as_ref().map(|c| c.1), built);
-    // A second later they are rebuilt anyway (background changes).
+    // A second later they are rebuilt anyway (background changes): by the
+    // in-window menu bar during a frame, or the next time macOS asks.
+    let before = app.menus_cache.as_ref().map(|c| c.1);
     for _ in 0..5 {
         frame(&mut app, &ctx, vec![]);
     }
-    let before = app.menus_cache.as_ref().map(|c| c.1);
     app.fresh_menus(&ctx);
     assert_ne!(app.menus_cache.as_ref().map(|c| c.1), before);
     // Git marks: kept between frames, dropped when the gutter is turned off.
