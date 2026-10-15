@@ -34,7 +34,7 @@ chardetng = "1.0.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 # Updates: checking the ed25519 signature and SHA-256 of a downloaded update
 # (pure Rust; the download itself goes through the system's curl, see src/update).
-ed25519-dalek = { version = "2.2.0", default-features = false }
+ed25519-dalek = { version = "3.0.0", default-features = false }
 sha2 = { version = "0.10.9", default-features = false }
 
 # Dev aids read from STRATA_* environment variables (see src/dev.rs).
