@@ -156,6 +156,7 @@ mod context_menus;
 mod delayed_save;
 mod diagnostics;
 mod features;
+mod file_links;
 mod find_options;
 #[cfg(test)]
 mod headless;
@@ -1046,6 +1047,8 @@ impl StrataApp {
             Cmd::ReplaceNext => self.replace_one(),
             Cmd::ToggleFindRegex | Cmd::ToggleFindCase | Cmd::ToggleFindWholeWord | Cmd::ToggleFindInSelection | Cmd::ToggleFindWrap | Cmd::ToggleFindPreserveCase | Cmd::ToggleFindHighlight => self.toggle_find_option(cmd),
             Cmd::ToggleSpellCheck | Cmd::NextMisspelling | Cmd::PrevMisspelling => self.run_spelling(cmd),
+            Cmd::CopyRelativePath => self.copy_relative_path(ctx, self.active),
+            Cmd::CopyPermalink => self.copy_permalink(ctx, self.active),
             Cmd::NextFindResult => self.step_find_result(true),
             Cmd::PrevFindResult => self.step_find_result(false),
             Cmd::CancelFindInFiles => self.sidebar.search.stop(),

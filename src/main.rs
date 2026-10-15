@@ -43,6 +43,7 @@ mod markdown;
 mod palette;
 mod panes;
 mod pdf;
+mod permalink;
 mod print;
 mod private;
 mod replace;
