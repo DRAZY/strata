@@ -50,9 +50,12 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+// Encoding is for the signing tool and tests; the app only decodes.
+#[cfg_attr(not(test), allow(dead_code))]
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Standard base64 with padding.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn b64_encode(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
@@ -73,7 +76,7 @@ pub fn b64_encode(data: &[u8]) -> String {
 /// whitespace inside). None for anything malformed.
 pub fn b64_decode(s: &str) -> Option<Vec<u8>> {
     let s = s.as_bytes();
-    if s.len() % 4 != 0 {
+    if !s.len().is_multiple_of(4) {
         return None;
     }
     let mut out = Vec::with_capacity(s.len() / 4 * 3);

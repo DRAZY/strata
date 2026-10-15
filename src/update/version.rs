@@ -40,10 +40,6 @@ impl Version {
         };
         Some(Self { major, minor, patch, pre })
     }
-
-    pub fn is_prerelease(&self) -> bool {
-        !self.pre.is_empty()
-    }
 }
 
 /// A numeric part: digits, no leading zero.
@@ -130,7 +126,7 @@ mod tests {
         assert_eq!(v("1.2.3").to_string(), "1.2.3");
         assert_eq!(v("v1.0.0-rc.1").to_string(), "1.0.0-rc.1");
         assert_eq!(v("1.0.0-alpha+build.5"), v("1.0.0-alpha"));
-        assert!(v("1.0.0-rc.1").is_prerelease() && !v("1.0.0").is_prerelease());
+        assert!(!v("1.0.0-rc.1").pre.is_empty() && v("1.0.0").pre.is_empty());
         assert_eq!(v(env!("CARGO_PKG_VERSION")).to_string(), env!("CARGO_PKG_VERSION"));
         for bad in ["", "1", "1.2", "1.2.3.4", "01.2.3", "1.2.3-", "1.2.3-01", "1.2.3-a..b", "1.2.x", "1.2.3+", "1.2.3+a..b", "1.2.3-ä", " v", "-1.2.3"] {
             assert_eq!(Version::parse(bad), None, "{bad:?}");

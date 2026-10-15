@@ -67,6 +67,8 @@ pub enum Status {
     /// relaunches right away).
     Installed { release: Release, plan: helper::Plan },
     Failed { error: String, release: Option<Release>, manual: bool },
+    /// A note for the user (an update finished, or was rolled back).
+    Message(String),
 }
 
 impl Status {
@@ -100,17 +102,54 @@ pub struct Updater {
     waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Set by the UI when quitting to finish an update; `on_exit` starts it.
     relaunch: Mutex<Option<helper::Plan>>,
+    /// The window showing the notices (a token it chose), and when it last did.
+    owner: Mutex<Option<(u64, f64)>>,
+    /// `startup` ran (once per process, whichever window is first).
+    started: AtomicBool,
 }
 
 impl Updater {
     pub fn new(source: Source) -> Self {
-        Self { source, config: Mutex::new(None), status: Mutex::new(Status::Idle), cancel: Mutex::new(Arc::new(AtomicBool::new(false))), waker: Mutex::new(None), relaunch: Mutex::new(None) }
+        Self { source, config: Mutex::new(None), status: Mutex::new(Status::Idle), cancel: Mutex::new(Arc::new(AtomicBool::new(false))), waker: Mutex::new(None), relaunch: Mutex::new(None), owner: Mutex::new(None), started: AtomicBool::new(false) }
     }
 
     /// The one updater every window shares.
     pub fn global() -> Arc<Updater> {
         static G: OnceLock<Arc<Updater>> = OnceLock::new();
         G.get_or_init(|| Arc::new(Updater::new(Source::real()))).clone()
+    }
+
+    /// An updater that never reaches the network and can't install (tests).
+    #[cfg(test)]
+    pub fn for_tests() -> Arc<Updater> {
+        Arc::new(Updater::new(Source { fetch: Arc::new(fetch::tests::FakeNet::default()), key: [0; 32], current: current_version(), platform: manifest::current_platform(), target: Err("tests don't install".into()) }))
+    }
+
+    #[cfg(test)]
+    pub fn set_status(&self, s: Status) {
+        self.set(s);
+    }
+
+    /// True the first time it's called in this process.
+    pub fn first_start(&self) -> bool {
+        !self.started.swap(true, Ordering::Relaxed)
+    }
+
+    /// Which window shows the notices. A window that asked (`take`) gets
+    /// them; otherwise the first window, or the first one to draw when the
+    /// owner hasn't for a second (it was closed). Whether `me` shows them.
+    pub fn notice_owner(&self, me: u64, first: bool, now: f64, take: bool) -> bool {
+        let mut o = self.owner.lock().unwrap();
+        let mine = match *o {
+            _ if take => true,
+            None => first,
+            Some((id, _)) if id == me => true,
+            Some((_, seen)) => first && (now - seen > 1.0 || now < seen),
+        };
+        if mine {
+            *o = Some((me, now));
+        }
+        mine
     }
 
     pub fn set_config(&self, dir: Option<PathBuf>) {
@@ -155,6 +194,14 @@ impl Updater {
             && let Err(e) = Saved::update(&dir, f)
         {
             log::warn!("couldn't save the update state: {e}");
+        }
+    }
+
+    /// Show a note (from `startup`) unless something else is showing.
+    pub fn set_status_message(&self, note: String) {
+        let mut s = self.status.lock().unwrap();
+        if *s == Status::Idle {
+            *s = Status::Message(note);
         }
     }
 

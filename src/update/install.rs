@@ -260,7 +260,7 @@ pub fn run_quiet(cmd: &mut Command, timeout: Duration) -> Result<String, String>
         }
     };
     let text = read_out.join().unwrap_or_default() + &read_err.join().unwrap_or_default();
-    if status.success() { Ok(text) } else { Err(text.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("it failed").to_owned()) }
+    if status.success() { Ok(text) } else { Err(text.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("it failed").to_owned()) }
 }
 
 fn read_some(r: Option<&mut impl std::io::Read>) -> String {

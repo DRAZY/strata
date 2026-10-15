@@ -131,6 +131,10 @@ pub struct Settings {
     pub syntax_settings: std::collections::BTreeMap<String, crate::doc_settings::Layer>,
     /// Follow `.editorconfig` files.
     pub editorconfig: bool,
+    /// Checking GitHub for new versions: "ask" (once), "auto" (daily) or "off".
+    pub update_check: String,
+    /// "stable" releases only, or "prerelease" ones too.
+    pub update_channel: String,
 }
 
 impl Default for Settings {
@@ -197,6 +201,8 @@ impl Default for Settings {
             file_exclude_patterns: vec![".git".into(), ".DS_Store".into()],
             syntax_settings: Default::default(),
             editorconfig: true,
+            update_check: "ask".into(),
+            update_channel: "stable".into(),
         }
     }
 }

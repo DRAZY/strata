@@ -76,9 +76,14 @@ all there out of the box, with no accounts, no telemetry and nothing to set up.
   syntaxes (`.sublime-syntax`) and color schemes (`.tmTheme`,
   `.sublime-color-scheme`); these widely shared formats mean existing
   collections work unchanged.
-- **Private by design**: Strata never connects to the network on its own. It
-  has no telemetry or update checks, and logs and crash reports stay on your
-  computer.
+- **Private by design**: no accounts, no telemetry. Strata only contacts
+  GitHub to check for and download updates, and only if you allow it (or when
+  you choose Help ▸ Check for Updates…); it sends nothing else. Logs and crash
+  reports stay on your computer.
+- **Signed updates**: a new version is offered in the app and installs with
+  one click; every download is checked against an ed25519 signature (and, on
+  macOS, Strata's Developer ID) before it replaces anything, and the previous
+  version comes back if the new one doesn't start.
 
 ## Install
 
@@ -471,8 +476,13 @@ Reference; tests keep the two in step with `Settings`.
 
 ## Privacy
 
-Strata makes no network connections of its own: no telemetry, no update
-checks, no downloads, and Markdown images aren't fetched. A link you click (in
+Strata has no telemetry and no accounts. Its only network connections of its
+own are update checks and downloads from GitHub, and only if you allow them
+(Strata asks once; the `update_check` setting) or choose Help ▸ Check for
+Updates…; they send nothing but the request itself. Updates are fetched with
+the system's `curl` (HTTPS only) and verified against an ed25519 key built
+into the app before anything is installed; see [docs/UPDATES.md](docs/UPDATES.md).
+Markdown images aren't fetched. A link you click (in
 the Markdown preview, the manual, or Help ▸ Report a Problem…) opens in your
 browser; only `http`, `https` and `mailto` links leave Strata (other local
 files are shown in the file manager, other schemes are refused; see

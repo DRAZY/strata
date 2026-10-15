@@ -132,6 +132,8 @@ pub struct StrataApp {
     first_run: first_run::FirstRun,
     /// "Strata quit unexpectedly last time" (see `diagnostics`).
     crash_notice: Option<crate::crash::PreviousCrash>,
+    /// Update notices (see `update_ui`).
+    update: update_ui::UpdateUi,
     /// Tabs sharing a buffer (see `clones`).
     views: clones::Views,
     /// File ▸ Print… options (see `printing`).
@@ -182,6 +184,7 @@ mod snippets_ui;
 mod spelling;
 mod textutil;
 mod theme_ui;
+mod update_ui;
 #[cfg(test)]
 mod ui_tests;
 mod windows;
@@ -298,6 +301,7 @@ impl StrataApp {
             settings_ui: Default::default(),
             first_run: Default::default(),
             crash_notice: None,
+            update: Default::default(),
             views: Default::default(),
             print: Default::default(),
             lookup: Default::default(),
@@ -1178,6 +1182,7 @@ impl StrataApp {
             Cmd::RefreshFolders => self.sidebar.refresh(),
             Cmd::About => self.about_open = true,
             Cmd::OpenLogFolder | Cmd::ShowLatestLog | Cmd::ReportProblem => self.diagnostics_command(cmd),
+            Cmd::CheckForUpdates => self.check_for_updates(ctx),
             Cmd::InstallShellCommand => self.install_shell_command(),
             Cmd::Documentation => self.open_help(None, false),
             Cmd::KeyboardShortcuts => self.open_help(Some(crate::help::SHORTCUTS), false),
@@ -2607,6 +2612,7 @@ impl eframe::App for StrataApp {
             self.licenses_window(ctx);
         }
         self.crash_notice_ui(ctx);
+        self.update_ui(ctx);
         if self.build.visible && self.distraction.is_none() {
             let action = egui::Panel::bottom(self.link.id("build")).resizable(true).default_size(180.0).show(ui, |ui| self.build.show(ui)).inner;
             if let Some(crate::build::BuildAction::Goto(p, line, col)) = action {

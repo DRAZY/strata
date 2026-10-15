@@ -25,7 +25,7 @@ It opens in a blink, stays smooth on files of hundreds of megabytes, and gives y
 
 - **Fast.** Strata starts quickly, types without lag, and keeps big and minified files responsive by only doing work for what's on screen.
 - **Keyboard first.** Every command is in the command palette and can have a shortcut. The mouse works everywhere too, but you never need it.
-- **Local and private.** Strata has no accounts and no telemetry, and it doesn't check for updates or download anything. It only goes online when you ask it to, for example by clicking a link, which opens in your browser. Logs and crash reports stay on your computer, and Strata never sends them anywhere; see [Report a problem](troubleshooting.md#report-a-problem).
+- **Local and private.** Strata has no accounts and no telemetry. The only time it goes online by itself is to check GitHub for a new version, and only if you allow it (or when you choose **Check for Updates…**); it sends nothing else. See [Updates](#updates). Links you click open in your browser. Logs and crash reports stay on your computer, and Strata never sends them anywhere; see [Report a problem](troubleshooting.md#report-a-problem).
 - **Yours to shape.** Settings, key bindings, snippets, syntaxes, color schemes and build systems are all plain files you can edit, copy and share.
 
 Snippets, syntaxes and color schemes use widely shared file formats (`.sublime-snippet`, `.sublime-syntax`, `.tmTheme` and `.sublime-color-scheme`), so existing collections work unchanged.
@@ -36,6 +36,19 @@ To see which version you have:
 
 - Choose **Help ▸ About Strata** on Windows and Linux, or **Strata ▸ About Strata** on macOS. The command palette name is **Help: About Strata**.
 - Or run `strata --version` in a terminal. See [Command Line](cli.md).
+
+## Updates
+
+Strata can tell you when a new version is out and install it for you.
+
+- **Checking.** The first time you use Strata it asks whether to check for updates automatically. With checks on, Strata looks about once a day; you can change this any time with the `update_check` setting ([Settings](settings.md#updates)). **Help ▸ Check for Updates…** checks right away, even with automatic checks off.
+- **What's sent.** A check downloads one small file, `latest.json`, from Strata's releases on GitHub. Nothing else is sent: no telemetry, no account, no information about you or your files beyond what any web request carries (your IP address and a `Strata/<version>` user agent). Strata never contacts any other server for updates.
+- **When there's a new version**, a notice in the corner shows its release notes. **Install and Relaunch** downloads it, installs it and restarts Strata; your open tabs, unsaved text included, come back as they do after any quit (see [Hot exit](welcome.md#hot-exit)). **Later** puts the notice away until the next check, **Skip This Version** stops automatic checks from offering that version, and **Release Notes** opens the release page.
+- **Prereleases.** Set `update_channel` to `"prerelease"` to be offered release candidates and betas too.
+
+Every download is checked before it's installed: its size and SHA-256 must match, and it must carry a signature made with Strata's private signing key, which Strata checks with the public key built into it. On macOS the new app must also be signed by Strata's developer and accepted by Gatekeeper. A download that fails any check is deleted and nothing changes. The previous version is kept until the new one has started; if the new one doesn't start, Strata puts the previous version back.
+
+Strata installs the update where it is now, so it needs to be able to write there. If it can't (for example, it's in a folder you don't own, or on macOS it was opened straight from the downloaded disk image), the notice offers **Download…** instead, which opens the release page in your browser. On macOS, moving Strata to your Applications folder fixes this.
 
 ## License
 

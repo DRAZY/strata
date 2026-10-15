@@ -726,6 +726,7 @@ impl StrataApp {
             c("Keyboard Shortcuts", Cmd::KeyboardShortcuts),
             c("Search Documentation…", Cmd::SearchDocumentation),
             SEP(),
+            c("Check for Updates…", Cmd::CheckForUpdates),
             c("Report a Problem…", Cmd::ReportProblem),
             c("Show Latest Log", Cmd::ShowLatestLog),
             c("Open Log Folder", Cmd::OpenLogFolder),

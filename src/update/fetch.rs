@@ -135,7 +135,7 @@ fn run(url: &str, out: &Path, limit: u64, max_time: Option<u64>, cancel: &Atomic
 /// curl's exit code as something a person can act on.
 pub fn explain(code: Option<i32>, stderr: &str) -> String {
     let detail = stderr.lines().last().unwrap_or("").trim_start_matches("curl: ").to_owned();
-    let what = match code {
+    match code {
         Some(5 | 6) => "Couldn't find GitHub's server. Are you online?".to_owned(),
         Some(7) => "Couldn't connect to GitHub. Are you online?".to_owned(),
         Some(22) if detail.contains("404") => "GitHub has no update information yet (404).".to_owned(),
@@ -147,8 +147,7 @@ pub fn explain(code: Option<i32>, stderr: &str) -> String {
         Some(63) => "The download is bigger than the update feed says.".to_owned(),
         Some(c) => format!("The download failed (curl exit {c}{}).", if detail.is_empty() { String::new() } else { format!(": {detail}") }),
         None => "The download was stopped.".to_owned(),
-    };
-    what
+    }
 }
 
 /// Don't flash a console window for curl or tar (Windows).
