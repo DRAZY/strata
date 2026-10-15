@@ -49,8 +49,12 @@ all there out of the box, with no accounts, no telemetry and nothing to set up.
 - **Big files**: a 95 MB, 1.6 million-line file opens highlighted in about
   0.6 s on an M-series Mac, and minified one-line files stay responsive.
 - **40 encodings**, atomic saves, **printing** and **PDF export**.
+- **Settings window** (⌘, / Ctrl+,): every setting by category, with search,
+  applied live; a short welcome card on the first launch picks a scheme and
+  font size.
 - **Plain-file configuration**: settings and key bindings are JSON files that
-  apply as soon as you save. Add your own snippets (`.sublime-snippet`),
+  apply as soon as you save; the Settings window edits `settings.json` in
+  place, keeping your comments. Add your own snippets (`.sublime-snippet`),
   syntaxes (`.sublime-syntax`) and color schemes (`.tmTheme`,
   `.sublime-color-scheme`); these widely shared formats mean existing
   collections work unchanged.
@@ -441,8 +445,11 @@ height; in `settings.json`:
 "caret_width": 2,
 ```
 
-Settings ▸ Settings (⌘,) opens `settings.json`; a new file is written with every
-setting at its default, the ones above included.
+Settings ▸ Settings… (⌘, / Ctrl+,) opens the Settings window, and Settings ▸
+Settings (JSON) opens `settings.json`; a new file is written with every setting
+at its default, the ones above included. The window's rows come from
+`src/settings_meta.rs`, with descriptions taken from the manual's Settings
+Reference; tests keep the two in step with `Settings`.
 
 ## Privacy
 
@@ -492,7 +499,8 @@ Dev aids (all pair with `STRATA_SCREENSHOT=out.ppm`, which renders the window,
 saves a screenshot and exits): `STRATA_DEV_FIND=query` (+ `STRATA_DEV_FIND_REGEX=1`),
 `STRATA_DEV_FIND_IN_FILES=query` (+ `STRATA_DEV_WHERE`, `STRATA_DEV_REPLACE`,
 `STRATA_DEV_REPLACE_STEP=confirm|run`), `STRATA_DEV_PALETTE="p:query"`,
-`"cmd:query"`, `"theme:query"` (the color scheme picker), `"licenses:"` or
+`"cmd:query"`, `"theme:query"` (the color scheme picker), `"settings:query"`
+(the Settings window, searching), `"welcome:"` (the first-run card), `"licenses:"` or
 `"fif:query"` (Find in Files on the first frame, after files given on the
 command line are open), `STRATA_SCREENSHOT_TYPE='fn\t'` (types into the editor first; `\t`
 presses Tab). `STRATA_DEV_PANIC=40` crashes on purpose at frame 40 (try it

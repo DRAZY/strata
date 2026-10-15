@@ -4,6 +4,17 @@ Strata is a fast, open-source editor for code and text. It opens instantly, hand
 
 This page walks you through the window, opening and saving files, and the two shortcuts worth learning first. To find out more about Strata itself, see [About Strata](about.md).
 
+## The welcome card
+
+The first time you start Strata, a small card in the middle of the editor offers a few choices to start with:
+
+- **Color scheme**: Dark, Light, or Auto, which follows your system's light or dark appearance.
+- **Font size** for the editor.
+- **Open a Folder…**, **Install Shell Command** (macOS, so you can type `strata` in a terminal; see [Command Line](cli.md)) and **All Settings…**.
+- Links to this manual, the keyboard shortcuts and the command palette.
+
+The card doesn't get in your way: you can start typing straight away. Press Esc or click × to close it; it also goes away once you open a file. It only appears on the very first launch. To see it again, choose **Help ▸ Welcome**.
+
 ## The window at a glance
 
 A Strata window has a few parts. Each one can be shown or hidden.
@@ -18,7 +29,7 @@ A Strata window has a few parts. Each one can be shown or hidden.
 
 On macOS, Strata uses the system menu bar at the top of the screen. On Windows and Linux, the menu bar is inside the window. Both have the same menus: File, Edit, Selection, Find, View, Goto, Tools, Project, Window and Help.
 
-Settings live under Strata ▸ Settings on macOS, and under the Preferences menu on Windows and Linux. See [Settings](settings.md) for every option and [Appearance](appearance.md) for color schemes, fonts and the minimap.
+To change settings, press {{key:settings}} to open the Settings window: every option, by category, with search. It's also under Strata ▸ Settings on macOS and the Preferences menu on Windows and Linux, next to **Settings (JSON)** for editing `settings.json` directly. See [Settings](settings.md) for every option and [Appearance](appearance.md) for color schemes, fonts and the minimap.
 
 ## Opening files and folders
 
