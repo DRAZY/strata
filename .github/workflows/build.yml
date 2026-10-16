@@ -1,6 +1,6 @@
 # CI: tests and clippy on macOS and Windows, a Linux build, and a dependency
 # audit, for every pull request and every push to main. (The README's badge
-# points at this file's name.) Releases are built by release.yml.
+# points at this file's name.) Releases are built locally with scripts/release.sh (RELEASING.md).
 name: build
 
 on:

@@ -115,34 +115,11 @@ trust). Releases after it are signed with the new key.
    must match the uploaded names. Mark release candidates as prereleases:
    the stable channel skips them.
 
-### In the release workflow
+### As part of a release
 
-Add a repository secret **`STRATA_UPDATE_KEY`** holding the contents of
-`~/.strata-update-key` (the base64 line). Then, after the macOS and Windows
-artifacts are in `dist/` on one runner (macOS, since it has `ditto` and the
-notarized app), add this step to `.github/workflows/release.yml` before the
-upload step:
-
-```yaml
-      # ---- Update feed (docs/UPDATES.md) ----
-      - name: Sign updates and write latest.json
-        env:
-          STRATA_UPDATE_KEY: ${{ secrets.STRATA_UPDATE_KEY }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          # Release notes for this version (from CHANGELOG.md, or the tag message).
-          awk -v v="$VERSION" '/^## /{p = index($0, v) > 0; next} p' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
-          [ -s "$RUNNER_TEMP/notes.md" ] || echo "See the release page for what's new." > "$RUNNER_TEMP/notes.md"
-          scripts/make-update-manifest.sh "$VERSION" "$RUNNER_TEMP/notes.md"
-      # Then upload, with the other assets:
-      #   dist/latest.json
-      #   dist/Strata-*.app.zip
-      #   dist/Strata-*-windows-x64.zip
-```
-
-The Windows zip is built on a Windows runner; download it into `dist/` on the
-macOS job (`actions/download-artifact`) before this step. The key exists only
-in this step's environment; it's never written to disk or printed.
+`scripts/release.sh` runs `make-update-manifest.sh` with `~/.strata-update-key`
+and uploads `latest.json` with the other files; see [RELEASING.md](../RELEASING.md).
+The key never leaves the Mac.
 
 ## Testing
 

@@ -570,9 +570,9 @@ see [CONTRIBUTING.md](CONTRIBUTING.md).
 the real widget and the whole window with simulated keys and clicks.
 
 CI (`.github/workflows/build.yml`) runs clippy and the tests on macOS (Apple
-silicon) and Windows (x64), builds on Linux, and audits dependencies; tagged
-releases are built, notarized and drafted by `.github/workflows/release.yml`
-(see [RELEASING.md](RELEASING.md)). [CONTRIBUTING.md](CONTRIBUTING.md) has the
+silicon) and Windows (x64), builds on Linux, and audits dependencies.
+Releases are built, notarized and published from the maintainer's Mac with
+`scripts/release.sh` (see [RELEASING.md](RELEASING.md)). [CONTRIBUTING.md](CONTRIBUTING.md) has the
 details.
 
 **Logs and crash reports** (nothing is ever uploaded):
