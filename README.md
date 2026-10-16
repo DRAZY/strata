@@ -5,14 +5,14 @@
 <p align="center"><strong>A fast, open-source code and text editor.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/DRAZY/strata/actions/workflows/build.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/DRAZY/strata/build.yml?branch=main&label=build"></a>
-  <a href="https://github.com/DRAZY/strata/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/DRAZY/strata?label=latest&color=1fb6a8"></a>
+  <a href="https://github.com/DRAZY/strata/actions/workflows/build.yml"><img alt="CI" src="https://badgen.net/github/checks/DRAZY/strata/main?label=build"></a>
+  <a href="https://github.com/DRAZY/strata/releases/latest"><img alt="Latest release" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.github.com%2Frepos%2FDRAZY%2Fstrata%2Freleases%2Flatest&query=%24.tag_name&label=latest&color=1fb6a8&cacheSeconds=1800"></a>
   <a href="https://github.com/DRAZY/strata/releases"><img alt="Total downloads" src="https://img.shields.io/github/downloads/DRAZY/strata/total?label=downloads&color=1fb6a8"></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-1fb6a8"></a>
   <img alt="macOS and Windows" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows-252532">
   <br>
-  <a href="https://github.com/DRAZY/strata/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/DRAZY/strata?color=f5c542"></a>
-  <img alt="Last commit" src="https://img.shields.io/github/last-commit/DRAZY/strata?color=f5c542">
+  <a href="https://github.com/DRAZY/strata/stargazers"><img alt="Stars" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.github.com%2Frepos%2FDRAZY%2Fstrata&query=%24.stargazers_count&label=stars&color=f5c542&cacheSeconds=3600"></a>
+  <img alt="Last commit" src="https://badgen.net/github/last-commit/DRAZY/strata?color=f5c542">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-B7410E?logo=rust&logoColor=white">
   <img alt="egui" src="https://img.shields.io/badge/egui-0.36-3b82f6">
   <img alt="Notarized" src="https://img.shields.io/badge/macOS-notarized-252532?logo=apple&logoColor=white">
