@@ -226,6 +226,7 @@ impl After {
 }
 
 pub struct Kept {
+    /// The file the replace really wrote: a link's target (writes follow links).
     path: PathBuf,
     original: Arc<Vec<u8>>,
     after: After,
@@ -235,9 +236,15 @@ pub struct Kept {
 fn describe(state: &crate::swap::State) -> String {
     match state {
         crate::swap::State::Restored => "restored".into(),
+        crate::swap::State::RestoredWithLeftover(p) => format!("restored; its emptied staging folder couldn't be removed: {}", p.display()),
         crate::swap::State::Unchanged => "left as it was".into(),
         crate::swap::State::KeptAt(p) => format!("couldn't go back; it's kept at {}", p.display()),
     }
+}
+
+/// Where a write to `path` really lands (links followed, as the replace's write does).
+fn real_target(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned())
 }
 
 /// The background disk job (replace, or undo of the last replace) and its
@@ -263,6 +270,11 @@ pub struct DiskReplace {
     pub limit: Option<usize>,
     /// How the last undo went.
     pub undo: Option<crate::swap::Outcome>,
+    /// Emptied staging folders an undo couldn't remove (files restored).
+    pub leftovers: Vec<PathBuf>,
+    /// The folders the replace ran over: an undo only touches files inside
+    /// them (a link's target elsewhere is refused). Kept across jobs.
+    pub roots: Vec<PathBuf>,
     /// Tests: called with each file the undo has checked, just before it's put back.
     #[cfg(test)]
     pub undo_hook: Option<UndoHook>,
@@ -291,30 +303,44 @@ impl DiskReplace {
 
     /// Rewrite `jobs` off the UI thread. Forgets the previous undo.
     pub fn start(&mut self, jobs: Vec<Job>, r: Replacer, ctx: Option<egui::Context>) {
-        *self = DiskReplace { total: jobs.len(), limit: self.limit, ..Default::default() };
+        *self = DiskReplace { total: jobs.len(), limit: self.limit, roots: std::mem::take(&mut self.roots), ..Default::default() };
         self.spawn(ctx, move |job: &Job| match replace_file(job, &r) {
-            Ok((count, original)) => Outcome::Replaced { path: job.path.clone(), count, original, after: After::of(&job.path) },
+            Ok((count, original)) => {
+                // Recorded by the file actually written, so its undo finds it.
+                let real = real_target(&job.path);
+                let after = After::of(&real);
+                Outcome::Replaced { path: real, count, original, after }
+            }
             Err(reason) => Outcome::Skipped { path: job.path.clone(), reason },
         }, jobs);
     }
 
     /// Restore the files the last replace wrote.
     pub fn start_undo(&mut self, ctx: Option<egui::Context>) {
-        self.start_restore(Vec::new(), None, ctx);
+        self.start_restore("Undo Replace in Files", Vec::new(), None, ctx);
     }
 
     /// Restore the files the last replace wrote, and `extra` (more files, a
     /// rename back), all or nothing, off the UI thread (see `swap`). Files
     /// inside `top` are reached from it without following links; others
     /// from their own folder.
-    pub fn start_restore(&mut self, extra: Vec<crate::swap::Item>, top: Option<PathBuf>, ctx: Option<egui::Context>) {
+    pub fn start_restore(&mut self, op: &'static str, extra: Vec<crate::swap::Item>, top: Option<PathBuf>, ctx: Option<egui::Context>) {
         let kept = std::mem::take(&mut self.kept);
         #[cfg(test)]
         let hook = self.undo_hook.clone();
-        *self = DiskReplace { total: 1, undoing: true, limit: self.limit, ..Default::default() };
+        let roots: Vec<PathBuf> = self.roots.iter().map(|r| real_target(r)).collect();
+        *self = DiskReplace { total: 1, undoing: true, limit: self.limit, roots: std::mem::take(&mut self.roots), ..Default::default() };
         let batch = vec![(kept, extra)];
         self.spawn(ctx, move |(kept, extra): &(Vec<Kept>, Vec<crate::swap::Item>)| {
-            let top_of = |p: &Path| top.clone().filter(|t| p.starts_with(t)).unwrap_or_else(|| p.parent().map(Path::to_owned).unwrap_or_default());
+            let back = || kept.iter().map(|k| Kept { path: k.path.clone(), original: k.original.clone(), after: k.after }).collect();
+            // A link's target outside the folders the replace ran over isn't touched.
+            let outside: Vec<(PathBuf, String)> = kept.iter().filter(|k| !roots.is_empty() && !roots.iter().any(|r| k.path.starts_with(r))).map(|k| (k.path.clone(), "it's outside the folders the replace ran over".to_owned())).collect();
+            if !outside.is_empty() {
+                return Outcome::Undone(crate::swap::Outcome::Refused(outside, Vec::new()), back());
+            }
+            let top_of = |p: &Path| {
+                top.clone().filter(|t| p.starts_with(t)).or_else(|| roots.iter().filter(|r| p.starts_with(r)).max_by_key(|r| r.components().count()).cloned()).unwrap_or_else(|| p.parent().map(Path::to_owned).unwrap_or_default())
+            };
             let mut items: Vec<crate::swap::Item> = Vec::new();
             for k in kept {
                 // Never over a file whose state after the replace wasn't known.
@@ -338,8 +364,8 @@ impl DiskReplace {
             let mut step = |_: crate::swap::Step| {
                 let _ = &paths;
             };
-            let out = crate::swap::restore_all_with(&items, &mut step);
-            let back = if matches!(out, crate::swap::Outcome::Refused(..)) { kept.iter().map(|k| Kept { path: k.path.clone(), original: k.original.clone(), after: k.after }).collect() } else { Vec::new() };
+            let out = crate::swap::restore_all_with(op, &items, &mut step);
+            let back = if matches!(out, crate::swap::Outcome::Refused(..)) { back() } else { Vec::new() };
             Outcome::Undone(out, back)
         }, batch);
     }
@@ -388,7 +414,10 @@ impl DiskReplace {
                 Ok(Outcome::Undone(out, back)) => {
                     use crate::swap::{Outcome as O, State};
                     match &out {
-                        O::Done(states) => self.files = states.iter().filter(|(_, s)| *s == State::Restored).count(),
+                        O::Done(states) => {
+                            self.files = states.iter().filter(|(_, s)| s.restored()).count();
+                            self.leftovers.extend(states.iter().filter_map(|(_, s)| if let State::RestoredWithLeftover(p) = s { Some(p.clone()) } else { None }));
+                        }
                         O::Refused(why, kept) => {
                             self.skipped.extend(why.iter().cloned());
                             self.skipped.extend(kept.iter().map(|(p, s)| (p.clone(), describe(s))));
@@ -397,8 +426,9 @@ impl DiskReplace {
                             self.kept = back;
                         }
                         O::Partial(states, why) => {
-                            self.files = states.iter().filter(|(_, s)| *s == State::Restored).count();
-                            self.skipped.extend(states.iter().filter(|(_, s)| *s != State::Restored).map(|(p, s)| (p.clone(), describe(s))));
+                            self.files = states.iter().filter(|(_, s)| s.restored()).count();
+                            self.leftovers.extend(states.iter().filter_map(|(_, s)| if let State::RestoredWithLeftover(p) = s { Some(p.clone()) } else { None }));
+                            self.skipped.extend(states.iter().filter(|(_, s)| !s.restored()).map(|(p, s)| (p.clone(), describe(s))));
                             self.skipped.push((PathBuf::new(), why.clone()));
                         }
                     }
@@ -563,7 +593,7 @@ mod tests {
         task.start(vec![job(&a, 1)], Replacer::new(&Query::literal("x", false), "y").unwrap(), None);
         task.wait_until_done();
         assert!(task.poll());
-        let target = a.clone();
+        let target = fs::canonicalize(&a).unwrap();
         task.undo_hook = Some(Arc::new(move |p: &Path| {
             if p == target {
                 fs::write(p, "the sync tool's newer text\n").unwrap();
@@ -577,6 +607,45 @@ mod tests {
         assert!(matches!(task.undo, Some(crate::swap::Outcome::Partial(..))));
         assert!(task.skipped.iter().any(|(_, why)| why.contains("kept at")), "{:?}", task.skipped);
         fs::remove_dir_all(d).ok();
+    }
+
+    /// A replace through a link writes its target; the undo restores that
+    /// target, and only inside the folders the replace ran over.
+    #[cfg(unix)]
+    #[test]
+    fn undo_through_a_link_restores_its_target_inside_the_folders() {
+        let d = dir("link-undo");
+        let outside = dir("link-undo-out");
+        let (real, link) = (d.join("real.txt"), d.join("link.txt"));
+        fs::write(&real, "one x\n").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut task = DiskReplace { roots: vec![d.clone()], ..Default::default() };
+        task.start(vec![job(&link, 1)], Replacer::new(&Query::literal("x", false), "y").unwrap(), None);
+        task.wait_until_done();
+        task.poll();
+        assert_eq!(fs::read_to_string(&real).unwrap(), "one y\n");
+        task.start_undo(None);
+        task.wait_until_done();
+        task.poll();
+        assert!(matches!(task.undo, Some(crate::swap::Outcome::Done(_))), "{:?} {:?}", task.undo, task.skipped);
+        assert_eq!(fs::read_to_string(&real).unwrap(), "one x\n");
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link stays a link");
+        // A link to a file outside the folders: replaced (writes follow links), never undone there.
+        let (far, far_link) = (outside.join("far.txt"), d.join("far-link.txt"));
+        fs::write(&far, "far x\n").unwrap();
+        std::os::unix::fs::symlink(&far, &far_link).unwrap();
+        task.roots = vec![d.clone()];
+        task.start(vec![job(&far_link, 1)], Replacer::new(&Query::literal("x", false), "y").unwrap(), None);
+        task.wait_until_done();
+        task.poll();
+        task.start_undo(None);
+        task.wait_until_done();
+        task.poll();
+        assert!(matches!(task.undo, Some(crate::swap::Outcome::Refused(..))));
+        assert!(task.skipped.iter().any(|(_, why)| why.contains("outside the folders")), "{:?}", task.skipped);
+        assert_eq!(fs::read_to_string(&far).unwrap(), "far y\n", "untouched by the undo");
+        fs::remove_dir_all(d).ok();
+        fs::remove_dir_all(outside).ok();
     }
 
     #[test]
@@ -603,7 +672,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&a).unwrap(), "one y\n");
         assert_eq!(fs::read_to_string(&b).unwrap(), "edited later\n");
         assert_eq!((task.files, task.skipped.len(), task.undoable()), (0, 1, 2));
-        assert_eq!(task.skipped[0].0, b);
+        assert_eq!(task.skipped[0].0, fs::canonicalize(&b).unwrap());
         // b back as the replace left it: now everything comes back.
         fs::write(&b, "two y y\n").unwrap();
         task.start_undo(None);

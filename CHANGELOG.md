@@ -103,7 +103,10 @@ All notable changes to Strata are recorded here. The format follows
 - Undo Replace in Files is all or nothing: if any rewritten file changed
   since the replace, nothing is restored and those files are listed. It never
   overwrites a file written while it runs (by a sync tool, say): what it
-  couldn't put back stays in a marked folder next to the file.
+  couldn't put back stays in a marked folder next to the file. Files are
+  restored in place (keeping permissions, owner, extended attributes and hard
+  links), also through links inside the replaced folders. An undo interrupted
+  by a crash is listed in the Changes tab with **Put Back**.
 
 ### Fixed
 

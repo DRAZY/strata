@@ -468,9 +468,13 @@ impl StrataApp {
         }
         let Some(path) = self.docs[self.active].path.clone() else { return };
         let Some(vault) = self.notes.index.vault_for(&path).cloned() else { return };
-        let Some(i) = vault.find(&path) else { return };
-        let (copies, original) = (vault.copies(i).to_vec(), vault.original_of(i));
-        if copies.is_empty() && original.is_none() {
+        let (copies, original) = match vault.find(&path) {
+            Some(i) => (vault.copies(i).to_vec(), vault.original_of(i)),
+            None => (Vec::new(), None),
+        };
+        // Files an interrupted undo set aside, anywhere in the vault.
+        let leftovers: Vec<crate::swap::Leftover> = vault.leftovers.iter().filter_map(|s| crate::swap::leftover(s)).collect();
+        if copies.is_empty() && original.is_none() && leftovers.is_empty() {
             return;
         }
         let name = |k: u32| vault.files.path(k).rsplit('/').next().unwrap_or("").to_owned();
@@ -489,6 +493,18 @@ impl StrataApp {
                     }
                     if ui.small_button("Move This Copy to Trash…").clicked() {
                         act = Some((2, path.clone(), op));
+                    }
+                });
+            }
+            for left in &leftovers {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(WARN, "⚠");
+                    ui.label(left.describe());
+                    if ui.small_button("Put Back").clicked() {
+                        act = Some((3, left.stage.clone(), path.clone()));
+                    }
+                    if ui.small_button(crate::ctxmenu::reveal_label()).clicked() {
+                        act = Some((4, left.stage.clone(), path.clone()));
                     }
                 });
             }
@@ -512,6 +528,18 @@ impl StrataApp {
         match act {
             Some((0, other, _)) => self.compare_conflict(Some(other)),
             Some((1, other, _)) => self.open_path(other, false),
+            Some((3, stage, _)) => {
+                self.status = match crate::swap::put_back_leftover(&stage) {
+                    Ok(to) => format!("Put back {}", to.display()),
+                    Err(e) => format!("Couldn't put it back: {e}"),
+                };
+                self.notes.index.request(&vault.root, Some(ui.ctx()));
+            }
+            Some((4, stage, _)) => {
+                if let Err(e) = crate::ctxmenu::reveal_in_file_manager(&stage) {
+                    self.status = format!("Could not open the file manager: {e}");
+                }
+            }
             Some((_, copy, _)) => self.ask_trash_copy(&copy),
             None => {}
         }

@@ -436,6 +436,21 @@ pub(crate) mod imp {
         Ok(std::fs::File::from(f))
     }
 
+    /// Open an existing file for writing (not following a link, not creating it).
+    pub fn open_write_at(dir: &Dir, name: &str) -> io::Result<std::fs::File> {
+        let name = c(name)?;
+        // SAFETY: as above.
+        let f = fd(unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC) })?;
+        Ok(std::fs::File::from(f))
+    }
+
+    /// Rename within a folder, replacing `b` (only for Strata's own files).
+    pub fn rename_replace(dir: &Dir, a: &str, b: &str) -> io::Result<()> {
+        let (a, b) = (c(a)?, c(b)?);
+        // SAFETY: as above.
+        ok(unsafe { libc::renameat(dir.as_raw_fd(), a.as_ptr(), dir.as_raw_fd(), b.as_ptr()) })
+    }
+
     pub fn open_file(path: &Path) -> io::Result<std::fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)
@@ -587,6 +602,14 @@ pub(crate) mod imp {
         open_file(&dir.path.join(name))
     }
 
+    pub fn open_write_at(dir: &Dir, name: &str) -> io::Result<std::fs::File> {
+        std::fs::OpenOptions::new().write(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(dir.path.join(name))
+    }
+
+    pub fn rename_replace(dir: &Dir, a: &str, b: &str) -> io::Result<()> {
+        std::fs::rename(dir.path.join(a), dir.path.join(b))
+    }
+
     /// Opened without following a link at the end.
     pub fn open_file(path: &Path) -> io::Result<std::fs::File> {
         std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).open(path)
@@ -654,6 +677,12 @@ pub(crate) mod imp {
         no()
     }
     pub fn open_file_at(_: &Dir, _: &str) -> io::Result<std::fs::File> {
+        no()
+    }
+    pub fn open_write_at(_: &Dir, _: &str) -> io::Result<std::fs::File> {
+        no()
+    }
+    pub fn rename_replace(_: &Dir, _: &str, _: &str) -> io::Result<()> {
         no()
     }
     pub fn open_file(_: &Path) -> io::Result<std::fs::File> {

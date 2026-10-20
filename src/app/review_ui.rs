@@ -128,6 +128,9 @@ enum ListAction {
     Reviewed(PathBuf, bool),
     KeepFile(PathBuf),
     RevertFile(PathBuf),
+    /// Put back what an interrupted undo left in this staging folder (see `swap`).
+    PutBack(PathBuf),
+    Reveal(PathBuf),
     Start,
     End,
     Rescan,
@@ -944,6 +947,18 @@ impl StrataApp {
             Some(ListAction::Reviewed(p, on)) => self.review_set_reviewed(&p, on),
             Some(ListAction::KeepFile(p)) => self.review_on_file(&p, Self::review_keep_file),
             Some(ListAction::RevertFile(p)) => self.review_on_file(&p, Self::review_revert_file),
+            Some(ListAction::PutBack(stage)) => {
+                self.status = match crate::swap::put_back_leftover(&stage) {
+                    Ok(to) => format!("Put back {}", to.display()),
+                    Err(e) => format!("Couldn't put it back: {e}"),
+                };
+                self.review.next_scan = 0.0;
+            }
+            Some(ListAction::Reveal(p)) => {
+                if let Err(e) = crate::ctxmenu::reveal_in_file_manager(&p) {
+                    self.status = format!("Could not open the file manager: {e}");
+                }
+            }
             Some(ListAction::Start) => self.review_start(Some(ui.ctx())),
             Some(ListAction::End) => self.review_end(),
             Some(ListAction::Rescan) => self.review.next_scan = 0.0,
@@ -1124,6 +1139,18 @@ impl StrataApp {
                         if ui.add_enabled(!f.binary && f.blocked.is_none() && !f.alias, egui::Button::new("Revert File…")).on_hover_text("Put the whole file back as it was").clicked() {
                             action = Some(ListAction::RevertFile(f.path.clone()));
                             ui.close();
+                        }
+                        // What an interrupted undo left: put it back, or look at it.
+                        if crate::swap::leftover(&f.path).is_some() {
+                            ui.separator();
+                            if ui.button("Put Back").on_hover_text("Return the file to where the undo found it, as its journal says").clicked() {
+                                action = Some(ListAction::PutBack(f.path.clone()));
+                                ui.close();
+                            }
+                            if ui.button(crate::ctxmenu::reveal_label()).clicked() {
+                                action = Some(ListAction::Reveal(f.path.clone()));
+                                ui.close();
+                            }
                         }
                         ui.separator();
                         if ui.button("Copy Path").clicked() {

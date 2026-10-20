@@ -373,6 +373,8 @@ impl Sidebar {
     /// `jobs` on disk in the background.
     pub fn start_disk_replace(&mut self, jobs: Vec<Job>, r: Replacer, in_tabs: (usize, usize), ctx: Option<egui::Context>) {
         self.in_tabs = in_tabs;
+        // Its undo touches only files inside these folders (a link's target elsewhere is refused).
+        self.disk.roots = self.roots.clone();
         self.disk.start(jobs, r, ctx);
     }
 
@@ -393,12 +395,14 @@ impl Sidebar {
         let d = &self.disk;
         let plural = |n: usize, w: &str| format!("{n} {w}{}", if n == 1 { "" } else { "s" });
         let mut text = if d.undoing {
-            match &d.undo {
+            let summary = match &d.undo {
                 // All or nothing: the files in the way are listed below.
                 Some(crate::swap::Outcome::Refused(..)) => "Undo Replace in Files: nothing was restored, because some files changed since the replace".to_owned(),
                 Some(crate::swap::Outcome::Partial(..)) => format!("Undo Replace in Files stopped partway: restored {}", plural(d.files, "file")),
                 _ => format!("Undo Replace in Files: restored {}", plural(d.files, "file")),
-            }
+            };
+            let left: String = d.leftovers.iter().map(|p| format!("; an emptied folder of Strata's couldn't be removed: {}", p.display())).collect();
+            summary + &left
         } else {
             let (n, files) = (self.in_tabs.0 + d.replaced, self.in_tabs.1 + d.files);
             let mut t = format!("Replaced {} in {}", plural(n, "occurrence"), plural(files, "file"));

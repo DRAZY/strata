@@ -86,6 +86,7 @@ fn file_label(p: &Path) -> String {
 fn state_label(s: &crate::swap::State) -> String {
     match s {
         crate::swap::State::Restored => "restored".into(),
+        crate::swap::State::RestoredWithLeftover(p) => format!("restored (an empty folder of Strata's stayed at {})", p.display()),
         crate::swap::State::Unchanged => "as it was".into(),
         crate::swap::State::KeptAt(p) => format!("kept at {}", p.display()),
     }
@@ -1108,6 +1109,7 @@ impl StrataApp {
         let too_large = if tab_bytes > limit { plan.too_large.max(tabs.len()) } else { plan.too_large };
         self.notes.last_rename = Some(UndoRename { root: root.clone(), from: rename_path(&root, &rename.from), to: rename_path(&root, &rename.to), tabs, too_large });
         self.notes.disk.limit = Some(limit.saturating_sub(tab_bytes));
+        self.notes.disk.roots = vec![root.clone()];
         self.notes.disk.start(jobs, crate::replace::Replacer::rewriting(rewriter), ctx);
         self.notes.disk_in_tabs = (in_tabs, tab_files);
     }
@@ -1210,13 +1212,13 @@ impl StrataApp {
         self.status = "Undo Rename: checking files…".into();
         let root = u.root.clone();
         self.notes.undoing = Some((u, in_tabs));
-        self.notes.disk.start_restore(extra, Some(root), Some(ctx.clone()));
+        self.notes.disk.start_restore("Undo Rename", extra, Some(root), Some(ctx.clone()));
     }
 
     /// The disk half of Undo Rename finished: change the open tabs back, or say what's in the way.
     fn finish_undo(&mut self) {
         let Some((u, in_tabs)) = self.notes.undoing.take() else { return };
-        use crate::swap::{Outcome, State};
+        use crate::swap::Outcome;
         match self.notes.disk.undo.take() {
             Some(Outcome::Done(_)) => {
                 let mut changed = 0;
@@ -1229,6 +1231,9 @@ impl StrataApp {
                 self.follow_rename(&u.to, &u.from);
                 self.link.requests.renamed.push((u.to.clone(), u.from.clone()));
                 self.status = format!("Undo Rename: back to {}", u.from.display());
+                if let Some(left) = self.notes.disk.leftovers.first() {
+                    self.status += &format!("; an emptied folder of Strata's couldn't be removed: {}", left.display());
+                }
                 if changed > 0 {
                     self.status += &format!("; {changed} open tab{} changed meanwhile: use Undo there", if changed == 1 { "" } else { "s" });
                 }
@@ -1242,7 +1247,7 @@ impl StrataApp {
             }
             Some(Outcome::Partial(states, why)) => {
                 // The note may or may not be back under its old name: follow wherever it is.
-                if states.iter().any(|(p, s)| *p == u.to && *s == State::Restored) {
+                if states.iter().any(|(p, s)| *p == u.to && s.restored()) {
                     self.follow_rename(&u.to, &u.from);
                     self.link.requests.renamed.push((u.to.clone(), u.from.clone()));
                 }

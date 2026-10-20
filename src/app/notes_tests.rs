@@ -570,6 +570,32 @@ fn a_folder_swapped_for_a_link_after_the_check_is_never_written_through() {
 }
 
 #[test]
+fn an_interrupted_undo_in_a_vault_is_shown_with_put_back() {
+    let dir = temp_dir("notes-leftover");
+    write(&dir, "Home.md", "[[Plan]]\n");
+    write(&dir, "Plan.md", "new text\n");
+    let item = crate::swap::Item::restore(dir.clone(), dir.join("Plan.md"), std::sync::Arc::new(b"old text\n".to_vec()), crate::swap::identity_of(b"new text\n"));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::swap::restore_all_with("Undo Rename", &[item], &mut |s| {
+            if s == crate::swap::Step::BeforeInstall(0) {
+                panic!("crash");
+            }
+        })
+    }));
+    assert!(r.is_err());
+    let ctx = Context::default();
+    let mut app = open_vault(&dir, "Home.md", &ctx);
+    let out = frame(&mut app, &ctx, vec![]);
+    let shown = texts(&out).join("\n");
+    assert!(shown.contains("Left by an interrupted Undo Rename: Plan.md"), "{shown}");
+    assert!(shown.contains("Put Back"));
+    let stage = app.notes.index.vault_for(&dir.join("Home.md")).unwrap().leftovers[0].clone();
+    crate::swap::put_back_leftover(&stage).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("Plan.md")).unwrap(), "new text\n");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn sidebar_rename_offers_the_same_link_update() {
     let dir = temp_dir("notes-sidebar-rename");
     write(&dir, "A.md", "[[Old]]\n");

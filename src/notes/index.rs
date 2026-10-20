@@ -106,13 +106,15 @@ pub struct Vault {
     pub truncated: bool,
     /// Some note has a `[[wikilink]]`: the folder is used for notes.
     pub wikilinks: bool,
+    /// Staging folders an interrupted undo left (see `swap::leftover`).
+    pub leftovers: Vec<PathBuf>,
 }
 
 impl Vault {
     /// An empty vault (before the first scan finishes).
     pub fn empty(root: PathBuf) -> Vault {
         let config = Config::read(&root);
-        Vault { root, config, files: Files::default(), entries: Vec::new(), backlinks: HashMap::new(), tags: Vec::new(), copies: HashMap::new(), copy_of: HashMap::new(), truncated: false, wikilinks: false }
+        Vault { root, config, files: Files::default(), entries: Vec::new(), backlinks: HashMap::new(), tags: Vec::new(), copies: HashMap::new(), copy_of: HashMap::new(), truncated: false, wikilinks: false, leftovers: Vec::new() }
     }
 
     /// `path` relative to the vault folder, with `/`.
@@ -212,7 +214,7 @@ impl Vault {
                 copy_of.insert(i as u32, o);
             }
         }
-        Vault { root, config, files, entries, backlinks, tags, copies, copy_of, truncated, wikilinks }
+        Vault { root, config, files, entries, backlinks, tags, copies, copy_of, truncated, wikilinks, leftovers: Vec::new() }
     }
 }
 
@@ -230,7 +232,29 @@ pub fn scan(root: &Path, prev: Option<&Vault>, cancel: &AtomicBool) -> Outcome {
     // Obsidian shows every file but dot-folders (.obsidian, .trash, .git);
     // in other folders, what .gitignore ignores is left out too.
     let git = !config.obsidian;
-    let walk = ignore::WalkBuilder::new(root).hidden(true).git_ignore(git).git_global(git).git_exclude(git).ignore(git).parents(git).require_git(false).follow_links(false).build();
+    // Staging folders an interrupted undo left are noted (and not entered).
+    let left = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let found_left = left.clone();
+    let walk = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(git)
+        .git_global(git)
+        .git_exclude(git)
+        .ignore(git)
+        .parents(git)
+        .require_git(false)
+        .follow_links(false)
+        .filter_entry(move |e| {
+            let name = e.file_name().to_string_lossy();
+            if e.depth() == 0 || !name.starts_with('.') {
+                return true;
+            }
+            if e.file_type().is_some_and(|t| t.is_dir()) && name.starts_with(crate::claim::STAGING) && crate::swap::leftover(e.path()).is_some() {
+                found_left.lock().unwrap_or_else(|p| p.into_inner()).push(e.path().to_path_buf());
+            }
+            false
+        })
+        .build();
     let mut found: Vec<(String, PathBuf, Option<Stamp>)> = Vec::new();
     let mut truncated = false;
     for entry in walk.flatten() {
@@ -251,9 +275,11 @@ pub fn scan(root: &Path, prev: Option<&Vault>, cancel: &AtomicBool) -> Outcome {
         found.push((rel, path, stamp));
     }
     found.sort_by(|a, b| a.0.cmp(&b.0));
+    let leftovers_now = left.lock().unwrap_or_else(|p| p.into_inner()).clone();
     if let Some(p) = prev
         && p.config == config
         && p.truncated == truncated
+        && { let mut l = leftovers_now.clone(); l.sort(); l == p.leftovers }
         && p.files.len() == found.len()
         && found.iter().zip(p.files.paths()).zip(&p.entries).all(|((f, rel), e)| f.0 == *rel && f.2 == e.stamp)
     {
@@ -303,7 +329,10 @@ pub fn scan(root: &Path, prev: Option<&Vault>, cancel: &AtomicBool) -> Outcome {
     }
     let paths: Vec<String> = found.into_iter().map(|f| f.0).collect();
     let reuse = prev.filter(|p| p.config == config && p.files.paths() == paths.as_slice()).map(|p| (p, changed.as_slice()));
-    Outcome::New(Box::new(Vault::finish(root.to_owned(), config, paths, entries, truncated, reuse)))
+    let mut vault = Vault::finish(root.to_owned(), config, paths, entries, truncated, reuse);
+    vault.leftovers = std::mem::take(&mut *left.lock().unwrap_or_else(|p| p.into_inner()));
+    vault.leftovers.sort();
+    Outcome::New(Box::new(vault))
 }
 
 struct Job {
