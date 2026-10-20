@@ -43,14 +43,15 @@ pub(super) enum StatusClick {
 type Problems = Vec<(u8, String)>;
 /// Char-range edits for one file.
 type CharEdits = Vec<(Range<usize>, String)>;
-/// A file's modification time and size.
-type Stamp = (Option<std::time::SystemTime>, Option<u64>);
+use crate::document::FileId;
+/// A file read off the UI thread for a change: decoded, its edits, and which file it was.
+type ReadFile = (crate::document::Loaded, CharEdits, FileId);
 /// An open tab's planned edits: (view, (editor id, version) planned on, edits).
 type OpenEdit = (egui::Id, (u64, u64), CharEdits);
 
 /// A change waiting for its unopened files to be read (see `lsp_apply_workspace_edit`).
 struct Applying {
-    rx: std::sync::mpsc::Receiver<Result<Vec<(crate::document::Loaded, CharEdits)>, String>>,
+    rx: std::sync::mpsc::Receiver<Result<Vec<ReadFile>, String>>,
     open: Vec<OpenEdit>,
     back_to: egui::Id,
     count: usize,
@@ -961,7 +962,7 @@ impl StrataApp {
         }
         let window = self.lsp.window;
         let mut open: Vec<OpenEdit> = Vec::new();
-        let mut unread: Vec<(PathBuf, Vec<edit::TextEdit>, Stamp)> = Vec::new();
+        let mut unread: Vec<(PathBuf, Vec<edit::TextEdit>, FileId)> = Vec::new();
         for f in files.into_iter().filter(|f| !f.edits.is_empty()) {
             let at = self.docs.iter().position(|d| d.path.as_deref().is_some_and(|p| uri::normalize(p) == f.path));
             let then = asked.map(|a| a.iter().find(|(p, _)| *p == f.path).map(|(_, k)| *k));
@@ -991,10 +992,10 @@ impl StrataApp {
                     if self.link.is_open_elsewhere(&f.path) {
                         return Err(format!("{} is open in another window: rename from there, or close it there", file_name(&f.path)));
                     }
-                    if !f.path.is_file() {
+                    // The file as the server's answer found it (a stat, no read).
+                    let Some(now) = crate::document::file_id(&f.path).filter(|_| f.path.is_file()) else {
                         return Err(format!("{} doesn't exist", f.path.display()));
-                    }
-                    let now = crate::document::stamp(&f.path);
+                    };
                     unread.push((f.path, f.edits, now));
                 }
             }
@@ -1011,14 +1012,19 @@ impl StrataApp {
             let read = (|| {
                 let mut out = Vec::new();
                 for (path, edits, expected) in unread {
+                    if crate::document::file_id(&path) != Some(expected) {
+                        return Err(changed(&path));
+                    }
                     // Decoded as its tab will hold it (encoding, BOM), so offsets match.
                     let loaded = crate::document::Document::load_text(path.clone(), large).map_err(|e| format!("couldn't read {}: {e}", file_name(&path)))?;
                     let loaded = loaded.ok_or_else(|| format!("{} isn't a text file", file_name(&path)))?;
-                    if loaded.disk != expected {
+                    let char_edits = edit::to_char_edits(&loaded.buffer.snapshot(), &edits, enc, loaded.buffer.line_ending().as_str())?;
+                    // Last, right before handing back: still the bytes planned on, and the same file.
+                    let again = std::fs::read(&path).map_err(|e| format!("couldn't read {}: {e}", file_name(&path)))?;
+                    if crate::document::content_hash(&again) != loaded.hash || crate::document::file_id(&path) != Some(expected) {
                         return Err(changed(&path));
                     }
-                    let char_edits = edit::to_char_edits(&loaded.buffer.snapshot(), &edits, enc, loaded.buffer.line_ending().as_str())?;
-                    out.push((loaded, char_edits));
+                    out.push((loaded, char_edits, expected));
                 }
                 Ok(out)
             })();
@@ -1051,7 +1057,7 @@ impl StrataApp {
     /// Apply checked edits: to open tabs (unchanged since they were
     /// planned), and to files read off the UI thread (unchanged on disk and
     /// still not open), which become tabs. Nothing changes if any check fails.
-    fn lsp_finish_edit(&mut self, open: Vec<OpenEdit>, new: Vec<(crate::document::Loaded, CharEdits)>, back_to: egui::Id, count: usize) -> Result<String, String> {
+    fn lsp_finish_edit(&mut self, open: Vec<OpenEdit>, new: Vec<ReadFile>, back_to: egui::Id, count: usize) -> Result<String, String> {
         for (id, key, _) in &open {
             match self.docs.iter().find(|d| d.view.id == *id) {
                 Some(d) if (d.editor.id(), d.editor.version()) == *key => {}
@@ -1059,9 +1065,9 @@ impl StrataApp {
                 None => return Err("a file was closed meanwhile; try again".into()),
             }
         }
-        for (loaded, _) in &new {
+        for (loaded, _, id) in &new {
             let p = &loaded.path;
-            if self.docs.iter().any(|d| d.path.as_deref().is_some_and(|dp| uri::normalize(dp) == uri::normalize(p))) || self.link.is_open_elsewhere(p) || crate::document::stamp(p) != loaded.disk {
+            if self.docs.iter().any(|d| d.path.as_deref().is_some_and(|dp| uri::normalize(dp) == uri::normalize(p))) || self.link.is_open_elsewhere(p) || crate::document::file_id(p) != Some(*id) {
                 return Err(changed(p));
             }
         }
@@ -1072,7 +1078,7 @@ impl StrataApp {
             self.docs[i].editor.apply_edits(edits);
         }
         let opened = new.len();
-        for (loaded, edits) in new {
+        for (loaded, edits, _) in new {
             places += edits.len();
             self.remember_file(&loaded.path.clone());
             self.push_doc(crate::document::Document::from_loaded(loaded));
@@ -1959,6 +1965,39 @@ mod tests {
         wait(&mut app, &ctx, "the end of the rename", |a| a.lsp.applying.is_none());
         assert_eq!(text(&app), "old = 1;\n", "all or nothing: {}", app.status);
         assert!(app.status.contains("b.fake"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_same_size_rewrite_with_the_old_time_still_cancels_the_rename() {
+        let (mut app, ctx, dir) = app_with("rename-sneaky", &[("a.fake", "old = 1;\n"), ("b.fake", "use old;\n")], json!({}));
+        wait(&mut app, &ctx, "ready", |a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+        let b = dir.join("b.fake");
+        let mtime = std::fs::metadata(&b).unwrap().modified().unwrap();
+        rename(&mut app, &ctx, 1, "new");
+        wait(&mut app, &ctx, "the answer", |a| a.lsp.rename.is_none());
+        // Same length, same modification time: only the content (and the
+        // system's change time) tell.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&b, "// old ;\n").unwrap();
+        std::fs::File::options().write(true).open(&b).unwrap().set_modified(mtime).unwrap();
+        wait(&mut app, &ctx, "the end of the rename", |a| a.lsp.applying.is_none());
+        assert_eq!(text(&app), "old = 1;\n", "nothing applied: {}", app.status);
+        assert!(app.status.contains("b.fake"), "{}", app.status);
+        assert!(!app.docs.iter().any(|d| d.path.as_deref() == Some(b.as_path())));
+    }
+
+    #[test]
+    fn a_tab_opened_by_a_rename_notices_later_changes_on_disk() {
+        let (mut app, ctx, dir) = app_with("rename-later", &[("a.fake", "old = 1;\n"), ("b.fake", "use old;\n")], json!({}));
+        wait(&mut app, &ctx, "ready", |a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+        rename(&mut app, &ctx, 1, "new");
+        wait(&mut app, &ctx, "the rename", |a| a.lsp.rename.is_none() && a.lsp.applying.is_none());
+        let b = dir.join("b.fake");
+        let i = app.docs.iter().position(|d| d.path.as_deref() == Some(b.as_path())).expect("opened");
+        assert!(app.docs[i].is_dirty() && !app.docs[i].check_disk(), "unsaved, and nothing changed yet");
+        std::fs::write(&b, "// someone else's edit\nuse old;\n").unwrap();
+        assert!(!app.docs[i].check_disk(), "the unsaved rename isn't thrown away");
+        assert!(app.docs[i].conflict, "but the tab says the file changed on disk");
     }
 
     #[test]

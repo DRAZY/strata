@@ -64,6 +64,51 @@ pub struct Document {
     pub binary: Option<Box<crate::binary::BinaryView>>,
 }
 
+/// Enough of a file's metadata to tell that it was rewritten, even to the
+/// same size with its modification time put back: the system's change
+/// time (which programs can't set), and on Unix which file it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileId {
+    len: u64,
+    mtime: Option<SystemTime>,
+    change: (i64, i64),
+    node: (u64, u64),
+}
+
+pub fn file_id(path: &Path) -> Option<FileId> {
+    let m = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let (change, node) = {
+        use std::os::unix::fs::MetadataExt;
+        ((m.ctime(), m.ctime_nsec()), (m.dev(), m.ino()))
+    };
+    #[cfg(windows)]
+    let (change, node) = (windows_change_time(path)?, (0, 0));
+    #[cfg(not(any(unix, windows)))]
+    let (change, node) = ((0, 0), (0, 0));
+    Some(FileId { len: m.len(), mtime: m.modified().ok(), change, node })
+}
+
+/// The file's ChangeTime (any write or metadata change updates it).
+#[cfg(windows)]
+fn windows_change_time(path: &Path) -> Option<(i64, i64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandleEx};
+    let file = std::fs::File::open(path).ok()?;
+    // SAFETY: `info` is a plain struct of the size passed, filled by the call.
+    unsafe {
+        let mut info: FILE_BASIC_INFO = std::mem::zeroed();
+        let ok = GetFileInformationByHandleEx(file.as_raw_handle() as _, FileBasicInfo, &mut info as *mut _ as *mut core::ffi::c_void, std::mem::size_of::<FILE_BASIC_INFO>() as u32);
+        (ok != 0).then_some((info.ChangeTime, info.LastWriteTime))
+    }
+}
+
+/// SHA-256 of a file's bytes.
+pub fn content_hash(bytes: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes).into()
+}
+
 /// A text file read and decoded, not yet a tab (see `Document::load_text`).
 pub struct Loaded {
     pub path: PathBuf,
@@ -74,6 +119,8 @@ pub struct Loaded {
     large: Option<(bool, usize)>,
     /// Modification time and size before reading.
     pub disk: (Option<SystemTime>, Option<u64>),
+    /// SHA-256 of the bytes it was decoded from.
+    pub hash: [u8; 32],
 }
 
 /// Images are shrunk to fit this many pixels a side (what GPUs take).
@@ -192,7 +239,8 @@ impl Document {
         let detected = crate::encoding::detect(&bytes);
         let mut buffer = Buffer::from_str(&detected.text);
         buffer.lossy = detected.lossy;
-        Ok(Loaded { path, buffer, encoding: detected.encoding, guessed: detected.worth_mentioning(), large, disk })
+        let hash = content_hash(&bytes);
+        Ok(Loaded { path, buffer, encoding: detected.encoding, guessed: detected.worth_mentioning(), large, disk, hash })
     }
 
     /// Read and decode a text file off the UI thread, for `from_loaded`;
