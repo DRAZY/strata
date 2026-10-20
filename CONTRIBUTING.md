@@ -56,7 +56,9 @@ surrounding code instead of reformatting files.
   concrete.
 - User-facing text: sentence case, plain words, "macOS" (not "Mac OS"),
   ⌘-style shortcuts in the macOS manual and Ctrl+ elsewhere (use
-  `{{key:command_id}}` in the manual so both are filled in).
+  `{{key:command_id}}` in the manual so both are filled in). Command palette
+  names and menu items are the exception: they use title case
+  ("Terminal: Send to Terminal"), like the existing ones.
 - Never log file contents or clipboard text; paths and errors only.
 - Strata makes no network connections except the opt-in update check. Don't
   add any without discussing it in an issue first.
