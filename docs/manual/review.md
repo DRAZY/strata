@@ -2,7 +2,7 @@
 
 Review Changes is for checking what a coding agent (Claude Code, Codex, Aider or any other tool) changed in your project, and keeping or undoing each change. The agent runs wherever you like, often in Strata's own [terminal](terminal.md). Strata doesn't use AI for this: it compares your files with Git and shows the differences.
 
-It works in a folder that is a Git repository.
+It works in a folder that is a Git repository, and reads it the same way [Git Integration](git.md) does.
 
 ## The Changes list
 
@@ -68,7 +68,7 @@ Keeping a change accepts it: it stops showing in the review tab and the file's c
 
 ## Marking files as reviewed
 
-Tick the box next to a file, or use Mark Reviewed in the review tab, to set it aside. Reviewed files collapse into a **Reviewed** section at the bottom of the list, and the status bar counts the files still to review ("3 to review"; click it to show the list). If the file changes again afterwards (the agent edits it once more), it comes back to the list. Saving it yourself doesn't untick it.
+Tick the box next to a file, or click **Mark Reviewed** in the review tab ({{key:review_mark_reviewed}}), to set it aside. Reviewed files collapse into a **Reviewed** section at the bottom of the list, and the status bar counts the files still to review ("3 to review"; click it to show the list). If the file changes again afterwards (the agent edits it once more), it comes back to the list. Saving it yourself doesn't untick it.
 
 ## Good to know
 

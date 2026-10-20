@@ -71,8 +71,10 @@ The work happens in the background and never makes the editor wait. Strata compa
 
 Strata never asks for passwords and doesn't contact remote servers; it only reads your local repository (Copy Permalink reads the remote's address from it).
 
-## What isn't supported
+## Review Changes
 
-To go through everything that changed since the last commit (or since you started a review), file by file, and keep or revert each change, see [Review Changes](review.md).
+To go through everything that changed since the last commit (or since you started a review), file by file, and keep or revert each change, see [Review Changes](review.md). It's made for checking what a coding agent did.
+
+## What isn't supported
 
 Strata doesn't have its own Git interface. To commit, stage, switch branches, pull, push, view history or blame, or discard changes, use Git in the [terminal](terminal.md) or another Git tool. The side bar doesn't color files by their Git status.

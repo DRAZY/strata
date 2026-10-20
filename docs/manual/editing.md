@@ -94,7 +94,7 @@ When you type `(`, `[`, `{`, `"`, `'` or a backtick, Strata adds the closing cha
 
 ## Word completion
 
-As you type a word, Strata shows a list of matching words from the current file, nearest first. Snippets whose trigger matches what you typed appear in the same list, labelled with their description and a ⇥ sign. See [Snippets](snippets.md).
+As you type a word, Strata shows a list of matching words from the current file, nearest first. Snippets whose trigger matches what you typed appear in the same list, labelled with their description and a ⇥ sign. See [Snippets](snippets.md). When a [language server](languages.md#language-servers) runs for the file, its suggestions come first.
 
 - The list appears once you've typed two letters of a word.
 - Use the Up and Down arrows to choose, then Enter or Tab to insert. Esc closes the list. You can also click an entry.

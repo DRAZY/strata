@@ -136,6 +136,8 @@ Relative paths are looked for in the shell's current folder (it follows `cd` on 
 
 While a program is using the mouse (see [Programs that use the mouse](#programs-that-use-the-mouse)), clicks go to the program; hold Shift as well to open a location.
 
+Output from Tools ▸ Build goes to the build results panel instead, where errors are links without holding a key and {{key:next_result}} steps through them; see [Build Systems](build.md#jumping-to-errors). To go through what a coding agent running in the terminal changed, see [Review Changes](review.md).
+
 ## Sending text to the terminal
 
 Send to Terminal ({{key:send_to_terminal}}, Tools ▸ Send to Terminal, or "Terminal: Send to Terminal" in the palette) sends the selected text to the current terminal tab and presses Enter, which is handy for trying code in a REPL such as `python3` or `node`, or for running a command written in a file. With nothing selected, it sends the line the cursor is on, then you can move down and send the next one. If no terminal is running, it starts one first and sends the text once the shell's prompt is ready (at most 10 seconds later), so slow startup files don't swallow it.

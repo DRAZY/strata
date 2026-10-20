@@ -1,8 +1,8 @@
 # Roadmap
 
-What Strata 1.0 is, and what comes after it. The user manual (Help ▸
-Documentation, sources in [`manual/`](manual/)) describes everything that's
-in the app today.
+What Strata 1.0 is, what's on `main` for the next release, and what comes
+after that. The user manual (Help ▸ Documentation, sources in
+[`manual/`](manual/)) describes everything that's in the app today.
 
 ## In 1.0
 
@@ -29,12 +29,38 @@ in the app today.
   Windows on x64.
 - **Updates**: opt-in, signed in-app updates from GitHub Releases.
 
-## After 1.0
+## Next release (on `main`)
 
-These are planned, in no particular order. None of them is in 1.0.
+These are finished and merged, and will ship together in the next release.
+They aren't in 1.0.x.
 
-- **Language servers (LSP)**: completions, diagnostics, hover, rename and
-  go-to across files from the language's own server.
+- **Terminal links**: ⌘-click (Ctrl+click) a file location in the terminal's
+  output, such as a compiler error, a panic or a stack trace, to open the
+  file at that line and column. **Send to Terminal** sends the selection or
+  the current line to the shell or REPL.
+- **Review Changes**: the side bar's Changes tab lists every file that
+  differs from the last commit (or from a snapshot taken with Start Review),
+  and each file opens side by side with Keep and Revert for every change, for
+  checking what a coding agent did. No AI is involved.
+- **Language servers (LSP)**: problems, completions, hover information, Go to
+  Definition and Reference, rename across files, formatting and parameter
+  hints from the language's own server (rust-analyzer,
+  typescript-language-server, pyright, gopls, clangd, or any other set in
+  `lsp_servers`). Servers start only in project folders you trust, and Strata
+  never downloads them.
+
+## In progress
+
+Being worked on, but not finished or merged yet. What they include may change
+before they ship.
+
+- **Notes mode.**
+- **Optional AI helpers** ([#10](https://github.com/DRAZY/strata/issues/10)).
+
+## After that
+
+These are planned, in no particular order.
+
 - **Plugins**: an extension API and a way to install packages.
 - **Vim mode**: modal editing (normal, insert and visual modes, motions,
   operators and registers).

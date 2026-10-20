@@ -8,17 +8,26 @@ All notable changes to Strata are recorded here. The format follows
 
 ### Added
 
-- Terminal: ⌘-click (Ctrl+click on Windows and Linux) a file location in the
-  output to open the file at that line and column. Hold the key and point to
-  see the location underlined. Works with `path:line:col`, `path(line,col)`
-  (MSVC, C#, TypeScript), Rust errors and panics, Python tracebacks and Node
-  stack traces, including locations that wrap onto the next row. Relative
-  paths are found in the shell's current folder, then the side bar folders;
-  only files that exist are links.
-- **Send to Terminal** (Tools menu; ⌃↩ on macOS, Ctrl+Alt+Enter elsewhere)
-  sends the selection, or the current line, to the terminal and presses
-  Enter, starting a terminal if none is running. Multi-line text goes as one
-  bracketed paste when the shell or REPL supports it.
+- Language servers. When a language's server is installed (rust-analyzer,
+  typescript-language-server, pyright, gopls or clangd), Strata starts it in
+  the background and shows its problems as wavy underlines with a dot in the
+  gutter, puts its suggestions first in the completion list, and shows type
+  and documentation when the mouse pointer rests on a name. The status bar
+  shows the server for the current file and its error and warning counts; a
+  server that stops is restarted after a pause. Strata never downloads or
+  installs servers. See Languages and Syntaxes ▸ Language servers in the
+  manual.
+- Language server commands, in Tools ▸ Language Server and the command
+  palette: **LSP: Rename Symbol…** (across files, one Undo step per file),
+  **LSP: Format Document**, **LSP: Show Hover Info**, **LSP: Show Parameter
+  Hints**, **LSP: Show Problems…**, **LSP: Next Problem** / **Previous
+  Problem** (⌘K ⌘N / ⌘K ⌘P; Ctrl+K Ctrl+N / Ctrl+K Ctrl+P elsewhere) and
+  **LSP: Restart Language Servers**.
+- Language servers start only in project folders you trust. The first time,
+  Strata asks (**Start**, **Always for This Folder**, **Not Now**);
+  `lsp_trust_all` skips the question. `lsp_servers` in settings.json changes
+  the built-in servers or adds others, and `lsp_enabled` turns the feature
+  off.
 - Review Changes, for checking what a coding agent changed and keeping or
   undoing each change (no AI involved). The **Changes** tab of the side bar
   lists every file that differs from the last commit, or from a snapshot taken
@@ -30,24 +39,29 @@ All notable changes to Strata are recorded here. The format follows
   status bar counts the rest. F8 and Shift+F8 step through the changes across
   files, and the Review commands are in Tools ▸ Review Changes and the command
   palette. See the new Review Changes page in the manual.
-- Language servers. When a language's server is installed (rust-analyzer,
-  typescript-language-server, pyright, gopls or clangd), Strata starts it in
-  the background and shows its problems as wavy underlines with a dot in the
-  gutter, puts its suggestions first in the completion list, shows type and
-  documentation when the mouse pointer rests on a name, and uses it for Go to
-  Definition and Go to Reference. New commands: **LSP: Rename Symbol…**
-  (across files, one Undo step per file), **LSP: Format Document**, **LSP:
-  Show Hover Info**, **LSP: Show Parameter Hints**, **LSP: Show Problems…**,
-  **LSP: Next Problem** / **Previous Problem** (⌘K ⌘N / ⌘K ⌘P; Ctrl+K Ctrl+N
-  / Ctrl+K Ctrl+P elsewhere) and **LSP: Restart Language Servers**, also in
-  Tools ▸ Language Server. The status bar shows the server for the current
-  file and its error and warning counts. A server that stops is restarted
-  after a pause. Servers start only in project folders you trust: the first
-  time, Strata asks (Start, Always for This Folder, Not Now), and
-  `lsp_trust_all` skips the question. Strata never downloads or installs
-  servers. `lsp_servers` in settings.json changes the built-in servers or adds
-  others, and `lsp_enabled` turns the feature off. See Languages and Syntaxes
-  ▸ Language servers in the manual.
+- Terminal: ⌘-click (Ctrl+click on Windows and Linux) a file location in the
+  output to open the file at that line and column. Hold the key and point to
+  see the location underlined. Works with `path:line:col`, `path(line,col)`
+  (MSVC, C#, TypeScript), Rust errors and panics, Python tracebacks and Node
+  stack traces, including locations that wrap onto the next row. Relative
+  paths are found in the shell's current folder, then the side bar folders;
+  only files that exist are links.
+- **Send to Terminal** (Tools menu; ⌃↩ on macOS, Ctrl+Alt+Enter elsewhere)
+  sends the selection, or the current line, to the terminal and presses
+  Enter, starting a terminal if none is running. Multi-line text goes as one
+  bracketed paste when the shell or REPL supports it.
+
+### Changed
+
+- Go to Definition and Go to Reference ask the file's language server first,
+  across the whole project, and fall back to Strata's own symbol search when
+  there's no server or it has no answer.
+- The completion list stays inside the window; long details are cut with "…".
+
+### Fixed
+
+- Compare: Japanese, Chinese and Korean text loads the same fonts as the
+  editor, so Compare tabs no longer show boxes in place of those characters.
 
 ## [1.0.2] - 2026-10-15
 

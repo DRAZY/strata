@@ -9,12 +9,12 @@ It opens in a blink, stays smooth on files of hundreds of megabytes, and gives y
 | Area | What you get |
 |---|---|
 | Editing | [Multiple cursors](editing.md#multiple-cursors) and box selection, smart indentation, auto-closing brackets, word completion, code folding, macros, bookmarks, case conversion and line sorting. |
-| Navigation | [Goto Anything](find.md#goto-anything) for files, lines and symbols, the [command palette](find.md#command-palette), Go to Definition, and jumping back and forward. |
+| Navigation | [Goto Anything](find.md#goto-anything) for files, lines and symbols, the [command palette](find.md#command-palette), [Go to Definition](find.md#go-to-definition) and Go to Reference, and jumping back and forward. |
 | Search | A find bar with regular expressions and In Selection, plus [Find in Files and Replace in Files](find.md#find-in-files) across whole folders, with undo. |
 | Layout | [Tabs, split panes and multiple windows](panes.md), several views of one file, and a distraction-free mode. |
 | Projects | A [side bar](projects.md) with one or more folders, and project files that remember your folders and layout. |
-| Built-in tools | A [terminal](terminal.md), [build systems](build.md) with clickable errors, a live [Markdown preview](markdown.md), and [file comparison](compare.md). |
-| Languages | Syntax highlighting for about 190 [languages](languages.md) and file formats, with symbols and smart indentation for many of them. |
+| Built-in tools | A [terminal](terminal.md) with clickable file locations and Send to Terminal, [build systems](build.md) with clickable errors, a live [Markdown preview](markdown.md), and [file comparison](compare.md). |
+| Languages | Syntax highlighting for about 190 [languages](languages.md) and file formats, with symbols and smart indentation for many of them. [Language servers](languages.md#language-servers), when installed, add problems, completions, hover information, rename and formatting. |
 | Look and feel | 35 [color schemes](appearance.md#color-schemes) that can follow your system's light or dark mode, bundled coding fonts, a minimap, and an [interface size](appearance.md#interface-size) of its own (View ▸ Interface Size) for easier reading. |
 | Writing | [Spell check](editing.md#spell-check) for comments, strings and prose, with US and UK English dictionaries built in. |
 | Git | [Change bars](git.md) in the gutter for lines changed since the last commit, the current branch in the status bar, Compare with HEAD, and [Review Changes](review.md) for keeping or reverting what a coding agent changed. |
@@ -25,7 +25,7 @@ It opens in a blink, stays smooth on files of hundreds of megabytes, and gives y
 
 - **Fast.** Strata starts quickly, types without lag, and keeps big and minified files responsive by only doing work for what's on screen.
 - **Keyboard first.** Every command is in the command palette and can have a shortcut. The mouse works everywhere too, but you never need it.
-- **Local and private.** Strata has no accounts and no telemetry. The only time it goes online by itself is to check GitHub for a new version, and only if you allow it (or when you choose **Check for Updates…**); it sends nothing else. See [Updates](#updates). Links you click open in your browser. Logs and crash reports stay on your computer, and Strata never sends them anywhere; see [Report a problem](troubleshooting.md#report-a-problem).
+- **Local and private.** Strata has no accounts and no telemetry. The only time it goes online by itself is to check GitHub for a new version, and only if you allow it (or when you choose **Check for Updates…**); it sends nothing else. See [Updates](#updates). Links you click open in your browser. Logs and crash reports stay on your computer, and Strata never sends them anywhere; see [Report a problem](troubleshooting.md#report-a-problem). Language servers run on your computer, and Strata never downloads them.
 - **Yours to shape.** Settings, key bindings, snippets, syntaxes, color schemes and build systems are all plain files you can edit, copy and share.
 
 Snippets, syntaxes and color schemes use widely shared file formats (`.sublime-snippet`, `.sublime-syntax`, `.tmTheme` and `.sublime-color-scheme`), so existing collections work unchanged.
@@ -79,11 +79,11 @@ Strata is built on open-source projects, and it ships fonts, color schemes and s
 
 - **Keyboard only.** Everything can be done without a mouse: every command is in the [command palette](find.md#command-palette) and can have a shortcut ([Customizing Key Bindings](keybindings.md)), and there are commands to move between panes, tabs, the side bar and the panels.
 - **High contrast.** The High Contrast Dark and High Contrast Light [color schemes](appearance.md#color-schemes) are included, and every bundled scheme is checked for WCAG AA contrast. Text size can be changed for the editor and for the interface separately.
-- **Screen readers** can't read the editor area yet. Screen reader support is planned for after 1.0.
+- **Screen readers** can't read the editor area yet. Screen reader support is planned.
 
-## Not in 1.0
+## Not in Strata yet
 
-These are planned for after 1.0: language servers (LSP), plugins, a Vim mode, official Linux support, opt-in automatic updates, and screen reader support in the editor.
+These are planned: plugins, a Vim mode, official Linux support, and screen reader support in the editor.
 
 ## Getting help
 
