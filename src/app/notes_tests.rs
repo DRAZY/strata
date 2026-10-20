@@ -356,6 +356,18 @@ fn undo_rename_changes_nothing_when_the_old_name_is_taken_again() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// Draw frames until the link update is shown, with its links found (in
+/// the background: as long as that takes).
+fn links_shown(app: &mut StrataApp, ctx: &Context) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !matches!(&app.notes.dialog, Some(super::notes_panel::Dialog::Links(p)) if !p.waiting) {
+        assert!(std::time::Instant::now() < deadline, "the link update was never shown");
+        app.notes.index.wait();
+        frame(app, ctx, vec![]);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// Rename Old.md to New.md in `app` and accept the link update.
 fn rename_and_update(app: &mut StrataApp, ctx: &Context, dir: &Path) {
     let old = dir.join("Old.md");
@@ -363,11 +375,7 @@ fn rename_and_update(app: &mut StrataApp, ctx: &Context, dir: &Path) {
         app.open_path(old.clone(), false);
     }
     assert!(app.rename_note(&old, "New").is_ok());
-    for _ in 0..6 {
-        app.notes.index.wait();
-        frame(app, ctx, vec![]);
-    }
-    assert!(matches!(&app.notes.dialog, Some(super::notes_panel::Dialog::Links(p)) if !p.waiting), "the update is shown");
+    links_shown(app, ctx);
     frame(app, ctx, vec![press(Key::Enter, Modifiers::NONE)]);
     app.notes.disk.wait_until_done();
     frame(app, ctx, vec![]);
@@ -690,11 +698,8 @@ fn sidebar_rename_offers_the_same_link_update() {
     frame(&mut app, &ctx, vec![]);
     frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
     assert!(dir.join("Renamed.md").exists());
-    for _ in 0..4 {
-        app.notes.index.wait();
-        frame(&mut app, &ctx, vec![]);
-    }
-    assert!(matches!(&app.notes.dialog, Some(super::notes_panel::Dialog::Links(p)) if !p.waiting && p.files.len() == 1));
+    links_shown(&mut app, &ctx);
+    assert!(matches!(&app.notes.dialog, Some(super::notes_panel::Dialog::Links(p)) if p.files.len() == 1));
     // Don't Update leaves the link alone.
     frame(&mut app, &ctx, vec![press(Key::Escape, Modifiers::NONE)]);
     assert!(app.notes.dialog.is_none());
