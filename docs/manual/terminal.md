@@ -116,6 +116,32 @@ Programs can also put text on the clipboard with the standard terminal escape se
 
 Reading the clipboard the same way is blocked by default, because any program, or a file you print with `cat`, could otherwise read what you copied, such as a password. When a program tries, the status bar says Strata blocked it. To allow it, set `"terminal_allow_clipboard_read": true` in your settings.
 
+## Opening files from the output
+
+Hold ⌘ (Ctrl on Windows and Linux) and point at a file location in the output, such as an error from a compiler or a line of a stack trace. Strata underlines it; click to open the file at that line and column.
+
+Strata recognizes these forms:
+
+| Form | Example |
+|---|---|
+| Path, line and column | `src/main.rs:42:7`, `./lib/a.py:10`, `/home/me/x.go:3: undefined` |
+| Path with line and column in parentheses (MSVC, C#, TypeScript) | `C:\proj\x.cs(12,5)`, `src/a.ts(3,5)`, `main.cpp(7)` |
+| Rust errors and panics | `--> src/lib.rs:12:9`, `panicked at src/main.rs:3:5:` |
+| Python tracebacks | `File "tool.py", line 10, in <module>` |
+| Node stack traces | `at main (/home/me/x.js:3:7)` |
+
+A location that a long line wrapped onto the next row still works, wherever you point at it.
+
+Relative paths are looked for in the shell's current folder (it follows `cd` on macOS and Linux; on Windows, the folder the terminal started in), then in the folder the terminal started in, then in the side bar folders. Only files that exist are links, so times like `12:30:45` and files that were deleted aren't underlined. Paths with spaces are recognized only in Python tracebacks, which put them in quotes.
+
+While a program is using the mouse (see [Programs that use the mouse](#programs-that-use-the-mouse)), clicks go to the program; hold Shift as well to open a location.
+
+## Sending text to the terminal
+
+Send to Terminal ({{key:send_to_terminal}}, Tools ▸ Send to Terminal, or "Terminal: Send to Terminal" in the palette) sends the selected text to the current terminal tab and presses Enter, which is handy for trying code in a REPL such as `python3` or `node`, or for running a command written in a file. With nothing selected, it sends the line the cursor is on, then you can move down and send the next one. If no terminal is running, it starts one first.
+
+The editor keeps the keyboard, so you can go on editing and sending. Selected text that spans several lines is sent as one paste: shells and REPLs that support bracketed paste (zsh, recent bash, fish, Python 3.13 and others) receive the whole block before running it, while others run it one line at a time. With several selections, their text is sent one after another, each on its own line. When the last line sent is indented, such as the body of a Python `for` loop, Strata presses Enter a second time so the REPL runs the block instead of waiting at `...`; a shell just shows another prompt.
+
 ## Right-click menu
 
 Right-click inside the terminal for the menu below (Shift+right-click while a program is using the mouse):

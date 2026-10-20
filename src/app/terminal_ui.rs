@@ -1,8 +1,25 @@
-//! The app's side of the terminal panel: toggling, new tabs, layout, and
-//! which window shortcuts still work while a shell has the keyboard.
+//! The app's side of the terminal panel: toggling, new tabs, layout, Send to
+//! Terminal, opening clicked file locations, and which window shortcuts
+//! still work while a shell has the keyboard.
 
 use super::StrataApp;
+use crate::editor::Editor;
 use crate::terminal::{self, PanelAction};
+
+/// What Send to Terminal sends: the selected text (several selections one
+/// after another, each on its own line), or with nothing selected the lines
+/// the cursors are on.
+pub(super) fn send_text(e: &Editor) -> String {
+    let b = &e.buffer;
+    let sels = e.selections();
+    if sels.iter().any(|s| !s.is_empty()) {
+        return sels.iter().filter(|s| !s.is_empty()).map(|s| b.slice(s.start()..s.end())).collect::<Vec<_>>().join("\n");
+    }
+    let mut lines: Vec<usize> = sels.iter().map(|s| b.line_of(s.head)).collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines.into_iter().map(|l| b.line_text(l)).collect::<Vec<_>>().join("\n")
+}
 
 impl StrataApp {
     fn terminal_dir(&self) -> std::path::PathBuf {
@@ -31,6 +48,25 @@ impl StrataApp {
                 log::warn!("couldn't start a terminal in {}: {e}", dir.display());
                 self.status = e;
             }
+        }
+    }
+
+    /// Send the selection (or the current line) to the active terminal,
+    /// starting one if there is none. The editor keeps the keyboard, so you
+    /// can go on sending lines to a REPL.
+    pub(super) fn send_to_terminal(&mut self, ctx: &egui::Context) {
+        let text = send_text(&self.docs[self.active].editor);
+        if self.terminal.tabs.is_empty() {
+            let dir = self.terminal_dir();
+            if let Err(e) = self.terminal.open(ctx, &dir) {
+                log::warn!("couldn't start a terminal in {}: {e}", dir.display());
+                self.status = e;
+                return;
+            }
+        }
+        self.set_terminal_visible(true);
+        if let Some(t) = self.terminal.active_terminal_mut() {
+            t.send(&text);
         }
     }
 
@@ -68,6 +104,7 @@ impl StrataApp {
         }
         self.terminal.clipboard = crate::terminal::Clipboard { read: self.settings.terminal_allow_clipboard_read, write: self.settings.terminal_allow_clipboard_write };
         self.terminal.option_as_meta = self.settings.terminal_option_as_meta;
+        self.terminal.roots.clone_from(&self.sidebar.roots);
         let all_exited = self.terminal.poll(&ctx);
         let clip = std::mem::take(&mut self.terminal.clipboard_use);
         if clip.read_blocked {
@@ -101,6 +138,7 @@ impl StrataApp {
                 self.doc().view.focus();
             }
             Some(PanelAction::NewTab) => self.new_terminal(&ctx),
+            Some(PanelAction::Open(path, line, col)) => self.open_at(path, line, col..col),
             None => {}
         }
         // Remember the height once a resize drag ends.
@@ -234,11 +272,15 @@ mod tests {
         let file = std::env::temp_dir().join("strata-terminal-shot.txt");
         let body: String = (1..=60).map(|i| format!("line {i}\tcol\t中文 {i}\n")).collect();
         std::fs::write(&file, body).unwrap();
+        let src = std::env::temp_dir().join("strata-shot-src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
         let scenes = [
             ("tabs", "printf 'A\\tB 中文\\nname\\tsize\\tdate\\nab\\tc\\td\\n中文\\tX\\tY\\n|1234567|1234567|1234567|\\n\\033[4mun\\tder\\033[0m|\\n'; ls -l / | head -4; echo DONE; sleep 30".to_owned(), "DONE"),
             ("emoji", "printf 'thumbs 👍🏽 |\\nfamily 👨\\342\\200\\215👩\\342\\200\\215👧 |\\nkeycap 1\\357\\270\\217\\342\\203\\243 |\\ncafe\\314\\201 |\\nheart ❤\\357\\270\\217 |\\nok 👍 |\\n'; echo DONE; sleep 30".to_owned(), "DONE"),
             ("less", format!("less {}; sleep 30", file.display()), "line 5"),
             ("ime", "printf 'typing: '; sleep 30".to_owned(), "typing"),
+            ("link", "printf 'error[E0425]: cannot find value `y` in this scope\\n  --> strata-shot-src/main.rs:2:5\\n   |\\n2  |     y\\n   |     ^ not found\\n\\nthread main panicked at strata-shot-src/main.rs:10:3:\\n'; echo DONE; sleep 30".to_owned(), "DONE"),
         ];
         for (name, cmd, marker) in scenes {
             let ctx = egui::Context::default();
@@ -258,9 +300,256 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(300));
             // An input method composing Chinese at the cursor.
-            let events = if name == "ime" { vec![Event::Ime(egui::ImeEvent::Preedit { text: "ni hao 你好".into(), active_range_chars: None })] } else { vec![] };
+            let events = match name {
+                "ime" => vec![Event::Ime(egui::ImeEvent::Preedit { text: "ni hao 你好".into(), active_range_chars: None })],
+                // ⌘ (Ctrl) held over the rustc location underlines it.
+                "link" => vec![Event::ModifiersChanged(link_mods()), Event::PointerMoved(screen_pos(&app, "main.rs:2:5", 2))],
+                _ => vec![],
+            };
             sh.shoot(&ctx, &mut app, 3, events, &dir.join(format!("term_{name}.ppm")));
         }
+    }
+
+    #[test]
+    fn send_text_is_the_selection_or_the_current_line() {
+        use crate::buffer::Buffer;
+        let mut e = Editor::new(Buffer::from_str("print(1)\nx = 2\n\nfor i in y:\n    f(i)\n"));
+        e.select_ranges(&[11..11], 0);
+        assert_eq!(send_text(&e), "x = 2", "no selection: the cursor's line, without its line break");
+        e.select_ranges(&[0..3], 0);
+        assert_eq!(send_text(&e), "pri");
+        e.select_ranges(&[16..37], 0);
+        assert_eq!(send_text(&e), "for i in y:\n    f(i)\n", "several lines, as selected");
+        e.select_ranges(&[15..15], 0);
+        assert_eq!(send_text(&e), "", "an empty line sends just Enter");
+        e.select_ranges(&[0..0, 1..1, 9..9], 0);
+        assert_eq!(send_text(&e), "print(1)\nx = 2", "each cursor's line once");
+        e.select_ranges(&[0..5, 7..7, 9..10], 0);
+        assert_eq!(send_text(&e), "print\nx", "selected text wins over empty cursors");
+    }
+
+    /// The link modifier held: ⌘ on macOS, Ctrl elsewhere.
+    fn link_mods() -> Modifiers {
+        if crate::keys::MAC { Modifiers::MAC_CMD | Modifiers::COMMAND } else { Modifiers::CTRL | Modifiers::COMMAND }
+    }
+
+    /// Where `needle` is drawn on the screen (the middle of its `nth` character).
+    fn screen_pos(app: &StrataApp, needle: &str, nth: usize) -> Pos2 {
+        let t = app.terminal.active_terminal().unwrap();
+        let screen = t.screen_text();
+        let (row, col) = screen.lines().enumerate().find_map(|(r, l)| l.find(needle).map(|c| (r, c))).unwrap_or_else(|| panic!("{needle} not on screen: {screen}"));
+        let body = app.terminal.body.as_ref().unwrap().rect;
+        let (cw, ch) = t.cell_size();
+        body.min + vec2(6.0 + (col + nth) as f32 * cw + 0.5 * cw, 4.0 + (row as f32 + 0.5) * ch)
+    }
+
+    /// Hover `p` with the modifier held, then click there.
+    fn link_click(app: &mut StrataApp, ctx: &egui::Context, p: Pos2) {
+        let m = link_mods();
+        frame_held(app, ctx, vec![Event::PointerMoved(p)], m);
+        let button = |pressed| Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: m };
+        frame_held(app, ctx, vec![button(true)], m);
+        frame_held(app, ctx, vec![button(false)], m);
+        frame(app, ctx, vec![]);
+    }
+
+    #[test]
+    fn modifier_click_opens_file_locations() {
+        let dir = std::env::temp_dir().join(format!("strata-term-click-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let rust: String = (1..=30).map(|i| format!("// line {i}\n")).collect();
+        std::fs::write(dir.join("src/main.rs"), &rust).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), &rust).unwrap();
+        std::fs::write(dir.join("tool.py"), "import sys\n\n\ndef f():\n    raise ValueError()\n").unwrap();
+        // Last, a panic padded so its location wraps after "src/lib" (once the
+        // panel has given the terminal its width).
+        let script = "stty -echo; echo READY; printf 'src/main.rs:10:3\\n'; printf 'error[E0425]: nope\\n  --> src/lib.rs:7:5\\n'; \
+             printf 'Traceback (most recent call last):\\n  File \"tool.py\", line 5, in <module>\\n'; \
+             printf 'missing.rs:3:1\\n'; sleep 1; cols=$(stty size | cut -d' ' -f2); \
+             printf \"%$((cols - 20))s\" '' | tr ' ' x; printf ' panicked at src/lib.rs:21:9:\\n'; echo DONE; sleep 30"
+            .to_owned();
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(Some(dir.clone()), None);
+        frame(&mut app, &ctx, vec![]);
+        let shell = ("/bin/sh".to_owned(), vec!["-c".to_owned(), script]);
+        app.terminal.tabs.push(crate::terminal::Terminal::spawn(Some(ctx.clone()), &dir, Some(shell), 80, 12).unwrap());
+        app.terminal.visible = true;
+        wait_for(&mut app, &ctx, "DONE");
+
+        // Hovering without the modifier underlines nothing.
+        let p = screen_pos(&app, "src/main.rs:10:3", 2);
+        frame(&mut app, &ctx, vec![Event::PointerMoved(p)]);
+        assert!(app.terminal.active_terminal().unwrap().hovered_link().is_none());
+        assert!(app.terminal.active_terminal().unwrap().link_lookup_is_empty(), "no disk work without the modifier");
+        // With it, the whole location is underlined.
+        frame_held(&mut app, &ctx, vec![Event::PointerMoved(p)], link_mods());
+        let (path, line, col, rows) = app.terminal.active_terminal().unwrap().hovered_link().expect("a link under the pointer");
+        assert_eq!((path, line, col), (dir.join("src/main.rs").as_path(), 9, 2));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].2 - rows[0].1, "src/main.rs:10:3".len());
+
+        let opened = |app: &mut StrataApp| {
+            let d = app.doc();
+            (d.path.clone().unwrap(), d.editor.cursor_line_col())
+        };
+        link_click(&mut app, &ctx, p);
+        assert_eq!(opened(&mut app), (dir.join("src/main.rs"), (10, 3)), "path:line:col");
+        frame(&mut app, &ctx, vec![]);
+        assert!(app.docs[app.active].view.has_focus(&ctx), "the opened file gets the keyboard");
+
+        let p = screen_pos(&app, "src/lib.rs:7:5", 0);
+        link_click(&mut app, &ctx, p);
+        assert_eq!(opened(&mut app), (dir.join("src/lib.rs"), (7, 5)), "rustc's --> line");
+
+        let p = screen_pos(&app, "tool.py", 1);
+        link_click(&mut app, &ctx, p);
+        assert_eq!(opened(&mut app), (dir.join("tool.py"), (5, 1)), "a Python traceback");
+
+        // The wrapped panic location, clicked on its second row.
+        let p = screen_pos(&app, ":21:9:", 1);
+        frame_held(&mut app, &ctx, vec![Event::PointerMoved(p)], link_mods());
+        let rows = app.terminal.active_terminal().unwrap().hovered_link().expect("wrapped link").3.to_vec();
+        assert_eq!(rows.len(), 2, "underlined on both rows: {rows:?}");
+        link_click(&mut app, &ctx, p);
+        assert_eq!(opened(&mut app), (dir.join("src/lib.rs"), (21, 9)), "a location wrapped across rows");
+
+        // A file that doesn't exist isn't a link, and clicking it opens nothing.
+        let tabs = app.docs.len();
+        let p = screen_pos(&app, "missing.rs:3:1", 1);
+        frame_held(&mut app, &ctx, vec![Event::PointerMoved(p)], link_mods());
+        assert!(app.terminal.active_terminal().unwrap().hovered_link().is_none());
+        link_click(&mut app, &ctx, p);
+        assert_eq!(app.docs.len(), tabs);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn send_to_terminal_brackets_the_paste_when_asked() {
+        // The program turns on bracketed paste, so the text arrives marked, then Enter.
+        let (ctx, mut app) = shell_app("printf '\\033[?2004h'; cat -v");
+        let file = std::env::temp_dir().join(format!("strata-send-{}.txt", std::process::id()));
+        std::fs::write(&file, "a\nb\n").unwrap();
+        app.open_path(file.clone(), false);
+        app.doc().editor.select_ranges(&[0..4], 0);
+        app.run(&ctx, Cmd::SendToTerminal);
+        let screen = wait_for(&mut app, &ctx, "b^[[201~");
+        assert!(screen.contains("^[[200~a\nb^[[201~\n"), "{screen}");
+        std::fs::remove_file(file).ok();
+    }
+
+    #[test]
+    fn send_to_terminal_runs_lines_in_a_real_shell() {
+        // zsh's line editor turns on bracketed paste; plain sh doesn't, so its
+        // lines are typed one by one. Either way each line runs.
+        let shell = if std::path::Path::new("/bin/zsh").exists() { ("/bin/zsh".to_owned(), vec!["-f".to_owned()]) } else { ("/bin/sh".to_owned(), vec![]) };
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(None, None);
+        frame(&mut app, &ctx, vec![]);
+        let file = std::env::temp_dir().join(format!("strata-send-shell-{}.sh", std::process::id()));
+        std::fs::write(&file, "echo $((6*7))\necho one-$((1))\necho two-$((1+1))\n\necho $((2+3))X\n").unwrap();
+        app.open_path(file.clone(), false);
+        app.terminal.tabs.push(crate::terminal::Terminal::spawn(Some(ctx.clone()), &std::env::temp_dir(), Some(shell), 80, 20).unwrap());
+        app.terminal.visible = true;
+        let row = |screen: &str, text: &str| screen.lines().position(|l| l.trim() == text);
+        // With nothing selected, the cursor's line; sent twice at once, while
+        // the shell may still be starting, and run in order.
+        app.doc().editor.select_ranges(&[0..0], 0);
+        app.run(&ctx, Cmd::SendToTerminal);
+        app.doc().editor.select_ranges(&[56..56], 0);
+        app.run(&ctx, Cmd::SendToTerminal);
+        let screen = wait_for(&mut app, &ctx, "5X");
+        assert!(row(&screen, "42").is_some() && row(&screen, "42") < row(&screen, "5X"), "{screen}");
+        // Two lines selected.
+        app.doc().editor.select_ranges(&[14..48], 0);
+        app.run(&ctx, Cmd::SendToTerminal);
+        let screen = wait_for(&mut app, &ctx, "two-2");
+        assert!(row(&screen, "one-1").is_some() && row(&screen, "two-2").is_some(), "{screen}");
+        assert!(!app.terminal.has_focus(&ctx), "the editor keeps the keyboard");
+        std::fs::remove_file(file).ok();
+    }
+
+    /// Whether `python3` can be run.
+    fn have_python() -> bool {
+        std::process::Command::new("python3").args(["-c", ""]).status().is_ok_and(|s| s.success())
+    }
+
+    #[test]
+    fn send_to_terminal_closes_an_open_python_block() {
+        if !have_python() {
+            return;
+        }
+        let file = std::env::temp_dir().join(format!("strata-send-py-{}.py", std::process::id()));
+        std::fs::write(&file, "for i in range(2):\n    print(i * 7)\n").unwrap();
+        // The new REPL (bracketed paste) and the basic one (lines typed one by one).
+        for basic in [false, true] {
+            let env = if basic { "PYTHON_BASIC_REPL=1 " } else { "" };
+            let shell = ("/bin/sh".to_owned(), vec!["-c".to_owned(), format!("{env}exec python3 -q")]);
+            let ctx = egui::Context::default();
+            let mut app = StrataApp::new(None, None);
+            frame(&mut app, &ctx, vec![]);
+            app.open_path(file.clone(), false);
+            app.terminal.tabs.push(crate::terminal::Terminal::spawn(Some(ctx.clone()), &std::env::temp_dir(), Some(shell), 80, 20).unwrap());
+            app.terminal.visible = true;
+            wait_for(&mut app, &ctx, ">>>");
+            app.doc().editor.select_all();
+            app.run(&ctx, Cmd::SendToTerminal);
+            let screen = wait_for(&mut app, &ctx, "\n7\n");
+            let lines: Vec<&str> = screen.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+            assert!(lines.contains(&"0") && lines.contains(&"7"), "the loop ran (basic: {basic}): {screen}");
+            // Back at the main prompt, not stuck at "...".
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut last = String::new();
+            while std::time::Instant::now() < deadline {
+                let screen = wait_for(&mut app, &ctx, ">>>");
+                last = screen.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or_default().to_owned();
+                if last == ">>>" {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            assert_eq!(last, ">>>", "basic: {basic}");
+        }
+        std::fs::remove_file(file).ok();
+    }
+
+    #[test]
+    fn an_indented_line_runs_once_in_a_shell() {
+        // The extra Enter after an indented line is only an empty prompt to a
+        // shell, and text sent right after it still runs, in order.
+        let shell = if std::path::Path::new("/bin/zsh").exists() { ("/bin/zsh".to_owned(), vec!["-f".to_owned()]) } else { ("/bin/sh".to_owned(), vec![]) };
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(None, None);
+        frame(&mut app, &ctx, vec![]);
+        let file = std::env::temp_dir().join(format!("strata-send-indent-{}.sh", std::process::id()));
+        std::fs::write(&file, "if true; then\n  echo in-$((3*3))\nfi\necho after-$((2*2))\n").unwrap();
+        app.open_path(file.clone(), false);
+        app.terminal.tabs.push(crate::terminal::Terminal::spawn(Some(ctx.clone()), &std::env::temp_dir(), Some(shell), 80, 20).unwrap());
+        app.terminal.visible = true;
+        app.doc().editor.select_ranges(&[16..16], 0);
+        app.run(&ctx, Cmd::SendToTerminal);
+        app.doc().editor.select_ranges(&[38..38], 0);
+        app.run(&ctx, Cmd::SendToTerminal);
+        let screen = wait_for(&mut app, &ctx, "after-4");
+        let row = |text: &str| screen.lines().position(|l| l.trim() == text);
+        assert!(row("in-9").is_some() && row("in-9") < row("after-4"), "{screen}");
+        assert_eq!(screen.matches("in-9").count(), 1, "ran once: {screen}");
+        assert!(!screen.contains("not found") && !screen.contains("error"), "{screen}");
+        std::fs::remove_file(file).ok();
+    }
+
+    #[test]
+    fn send_to_terminal_opens_one_when_needed() {
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(None, None);
+        frame(&mut app, &ctx, vec![]);
+        assert!(app.terminal.tabs.is_empty());
+        // The default key, pressed in the editor (it isn't typed as a line break).
+        let (mods, k) = Cmd::SendToTerminal.default_keys()[0];
+        frame(&mut app, &ctx, vec![key(k, mods)]);
+        assert!(app.terminal.visible && app.terminal.tabs.len() == 1);
+        assert_eq!(app.docs[app.active].editor.buffer.len_lines(), 1, "nothing typed into the editor");
+        app.run(&ctx, Cmd::SendToTerminal);
+        assert_eq!(app.terminal.tabs.len(), 1, "later sends reuse it");
     }
 
     #[test]

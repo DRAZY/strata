@@ -126,6 +126,8 @@ pub enum Cmd {
     PrevModification,
     ToggleTerminal,
     NewTerminal,
+    /// The selection, or the current line, to the active terminal.
+    SendToTerminal,
     Snippets,
     NewSnippet,
     InstallShellCommand,
@@ -282,6 +284,7 @@ impl Cmd {
         Cmd::PrevModification,
         Cmd::ToggleTerminal,
         Cmd::NewTerminal,
+        Cmd::SendToTerminal,
         Cmd::Snippets,
         Cmd::NewSnippet,
         Cmd::InstallShellCommand,
@@ -445,6 +448,7 @@ impl Cmd {
             Cmd::PrevModification => "Goto: Previous Modification",
             Cmd::ToggleTerminal => "View: Toggle Terminal",
             Cmd::NewTerminal => "Terminal: New Terminal",
+            Cmd::SendToTerminal => "Terminal: Send to Terminal",
             Cmd::KeyBindings => "Preferences: Key Bindings",
             Cmd::ToggleFindRegex => "Find: Toggle Regular Expression",
             Cmd::ToggleFindCase => "Find: Toggle Case Sensitive",
@@ -585,6 +589,8 @@ impl Cmd {
             // Ctrl+` everywhere, like VS Code (Cmd+` is the system's window cycling on macOS).
             Cmd::ToggleTerminal => &[(CTRL, Key::Backtick)],
             Cmd::NewTerminal => &[(CTRL_SHIFT, Key::Backtick)],
+            // ⌘↩ and Ctrl+Enter (the same key off macOS) are Insert Line After.
+            Cmd::SendToTerminal => if MAC { &[(CTRL, Key::Enter)] } else { &[(CTRL_ALT, Key::Enter)] },
             Cmd::ToggleWordWrap => if MAC { &[(CMD_ALT, Key::W)] } else { &[(ALT_SHIFT, Key::W)] },
             // Sublime's layout keys: Alt+Cmd+N on macOS, Alt+Shift+N elsewhere.
             Cmd::LayoutSingle => if MAC { &[(CMD_ALT, Key::Num1)] } else { &[(ALT_SHIFT, Key::Num1)] },
@@ -756,6 +762,7 @@ impl Cmd {
             Cmd::PrevModification => "prev_modification",
             Cmd::ToggleTerminal => "toggle_terminal",
             Cmd::NewTerminal => "new_terminal",
+            Cmd::SendToTerminal => "send_to_terminal",
             Cmd::Snippets => "snippets",
             Cmd::NewSnippet => "new_snippet",
             Cmd::InstallShellCommand => "install_shell_command",
