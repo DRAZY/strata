@@ -728,5 +728,13 @@ fn view_settings_checks_follow_the_file() {
     app.status.clear();
     app.run_act(&ctx, crate::menus::Act::Named("x:trailing".into()));
     assert!(app.status.is_empty(), "{}", app.status);
+    // When settings.json can't be written, that's what it says.
+    let not_a_folder = dir.join("not-a-folder");
+    std::fs::write(&not_a_folder, "").unwrap();
+    app.config = Some(not_a_folder);
+    for act in ["ruler:90", "wrapcol:90", "x:ws_all"] {
+        app.run_act(&ctx, crate::menus::Act::Named(act.into()));
+        assert!(app.status.starts_with("Could not write settings"), "{act}: {}", app.status);
+    }
     std::fs::remove_dir_all(dir).ok();
 }

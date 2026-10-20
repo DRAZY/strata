@@ -908,7 +908,10 @@ impl StrataApp {
                         "git" => s.git_gutter = !s.git_gutter,
                         _ => {}
                     }
-                    self.persist_settings();
+                    // A failed save says so; "Saved, but …" mustn't cover it.
+                    if !self.persist_settings() {
+                        return;
+                    }
                     match &n[2..] {
                         "ws_sel" | "ws_all" | "ws_none" => self.note_override("whitespace", |e| e.draw_white_space.clone()),
                         "trailing" => self.note_override("trailing whitespace", |e| e.highlight_trailing_whitespace),
@@ -944,13 +947,15 @@ impl StrataApp {
                 }
                 n if n.starts_with("wrapcol:") => {
                     self.settings.wrap_column = n[8..].parse().ok();
-                    self.persist_settings();
-                    self.note_override("wrap column", |e| e.wrap_column);
+                    if self.persist_settings() {
+                        self.note_override("wrap column", |e| e.wrap_column);
+                    }
                 }
                 n if n.starts_with("ruler:") => {
                     self.settings.rulers = n[6..].parse().into_iter().collect();
-                    self.persist_settings();
-                    self.note_override("ruler", |e| e.rulers.clone());
+                    if self.persist_settings() {
+                        self.note_override("ruler", |e| e.rulers.clone());
+                    }
                 }
                 "show_find_results" => {
                     self.sidebar.visible = true;

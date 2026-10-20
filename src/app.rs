@@ -826,16 +826,19 @@ impl StrataApp {
         crate::fonts::ui_size(self.settings.ui_font_size)
     }
 
-    fn persist_settings(&mut self) {
+    /// Save settings.json; false (and a status saying so) if it couldn't be written.
+    fn persist_settings(&mut self) -> bool {
         if let Some(dir) = &self.config {
             match self.settings.save(dir) {
                 Ok(()) => self.settings_mtime = std::fs::metadata(Settings::path(dir)).and_then(|m| m.modified()).ok(),
                 Err(e) => {
                     log::warn!("couldn't write settings: {e}");
                     self.status = format!("Could not write settings: {e}");
+                    return false;
                 }
             }
         }
+        true
     }
 
     fn zoom(&mut self, delta: f32) {
