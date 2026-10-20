@@ -71,6 +71,8 @@ pub enum Step {
     BeforeClaim,
     /// Claimed into the staging folder, not checked yet.
     Claimed,
+    /// About to remove the emptied staging folder.
+    RemovingStage,
 }
 
 /// The fingerprint of `len` bytes from `bytes` (the same for a slice and a stream).
@@ -159,63 +161,76 @@ pub fn trash_listed_with(top: &Path, path: &Path, old: Option<&Path>, expected: 
         }
     };
     // The marker says this folder is Strata's (a scan reports it if left over).
-    if let Err(e) = imp::write_new(&stage, MARKER, format!("{MARKER_TAG} {stamp}\n").as_bytes()) {
+    let marker = format!("{MARKER_TAG} {stamp}\n");
+    if let Err(e) = imp::write_new(&stage, MARKER, marker.as_bytes()) {
+        drop(stage);
         let _ = imp::remove_empty_dir(&parent, &stage_name);
         return Err(Refused::Failed(e.to_string()));
     }
-    let done_with_stage = || {
-        let _ = imp::remove_file_at(&stage, MARKER);
-        let _ = imp::remove_empty_dir(&parent, &stage_name);
-    };
     let staged_path = path.parent().unwrap_or(top).join(&stage_name).join(name);
-    match imp::move_noreplace(&parent, name, &stage, name) {
+    let (result, emptied) = claim_and_trash(&parent, &stage, name, &staged_path, top, old, expected, hook);
+    // The staging folder goes once it's empty again; one still holding a
+    // file stays, marked, for the user (and the next scan) to find.
+    if emptied {
+        finish_stage(&parent, stage, &stage_name, marker.as_bytes(), hook);
+    }
+    result
+}
+
+/// Claim `name` into `stage`, check it, trash it (or put it back). Also
+/// says whether `stage` is empty again (only the marker left).
+#[allow(clippy::too_many_arguments)]
+fn claim_and_trash(parent: &imp::Dir, stage: &imp::Dir, name: &str, staged_path: &Path, top: &Path, old: Option<&Path>, expected: &Expected, hook: &mut dyn FnMut(Step)) -> (Result<(), Refused>, bool) {
+    match imp::move_noreplace(parent, name, stage, name) {
         Moved::Done => {}
-        Moved::Not => {
-            done_with_stage();
-            return Err(Refused::Changed);
-        }
+        Moved::Not => return (Err(Refused::Changed), true),
         // Linked into the staging folder but still at its name: the extra
         // link goes (only if it's really the same file), else say where.
         Moved::Both => {
-            if imp::drop_extra_link(&stage, name, &parent, name) {
-                done_with_stage();
-                return Err(Refused::Failed("it couldn't be set aside".into()));
+            if imp::drop_extra_link(stage, name, parent, name) {
+                return (Err(Refused::Failed("it couldn't be set aside".into())), true);
             }
-            return Err(Refused::KeptAt(staged_path));
+            return (Err(Refused::KeptAt(staged_path.to_owned())), false);
         }
     }
     hook(Step::Claimed);
     // Not the listed file: put it back, or say where it is.
-    let put_back = |why: Refused| -> Refused {
-        match imp::move_noreplace(&stage, name, &parent, name) {
-            Moved::Done => {
-                done_with_stage();
-                why
-            }
-            Moved::Both if imp::drop_extra_link(&parent, name, &stage, name) => {
-                done_with_stage();
-                why
-            }
-            Moved::Not | Moved::Both => Refused::KeptAt(staged_path.clone()),
+    let put_back = |why: Refused| -> (Result<(), Refused>, bool) {
+        match imp::move_noreplace(stage, name, parent, name) {
+            Moved::Done => (Err(why), true),
+            Moved::Both if imp::drop_extra_link(parent, name, stage, name) => (Err(why), true),
+            Moved::Not | Moved::Both => (Err(Refused::KeptAt(staged_path.to_owned())), false),
         }
     };
-    let checked = match imp::open_file_at(&stage, name) {
+    let checked = match imp::open_file_at(stage, name) {
         Ok(mut claimed) => check(&mut claimed, expected, old),
         Err(_) => Err(Refused::Changed),
     };
     if let Err(why) = checked {
-        return Err(put_back(why));
+        return put_back(why);
     }
     // Trash it by the staging folder's real path, which must be inside the top.
-    let real = match (imp::real_path(&stage), top.canonicalize()) {
+    let real = match (imp::real_path(stage), top.canonicalize()) {
         (Ok(real), Ok(top)) if real.starts_with(&top) => real,
-        _ => return Err(put_back(Refused::Outside)),
+        _ => return put_back(Refused::Outside),
     };
     if let Err(e) = crate::trash::move_to_trash(&real.join(name)) {
-        return Err(put_back(Refused::Failed(e.to_string())));
+        return put_back(Refused::Failed(e.to_string()));
     }
-    done_with_stage();
-    Ok(())
+    (Ok(()), true)
+}
+
+/// Remove an emptied staging folder: its handle first (on Windows it holds
+/// the folder against deletion too), then the marker, then the folder. If
+/// the folder can't go, the marker goes back, so a leftover is always one a
+/// scan recognizes and reports.
+fn finish_stage(parent: &imp::Dir, stage: imp::Dir, stage_name: &str, marker: &[u8], hook: &mut dyn FnMut(Step)) {
+    drop(stage);
+    hook(Step::RemovingStage);
+    let _ = imp::remove_in(parent, stage_name, MARKER);
+    if imp::remove_empty_dir(parent, stage_name).is_err() {
+        let _ = imp::write_in(parent, stage_name, MARKER, marker);
+    }
 }
 
 #[cfg(unix)]
@@ -341,6 +356,17 @@ mod imp {
         let name = c(name)?;
         // SAFETY: as above.
         ok(unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) })
+    }
+
+    /// Remove `file` from the folder `dir_name` in `parent` (reached without
+    /// following a link; the handle is closed again at once).
+    pub fn remove_in(parent: &Dir, dir_name: &str, file: &str) -> io::Result<()> {
+        remove_file_at(&open_dir(parent, dir_name)?, file)
+    }
+
+    /// `write_new` in the folder `dir_name` in `parent`.
+    pub fn write_in(parent: &Dir, dir_name: &str, file: &str, bytes: &[u8]) -> io::Result<()> {
+        write_new(&open_dir(parent, dir_name)?, file, bytes)
     }
 
     /// A new file with `bytes`, failing if the name exists.
@@ -474,13 +500,20 @@ mod imp {
         matches!((id(extra_dir, extra), id(kept_dir, kept)), (Some(x), Some(y)) if x == y) && std::fs::remove_file(extra_dir.path.join(extra)).is_ok()
     }
 
-    pub fn remove_file_at(dir: &Dir, name: &str) -> io::Result<()> {
-        std::fs::remove_file(dir.path.join(name))
-    }
-
     pub fn write_new(dir: &Dir, name: &str, bytes: &[u8]) -> io::Result<()> {
         use std::io::Write;
         std::fs::OpenOptions::new().write(true).create_new(true).open(dir.path.join(name))?.write_all(bytes)
+    }
+
+    /// By path: a handle on the staging folder would hold it against
+    /// deletion (its parent stays held, so it can't be swapped).
+    pub fn remove_in(parent: &Dir, dir_name: &str, file: &str) -> io::Result<()> {
+        std::fs::remove_file(parent.path.join(dir_name).join(file))
+    }
+
+    pub fn write_in(parent: &Dir, dir_name: &str, file: &str, bytes: &[u8]) -> io::Result<()> {
+        use std::io::Write;
+        std::fs::OpenOptions::new().write(true).create_new(true).open(parent.path.join(dir_name).join(file))?.write_all(bytes)
     }
 
     pub fn open_file_at(dir: &Dir, name: &str) -> io::Result<std::fs::File> {
@@ -535,10 +568,13 @@ mod imp {
     pub fn drop_extra_link(_: &Dir, _: &str, _: &Dir, _: &str) -> bool {
         false
     }
-    pub fn remove_file_at(_: &Dir, _: &str) -> io::Result<()> {
+    pub fn write_new(_: &Dir, _: &str, _: &[u8]) -> io::Result<()> {
         no()
     }
-    pub fn write_new(_: &Dir, _: &str, _: &[u8]) -> io::Result<()> {
+    pub fn remove_in(_: &Dir, _: &str, _: &str) -> io::Result<()> {
+        no()
+    }
+    pub fn write_in(_: &Dir, _: &str, _: &str, _: &[u8]) -> io::Result<()> {
         no()
     }
     pub fn open_file_at(_: &Dir, _: &str) -> io::Result<std::fs::File> {
@@ -665,6 +701,7 @@ mod tests {
                 std::fs::write(&file, "replacement\n").unwrap();
             }
             Step::Claimed => std::fs::write(&file, "yet another\n").unwrap(),
+            Step::RemovingStage => {}
         });
         let Err(Refused::KeptAt(at)) = r else { panic!("{r:?}") };
         assert_eq!(std::fs::read_to_string(&at).unwrap(), "replacement\n");
@@ -705,6 +742,30 @@ mod tests {
             assert!(!dir.join("to/c.txt").exists());
             assert_eq!(std::fs::read_to_string(dir.join("sub/c.txt")).unwrap(), "c\n");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// When the emptied staging folder can't be removed, its marker is put
+    /// back: what's left is always a folder the next scan reports.
+    #[test]
+    fn a_staging_folder_that_stays_keeps_its_marker() {
+        let dir = temp("stays");
+        let file = dir.join("sub/new.txt");
+        std::fs::write(&file, "listed\n").unwrap();
+        let listed = expect(&file);
+        let r = trash_listed_with(&dir, &file, None, &listed, &mut |step| {
+            if step == Step::RemovingStage {
+                // Something else lands in it: the folder isn't empty, so it stays.
+                let stage = std::fs::read_dir(dir.join("sub")).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with(STAGING)).unwrap();
+                std::fs::write(stage.path().join("stray.txt"), "stray\n").unwrap();
+            }
+        });
+        assert_eq!(r, Ok(()));
+        let left = leftovers(&dir.join("sub"));
+        assert_eq!(left.len(), 1);
+        let stage = dir.join("sub").join(&left[0]);
+        assert!(is_staging(&stage), "the marker is back");
+        assert_eq!(std::fs::read_to_string(stage.join("stray.txt")).unwrap(), "stray\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
