@@ -81,7 +81,8 @@ fn string(m: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
 /// A folder setting as a path relative to the vault (Obsidian writes them
 /// with or without a leading or trailing `/`).
 fn folder(s: &str) -> String {
-    s.trim().trim_matches('/').to_owned()
+    // `.` and `..` are dropped: a folder setting never leads out of the vault.
+    s.trim().split(['/', '\\']).filter(|p| !p.is_empty() && *p != "." && *p != "..").collect::<Vec<_>>().join("/")
 }
 
 impl Config {
@@ -157,6 +158,7 @@ mod tests {
         assert_eq!((c.new_notes, c.markdown_links), (NewNotes::Root, false));
         assert_eq!(c.daily.folder, "");
         assert_eq!(c.daily.format, DEFAULT_DATE);
+        assert_eq!(folder("../../outside/./x/"), "outside/x", "never out of the vault");
         std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -81,13 +81,18 @@ pub(super) struct LinkPlan {
     pub files: Vec<PlanFile>,
     /// Files with links that can't be read or rewritten safely, and why.
     skipped: Vec<(PathBuf, String)>,
-    /// Waiting for the vault to be indexed.
+    /// Waiting for the vault to be indexed, or for the files to be read.
     pub waiting: bool,
+    /// The files being read and their links worked out, off the UI thread.
+    pub reading: Option<Receiver<Planned>>,
 }
+
+/// The files a link update changes, and those it can't (with why).
+pub(super) type Planned = (Vec<PlanFile>, Vec<(PathBuf, String)>);
 
 impl LinkPlan {
     pub fn waiting(root: PathBuf, from_rel: String, to_rel: String) -> LinkPlan {
-        LinkPlan { root, from_rel, to_rel, rename: None, files: Vec::new(), skipped: Vec::new(), waiting: true }
+        LinkPlan { root, from_rel, to_rel, rename: None, files: Vec::new(), skipped: Vec::new(), waiting: true, reading: None }
     }
 
     pub fn rename_from(&self) -> &str {
@@ -103,10 +108,15 @@ impl LinkPlan {
         self.files = files;
         self.skipped = skipped;
         self.waiting = false;
+        self.reading = None;
     }
 
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
+    }
+
+    pub fn skipped_count(&self) -> usize {
+        self.skipped.len()
     }
 }
 

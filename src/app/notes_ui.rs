@@ -23,6 +23,9 @@ use std::sync::Arc;
 const RESCAN_SECS: f64 = 3.0;
 /// Notes longer than this (chars) get no marks or link completion.
 const MARK_CHARS: usize = 2_000_000;
+/// Above this many chars, a note's marks are made again at most every `LONG_NOTE_SECS`.
+const LONG_NOTE: usize = 200_000;
+const LONG_NOTE_SECS: f64 = 0.3;
 /// Rows in the `[[` completion list.
 const COMPLETIONS: usize = 40;
 
@@ -73,6 +76,8 @@ pub(super) struct NotesState {
     focused: bool,
     /// Per editor view: the (edit version, index generation) its marks are for.
     marked: HashMap<egui::Id, (u64, u64)>,
+    /// When each view's marks were last made (input time), to space them out in long notes.
+    marked_at: HashMap<egui::Id, f64>,
     pub complete: Option<Complete>,
     pub dialog: Option<Dialog>,
     /// A rename's link updates on disk; it holds their undo too.
@@ -269,6 +274,17 @@ impl StrataApp {
         if self.notes.marked.get(&d.view.id) == Some(&key) {
             return;
         }
+        // A long note is read again at most a few times a second while
+        // typing; lines edited meanwhile just show no marks (see `NoteMarks`).
+        let now = self.notes.ctx.as_ref().map_or(0.0, |c| c.input(|i| i.time));
+        let last = self.notes.marked_at.get(&d.view.id).copied().unwrap_or(f64::NEG_INFINITY);
+        if d.editor.buffer.len_chars() > LONG_NOTE && now - last < LONG_NOTE_SECS {
+            if let Some(ctx) = &self.notes.ctx {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(LONG_NOTE_SECS));
+            }
+            return;
+        }
+        self.notes.marked_at.insert(d.view.id, now);
         self.notes.marked.insert(d.view.id, key);
         d.view.note_marks.clear();
         if d.editor.buffer.len_chars() > MARK_CHARS {
@@ -544,6 +560,10 @@ impl StrataApp {
         let d = &mut self.docs[self.active];
         let head = d.editor.primary().head;
         let len = d.editor.buffer.len_chars();
+        // Only for the text and cursor the list was made for.
+        if d.view.id != c.view || (d.editor.version(), head) != c.key || head < c.start || c.start < 2 {
+            return;
+        }
         // The `]]` auto-closing put after the cursor goes too.
         let closer = head + 2 <= len && d.editor.buffer.slice(head..head + 2) == "]]";
         let end = if closer { head + 2 } else { head };
@@ -796,6 +816,12 @@ impl StrataApp {
 
     /// A file was renamed (here or in the side bar): offer to update links to it.
     pub(super) fn notes_renamed(&mut self, from: &Path, to: &Path) {
+        // Undo Rename is for the last rename only: an older one's undo would
+        // restore links to a name that has moved on.
+        if !self.notes.disk.running() {
+            self.notes.last_rename = None;
+            self.notes.disk = crate::replace::DiskReplace::default();
+        }
         if to.is_dir() {
             return;
         }
@@ -816,7 +842,19 @@ impl StrataApp {
 
     /// Work out the link updates of a rename once its vault is indexed.
     fn plan_waiting_links(&mut self) {
-        let Some(Dialog::Links(plan)) = &self.notes.dialog else { return };
+        let Some(Dialog::Links(plan)) = &mut self.notes.dialog else { return };
+        if let Some(rx) = &plan.reading {
+            let Ok((files, skipped)) = rx.try_recv() else { return };
+            let rename = plan.rename.clone().expect("set when reading starts");
+            plan.ready(rename, files, skipped);
+            if plan.is_empty() {
+                let to = rename_path(&plan.root, plan.rename_to());
+                let skipped = plan_skipped_note(plan);
+                self.notes.dialog = None;
+                self.status = format!("Renamed to {} (no links to update{skipped})", to.display());
+            }
+            return;
+        }
         if !plan.waiting || !self.notes.index.ready(&plan.root) || self.notes.index.scanning(&plan.root) {
             return;
         }
@@ -840,37 +878,26 @@ impl StrataApp {
         candidates.extend(self.docs.iter().filter_map(|d| vault.rel(d.path.as_deref()?)).filter(|r| is_note(r)));
         candidates.sort();
         candidates.dedup();
-        let mut files = Vec::new();
-        let mut skipped = Vec::new();
-        for rel in candidates {
-            let path = vault.abs(&rel);
-            let tab = self.docs.iter().position(|d| d.path.as_deref() == Some(path.as_path()) && d.compare.is_none());
-            let (text, stamp) = match tab {
-                Some(i) => (self.docs[i].editor.text_snapshot().to_string(), None),
-                None => match crate::search::read_text(&path) {
-                    Ok(f) if f.lossy => {
-                        skipped.push((path.clone(), format!("not valid {} (saving would lose bytes)", f.encoding.name())));
-                        continue;
-                    }
-                    Ok(f) => (f.text, Some(f.stamp)),
-                    Err(e) => {
-                        skipped.push((path.clone(), e.to_string()));
-                        continue;
-                    }
-                },
-            };
-            let edits = rename.edits(&rel, &text);
-            if edits.is_empty() {
-                continue;
+        // Open tabs' text now (it's theirs that changes); the rest is read off the UI thread.
+        let work: Vec<(String, PathBuf, Option<Arc<String>>)> = candidates
+            .into_iter()
+            .map(|rel| {
+                let path = vault.abs(&rel);
+                let tab = self.docs.iter_mut().find(|d| d.path.as_deref() == Some(path.as_path()) && d.compare.is_none()).map(|d| d.editor.text_snapshot());
+                (rel, path, tab)
+            })
+            .collect();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (r, ctx) = (rename.clone(), self.notes.ctx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(plan_files(&r, work));
+            if let Some(ctx) = ctx {
+                ctx.request_repaint();
             }
-            files.push(PlanFile { path, rel, stamp, in_tab: tab.is_some(), count: edits.len(), lines: preview_lines(&text, &edits) });
-        }
+        });
         let Some(Dialog::Links(plan)) = &mut self.notes.dialog else { return };
-        plan.ready(rename, files, skipped);
-        if plan.is_empty() {
-            self.notes.dialog = None;
-            self.status = format!("Renamed to {} (no links to update)", vault.abs(&to_rel).display());
-        }
+        plan.rename = Some(rename);
+        plan.reading = Some(rx);
     }
 
     /// Make the planned link updates: open tabs in their buffer (one undo
@@ -957,6 +984,12 @@ impl StrataApp {
             self.status = "No rename to undo".into();
             return;
         };
+        // Check the name can go back before restoring any link: links to a
+        // name that's taken (or a file that moved on) would point elsewhere.
+        if !u.to.exists() || std::fs::symlink_metadata(&u.from).is_ok() {
+            self.status = format!("Can't undo the rename: {} is gone or {} exists again", u.to.display(), u.from.display());
+            return;
+        }
         let mut changed = 0;
         for (id, version) in &u.tabs {
             if let Some(d) = self.docs.iter_mut().find(|d| d.view.id == *id) {
@@ -1017,6 +1050,44 @@ impl StrataApp {
                 Item::cmd("Compare with Conflict Copy", Cmd::NotesCompareConflict),
             ],
         )
+    }
+}
+
+/// The files of a rename's link update (each with its changes) and those
+/// that can't be updated safely, from `work`: (vault path, full path, text
+/// of its open tab).
+fn plan_files(rename: &Rename, work: Vec<(String, PathBuf, Option<Arc<String>>)>) -> super::notes_panel::Planned {
+    let mut files = Vec::new();
+    let mut skipped = Vec::new();
+    for (rel, path, tab) in work {
+        let in_tab = tab.is_some();
+        let (text, stamp) = match tab {
+            Some(t) => (t.to_string(), None),
+            None => match crate::search::read_text(&path) {
+                Ok(f) if f.lossy => {
+                    skipped.push((path.clone(), format!("not valid {} (saving would lose bytes)", f.encoding.name())));
+                    continue;
+                }
+                Ok(f) => (f.text, Some(f.stamp)),
+                Err(e) => {
+                    skipped.push((path.clone(), e.to_string()));
+                    continue;
+                }
+            },
+        };
+        let edits = rename.edits(&rel, &text);
+        if !edits.is_empty() {
+            files.push(PlanFile { path, rel, stamp, in_tab, count: edits.len(), lines: preview_lines(&text, &edits) });
+        }
+    }
+    (files, skipped)
+}
+
+/// "; 2 files couldn't be read" for a status line, or nothing.
+fn plan_skipped_note(plan: &LinkPlan) -> String {
+    match plan.skipped_count() {
+        0 => String::new(),
+        n => format!("; {n} file{} with links couldn't be read", if n == 1 { "" } else { "s" }),
     }
 }
 

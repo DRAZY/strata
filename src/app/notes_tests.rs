@@ -308,6 +308,34 @@ fn rename_updates_links_and_undo_restores_them_byte_for_byte() {
 }
 
 #[test]
+fn undo_rename_changes_nothing_when_the_old_name_is_taken_again() {
+    let dir = temp_dir("notes-undo-refused");
+    write(&dir, "A.md", "[[Old]]\n");
+    write(&dir, "Old.md", "x\n");
+    let ctx = Context::default();
+    let mut app = open_vault(&dir, "Old.md", &ctx);
+    assert!(app.rename_note(&dir.join("Old.md"), "New").is_ok());
+    for _ in 0..4 {
+        app.notes.index.wait();
+        frame(&mut app, &ctx, vec![]);
+    }
+    frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+    app.notes.disk.wait_until_done();
+    frame(&mut app, &ctx, vec![]);
+    assert_eq!(std::fs::read_to_string(dir.join("A.md")).unwrap(), "[[New]]\n");
+    // Meanwhile a new Old.md appears (Obsidian made it from a leftover link, say).
+    write(&dir, "Old.md", "someone else\n");
+    app.run(&ctx, Cmd::NotesUndoRename);
+    app.notes.disk.wait_until_done();
+    frame(&mut app, &ctx, vec![]);
+    assert!(app.status.starts_with("Can't undo the rename"), "{}", app.status);
+    assert_eq!(std::fs::read_to_string(dir.join("A.md")).unwrap(), "[[New]]\n", "links still point at the renamed note");
+    assert_eq!(std::fs::read_to_string(dir.join("Old.md")).unwrap(), "someone else\n");
+    assert!(dir.join("New.md").exists());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn sidebar_rename_offers_the_same_link_update() {
     let dir = temp_dir("notes-sidebar-rename");
     write(&dir, "A.md", "[[Old]]\n");

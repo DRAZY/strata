@@ -76,6 +76,11 @@ impl Rename {
             let written = if md && !l.angle { parse::percent_encode(&path) } else { path };
             out.push((l.path_range.clone(), written));
         }
+        // Links are listed by where they start, but a link inside another's
+        // text (`[![i](Old.png)](Old.png)`) has its path earlier: edits must
+        // go in text order, and never overlap.
+        out.sort_by_key(|(r, _)| r.start);
+        out.dedup_by(|b, a| b.0.start < a.0.end);
         out
     }
 
@@ -115,11 +120,15 @@ impl crate::replace::Rewrite for Rewriter {
     }
 }
 
-/// `text` with `edits` made.
+/// `text` with `edits` made (in order, not overlapping; any that aren't are skipped).
 pub fn apply(text: &str, edits: &[(Range<usize>, String)]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut at = 0;
     for (r, s) in edits {
+        debug_assert!(r.start >= at, "edits out of order");
+        if r.start < at || r.end > text.len() {
+            continue;
+        }
         out.push_str(&text[at..r.start]);
         out.push_str(s);
         at = r.end;
@@ -175,6 +184,15 @@ mod tests {
         assert_eq!(out, "[[x/Ideas]] and [[y/Ideas]]");
         // From x/ the bare name now means the renamed note (same folder wins).
         assert_eq!(rewrite(&r, "x/Other.md", "[[Plan]] [[Ideas]]"), "[[Ideas]] [[y/Ideas]]");
+    }
+
+    #[test]
+    fn links_inside_link_text_are_edited_in_order() {
+        let r = Rename::new(&paths(&["A.md", "Old.png"]), "Old.png", "New.png", LinkFormat::Shortest);
+        let text = "[![pic](Old.png)](Old.png) and [![[Old.png]]](Old.png)";
+        let edits = r.edits("A.md", text);
+        assert!(edits.windows(2).all(|w| w[0].0.end <= w[1].0.start), "{edits:?}");
+        assert_eq!(apply(text, &edits), "[![pic](New.png)](New.png) and [![[New.png]]](New.png)");
     }
 
     #[test]
