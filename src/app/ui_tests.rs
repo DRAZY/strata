@@ -50,17 +50,17 @@ fn shortcuts_wait_while_a_dialog_is_up() {
     }
     app.sidebar.ask_rename(&b);
     frame(&mut app, &ctx, vec![]);
+    let name = |app: &mut StrataApp| app.sidebar.prompt_state().map(|(n, _)| n.clone());
+    assert_eq!(name(&mut app).as_deref(), Some("b.txt"), "the rename dialog is up");
     frame(&mut app, &ctx, vec![press(Key::W, primary())]);
     assert_eq!(app.docs.len(), 2, "Cmd+W didn't close the tab behind the dialog");
     frame(&mut app, &ctx, vec![press(Key::P, primary() | Modifiers::SHIFT)]);
     assert!(!app.palette.open, "nor did Cmd+Shift+P open the palette");
     frame(&mut app, &ctx, vec![press(Key::F, primary())]);
     assert!(!app.find.open);
-    // Typing goes to the name field, not the editor. (What the shortcuts
-    // did to the field itself is egui's: off macOS Ctrl+W deletes a word.)
-    let name = |app: &mut StrataApp| app.sidebar.prompt_state().map(|(n, _)| n.clone());
-    // The dialog opens with the name selected up to the extension.
-    assert_eq!(name(&mut app).as_deref(), Some("b.txt"), "the rename dialog is up");
+    // Typing goes to the name field, not the editor; the dialog opened with
+    // the name selected up to the extension. (What the shortcuts did to the
+    // field itself is egui's: off macOS Ctrl+W deletes that word.)
     frame(&mut app, &ctx, vec![Event::Text("x".into())]);
     assert_eq!(name(&mut app).as_deref(), Some("x.txt"));
     assert_eq!(app.docs[app.active].editor.buffer.line_text(0), "b");

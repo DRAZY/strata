@@ -199,7 +199,7 @@ mod tests {
         sync(&mut hub);
         assert!(hub.pid_for(&file).is_some());
         let saved: Vec<PathBuf> = serde_json::from_str(&std::fs::read_to_string(config.join(hub::TRUST_FILE)).unwrap()).unwrap();
-        assert_eq!(saved, [std::fs::canonicalize(&dir).unwrap()], "stored as the real path");
+        assert_eq!(saved, [crate::paths::canonical(&dir).unwrap()], "stored as the real path");
         drop(hub);
         // Next time (another Strata): no question.
         let mut hub = Hub::new(false);
@@ -245,7 +245,7 @@ mod tests {
         assert!(hub.trust_question(1).is_some(), "asked instead");
         // Remembered folders are stored as real paths.
         let saved: Vec<PathBuf> = serde_json::from_str(&std::fs::read_to_string(config.join(hub::TRUST_FILE)).unwrap()).unwrap();
-        assert_eq!(saved, [std::fs::canonicalize(&safe).unwrap()]);
+        assert_eq!(saved, [crate::paths::canonical(&safe).unwrap()]);
         // A file really inside `safe` is trusted, even named through a link to it.
         std::fs::create_dir_all(safe.join("own")).unwrap();
         std::os::unix::fs::symlink(&safe, base.join("alias")).unwrap();
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn trust_fails_closed_when_a_folder_has_no_real_path() {
-        let base = std::fs::canonicalize(scratch("trust-closed")).unwrap();
+        let base = crate::paths::canonical(scratch("trust-closed")).unwrap();
         let mut hub = Hub::new(false);
         hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
         hub.require_trust();
@@ -289,7 +289,7 @@ mod tests {
         let file = base.join("alias").join("x.fake");
         hub.sync(1, &file, (1, 0), || Rope::from_str(""), None, &[]);
         assert!(hub.pid_for(&file).is_some());
-        assert_eq!(hub.root_for(&file), Some(std::fs::canonicalize(&safe).unwrap()), "not the link it was reached through");
+        assert_eq!(hub.root_for(&file), Some(crate::paths::canonical(&safe).unwrap()), "not the link it was reached through");
         std::fs::remove_dir_all(base).ok();
     }
 
@@ -308,7 +308,7 @@ mod tests {
         let dir = scratch("link-file");
         std::fs::write(dir.join("real.fake"), "x bad\n").unwrap();
         std::os::unix::fs::symlink("real.fake", dir.join("link.fake")).unwrap();
-        let (link, real) = (dir.join("link.fake"), std::fs::canonicalize(dir.join("real.fake")).unwrap());
+        let (link, real) = (dir.join("link.fake"), crate::paths::canonical(dir.join("real.fake")).unwrap());
         let mut hub = Hub::new(false);
         hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
         hub.sync(1, &link, (1, 0), || Rope::from_str("x bad\n"), None, &[]);
@@ -366,8 +366,8 @@ mod tests {
         assert_eq!(hub.pid_for(&t1), hub.pid_for(&t2), "one server");
         until("ready", || hub.server_for(1, &t1).map(|_| ()));
         assert!(hub.server_for(2, &t2).is_none(), "window 1 opened it first");
-        assert_eq!(hub.client_path(2, &std::fs::canonicalize(&t2).unwrap()), uri::normalize(&t2), "each window gets its own tab's name");
-        assert_eq!(hub.client_path(1, &std::fs::canonicalize(&t2).unwrap()), uri::normalize(&t1));
+        assert_eq!(hub.client_path(2, &crate::paths::canonical(&t2).unwrap()), uri::normalize(&t2), "each window gets its own tab's name");
+        assert_eq!(hub.client_path(1, &crate::paths::canonical(&t2).unwrap()), uri::normalize(&t1));
         hub.forget_window(1);
         hub.sync(2, &t2, (2, 0), || Rope::from_str("thing\n"), None, &[]);
         assert!(hover_text(&hub, 2, &t2, 1).unwrap().contains("opens=1"));
@@ -478,7 +478,7 @@ mod tests {
         save_atomically(&x, "thing\n");
         assert_ne!(std::fs::metadata(&x).unwrap().ino(), first, "the save made a new file");
         // A path to the old inode is a different file now: it mustn't land on the tab.
-        let stale = std::fs::canonicalize(dir.join("old-inode.fake")).unwrap();
+        let stale = crate::paths::canonical(dir.join("old-inode.fake")).unwrap();
         assert_eq!(hub.client_path(1, &stale), stale);
         // And the tab's file is still found by identity under another name for it.
         std::fs::hard_link(&x, dir.join("new-name.fake")).unwrap();

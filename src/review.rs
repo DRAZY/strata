@@ -1388,6 +1388,10 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).ok()?;
         crate::git::git(&dir, &["init", "-q", "-b", "main"])?;
+        // Line endings as written, whatever the machine's Git says (Git for
+        // Windows sets core.autocrlf in its system config); tests that are
+        // about autocrlf turn it on themselves.
+        run(&dir, &["config", "core.autocrlf", "false"]);
         std::fs::write(dir.join("src/main.rs"), "fn main() {\n    one();\n    two();\n}\n").unwrap();
         std::fs::write(dir.join("README.md"), "# Title\n\nText.\n").unwrap();
         std::fs::write(dir.join("crlf.txt"), "a\r\nb\r\nc\r\n").unwrap();
@@ -1759,6 +1763,8 @@ pub(crate) mod tests {
     #[test]
     fn line_ending_settings_from_the_system_config() {
         let Some(dir) = temp_repo("sysconfig") else { return };
+        // The test repository's own setting would override the system's.
+        run(&dir, &["config", "--unset", "core.autocrlf"]);
         let sys = dir.with_extension("sysconfig");
         std::fs::write(dir.join("README.md"), "# Title\r\n\r\nText.\r\n").unwrap();
         let with = |config: &str| {

@@ -1022,7 +1022,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(config.join("Plugins/.installing-2")).unwrap();
         // One left two hours ago; one another Strata may be using now.
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
-        std::fs::File::open(config.join("Plugins/.installing-1")).unwrap().set_modified(old).unwrap();
+        crate::paths::set_modified(&config.join("Plugins/.installing-1"), old);
         tidy(&config);
         assert!(!config.join("Plugins/.installing-1").exists());
         assert!(config.join("Plugins/.installing-2").exists(), "a fresh one is left alone");

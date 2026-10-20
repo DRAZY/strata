@@ -59,7 +59,7 @@ pub(crate) fn fixture(tag: &str) -> Option<Fixture> {
     let base = std::env::temp_dir().join(format!("strata-sync-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let base = std::fs::canonicalize(&base).unwrap();
+    let base = crate::paths::canonical(&base).unwrap();
     let config = base.join("gitconfig");
     std::fs::write(&config, "[user]\n\tname = Tester\n\temail = t@example.com\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n").unwrap();
     let f = Fixture { remote: base.join("remote.git"), here: base.join("here"), there: base.join("there"), config, base };
@@ -964,7 +964,7 @@ fn backups_older_than_30_days_are_removed() {
     write(&old, "worktree/vault/x.md", "old\n");
     write(&old, "README.txt", "a backup\n");
     let month_ago = std::time::SystemTime::now() - Duration::from_secs(31 * 24 * 3600);
-    std::fs::File::open(&old).unwrap().set_modified(month_ago).unwrap();
+    crate::paths::set_modified(&old, month_ago);
     let recent = f.backups().join("0123456789abcdef/2026-10-19_00-00-00-new");
     write(&recent, "worktree/vault/x.md", "new\n");
     write(&recent, "README.txt", "a backup\n");
