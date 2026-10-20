@@ -40,6 +40,8 @@ pub struct Settings {
     pub bracket_colors: bool,
     /// Small color bars under CSS colors like #22d3ee.
     pub color_swatches: bool,
+    /// Draw bidirectional controls and invisible characters as labeled boxes.
+    pub show_hidden_characters: bool,
     /// Pin the enclosing block headers at the top while scrolling.
     pub sticky_scroll: bool,
     pub smooth_scroll: bool,
@@ -185,6 +187,7 @@ impl Default for Settings {
             highlight_trailing_whitespace: true,
             bracket_colors: true,
             color_swatches: true,
+            show_hidden_characters: true,
             sticky_scroll: true,
             smooth_scroll: true,
             git_gutter: true,

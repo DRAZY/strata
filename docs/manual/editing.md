@@ -317,6 +317,27 @@ Lines break after the last space that fits. A word too long for a line is cut wh
 > [!NOTE]
 > Files larger than about 8 million characters are never wrapped, to keep editing them fast. Files in large-file mode don't wrap unless you turn it on for them; see [Very large files](troubleshooting.md#very-large-files).
 
+## Hidden and direction-changing characters
+
+Some Unicode characters are invisible, and some change the direction text is shown in. A file can use them to make code read differently from what it really is: a comment that seems to end early, or a check that seems to be inside a comment but runs (the "Trojan Source" problem). Strata shows each one as a small box with its short name in the theme's warning color, so nothing is hidden and the text around it stays in the order it's written:
+
+| Box | Character | What it does |
+|---|---|---|
+| LRE, RLE, LRO, RLO, PDF | U+202A to U+202E | Embeddings and overrides: show text in a forced direction. |
+| LRI, RLI, FSI, PDI | U+2066 to U+2069 | Isolates: show a stretch of text in another direction. |
+| LRM, RLM, ALM | U+200E, U+200F, U+061C | Direction marks. |
+| ZWSP, ZWNJ, ZWJ, WJ | U+200B, U+200C, U+200D, U+2060 | Zero-width spaces and joiners. |
+| BOM | U+FEFF | A byte order mark in the middle of the text. A file's own byte order mark at its start isn't shown; Strata keeps track of it as part of the [encoding](encodings.md). |
+| SHY | U+00AD | Soft hyphen. |
+
+- Rest the mouse pointer on a box to see the character's code and name, for example "U+202E RIGHT-TO-LEFT OVERRIDE: can make text display in a different order".
+- A box is still one character. The arrow keys step over it in one press, selecting, copying, cutting and deleting it work on that one character, and the file is never changed. Spell check and the word count see the text as it is.
+- When the current file has any of these characters, the status bar says how many (for example **⚠ 3 hidden characters**). Click it, or choose **Find ▸ Find Hidden Characters** (also in the command palette), to select the next one; the status bar names it and says which one it is of how many. It wraps around at the end of the file.
+- Compare and Review Changes tabs show the boxes too.
+- To draw these characters the old way (invisibly), turn off **View ▸ Editor Extras ▸ Hidden Characters**, or set `"show_hidden_characters": false`. The status bar count stays, so a file with hidden characters is still pointed out.
+
+Emoji built with a zero-width joiner (such as some family and profession emoji) show their ZWJ boxes too, since the joiner is a separate character in the file.
+
 ## Spell check
 
 **View ▸ Spell Check** ({{key:toggle_spell_check}}) underlines misspelled words with a wavy red line. It's off by default; the choice is saved as the `spell_check` setting and applies to every file.

@@ -82,7 +82,7 @@ Every setting is in the Settings window, and many also have a menu item:
 |------|----------|
 | View ▸ Color Scheme, the status bar's Theme menu | `theme`, `theme_mode`, `dark_theme`, `light_theme` |
 | Strata ▸ Settings ▸ Font (Preferences ▸ Font on Windows and Linux) | `font_face`, `font_size`, `line_height` (and resets `line_padding_top` and `line_padding_bottom`), `ui_font_face`, `ui_font_size` |
-| View ▸ Editor Extras | `draw_white_space`, `highlight_trailing_whitespace`, `bracket_colors`, `color_swatches`, `sticky_scroll`, `smooth_scroll`, `git_gutter` |
+| View ▸ Editor Extras | `draw_white_space`, `highlight_trailing_whitespace`, `bracket_colors`, `color_swatches`, `show_hidden_characters`, `sticky_scroll`, `smooth_scroll`, `git_gutter` |
 | View ▸ Cursor | `caret_style`, `caret_blink`, `caret_width` |
 | View ▸ Window Opacity | `window_opacity` |
 | View ▸ Toggle Minimap, Toggle Tabs, Toggle Status Bar | `minimap`, `show_tabs`, `show_status_bar` |
@@ -203,6 +203,7 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `highlight_trailing_whitespace` | true/false | `true` | Tint spaces and tabs at the ends of lines. |
 | `bracket_colors` | true/false | `true` | Color bracket pairs by nesting depth. |
 | `color_swatches` | true/false | `true` | Show a small color bar under color values such as `#22d3ee` or `rgb(…)`. |
+| `show_hidden_characters` | true/false | `true` | Show invisible and direction-changing characters (such as U+202E) as small labeled boxes, so they can't hide or reorder text. See [Hidden and direction-changing characters](editing.md#hidden-and-direction-changing-characters). |
 | `sticky_scroll` | true/false | `true` | Pin the headers of the blocks you are inside at the top while scrolling. |
 | `smooth_scroll` | true/false | `true` | Animate scrolling. |
 | `git_gutter` | true/false | `true` | Show bars in the gutter for lines changed since the last Git commit. |

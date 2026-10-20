@@ -185,6 +185,22 @@ mod tests {
         app.step_difference(true);
         shooter.shoot(&ctx, &mut app, 6, vec![], &dir.join("compare_cjk.ppm"));
 
+        // Trojan Source: direction-changing and invisible characters show as boxes,
+        // the status bar counts them, and Compare shows them too.
+        let trojan = "// Shown plainly, the check below looks commented out.\nfunction run(isAdmin) {\n    /*\u{202E} } \u{2066}if (isAdmin)\u{2069} \u{2066} begin admins only */\n        console.log(\"You are an admin.\");\n    /* end admins only \u{202E} { \u{2066}*/\n    let user\u{200B}Name = \"ad\u{00AD}min\"; // zero-width space, soft hyphen\n    const greeting = \"\u{2067}olleh\u{2069}\";\n}\n";
+        let tmp = std::env::temp_dir().join("strata-shot-trojan.js");
+        std::fs::write(&tmp, trojan).unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(Some(tmp.clone()), None);
+        app.settings.minimap = false;
+        shooter.run(&ctx, &mut app, 3, vec![]);
+        app.find_hidden_characters();
+        shooter.shoot(&ctx, &mut app, 6, vec![], &dir.join("hidden.ppm"));
+        let plain = std::env::temp_dir().join("strata-shot-trojan-plain.js");
+        std::fs::write(&plain, trojan.chars().filter(|&c| !crate::hidden::is_hidden(c)).collect::<String>()).unwrap();
+        app.compare_with_file(0, &plain);
+        shooter.shoot(&ctx, &mut app, 6, vec![], &dir.join("hidden_compare.ppm"));
+
         // Spell check: prose and comments are checked, code isn't.
         let tmp = std::env::temp_dir().join("strata-shot-spell.md");
         std::fs::write(&tmp, "# Notes\n\nThis paragraph has a mispelled word and anothr one.\n\n```rust\n// a coment in code\nlet varible = 1;\n```\n").unwrap();

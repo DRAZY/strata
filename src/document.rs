@@ -51,6 +51,8 @@ pub struct Document {
     pub compare: Option<Box<crate::compare::Compare>>,
     /// Status bar word count and the text/selection state it was counted for.
     pub word_count: Option<(u64, Option<String>)>,
+    /// Status bar count of hidden and direction-changing characters.
+    pub hidden_count: crate::hidden::Counter,
     /// Opened in large-file mode (see `LargeFile`).
     pub large: Option<LargeFile>,
     /// Settings resolved for this tab, and what was set for it alone (see `app::doc_settings`).
@@ -198,6 +200,7 @@ impl Document {
             git_version: None,
             title: None,
             word_count: None,
+            hidden_count: Default::default(),
             large: None,
             local: Default::default(),
             encoding_guessed: false,

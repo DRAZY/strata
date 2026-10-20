@@ -201,14 +201,12 @@ fn fence_len(text: &str) -> usize {
 
 /// A character that hides or reorders what a block shows: bidirectional
 /// controls (which can make `rm` read as something harmless), invisible
-/// ones (zero-width, soft hyphen, byte order mark), and control characters
+/// ones (zero-width, soft hyphen, byte order mark; see `hidden`), and control characters
 /// other than tab and line break (a lone carriage return, escape, delete,
 /// the C1 range). A block holding any isn't run: the confirmation couldn't
 /// show what would really run.
 fn is_hidden(c: char) -> bool {
-    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}')
-        || matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{00AD}')
-        || (c.is_control() && c != '\t' && c != '\n')
+    crate::hidden::is_hidden(c) || (c.is_control() && c != '\t' && c != '\n')
 }
 
 /// The characters of `code` that keep it from running (see `is_hidden`),

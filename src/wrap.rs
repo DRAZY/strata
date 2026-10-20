@@ -2,20 +2,34 @@
 //! first visual row of every line so rows map to lines by binary search.
 //!
 //! Widths are monospace columns: a tab runs to the next tab stop, CJK takes
-//! two columns, anything else one. Rows break after the last whitespace that
+//! two columns, a shown hidden character its box's (see `hidden::cols`),
+//! anything else one. Rows break after the last whitespace that
 //! fits; a word wider than a row is cut where the row is full.
 
 use crate::buffer::Buffer;
 use crate::fonts::is_cjk;
+use crate::hidden;
 use std::ops::Range;
 
 /// Wrapping scans the whole text on every edit, so huge buffers stay unwrapped.
 pub const MAX_CHARS: usize = 8 << 20;
 
+/// Display columns before the next char, after `c` at column `col`. With
+/// `hidden`, a hidden character takes its box's columns (like a tab, so
+/// the galley, the caret and clicks all agree on where things are).
+pub fn advance(c: char, col: usize, tab: usize, hidden: bool) -> usize {
+    match c {
+        '\t' => col + tab - col % tab,
+        _ if hidden && hidden::is_hidden(c) => col + hidden::cols(c),
+        _ => col + 1,
+    }
+}
+
 /// Feeds one line's chars and reports where rows break.
 struct Wrapper {
     cols: usize,
     tab: usize,
+    hidden: bool,
     /// Index of the next char.
     i: usize,
     /// Tab-stop column (tabs expanded, every other char 1), as the line is laid out.
@@ -28,8 +42,8 @@ struct Wrapper {
 }
 
 impl Wrapper {
-    fn new(cols: usize, tab: usize) -> Self {
-        Self { cols: cols.max(1), tab: tab.max(1), i: 0, col: 0, width: 0, row_start: 0, space: None }
+    fn new(cols: usize, tab: usize, hidden: bool) -> Self {
+        Self { cols: cols.max(1), tab: tab.max(1), hidden, i: 0, col: 0, width: 0, row_start: 0, space: None }
     }
 
     /// Calls `brk` with the char offset of each row that starts before `c` ends.
@@ -39,8 +53,8 @@ impl Wrapper {
         if c == '\n' || c == '\r' {
             return;
         }
-        let adv = if c == '\t' { self.tab - self.col % self.tab } else { 1 };
-        let w = if c == '\t' { adv } else if is_cjk(c) { 2 } else { 1 };
+        let adv = advance(c, self.col, self.tab, self.hidden) - self.col;
+        let w = if adv == 1 && is_cjk(c) { 2 } else { adv };
         let blank = c == ' ' || c == '\t';
         // One whitespace char may hang past the edge rather than start a row.
         while self.width + w > self.cols && i > self.row_start && !(blank && self.width <= self.cols) {
@@ -74,18 +88,19 @@ pub struct LineRows {
 }
 
 impl LineRows {
-    /// `cols: None` is a single row (wrap off).
-    pub fn new(chars: impl Iterator<Item = char>, cols: Option<usize>, tab: usize) -> Self {
+    /// `cols: None` is a single row (wrap off). `hidden`: hidden characters
+    /// are shown as boxes (see `advance`).
+    pub fn new(chars: impl Iterator<Item = char>, cols: Option<usize>, tab: usize, hidden: bool) -> Self {
         let tab = tab.max(1);
         let mut starts = vec![0];
         let mut dcols = vec![0];
-        let mut wrapper = cols.map(|c| Wrapper::new(c, tab));
+        let mut wrapper = cols.map(|c| Wrapper::new(c, tab, hidden));
         let mut col = 0;
         for c in chars {
             if let Some(w) = &mut wrapper {
                 w.push(c, |at| starts.push(at));
             }
-            col += if c == '\t' { tab - col % tab } else { 1 };
+            col = advance(c, col, tab, hidden);
             dcols.push(col);
         }
         Self { starts, dcols }
@@ -93,12 +108,12 @@ impl LineRows {
 
     /// One unwrapped row of part of a line that starts at display column
     /// `col` (so tabs land on the line's tab stops).
-    pub fn starting_at(chars: impl Iterator<Item = char>, col: usize, tab: usize) -> Self {
+    pub fn starting_at(chars: impl Iterator<Item = char>, col: usize, tab: usize, hidden: bool) -> Self {
         let tab = tab.max(1);
         let mut dcols = vec![col];
         let mut col = col;
         for c in chars {
-            col += if c == '\t' { tab - col % tab } else { 1 };
+            col = advance(c, col, tab, hidden);
             dcols.push(col);
         }
         Self { starts: vec![0], dcols }
@@ -152,19 +167,19 @@ impl LineRows {
 /// First visual row of every line, for one wrap width.
 #[derive(Default)]
 pub struct WrapIndex {
-    /// (version, cols, tab, lines, chars) the index was built for.
-    key: Option<(u64, usize, usize, usize, usize)>,
+    /// (version, cols, tab, hidden shown, lines, chars) the index was built for.
+    key: Option<(u64, usize, usize, bool, usize, usize)>,
     /// `starts[line]` = first row of `line`; one extra entry = total rows.
     starts: Vec<usize>,
 }
 
 impl WrapIndex {
     /// Rebuild if the text or wrap settings changed since the last build.
-    pub fn update(&mut self, buf: &Buffer, version: u64, cols: usize, tab: usize) {
-        let key = (version, cols, tab, buf.len_lines(), buf.len_chars());
+    pub fn update(&mut self, buf: &Buffer, version: u64, cols: usize, tab: usize, hidden: bool) {
+        let key = (version, cols, tab, hidden, buf.len_lines(), buf.len_chars());
         if self.key != Some(key) {
             self.key = Some(key);
-            self.starts = build(buf, cols, tab);
+            self.starts = build(buf, cols, tab, hidden);
         }
     }
 
@@ -187,12 +202,12 @@ impl WrapIndex {
     }
 }
 
-fn build(buf: &Buffer, cols: usize, tab: usize) -> Vec<usize> {
+fn build(buf: &Buffer, cols: usize, tab: usize, hidden: bool) -> Vec<usize> {
     let mut starts = Vec::with_capacity(buf.len_lines() + 1);
     let mut row = 0;
     for chunks in buf.line_chunks() {
         starts.push(row);
-        let mut w = Wrapper::new(cols, tab);
+        let mut w = Wrapper::new(cols, tab, hidden);
         row += 1;
         for chunk in chunks {
             for c in chunk.chars() {
@@ -209,7 +224,7 @@ mod tests {
     use super::*;
 
     fn rows(text: &str, cols: usize) -> Vec<String> {
-        let lr = LineRows::new(text.chars(), Some(cols), 4);
+        let lr = LineRows::new(text.chars(), Some(cols), 4, true);
         let chars: Vec<char> = text.chars().collect();
         (0..lr.rows()).map(|r| chars[lr.range(r)].iter().collect()).collect()
     }
@@ -239,8 +254,21 @@ mod tests {
     }
 
     #[test]
+    fn hidden_characters_take_their_boxes_columns() {
+        // RLO's box is 3 columns: "a" + 3 + "bc" fills 6.
+        assert_eq!(rows("a\u{202E}bc def", 6), ["a\u{202E}bc ", "def"]);
+        let lr = LineRows::new("a\u{202E}b\tc".chars(), None, 4, true);
+        assert_eq!(lr.dcols, [0, 1, 4, 5, 8, 9]);
+        // Shown or not, it stays one char: a click past it lands after it.
+        assert_eq!(lr.off_at_col(0, 3), 2);
+        assert_eq!(lr.off_at_col(0, 2), 1);
+        let plain = LineRows::new("a\u{202E}b".chars(), None, 4, false);
+        assert_eq!(plain.dcols, [0, 1, 2, 3]);
+    }
+
+    #[test]
     fn row_offsets_and_columns() {
-        let lr = LineRows::new("the quick brown fox".chars(), Some(10), 4);
+        let lr = LineRows::new("the quick brown fox".chars(), Some(10), 4, true);
         assert_eq!(lr.starts, [0, 10]);
         assert_eq!(lr.row_of(9), 0);
         assert_eq!(lr.row_of(10), 1, "a row boundary belongs to the next row");
@@ -248,7 +276,7 @@ mod tests {
         assert_eq!(lr.off_at_col(1, 2), 12);
         assert_eq!(lr.off_at_col(0, 50), 9, "stays on the wrapped row");
         assert_eq!(lr.off_at_col(1, 50), 19);
-        let unwrapped = LineRows::new("a\tb".chars(), None, 4);
+        let unwrapped = LineRows::new("a\tb".chars(), None, 4, true);
         assert_eq!(unwrapped.rows(), 1);
         assert_eq!(unwrapped.dcols, [0, 1, 4, 5]);
     }
@@ -257,7 +285,7 @@ mod tests {
     fn index_maps_rows_to_lines() {
         let buf = Buffer::from_str("the quick brown fox\nshort\r\n\nabcdefghijkl");
         let mut idx = WrapIndex::default();
-        idx.update(&buf, 0, 10, 4);
+        idx.update(&buf, 0, 10, 4, true);
         // Rows: 2 + 1 + 1 + 2.
         assert_eq!(idx.rows(), 6);
         assert_eq!(idx.first_row(1), 2);
@@ -268,7 +296,7 @@ mod tests {
         assert_eq!(idx.line_of_row(99), (3, 1));
         // Agrees with per-line wrapping.
         for line in 0..buf.len_lines() {
-            let lr = LineRows::new(buf.line_chars(line), Some(10), 4);
+            let lr = LineRows::new(buf.line_chars(line), Some(10), 4, true);
             let next = if line + 1 < buf.len_lines() { idx.first_row(line + 1) } else { idx.rows() };
             assert_eq!(next - idx.first_row(line), lr.rows(), "line {line}");
         }
@@ -281,7 +309,7 @@ mod tests {
         let buf = Buffer::from_str(&text);
         let start = std::time::Instant::now();
         let mut idx = WrapIndex::default();
-        idx.update(&buf, 0, 40, 4);
+        idx.update(&buf, 0, 40, 4, true);
         let took = start.elapsed();
         assert!(idx.rows() > 2 * buf.len_lines());
         assert!(took.as_secs_f64() < 1.0, "building took {took:?}");
