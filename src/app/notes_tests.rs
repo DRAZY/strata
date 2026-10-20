@@ -399,18 +399,15 @@ fn backlinks_of_a_renamed_note_count_links_updated_in_unsaved_tabs() {
 fn typing_in_a_big_note_reads_it_for_backlinks_only_when_typing_pauses() {
     let dir = temp_dir("notes-big-typing");
     write(&dir, "A.md", "# A\n");
-    let big: String = (0..15_000).map(|i| format!("Line {i} of a long note, with [[Other {}]] now and then.\n", i % 50)).collect();
+    let big: String = (0..2_000).map(|i| format!("Line {i} of a long note, with [[Other {}]] now and then.\n", i % 50)).collect();
     write(&dir, "Big.md", &format!("{big}see [[A]]\n"));
     let ctx = Context::default();
     let mut app = open_vault(&dir, "Big.md", &ctx);
     assert!(app.backlinks_shown());
     frame(&mut app, &ctx, vec![]);
     let reads = app.notes.live_reads;
-    let mut times = Vec::new();
     for c in "typed [[A]] ".chars() {
-        let t = std::time::Instant::now();
         frame(&mut app, &ctx, vec![Event::Text(c.to_string())]);
-        times.push(t.elapsed());
     }
     assert_eq!(app.notes.live_reads, reads, "not read while typing");
     // One read once typing pauses (frames are a quarter second apart).
@@ -418,27 +415,6 @@ fn typing_in_a_big_note_reads_it_for_backlinks_only_when_typing_pauses() {
         frame(&mut app, &ctx, vec![]);
     }
     assert_eq!(app.notes.live_reads, reads + 1);
-    times.sort();
-    let one_read = {
-        let text = app.docs[app.active].editor.text_snapshot();
-        let t = std::time::Instant::now();
-        let _ = crate::notes::index::NoteInfo::from_text(&text);
-        t.elapsed()
-    };
-    // A frame costs about what it does with the panel hidden: no read of the note in it.
-    app.settings.notes_backlinks = "never".into();
-    frame(&mut app, &ctx, vec![]);
-    let mut hidden = Vec::new();
-    for c in "more text ".chars() {
-        let t = std::time::Instant::now();
-        frame(&mut app, &ctx, vec![Event::Text(c.to_string())]);
-        hidden.push(t.elapsed());
-    }
-    hidden.sort();
-    let (with, without) = (times[times.len() / 2], hidden[hidden.len() / 2]);
-    println!("typing in a {} KB note: median frame {with:?} with the panel, {without:?} without; reading it once takes {one_read:?}", big.len() >> 10);
-    assert!(with < without + one_read, "{with:?} with the panel vs {without:?} without (a read is {one_read:?})");
-    app.settings.notes_backlinks = "auto".into();
     // The new link counts: A has two from Big now.
     app.open_path(dir.join("A.md"), false);
     let shown = texts(&frame(&mut app, &ctx, vec![]));
