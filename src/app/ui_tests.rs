@@ -36,6 +36,16 @@ pub(super) fn labelled(app: &mut StrataApp, ctx: &Context) -> Vec<(String, Rect)
         .collect()
 }
 
+/// One frame's text on screen: labelled nodes and plain labels (whose
+/// text accesskit carries as their value).
+pub(super) fn shown_text(app: &mut StrataApp, ctx: &Context) -> Vec<String> {
+    ctx.enable_accesskit();
+    frame(app, ctx, vec![]);
+    let out = frame(app, ctx, vec![]);
+    let Some(update) = out.platform_output.accesskit_update else { return Vec::new() };
+    update.nodes.iter().filter_map(|(_, n)| n.label().or(n.value()).map(str::to_owned)).collect()
+}
+
 fn primary() -> Modifiers {
     if cfg!(target_os = "macos") { Modifiers::MAC_CMD | Modifiers::COMMAND } else { Modifiers::CTRL | Modifiers::COMMAND }
 }
@@ -324,7 +334,7 @@ fn the_status_bar_drops_items_rather_than_overlap() {
         let mut fit = None;
         let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 100.0))), ..Default::default() };
         ctx.run_ui(raw, |ui| {
-            fit = Some(status_fit(ui, "Line 120, Column 40", true, false, false, None, None, (Some("main"), Some("3 to review")), (Some("1,234 words"), None)));
+            fit = Some(status_fit(ui, ("Line 120, Column 40", false), true, false, false, None, None, (Some("main"), Some("3 to review")), (Some("1,234 words"), None)));
         })
         .textures_delta
         .clear();
@@ -555,4 +565,168 @@ fn interface_text_meets_wcag_aa_in_every_scheme() {
         assert_ne!(text, weak, "{name}");
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A menu item by its path ("View", "Focus Group", "Group 2"): (check, enabled).
+fn menu_item(app: &StrataApp, path: &[&str]) -> Option<(Option<bool>, bool)> {
+    use crate::menus::Item;
+    fn find(items: &[Item], path: &[&str]) -> Option<(Option<bool>, bool)> {
+        items.iter().find_map(|it| match (it, path) {
+            (Item::Action { label, check, enabled, .. }, [last]) if label == last => Some((*check, *enabled)),
+            (Item::Sub(name, kids), [first, rest @ ..]) if name == first => find(kids, rest),
+            _ => None,
+        })
+    }
+    app.menus().iter().find_map(|(name, items)| (name == path[0]).then(|| find(items, &path[1..])).flatten())
+}
+
+/// With the status bar hidden (or distraction-free), status messages show
+/// for a few seconds at the bottom of the window instead of going nowhere.
+#[test]
+fn status_messages_toast_while_the_status_bar_is_hidden() {
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    let shows = |app: &mut StrataApp, text: &str| shown_text(app, &ctx).iter().any(|n| n == text);
+    app.run(&ctx, Cmd::ToggleStatusBar);
+    assert!(!app.settings.show_status_bar);
+    app.status = "Saved project x".into();
+    assert!(shows(&mut app, "Saved project x"), "shown though the status bar is hidden");
+    for _ in 0..20 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    assert!(!shows(&mut app, "Saved project x"), "and gone a few seconds later");
+    // Distraction-free too.
+    app.run(&ctx, Cmd::ToggleStatusBar);
+    app.run(&ctx, Cmd::DistractionFree);
+    app.status = "No macro recorded".into();
+    assert!(shows(&mut app, "No macro recorded"));
+}
+
+/// Leaving full screen some other way (the window's button, Esc) ends
+/// distraction-free mode, which needs it; its own switch to full screen
+/// taking a few frames doesn't.
+#[test]
+fn leaving_full_screen_ends_distraction_free() {
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    app.sidebar.visible = true;
+    frame_fullscreen(&mut app, &ctx, false);
+    app.run(&ctx, Cmd::DistractionFree);
+    frame_fullscreen(&mut app, &ctx, false);
+    assert!(app.distraction.is_some(), "still on its way to full screen");
+    frame_fullscreen(&mut app, &ctx, true);
+    assert!(app.distraction.is_some());
+    frame_fullscreen(&mut app, &ctx, false);
+    assert!(app.distraction.is_none(), "left with the window");
+    assert!(app.sidebar.visible, "the side bar is back");
+    assert_eq!(menu_item(&app, &["View", "Toggle Distraction Free"]), Some((Some(false), true)));
+}
+
+/// In distraction-free mode panels aren't shown, so their check marks are
+/// off; asking for one leaves the mode so it shows.
+#[test]
+fn panels_asked_for_in_distraction_free_show() {
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    app.settings.markdown_preview = true;
+    let items: [(&[&str], Cmd); 6] = [
+        (&["View", "Toggle Minimap"], Cmd::ToggleMinimap),
+        (&["View", "Toggle Tabs"], Cmd::ToggleTabs),
+        (&["View", "Toggle Status Bar"], Cmd::ToggleStatusBar),
+        (&["View", "Show Panel", "Build Results"], Cmd::ToggleBuildResults),
+        (&["View", "Markdown Preview"], Cmd::ToggleMarkdownPreview),
+        (&["Tools", "AI", "Show Panel"], Cmd::AiTogglePanel),
+    ];
+    for (path, cmd) in items {
+        app.run(&ctx, Cmd::DistractionFree);
+        frame(&mut app, &ctx, vec![]);
+        assert_eq!(menu_item(&app, path).map(|i| i.0), Some(Some(false)), "{path:?}: hidden, so not checked");
+        app.run(&ctx, cmd);
+        assert!(app.distraction.is_none(), "{path:?}: left distraction-free mode");
+        assert_eq!(menu_item(&app, path).map(|i| i.0), Some(Some(true)), "{path:?}: shown");
+        assert!(app.status.starts_with("Left Distraction Free"), "{}", app.status);
+    }
+    // Off again outside it.
+    app.run(&ctx, Cmd::ToggleMinimap);
+    assert!(!app.settings.minimap);
+}
+
+/// Turning the minimap on in a pane too narrow for it says why it doesn't show.
+#[test]
+fn minimap_in_a_narrow_pane_says_why_it_is_hidden() {
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    app.settings.minimap = false;
+    frame_sized(&mut app, &ctx, vec2(500.0, 400.0), vec![]);
+    app.run(&ctx, Cmd::ToggleMinimap);
+    assert!(app.settings.minimap);
+    assert!(app.status.contains("wider than 640"), "{}", app.status);
+    app.run(&ctx, Cmd::ToggleMinimap);
+    frame(&mut app, &ctx, vec![]);
+    app.status.clear();
+    app.run(&ctx, Cmd::ToggleMinimap);
+    assert!(app.status.is_empty(), "wide enough: nothing to say");
+}
+
+/// While a macro records, the status bar says so, and the palette offers to stop.
+#[test]
+fn recording_a_macro_shows_in_the_status_bar_and_palette() {
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    let rec = |app: &mut StrataApp| shown_text(app, &ctx).iter().any(|n| n == "● REC");
+    assert!(!rec(&mut app));
+    app.run(&ctx, Cmd::RecordMacro);
+    app.status = "Something else".into();
+    assert!(rec(&mut app), "lasts past the status message");
+    assert_eq!(menu_item(&app, &["Tools", "Stop Recording Macro"]).map(|i| i.1), Some(true));
+    app.open_palette(&ctx, crate::palette::Mode::Commands, "recording macro");
+    frame(&mut app, &ctx, vec![]);
+    assert_eq!(app.palette.selected_label(), Some("Tools: Stop Recording Macro"));
+    frame(&mut app, &ctx, vec![press(Key::Escape, Modifiers::NONE)]);
+    app.run(&ctx, Cmd::RecordMacro);
+    assert!(!rec(&mut app));
+}
+
+/// View ▸ Focus Group offers only the groups there are.
+#[test]
+fn focus_group_items_need_the_group() {
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    let enabled = |app: &StrataApp, g: &str| menu_item(app, &["View", "Focus Group", g]).map(|i| i.1);
+    assert_eq!((enabled(&app, "Group 1"), enabled(&app, "Group 2")), (Some(true), Some(false)));
+    app.run(&ctx, Cmd::LayoutColumns2);
+    assert_eq!((enabled(&app, "Group 2"), enabled(&app, "Group 3")), (Some(true), Some(false)));
+    assert_eq!(menu_item(&app, &["View", "Move File to Group", "Group 4"]).map(|i| i.1), Some(true), "moving makes the group");
+}
+
+/// Ruler, Word Wrap Column and the whitespace items check what the current
+/// file gets, and say so when `.editorconfig` or the syntax's settings
+/// keep a choice from applying to it.
+#[test]
+fn view_settings_checks_follow_the_file() {
+    let dir = temp_dir("effective");
+    std::fs::write(dir.join(".editorconfig"), "root = true\n[*.rs]\nmax_line_length = 100\n").unwrap();
+    std::fs::write(dir.join("a.rs"), "fn main() {}\n").unwrap();
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    app.settings.rulers = vec![];
+    app.settings.syntax_settings.insert("Rust".into(), crate::doc_settings::Layer { draw_white_space: Some("all".into()), ..Default::default() });
+    app.open_path(dir.join("a.rs"), false);
+    frame(&mut app, &ctx, vec![]);
+    let check = |app: &StrataApp, path: &[&str]| menu_item(app, path).and_then(|i| i.0);
+    assert_eq!(check(&app, &["View", "Ruler", "100"]), Some(true));
+    assert_eq!(check(&app, &["View", "Ruler", "None"]), Some(false));
+    assert_eq!(check(&app, &["View", "Word Wrap Column", "100"]), Some(true));
+    assert_eq!(check(&app, &["View", "Editor Extras", "Show All Whitespace"]), Some(true));
+    assert_eq!(check(&app, &["View", "Editor Extras", "Show Whitespace in Selection"]), Some(false));
+    app.run_act(&ctx, crate::menus::Act::Named("ruler:80".into()));
+    assert_eq!(app.settings.rulers, vec![80]);
+    assert_eq!(app.status, "Saved, but .editorconfig sets the ruler for a.rs");
+    app.run_act(&ctx, crate::menus::Act::Named("x:ws_none".into()));
+    assert_eq!(app.status, "Saved, but syntax_settings (Rust) sets the whitespace for a.rs");
+    // A choice that applies says nothing.
+    app.status.clear();
+    app.run_act(&ctx, crate::menus::Act::Named("x:trailing".into()));
+    assert!(app.status.is_empty(), "{}", app.status);
+    std::fs::remove_dir_all(dir).ok();
 }

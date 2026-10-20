@@ -246,7 +246,7 @@ With multiple cursors, each cursor gets its own mark.
 
 A macro records what you type in the editor so you can replay it.
 
-1. Choose **Tools ▸ Record Macro** ({{key:toggle_record_macro}}). The status bar says it's recording.
+1. Choose **Tools ▸ Record Macro** ({{key:toggle_record_macro}}). The status bar shows a red **● REC** for as long as it's recording, and the menu item and command palette entry read **Stop Recording Macro**.
 2. Make your edits.
 3. Choose **Tools ▸ Stop Recording Macro** (the same command) to finish.
 4. Put the cursor where you want the same edits, and choose **Tools ▸ Playback Macro** ({{key:run_macro}}). It runs at every cursor.

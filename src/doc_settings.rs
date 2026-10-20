@@ -131,7 +131,8 @@ pub struct Effective {
 }
 
 impl Effective {
-    fn from_settings(s: &Settings) -> Self {
+    /// settings.json alone.
+    pub fn from_settings(s: &Settings) -> Self {
         Self {
             tab_size: s.tab_size,
             translate_tabs_to_spaces: s.translate_tabs_to_spaces,

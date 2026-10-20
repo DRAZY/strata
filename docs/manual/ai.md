@@ -88,7 +88,7 @@ A helper sends at most `ai_max_prompt_kb` (200 KB unless you change it). When a 
 
 ## The answer panel
 
-Answers stream into a panel at the bottom of the window, rendered as Markdown, with the provider and the time taken in its header. While a request runs, a spinner shows and **Cancel** (or Tools ▸ AI ▸ Cancel Request) stops it at once; the text so far stays. **Copy** copies the answer and **Open in New Tab** puts it in a new, untitled tab. Strata doesn't commit: copy a drafted commit message into your Git tool, or the terminal. × hides the panel (and stops a request). AI: Toggle Panel (Tools ▸ AI ▸ Show Panel) brings it back.
+Answers stream into a panel at the bottom of the window, rendered as Markdown, with the provider and the time taken in its header. While a request runs, a spinner shows and **Cancel** (or Tools ▸ AI ▸ Cancel Request) stops it at once; the text so far stays. **Copy** copies the answer and **Open in New Tab** puts it in a new, untitled tab. Strata doesn't commit: copy a drafted commit message into your Git tool, or the terminal. × hides the panel (and stops a request). AI: Toggle Panel (Tools ▸ AI ▸ Show Panel) brings it back, leaving distraction-free mode if it was on (the panel is hidden there).
 
 Requests never hold up the editor: they run in the background, and you can keep working. A new request replaces the one running. When a provider sends nothing for `ai_timeout_seconds` (180 unless you change it), Strata stops waiting and says so.
 

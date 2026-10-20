@@ -34,6 +34,10 @@ pub struct StrataApp {
     /// Recently closed files, for Reopen Closed Tab.
     closed: Vec<PathBuf>,
     status: String,
+    /// The status message the toast last looked at, and the toast shown
+    /// while the status bar is hidden: (text, since) (see `status_toast`).
+    status_seen: String,
+    toast: Option<(String, f64)>,
     devshot: DevShot,
     find: FindBar,
     sidebar: Sidebar,
@@ -53,6 +57,8 @@ pub struct StrataApp {
     fullscreen: bool,
     /// Whether the window was full screen before distraction-free mode.
     fullscreen_before_distraction: bool,
+    /// The full screen state the system reported last frame, to see it end.
+    fullscreen_reported: Option<bool>,
     /// Tab being dragged to a new position (or another pane).
     dragging_tab: Option<usize>,
     layout: Layout,
@@ -287,6 +293,9 @@ impl StrataApp {
             chrome_theme: String::new(),
             fullscreen: false,
             fullscreen_before_distraction: false,
+            fullscreen_reported: None,
+            status_seen: String::new(),
+            toast: None,
             dragging_tab: None,
             layout: Layout::default(),
             focus_group: 0,
@@ -1151,8 +1160,12 @@ impl StrataApp {
             Cmd::GotoSymbolInProject => self.goto_symbol_in_project(ctx),
             Cmd::CopyAsHtml => self.copy_as_html(),
             Cmd::ToggleMarkdownPreview => {
-                self.settings.markdown_preview = !self.settings.markdown_preview;
+                let on = !(self.settings.markdown_preview && self.distraction.is_none());
+                self.settings.markdown_preview = on;
                 self.persist_settings();
+                if on {
+                    self.reveal(ctx, "the Markdown preview");
+                }
             }
             Cmd::ExportMarkdownHtml => self.export_markdown_html(),
             Cmd::CloneFile => self.clone_file(),
@@ -1225,7 +1238,12 @@ impl StrataApp {
                     self.open_at(p, line, col..col);
                 }
             }
-            Cmd::ToggleBuildResults => self.build.visible = !self.build.visible,
+            Cmd::ToggleBuildResults => {
+                self.build.visible = !(self.build.visible && self.distraction.is_none());
+                if self.build.visible {
+                    self.reveal(ctx, "the build results");
+                }
+            }
             Cmd::ToggleTerminal => self.toggle_terminal(ctx),
             Cmd::NewTerminal => self.new_terminal(ctx),
             Cmd::SendToTerminal => self.send_to_terminal(ctx),
@@ -1241,12 +1259,18 @@ impl StrataApp {
             Cmd::RevertFile => self.revert(),
             Cmd::ClearRecent => self.clear_recent(),
             Cmd::ToggleStatusBar => {
-                self.settings.show_status_bar = !self.settings.show_status_bar;
+                self.settings.show_status_bar = !self.status_bar_shown();
                 self.persist_settings();
+                if self.settings.show_status_bar {
+                    self.reveal(ctx, "the status bar");
+                }
             }
             Cmd::ToggleTabs => {
-                self.settings.show_tabs = !self.settings.show_tabs;
+                self.settings.show_tabs = !(self.settings.show_tabs && self.distraction.is_none());
                 self.persist_settings();
+                if self.settings.show_tabs {
+                    self.reveal(ctx, "the tabs");
+                }
             }
             Cmd::DistractionFree => self.toggle_distraction_free(ctx),
             Cmd::IncrementalFind => self.open_find(false),
@@ -1319,15 +1343,22 @@ impl StrataApp {
             Cmd::ZoomOut => self.zoom(-1.0),
             Cmd::ZoomReset => self.zoom(0.0),
             Cmd::ToggleMinimap => {
-                self.settings.minimap = !self.settings.minimap;
+                // Like Toggle Side Bar: is it on screen?
+                let on = !self.minimap_shown();
+                self.settings.minimap = on;
                 self.persist_settings();
+                if on {
+                    self.reveal(ctx, "the minimap");
+                    if !self.docs[self.active].view.minimap_fits() {
+                        self.status = format!("The minimap shows in panes wider than {} points", crate::view::MINIMAP_MIN_WIDTH);
+                    }
+                }
             }
             Cmd::Fullscreen => {
                 self.fullscreen = !self.fullscreen;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
-                // Leaving full screen also leaves distraction-free mode, which needs it.
-                if !self.fullscreen && let Some(sidebar) = self.distraction.take() {
-                    self.sidebar.visible = sidebar;
+                if !self.fullscreen {
+                    self.left_fullscreen();
                 }
             }
             Cmd::Settings => self.open_settings(),
@@ -1428,6 +1459,7 @@ impl StrataApp {
             roots: self.sidebar.roots.clone(),
             theme: self.active_theme(),
             open: self.docs.iter().filter_map(|d| d.path.clone()).collect(),
+            recording_macro: self.macro_recording.is_some(),
         }
     }
 
@@ -2080,7 +2112,7 @@ struct StatusFit {
 /// the branch, the count of files to review and the word count; the
 /// message gets what's left (at least a little).
 #[allow(clippy::too_many_arguments)]
-fn status_fit(ui: &egui::Ui, pos: &str, conflict: bool, deleted: bool, lossy: bool, hidden: Option<&str>, lsp: Option<&str>, (branch, review): (Option<&str>, Option<&str>), (words, plugins): (Option<&str>, Option<&str>)) -> StatusFit {
+fn status_fit(ui: &egui::Ui, (pos, recording): (&str, bool), conflict: bool, deleted: bool, lossy: bool, hidden: Option<&str>, lsp: Option<&str>, (branch, review): (Option<&str>, Option<&str>), (words, plugins): (Option<&str>, Option<&str>)) -> StatusFit {
     let right_widths: [f32; 5] = ui.ctx().data(|d| d.get_temp(egui::Id::new("status-bar-widths"))).unwrap_or([100.0, 70.0, 40.0, 90.0, 70.0]);
     let font = egui::TextStyle::Body.resolve(ui.style());
     let gap = ui.spacing().item_spacing.x;
@@ -2088,6 +2120,10 @@ fn status_fit(ui: &egui::Ui, pos: &str, conflict: bool, deleted: bool, lossy: bo
     let sep = 2.0 * gap + 6.0;
     let message_min = 48.0;
     let mut room = ui.available_width() - message_min - sep;
+    // The recording mark always shows.
+    if recording {
+        room -= text_w(MACRO_REC) + sep;
+    }
     let (full, short) = (text_w(pos), text_w("0000:000"));
     room -= short;
     let mut right = [false; 5];
@@ -2484,8 +2520,13 @@ impl StrataApp {
         let review = self.review_remaining().map(|n| if n == 0 { "All reviewed".to_owned() } else { format!("{n} to review") });
         let mut find_hidden = false;
         let plugins = self.plugin_status_text();
-        let fit = status_fit(ui, &pos, d.conflict, d.deleted, d.editor.buffer.lossy, hidden.as_ref().map(|h| h.0.as_str()), lsp.as_ref().map(|l| l.0.as_str()), (branch_fit.as_deref(), review.as_deref()), (words.as_deref(), plugins.as_deref()));
+        let recording = self.macro_recording.is_some();
+        let fit = status_fit(ui, (&pos, recording), d.conflict, d.deleted, d.editor.buffer.lossy, hidden.as_ref().map(|h| h.0.as_str()), lsp.as_ref().map(|l| l.0.as_str()), (branch_fit.as_deref(), review.as_deref()), (words.as_deref(), plugins.as_deref()));
         ui.horizontal(|ui| {
+            if recording {
+                ui.colored_label(ui.visuals().error_fg_color, MACRO_REC).on_hover_text("Recording a macro: Tools ▸ Stop Recording Macro to stop");
+                ui.separator();
+            }
             let d = &mut self.docs[self.active];
             ui.label(if fit.short_pos && binary.is_none() { format!("{line}:{col}") } else { pos });
             if d.deleted && fit.left[StatusLeft::Deleted as usize] {
@@ -2668,6 +2709,10 @@ impl eframe::App for StrataApp {
         // The real full screen state: the window's button or the system may change it.
         if let Some(full) = ctx.input(|i| i.viewport().fullscreen) {
             self.fullscreen = full;
+            if !full && self.fullscreen_reported == Some(true) {
+                self.left_fullscreen();
+            }
+            self.fullscreen_reported = Some(full);
         }
         // Views of one buffer catch up with last frame's late edits (menus, palette).
         if self.sync_views() {
@@ -2857,7 +2902,7 @@ impl eframe::App for StrataApp {
                 self.run_act(ctx, act);
             }
         }
-        if self.settings.show_status_bar && self.distraction.is_none() {
+        if self.status_bar_shown() {
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         }
         self.terminal_panel(ui);
@@ -3015,6 +3060,7 @@ impl eframe::App for StrataApp {
         self.run_context_actions(ctx);
         self.track_copies(ctx);
         self.update_spelling(ctx);
+        self.status_toast(ctx);
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
@@ -3055,6 +3101,9 @@ fn select_on_line(d: &mut Document, line: usize, cols: std::ops::Range<usize>) {
 fn wrap_paragraph_width(s: &crate::doc_settings::Effective) -> usize {
     s.rulers.first().copied().filter(|&r| r > 0).unwrap_or(if s.wrap_width > 0 { s.wrap_width } else { 80 })
 }
+
+/// The status bar's mark while a macro is being recorded.
+const MACRO_REC: &str = "● REC";
 
 /// The first thing Save asks about, for a read-only file (Save As still works).
 const READ_ONLY_REASON: &str = "The file is read-only. Save anyway? (It stays read-only.)";

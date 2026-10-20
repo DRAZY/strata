@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 
 const RECENT_MAX: usize = 15;
 const JUMPS_MAX: usize = 100;
+/// How long a status message shows while the status bar is hidden (seconds).
+const TOAST_SECS: f64 = 4.0;
 
 /// A `.strata-project` file: the folders, plus the files and layout to reopen.
 #[derive(Serialize, Deserialize, Default)]
@@ -266,9 +268,63 @@ impl StrataApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
     }
 
+    /// The window left full screen (Toggle Full Screen, its button, Esc):
+    /// distraction-free mode, which needs full screen, ends too.
+    pub(super) fn left_fullscreen(&mut self) {
+        if let Some(sidebar) = self.distraction.take() {
+            self.sidebar.visible = sidebar;
+        }
+    }
+
+    /// Something distraction-free mode hides was asked for: leave the mode
+    /// so it shows.
+    pub(super) fn reveal(&mut self, ctx: &egui::Context, what: &str) {
+        if self.distraction.is_some() {
+            self.toggle_distraction_free(ctx);
+            self.status = format!("Left Distraction Free to show {what}");
+        }
+    }
+
     /// The minimap is drawn (the setting, unless distraction-free hides it).
     pub(super) fn minimap_shown(&self) -> bool {
         self.settings.minimap && self.distraction.is_none()
+    }
+
+    /// The status bar is drawn.
+    pub(super) fn status_bar_shown(&self) -> bool {
+        self.settings.show_status_bar && self.distraction.is_none()
+    }
+
+    /// New status messages while the status bar is hidden: a few seconds in
+    /// a small box at the bottom of the window.
+    pub(super) fn status_toast(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        if self.status != self.status_seen {
+            self.status_seen.clone_from(&self.status);
+            self.toast = (!self.status.is_empty()).then(|| (self.status.clone(), now));
+        }
+        if self.status_bar_shown() {
+            self.toast = None;
+        }
+        let Some((text, since)) = &self.toast else { return };
+        let left = TOAST_SECS - (now - since);
+        if left <= 0.0 {
+            self.toast = None;
+            return;
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
+        crate::fonts::ensure_cjk(ctx, text);
+        egui::Area::new(self.link.id("status-toast"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -24.0])
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width((ctx.content_rect().width() * 0.6).max(200.0));
+                    // Messages quote file names and server text: markers, never raw.
+                    ui.add(egui::Label::new(crate::hidden::label(ui, text)).wrap());
+                });
+            });
     }
 
     pub(super) fn about_window(&mut self, ctx: &egui::Context) {

@@ -5,7 +5,7 @@
 
 use super::StrataApp;
 use crate::buffer::{Buffer, LineEnding};
-use crate::doc_settings::{Effective, Source, resolve, syntax_value};
+use crate::doc_settings::{Effective, Source, resolve, syntax_value, user_layer};
 use crate::document::Document;
 use crate::session::Settings;
 use std::path::Path;
@@ -190,6 +190,26 @@ impl StrataApp {
             d.encoding = cs;
         }
         eff
+    }
+
+    /// After a View menu item changed `what` in settings.json: when the
+    /// current file's own settings keep a different value, say who sets it.
+    pub(super) fn note_override<T: PartialEq>(&mut self, what: &str, get: impl Fn(&Effective) -> T) {
+        let i = self.active;
+        let syntax = syntax_of(&self.docs[i]).to_owned();
+        let has = get(self.doc_settings(i));
+        let by_syntax = get(&resolve(&self.settings, &syntax, None));
+        let from = if has != by_syntax {
+            ".editorconfig".to_owned()
+        } else if by_syntax != get(&Effective::from_settings(&self.settings)) {
+            match user_layer(&self.settings, &syntax) {
+                Some((key, _)) => format!("syntax_settings ({key})"),
+                None => format!("Strata's default for {syntax}"),
+            }
+        } else {
+            return;
+        };
+        self.status = format!("Saved, but {from} sets the {what} for {}", self.docs[i].name());
     }
 
     /// The status bar's indentation menu: where the current file's indentation came from.
