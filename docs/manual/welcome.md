@@ -124,6 +124,7 @@ See [Find and Replace](find.md) for search, symbols and Go to Definition.
 - [Panes, Windows and Tabs](panes.md): split layouts, groups, preview tabs and multiple windows.
 - [Comparing Files](compare.md) and [Printing and Exporting](printing.md).
 - [Terminal](terminal.md), [Build Systems](build.md) and [Git Integration](git.md).
+- [Review Changes](review.md): review and keep or revert what a coding agent changed.
 - [Markdown Preview](markdown.md): live preview and HTML export.
 - [Appearance](appearance.md) and [Settings](settings.md): make Strata look and behave the way you like.
 - [Keyboard Shortcuts](shortcuts.md) and [Customizing Key Bindings](keybindings.md).

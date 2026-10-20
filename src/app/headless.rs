@@ -239,6 +239,74 @@ mod tests {
             shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join(format!("settings_find_{tag}.ppm")));
         }
 
+        // Review Changes: an agent's edits in a sample repository, the
+        // Changes list and a file's changes with Keep and Revert, dark and light.
+        if let Some(repo) = crate::review::tests::temp_repo("shots") {
+            let main = "use std::io;\n\nfn main() {\n    let name = read_name();\n    println!(\"Hello, {name}!\");\n}\n\nfn read_name() -> String {\n    let mut line = String::new();\n    io::stdin().read_line(&mut line).unwrap();\n    line.trim().to_owned()\n}\n";
+            std::fs::write(repo.join("src/main.rs"), main).unwrap();
+            crate::review::tests::run(&repo, &["commit", "-qam", "sample"]);
+            for (scheme, tag) in [("Strata Dark", "dark"), ("Strata Light", "light")] {
+                let ctx = Context::default();
+                let mut app = StrataApp::new(Some(repo.clone()), None);
+                app.settings.theme = scheme.into();
+                app.settings.minimap = false;
+                app.apply_settings();
+                shooter.run(&ctx, &mut app, 3, vec![]);
+                app.review_start(Some(&ctx));
+                for _ in 0..40 {
+                    shooter.run(&ctx, &mut app, 1, vec![]);
+                    if app.review.reviewing() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                // The "agent" at work.
+                let edited = main.replace("    let name = read_name();\n", "    let name = read_name().unwrap_or_else(|| \"world\".into());\n").replace(
+                    "fn read_name() -> String {\n    let mut line = String::new();\n    io::stdin().read_line(&mut line).unwrap();\n    line.trim().to_owned()\n}\n",
+                    "fn read_name() -> Option<String> {\n    let mut line = String::new();\n    io::stdin().read_line(&mut line).ok()?;\n    let name = line.trim();\n    (!name.is_empty()).then(|| name.to_owned())\n}\n",
+                );
+                std::fs::write(repo.join("src/main.rs"), edited).unwrap();
+                std::fs::write(repo.join("README.md"), "# Title\n\nText.\n\nRun it with `cargo run`.\n").unwrap();
+                std::fs::write(repo.join("src/args.rs"), "pub fn verbose() -> bool {\n    std::env::args().any(|a| a == \"-v\")\n}\n").unwrap();
+                std::fs::remove_file(repo.join("gone.txt")).unwrap();
+                app.review.reviewed.clear();
+                for _ in 0..80 {
+                    shooter.run(&ctx, &mut app, 1, vec![]);
+                    if app.review.scan.as_ref().is_some_and(|s| s.files.len() == 4) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                app.review_set_reviewed(&repo.join("README.md"), true);
+                app.open_review(&repo.join("src/main.rs"));
+                app.review_step_change(true);
+                shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join(format!("review_{tag}.ppm")));
+                // A narrow window: the file's buttons give way to the summary.
+                if tag == "dark"
+                    && let Some(mut narrow) = Shooter::new(980, 640, 2.0)
+                {
+                    let ctx = Context::default();
+                    let mut app = StrataApp::new(Some(repo.clone()), None);
+                    app.settings.minimap = false;
+                    app.apply_settings();
+                    app.review_show();
+                    for _ in 0..80 {
+                        narrow.run(&ctx, &mut app, 1, vec![]);
+                        if app.review.scan.is_some() {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                    app.open_review(&repo.join("src/main.rs"));
+                    narrow.shoot(&ctx, &mut app, 4, vec![], &dir.join("review_narrow.ppm"));
+                }
+                // Put things back for the next scheme.
+                crate::review::tests::run(&repo, &["checkout", "-q", "--", "."]);
+                let _ = std::fs::remove_file(repo.join("src/args.rs"));
+            }
+            let _ = std::fs::remove_dir_all(&repo);
+        }
+
         // The welcome card on a first launch, dark and light.
         for (scheme, tag) in [("Strata Dark", "dark"), ("Strata Light", "light")] {
             let ctx = Context::default();

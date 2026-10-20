@@ -142,7 +142,7 @@ impl StrataApp {
     }
 
     /// Add a Compare tab: `base` on the fixed side, a new view of tab `r` editable.
-    fn open_compare(&mut self, r: usize, base: &str, base_name: String, base_path: Option<&Path>, syntax: &str, live: Option<(Id, u64)>) {
+    pub(super) fn open_compare(&mut self, r: usize, base: &str, base_name: String, base_path: Option<&Path>, syntax: &str, live: Option<(Id, u64)>) {
         let right_name = self.docs[r].compare.as_ref().map_or_else(|| self.docs[r].name(), |c| c.right_name.clone());
         let base_label = label(&base_name, base_path, &right_name);
         let right_label = label(&right_name, self.docs[r].path.as_deref(), &base_name);
@@ -178,6 +178,21 @@ impl StrataApp {
                     HeaderAction::Prev => self.step_difference_in(i, false),
                     HeaderAction::Swap => self.docs[i].compare.as_mut().expect("compare tab").swap(),
                     HeaderAction::IgnoreWhitespace => self.docs[i].compare.as_mut().expect("compare tab").toggle_ignore_whitespace(),
+                    HeaderAction::Keep => self.review_keep_change(i),
+                    HeaderAction::Revert => self.review_revert_change(i),
+                    HeaderAction::KeepFile => self.review_keep_file(i),
+                    HeaderAction::RevertFile => self.review_revert_file(i),
+                    // These open and close tabs: the indices here are stale after them.
+                    HeaderAction::Reviewed | HeaderAction::NextFile => {
+                        self.activate(i);
+                        if a == HeaderAction::Reviewed {
+                            self.review_mark_current();
+                        } else {
+                            self.review_step_file(true, false);
+                        }
+                        ctx.request_repaint();
+                        return;
+                    }
                 }
                 ctx.request_repaint();
             }
@@ -214,7 +229,7 @@ impl StrataApp {
         }
     }
 
-    fn step_difference_in(&mut self, i: usize, forward: bool) {
+    pub(super) fn step_difference_in(&mut self, i: usize, forward: bool) {
         let d = &mut self.docs[i];
         let Some(c) = d.compare.as_mut() else { return };
         c.refresh(&mut d.editor, 0.0, true);

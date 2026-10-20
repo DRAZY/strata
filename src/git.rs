@@ -61,7 +61,16 @@ const NO_HOOKS: &str = if cfg!(windows) { "core.hooksPath=NUL" } else { "core.ho
 /// be someone else's repository, so nothing in its config gets to run a
 /// program: no fsmonitor, hooks, pager or textconv (`head_text`), and the
 /// system-wide config is skipped too.
-fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    git_io(dir, args, None, MAX_HEAD_BYTES, GIT_TIMEOUT)
+}
+
+/// `git`, with `input` written to its standard input, at most `limit` bytes
+/// of output (one more means "too much": callers check the length) and a
+/// time limit of its own. Only use commands that read the repository or
+/// take files as they are: anything that compares the working tree through
+/// Git (status, diff, add) can run filter programs named in its config.
+pub(crate) fn git_io(dir: &Path, args: &[&str], input: Option<Vec<u8>>, limit: usize, timeout: Duration) -> Option<Vec<u8>> {
     let mut cmd = Command::new("git");
     cmd.args(["-c", "core.fsmonitor=false", "-c", NO_HOOKS, "-c", "core.quotepath=false", "--no-pager"])
         .args(args)
@@ -72,7 +81,7 @@ fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
         .env("GIT_ASKPASS", "")
         .env("SSH_ASKPASS", "")
         .env("LC_ALL", "C")
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     #[cfg(windows)]
@@ -83,13 +92,21 @@ fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     }
     let mut child = cmd.spawn().ok()?;
     let stdout = child.stdout.take()?;
+    // Write on a helper thread too: git may fill its output pipe before it
+    // has read all of its input.
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = stdin.write_all(&input);
+        });
+    }
     // Read on a helper thread so a full pipe can't deadlock the timeout loop.
     // Past the limit the pipe closes, and git stops (or the timeout ends it).
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
-        stdout.take(MAX_HEAD_BYTES as u64 + 1).read_to_end(&mut buf).map(|_| buf)
+        stdout.take(limit as u64 + 1).read_to_end(&mut buf).map(|_| buf)
     });
-    let deadline = Instant::now() + GIT_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break s,

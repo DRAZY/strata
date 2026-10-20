@@ -41,6 +41,7 @@ pub static PAGES: &[Page] = &[
     page!("Using Strata", "markdown.md"),
     page!("Using Strata", "build.md"),
     page!("Using Strata", "git.md"),
+    page!("Using Strata", "review.md"),
     page!("Customizing", "appearance.md"),
     page!("Customizing", "settings.md"),
     page!("Customizing", "keybindings.md"),
@@ -130,7 +131,7 @@ pub fn expand_keys(src: &str) -> (String, Vec<String>) {
 
 /// Contents sections of the shortcuts page, by the prefix of command names.
 const CATEGORIES: &[&str] = &[
-    "File", "Edit", "Selection", "Find", "Goto", "View", "Code Folding", "Layout", "Tools", "Markdown", "Terminal", "Project", "Preferences", "Help", "Strata",
+    "File", "Edit", "Selection", "Find", "Goto", "View", "Code Folding", "Layout", "Tools", "Review", "Markdown", "Terminal", "Project", "Preferences", "Help", "Strata",
 ];
 
 /// Keyboard Shortcuts, from the keymap in effect: defaults plus keybindings.json.
@@ -395,7 +396,7 @@ mod tests {
 
     #[test]
     fn every_page_parses_with_a_title_and_known_shortcuts() {
-        assert_eq!(PAGES.len(), 21);
+        assert_eq!(PAGES.len(), 22);
         for p in PAGES {
             if let Some(src) = p.source {
                 let (_, unknown) = expand_keys(src);

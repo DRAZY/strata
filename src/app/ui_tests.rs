@@ -226,7 +226,7 @@ fn the_status_bar_drops_items_rather_than_overlap() {
         let mut fit = None;
         let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 100.0))), ..Default::default() };
         ctx.run_ui(raw, |ui| {
-            fit = Some(status_fit(ui, "Line 120, Column 40", true, false, false, Some("main"), Some("1,234 words")));
+            fit = Some(status_fit(ui, "Line 120, Column 40", true, false, false, (Some("main"), Some("3 to review")), Some("1,234 words")));
         })
         .textures_delta
         .clear();
@@ -234,7 +234,7 @@ fn the_status_bar_drops_items_rather_than_overlap() {
     };
     let wide = fit_at(1400.0);
     assert!(!wide.short_pos && wide.right.iter().all(|&r| r));
-    assert!(wide.left[StatusLeft::Conflict as usize] && wide.left[StatusLeft::Branch as usize] && wide.left[StatusLeft::Words as usize]);
+    assert!(wide.left[StatusLeft::Conflict as usize] && wide.left[StatusLeft::Branch as usize] && wide.left[StatusLeft::Review as usize] && wide.left[StatusLeft::Words as usize]);
     let mid = fit_at(760.0);
     assert!(mid.left[StatusLeft::Conflict as usize], "the warning outranks the word count");
     assert!(!mid.left[StatusLeft::Words as usize]);

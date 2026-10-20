@@ -30,6 +30,7 @@ mod git;
 mod help;
 mod devshot;
 mod diff;
+mod review;
 mod highlight;
 mod indent;
 mod jsonc;

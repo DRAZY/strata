@@ -152,6 +152,8 @@ pub struct StrataApp {
     doc_cfg: doc_settings::State,
     /// Auto save after a delay (see `delayed_save`).
     delayed_save: delayed_save::DelayedSave,
+    /// Review Changes (see `review_ui`).
+    review: review_ui::ReviewState,
 }
 
 mod autosave;
@@ -184,6 +186,7 @@ mod terminal_ui;
 mod preview;
 mod printing;
 mod replace_files;
+mod review_ui;
 #[cfg(test)]
 mod save_safety;
 mod settings_ui;
@@ -318,6 +321,7 @@ impl StrataApp {
             last_title: String::new(),
             doc_cfg: Default::default(),
             delayed_save: Default::default(),
+            review: Default::default(),
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -625,6 +629,7 @@ impl StrataApp {
                     self.reload_settings();
                 }
                 self.snippet_saved(&path);
+                self.review_saved(&path);
                 true
             }
             Err(e) => {
@@ -1108,6 +1113,18 @@ impl StrataApp {
             Cmd::PrevDifference => self.step_difference(false),
             Cmd::CompareSwap => self.compare_toggle(true),
             Cmd::CompareIgnoreWhitespace => self.compare_toggle(false),
+            Cmd::ReviewStart
+            | Cmd::ReviewEnd
+            | Cmd::ReviewShowChanges
+            | Cmd::ReviewNextChange
+            | Cmd::ReviewPrevChange
+            | Cmd::ReviewNextFile
+            | Cmd::ReviewPrevFile
+            | Cmd::ReviewKeepChange
+            | Cmd::ReviewRevertChange
+            | Cmd::ReviewKeepFile
+            | Cmd::ReviewRevertFile
+            | Cmd::ReviewMarkReviewed => self.review_command(ctx, cmd),
             Cmd::Print => self.open_print(printing::Output::Viewer),
             Cmd::ExportPdf => self.open_print(printing::Output::Pdf),
             Cmd::ExportHtml => self.open_print(printing::Output::Html),
@@ -1266,7 +1283,7 @@ impl StrataApp {
     /// Files' question, Print), or a menu: window and editor commands wait,
     /// and the dialog alone sees Esc and Enter.
     fn modal_open(&self, ctx: &egui::Context) -> bool {
-        self.sidebar.modal_open() || self.print.is_open() || egui::Popup::is_any_open(ctx)
+        self.sidebar.modal_open() || self.print.is_open() || self.review.confirming() || egui::Popup::is_any_open(ctx)
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -1951,6 +1968,7 @@ enum StatusLeft {
     Deleted,
     Lossy,
     Branch,
+    Review,
     Words,
 }
 
@@ -1958,7 +1976,7 @@ enum StatusLeft {
 struct StatusFit {
     /// "12:5" instead of "Line 12, Column 5".
     short_pos: bool,
-    left: [bool; 5],
+    left: [bool; 6],
     /// Syntax, encoding, line endings, indentation, theme.
     right: [bool; 5],
     /// Each right item's width (with its separator) when last drawn.
@@ -1967,9 +1985,10 @@ struct StatusFit {
 
 /// Choose the status bar items that fit its width, by priority: the cursor
 /// position and the syntax always; then the encoding, line endings,
-/// indentation and theme menus; then the warnings, the branch and the word
-/// count; the message gets what's left (at least a little).
-fn status_fit(ui: &egui::Ui, pos: &str, conflict: bool, deleted: bool, lossy: bool, branch: Option<&str>, words: Option<&str>) -> StatusFit {
+/// indentation and theme menus; then the warnings, the branch, the count of
+/// files to review and the word count; the message gets what's left (at
+/// least a little).
+fn status_fit(ui: &egui::Ui, pos: &str, conflict: bool, deleted: bool, lossy: bool, (branch, review): (Option<&str>, Option<&str>), words: Option<&str>) -> StatusFit {
     let right_widths: [f32; 5] = ui.ctx().data(|d| d.get_temp(egui::Id::new("status-bar-widths"))).unwrap_or([100.0, 70.0, 40.0, 90.0, 70.0]);
     let font = egui::TextStyle::Body.resolve(ui.style());
     let gap = ui.spacing().item_spacing.x;
@@ -1994,14 +2013,15 @@ fn status_fit(ui: &egui::Ui, pos: &str, conflict: bool, deleted: bool, lossy: bo
         room -= full - short;
     }
     let button = 2.0 * ui.spacing().button_padding.x;
-    let wanted: [(bool, f32); 5] = [
+    let wanted: [(bool, f32); 6] = [
         (conflict, sep + text_w("Changed on disk") + text_w("Reload") + button),
         (deleted, sep + text_w("Deleted on disk (save to recreate)")),
         (lossy, sep + text_w("Decoding errors")),
         (branch.is_some(), sep + branch.map_or(0.0, |b| text_w(&format!("⎇ {b}")))),
+        (review.is_some(), sep + review.map_or(0.0, text_w) + button),
         (words.is_some(), sep + words.map_or(0.0, text_w)),
     ];
-    let mut left = [false; 5];
+    let mut left = [false; 6];
     for (k, (on, w)) in wanted.into_iter().enumerate() {
         if on && w <= room {
             left[k] = true;
@@ -2357,7 +2377,8 @@ impl StrataApp {
             pos.push_str(&format!("  ·  {selected} selected"));
         }
         // Narrow windows: items drop out by priority rather than overlap.
-        let fit = status_fit(ui, &pos, d.conflict, d.deleted, d.editor.buffer.lossy, branch.as_deref(), words.as_deref());
+        let review = self.review_remaining().map(|n| if n == 0 { "All reviewed".to_owned() } else { format!("{n} to review") });
+        let fit = status_fit(ui, &pos, d.conflict, d.deleted, d.editor.buffer.lossy, (branch.as_deref(), review.as_deref()), words.as_deref());
         ui.horizontal(|ui| {
             let d = &mut self.docs[self.active];
             ui.label(if fit.short_pos && binary.is_none() { format!("{line}:{col}") } else { pos });
@@ -2380,6 +2401,12 @@ impl StrataApp {
             if let Some(branch) = branch.filter(|_| fit.left[StatusLeft::Branch as usize]) {
                 ui.separator();
                 ui.label(format!("⎇ {branch}"));
+            }
+            if let Some(review) = review.filter(|_| fit.left[StatusLeft::Review as usize]) {
+                ui.separator();
+                if ui.add(egui::Button::new(review).frame(false)).on_hover_text("Files left to review: show the Changes list").clicked() {
+                    self.review_show();
+                }
             }
             if let Some(words) = words.filter(|_| fit.left[StatusLeft::Words as usize]) {
                 ui.separator();
@@ -2583,6 +2610,7 @@ impl eframe::App for StrataApp {
             painter.text(r.center(), egui::Align2::CENTER_CENTER, "Drop to open", FontId::proportional(22.0), accent);
         }
         self.update_git(ctx, now);
+        self.review_frame(ctx, now);
         // Save on focus lost (a setting, off by default like Sublime's).
         let focused = ctx.input(|i| i.focused);
         if self.window_focused && !focused && self.settings.save_on_focus_lost {
@@ -2710,7 +2738,13 @@ impl eframe::App for StrataApp {
             let action = egui::Panel::left(self.link.id("sidebar"))
                 .resizable(true)
                 .default_size(260.0)
-                .show(ui, |ui| self.sidebar.show(ui, current.as_deref(), &open))
+                .show(ui, |ui| {
+                    let action = self.sidebar.show(ui, current.as_deref(), &open);
+                    if self.sidebar.tab == sidebar::Tab::Changes {
+                        self.changes_list(ui);
+                    }
+                    action
+                })
                 .inner;
             match action {
                 Some(sidebar::Action::Open(p, preview)) => {
