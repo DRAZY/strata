@@ -747,9 +747,9 @@ impl StrataApp {
             ],
         ));
 
-        // Notes go at the end of Tools (see `notes_ui`).
+        // Notes and plugins go at the end of Tools (see `notes_ui`, `plugins_ui`).
         if let Some((_, tools)) = m.last_mut() {
-            tools.extend([SEP(), self.notes_menu()]);
+            tools.extend([SEP(), self.notes_menu(), self.plugins_menu()]);
         }
 
         // ---- Project
@@ -962,6 +962,7 @@ impl StrataApp {
                 "crlf" => self.doc().set_line_ending(crate::buffer::LineEnding::CrLf),
                 n if n.starts_with("spell:") => self.spell_act(n),
                 n if n.starts_with(super::macro_files::RUN_PREFIX) => self.run_macro_file(&n[super::macro_files::RUN_PREFIX.len()..]),
+                n if n.starts_with(super::plugins_ui::ACT_PREFIX) => self.plugin_act(n),
                 _ => {}
             },
         }

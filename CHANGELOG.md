@@ -74,6 +74,35 @@ All notable changes to Strata are recorded here. The format follows
   (`ai_max_prompt_kb`) says what was left out. API keys live in the macOS
   Keychain or Windows Credential Manager, are only sent to the address they
   were saved for, and never touch `settings.json` or the log.
+- Plugins: extensions that are separate programs, in any language, which
+  Strata starts and talks to with JSON-RPC over their standard input and
+  output (the framing language servers use). A plugin can add commands to
+  the command palette and Tools ▸ Plugins, keys (never one Strata already
+  uses), status bar items, a Markdown panel and pick lists; read and edit
+  open files (one Undo takes back each edit); and read and write files in the
+  side bar folders. A plugin that crashes is restarted, and left stopped
+  after three crashes in five minutes; one that floods Strata with messages
+  or stops answering can't hold up the editor. Plugin settings go in
+  `plugins` in settings.json. See the new Plugins page in the manual, with
+  the full API reference; two small examples are in `examples/plugins`.
+- Plugins are installed from a folder or a zip (Tools ▸ Plugins ▸ **Install
+  from Folder…** / **Install from Zip…**) into Strata's settings folder;
+  there's no online directory. Zips with paths that would leave the package,
+  links, or sizes over the limits are refused. **Plugins: Manage Plugins…**
+  lists them, turns them on and off, starts and stops them, shows what they
+  may do and their log, and removes them.
+- A plugin asks before it first runs: Strata lists the permissions it wants
+  in plain words and remembers your answer for that exact package (by its
+  SHA-256), so any change to it asks again; it then runs from a read-only
+  copy of exactly that package, checked again right before it starts, with
+  the environment variables that load code from elsewhere (`PYTHONPATH`,
+  `NODE_OPTIONS`, `DYLD_*`…) removed. Every request a plugin makes is
+  checked against what you allowed, and its file access stays inside the
+  open folders, never following links or reaching hard-linked files. Text
+  from plugins shows hidden and direction-changing characters as markers.
+  Strata can't sandbox a plugin's own program, and the question says so:
+  running other programs and using the network are shown as things Strata
+  can't limit, and an interpreter's own libraries aren't part of the check.
 - Review Changes, for checking what a coding agent changed and keeping or
   undoing each change (no AI involved). The **Changes** tab of the side bar
   lists every file that differs from the last commit, or from a snapshot taken

@@ -12,12 +12,12 @@ use std::path::Path;
 
 /// Folders in the config folder that hold what Strata itself writes (files in
 /// them are made owner-only too). `backups.recovered-*` folders count as well.
-const DATA_DIRS: &[&str] = &["backups", "Logs", "Crashes", "Print"];
+const DATA_DIRS: &[&str] = &["backups", "Logs", "Crashes", "Print", crate::plugins::package::DIR, crate::plugins::package::DATA_DIR];
 /// Folders of the user's own files (snippets, syntaxes...): the folder is made
 /// owner-only, the files in it are left as they are.
 const USER_DIRS: &[&str] = &["Snippets", "build_systems", "Syntaxes", "Themes"];
 /// Files Strata keeps at the top of the config folder.
-const FILES: &[&str] = &["settings.json", "keybindings.json", "session.json", "session.json.tmp", "session.lock", "strata.port", crate::swap::KEY_FILE, crate::runblock::ALLOWED_FILE];
+const FILES: &[&str] = &["settings.json", "keybindings.json", "session.json", "session.json.tmp", "session.lock", "strata.port", crate::swap::KEY_FILE, crate::runblock::ALLOWED_FILE, crate::plugins::store::FILE];
 
 /// `create_dir_all`, with every folder it creates owner-only (folders that
 /// already exist are left to `harden`).

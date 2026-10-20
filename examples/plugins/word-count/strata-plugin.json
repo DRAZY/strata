@@ -1,0 +1,24 @@
+{
+  "name": "word-count",
+  "title": "Word Count",
+  "version": "1.0.0",
+  "description": "Shows how many words the current file has in the status bar, and a summary in a panel.",
+  "author": "The Strata authors",
+  "license": "MIT",
+  "api": "strata.plugin/1",
+  "run": {
+    "command": "python3",
+    "args": ["word_count.py"],
+    "windows": {"command": "py", "args": ["-3", "word_count.py"]}
+  },
+  "activation": ["open:*"],
+  "permissions": ["read_document", "notify", "panel"],
+  "contributes": {
+    "commands": [
+      {"id": "show", "title": "Show Word Count"}
+    ],
+    "settings": {
+      "count_numbers": {"default": true, "description": "Count numbers such as 42 or 3.14 as words."}
+    }
+  }
+}

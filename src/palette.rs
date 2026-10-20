@@ -32,6 +32,8 @@ pub enum Event {
     Run(Cmd),
     /// Run an editor command by name (see `editor_commands`).
     Editor(&'static str),
+    /// A command added at run time (a plugin's), as a menu action name.
+    Named(String),
     Open(PathBuf),
     /// 0-based line in the current file.
     GotoLine { line: usize, preview: bool },
@@ -101,6 +103,7 @@ struct Row {
 enum Pick {
     Cmd(Cmd),
     Editor(&'static str),
+    Named(String),
     File(PathBuf),
     Line(usize),
     /// A match on a line: (line, char columns).
@@ -129,6 +132,8 @@ pub struct Palette {
     choice_hint: String,
     /// Editor commands as (id, palette name); shortcuts come from the keymap.
     editor_cmds: Vec<(&'static str, &'static str)>,
+    /// Commands added at run time: (palette name, action name, shortcut).
+    extra: Vec<(String, String, String)>,
 }
 
 impl Palette {
@@ -146,6 +151,7 @@ impl Palette {
             rows_key: None,
             previewed: None,
             editor_cmds,
+            extra: Vec::new(),
             choices: Vec::new(),
             choice_hint: String::new(),
         }
@@ -177,6 +183,11 @@ impl Palette {
             self.selected = self.rows.iter().position(|r| r.label == current).unwrap_or(0);
             self.previewed = Some(self.selected);
         }
+    }
+
+    /// Commands that come and go (plugins'), listed with the built-in ones.
+    pub fn set_extra_commands(&mut self, extra: Vec<(String, String, String)>) {
+        self.extra = extra;
     }
 
     /// Offer `choices` to pick from; the app gets `Event::Chose(index)`.
@@ -263,6 +274,7 @@ impl Palette {
             .collect();
         let keymap = crate::keybindings::current();
         items.extend(self.editor_cmds.iter().map(|&(id, name)| (name.to_string(), keymap.label(crate::keybindings::Target::Editor(id)).unwrap_or_default(), Pick::Editor(id))));
+        items.extend(self.extra.iter().map(|(name, act, key)| (name.clone(), key.clone(), Pick::Named(act.clone()))));
         items.extend(crate::highlight::syntax_names().into_iter().map(|s| (format!("Set Syntax: {s}"), String::new(), Pick::Syntax(s.to_owned()))));
         rank_rows(&self.text, &items, |i| &i.0, |i| i.2.clone(), |i| i.1.clone())
     }
@@ -451,6 +463,7 @@ impl Palette {
             Pick::Line(usize::MAX) => return out, // no valid line typed yet
             Pick::Cmd(c) => out.push(Event::Run(c)),
             Pick::Editor(id) => out.push(Event::Editor(id)),
+            Pick::Named(act) => out.push(Event::Named(act)),
             Pick::Line(l) => out.push(Event::GotoLine { line: l, preview: false }),
             Pick::Span(line, cols) => out.push(Event::Select { line, cols, preview: false }),
             Pick::Theme(t) => out.push(Event::Theme { name: t, preview: false }),
@@ -559,6 +572,12 @@ fn rank_rows<T>(
 }
 
 /// The label with matched chars bold and tinted.
+/// The text a row named `label` is laid out as (tests of other modules' rows).
+#[cfg(test)]
+pub fn highlighted_for_tests(label: &str) -> String {
+    highlighted(label, &[], 14.0, Color32::WHITE, Color32::RED).text
+}
+
 fn highlighted(label: &str, hits: &[usize], size: f32, fg: Color32, accent: Color32) -> LayoutJob {
     let font = FontId::proportional(size);
     let normal = TextFormat::simple(font.clone(), fg);

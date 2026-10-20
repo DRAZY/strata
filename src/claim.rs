@@ -431,8 +431,10 @@ pub(crate) mod imp {
 
     pub fn open_file_at(dir: &Dir, name: &str) -> io::Result<std::fs::File> {
         let name = c(name)?;
+        // O_NONBLOCK: opening a named pipe put there mustn't wait for a writer
+        // (callers check it's a plain file; for those it changes nothing).
         // SAFETY: as above.
-        let f = fd(unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC) })?;
+        let f = fd(unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC) })?;
         Ok(std::fs::File::from(f))
     }
 
@@ -464,7 +466,8 @@ pub(crate) mod imp {
 
     pub fn open_file(path: &Path) -> io::Result<std::fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)
+        // O_NONBLOCK as in `open_file_at`.
+        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
     }
 
     pub fn id_of(file: &std::fs::File) -> Option<(u64, u64)> {

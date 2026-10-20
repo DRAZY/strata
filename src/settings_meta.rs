@@ -176,6 +176,7 @@ pub static SETTINGS: &[Meta] = &[
     m("editorconfig", Editor, "Follow .editorconfig files", Toggle),
     m("syntax_settings", Advanced, "Settings per language", Json),
     m("lsp_servers", Advanced, "Language server setup", Json),
+    m("plugins", Advanced, "Plugin settings", Json),
     m("theme_overrides", Advanced, "Color overrides", Json),
     m("theme_overrides_by_theme", Advanced, "Color overrides per scheme", Json),
 ];

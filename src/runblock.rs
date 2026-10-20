@@ -387,7 +387,7 @@ fn run_script(program: &Path, name: &str, args: &[&str], ext: &str, code: &str, 
     }
     #[cfg(windows)]
     let job = match crate::lsp::server::job::Job::holding(&child) {
-        Some(job) if tree::resume(&child) => job,
+        Some(job) if crate::lsp::server::job::Job::resume(&child) => job,
         // Not contained, so not run: it's still suspended and hasn't done anything.
         other => {
             drop(other);
@@ -572,44 +572,6 @@ mod tree {
 
     #[cfg(not(unix))]
     pub fn stop(_child: &Child, _descendants: bool) {}
-
-    /// Resume the threads of `child`, started suspended. False if there
-    /// were none to resume or one couldn't be.
-    #[cfg(windows)]
-    pub fn resume(child: &Child) -> bool {
-        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-        use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next};
-        use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
-        let pid = child.id();
-        let mut resumed = 0;
-        // SAFETY: plain Win32 calls on handles we open and close here; `entry` outlives them.
-        unsafe {
-            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-            if snap == INVALID_HANDLE_VALUE {
-                return false;
-            }
-            let mut entry: THREADENTRY32 = std::mem::zeroed();
-            entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
-            let mut more = Thread32First(snap, &mut entry) != 0;
-            while more {
-                if entry.th32OwnerProcessID == pid {
-                    let t = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
-                    if t.is_null() || ResumeThread(t) == u32::MAX {
-                        if !t.is_null() {
-                            CloseHandle(t);
-                        }
-                        CloseHandle(snap);
-                        return false;
-                    }
-                    CloseHandle(t);
-                    resumed += 1;
-                }
-                more = Thread32Next(snap, &mut entry) != 0;
-            }
-            CloseHandle(snap);
-        }
-        resumed > 0
-    }
 
     /// The processes whose parent is `pid`.
     #[cfg(target_os = "macos")]
