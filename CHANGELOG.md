@@ -106,9 +106,10 @@ on; see Security below.
   Strata starts and talks to with JSON-RPC over their standard input and
   output (the framing language servers use). A plugin can add commands to
   the command palette and Tools ▸ Plugins, keys (never one Strata already
-  uses), status bar items, a Markdown panel and pick lists; read and edit
-  open files (one Undo takes back each edit); and read and write files in the
-  side bar folders. A plugin that crashes is restarted, and left stopped
+  uses), status bar items (for every window, or for the file in front of
+  each), a Markdown panel and pick lists; read and edit open files (one
+  Undo takes back each edit); and read and write files in the side bar
+  folders. A plugin that crashes is restarted, and left stopped
   after three crashes in five minutes; one that floods Strata with messages
   or stops answering can't hold up the editor. Plugin settings go in
   `plugins` in settings.json. See the new Plugins page in the manual, with

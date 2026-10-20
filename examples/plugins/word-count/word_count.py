@@ -1,6 +1,6 @@
 """Word Count: an example Strata plugin (API strata.plugin/1).
 
-Shows the current file's word count as a status bar item, kept up to date
+Shows the word count of each window's current file as a status bar item, kept up to date
 as you type, and "Word Count: Show Word Count" opens a panel with words,
 lines and characters. It only uses the Python standard library.
 
@@ -20,7 +20,7 @@ _stdout = sys.stdout.buffer
 _next_id = 0
 _waiting = []  # messages that arrived while waiting for an answer
 _settings = {"count_numbers": True}
-_last = None  # (document id, version) last counted
+_counted = {}  # document id -> version last counted, for documents shown in front
 
 
 def read_message():
@@ -79,21 +79,20 @@ def count_words(text):
     return len(words)
 
 
-def update_status(document_id=None):
-    """Count the words of a document (the current tab if None) and show them."""
-    global _last
-    params = {} if document_id is None else {"document": document_id}
-    result, error = call("document/read", params)
+def update_status(document_id):
+    """Count the words of a document and show them in each window that has
+    it in front (an item for one document shows only there)."""
+    result, error = call("document/read", {"document": document_id})
     if error:
         return
     doc = result["document"]
-    key = (doc["id"], doc["version"])
-    if key == _last:
+    if _counted.get(doc["id"]) == doc["version"]:
         return
-    _last = key
+    _counted[doc["id"]] = doc["version"]
     n = count_words(result["text"])
     call("ui/statusItem", {
         "id": "words",
+        "document": doc["id"],
         "text": "Word Count: {:,}".format(n),
         "tooltip": "Words in {} (from the Word Count plugin)".format(doc["name"]),
         "command": "show",
@@ -136,15 +135,20 @@ def handle(message):
         return
     if method == "exit":
         sys.exit(0)
-    elif method == "initialized":
-        update_status()
-    elif method in ("document/opened", "document/changed", "document/saved"):
-        update_status()
+    doc_id = (params.get("document") or {}).get("id")
+    if method == "document/activated":
+        # A window shows this document in front: count it from now on.
+        _counted.setdefault(doc_id, None)
+        update_status(doc_id)
+    elif method in ("document/changed", "document/saved") and doc_id in _counted:
+        update_status(doc_id)
+    elif method == "document/closed":
+        _counted.pop(doc_id, None)
     elif method == "settings/changed":
-        global _last
         _settings.update(params.get("settings") or {})
-        _last = None
-        update_status()
+        for doc_id in list(_counted):
+            _counted[doc_id] = None
+            update_status(doc_id)
 
 
 def main():

@@ -368,6 +368,55 @@ fn the_word_count_example_counts_as_you_type() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// Two windows share the plugin: each shows the count of its own front
+/// file, from the start and after a tab switch or an edit in the other.
+#[test]
+fn the_word_count_example_counts_each_windows_own_file() {
+    if !installed("python3") {
+        eprintln!("python3 isn't installed: skipped");
+        return;
+    }
+    let dir = temp_dir("plugin-wc-windows");
+    let config = dir.join("config");
+    let (ctx_a, ctx_b) = (Context::default(), Context::default());
+    let mut a = window(&ctx_a, &dir, &config, "notes.md", "one two three\n");
+    install(&mut a, &ctx_a, example("word-count"), false);
+    let mut b = StrataApp::new(Some(dir.clone()), Some(config.clone()));
+    b.terminal_started = true;
+    b.plugins = PluginsState::sharing(a.plugins.mgr.clone());
+    std::fs::write(dir.join("other.md"), "a b\n").unwrap();
+    b.open_path(dir.join("other.md"), false);
+    frame(&mut b, &ctx_b, vec![]);
+    // The new file asks to start it, in the window in front.
+    click(&mut a, &ctx_a, "Allow and Start");
+    let both = |a: &mut StrataApp, b: &mut StrataApp, what: &str, want_a: &str, want_b: &str| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let (na, nb) = (frame(a, &ctx_a, vec![]), frame(b, &ctx_b, vec![]));
+            if has(&na, want_a) && has(&nb, want_b) {
+                return (na, nb);
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    };
+    let (na, nb) = both(&mut a, &mut b, "each window's count", "Word Count: 3", "Word Count: 2");
+    assert!(!has(&na, "Word Count: 2") && !has(&nb, "Word Count: 3"), "one count per window");
+    // An edit in one window changes only its own count.
+    b.docs[b.active].editor.insert_text("c d e ");
+    let (na, _) = both(&mut a, &mut b, "the edit", "Word Count: 3", "Word Count: 5");
+    assert!(!has(&na, "Word Count: 5"));
+    // Another tab in front: its count.
+    std::fs::write(dir.join("third.md"), "x\n").unwrap();
+    a.open_path(dir.join("third.md"), false);
+    both(&mut a, &mut b, "the new tab's count", "Word Count: 1", "Word Count: 5");
+    let i = a.docs.iter().position(|d| d.name() == "notes.md").unwrap();
+    a.activate(i);
+    both(&mut a, &mut b, "back to the first tab", "Word Count: 3", "Word Count: 5");
+    drop(b);
+    std::fs::remove_dir_all(dir).ok();
+}
+
 #[test]
 fn the_sort_unique_example_sorts_and_undo_puts_it_back() {
     if !installed("node") {
@@ -478,5 +527,41 @@ fn direction_overrides_from_a_plugin_never_reach_the_screen_raw() {
     let nodes = until(&mut app, &ctx, "the manager", |_, n| has(n, "Copy Log") && has(n, "log[RLO]line"));
     no_raw_rlo(&nodes, "manager");
     assert!(has(&nodes, "Evil[RLO]Name") && has(&nodes, "x[RLO]y"));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A plugin's Markdown panel starts at its left edge (not centered like a
+/// help page) and a short table fits above the status bar without scrolling.
+#[test]
+fn a_panel_is_flush_left_and_a_short_table_fits() {
+    let dir = temp_dir("plugin-panel-layout");
+    let ctx = Context::default();
+    let mut app = window(&ctx, &dir, &dir.join("config"), "notes.md", "one two three\n");
+    let md = "| | Count |\n|:--|--:|\n| Words | 3 |\n| Lines | 1 |\n| Characters | 14 |\n| Characters without spaces | 11 |\n";
+    app.plugin_show_panel("word-count", &json!({"title": "notes.md", "markdown": md})).unwrap();
+    let mut texts = Vec::new();
+    for _ in 0..4 {
+        let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 720.0))), focused: true, ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| {
+            let mut frame = eframe::Frame::_new_kittest();
+            eframe::App::ui(&mut app, ui, &mut frame);
+        });
+        out.textures_delta.clear();
+        texts = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.visual_bounding_rect(), s.clip_rect)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+    }
+    let find = |s: &str| texts.iter().find(|(t, ..)| t == s).unwrap_or_else(|| panic!("{s} not drawn")).clone();
+    let (_, head, _) = find("word-count: notes.md");
+    let (_, words, _) = find("Words");
+    let (_, last, clip) = find("Characters without spaces");
+    let (_, status, _) = find("Line 1, Column 1");
+    assert!(words.left() - head.left() < 24.0, "flush left: {words:?} vs the title {head:?}");
+    assert!(last.bottom() <= status.top() && clip.contains_rect(last), "the last row is in view: {last:?} {clip:?}, status bar at {status:?}");
     std::fs::remove_dir_all(dir).ok();
 }

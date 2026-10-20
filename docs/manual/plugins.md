@@ -170,7 +170,7 @@ The first message, a request. Params:
 | `storagePath` | A folder for the plugin's own files (kept when it's updated or removed), or `null` |
 | `workspaceFolders` | The folders open in the side bar, with `read_workspace` or `write_workspace`; otherwise `null` |
 
-Answer within 10 seconds. The result may be `{"api": "strata.plugin/1"}`; a plugin that answers with another `api`, or with an error, isn't started. After the answer Strata sends the `initialized` notification, then the plugin's first command (if one started it) and the open documents.
+Answer within 10 seconds. The result may be `{"api": "strata.plugin/1"}`; a plugin that answers with another `api`, or with an error, isn't started. After the answer Strata sends the `initialized` notification, then the plugin's first command (if one started it), the open documents and the one in front of each window.
 
 #### initialized
 
@@ -183,6 +183,10 @@ A request to run one of the plugin's commands. Params: `command` (its id) and `d
 #### document/opened, document/changed, document/saved, document/closed
 
 Notifications, sent only with `read_document`. Params: `{"document": …}` (for `document/closed`, just `{"id"}`). A plugin hears of every open document when it starts. `document/changed` comes at most every 150 ms for a document while you type. They never include the text: use `document/read`.
+
+#### document/activated
+
+A notification, sent only with `read_document`: a document came to the front of a window (a window opened, or you switched to another tab). Params: `{"document": …}`, after its `document/opened`. A plugin hears of the document in front of each window when it starts. Each window has its own document in front, so a plugin that shows something about "the current file" should show it with `ui/statusItem`'s `document`.
 
 #### settings/changed
 
@@ -241,7 +245,7 @@ Permission: `notify`. Params: `message` (its first line, up to 300 characters, i
 
 #### ui/statusItem
 
-Permission: `notify`. Params: `id` (the plugin's own name for the item), `text` (one line, up to 60 characters; empty removes the item), `tooltip`, and `command` (one of the plugin's command ids, run when the item is clicked). A plugin may show up to 4 items; they're removed when it stops. Result: `null`. Errors: `-32015` (a fifth item), `-32602` (a `command` that isn't the plugin's).
+Permission: `notify`. Params: `id` (the plugin's own name for the item), `text` (one line, up to 60 characters; empty removes the item), `tooltip`, `command` (one of the plugin's command ids, run when the item is clicked), and `document` (an id; leave it out for an item every window shows). An item with a `document` shows only in windows with that document in front, in place of the plugin's item with the same `id` for every document, and goes away when the document is closed; set one per document to show, say, each file's word count in its own window. A plugin may use up to 4 item ids; items are removed when it stops. Result: `null`. Errors: `-32015` (a fifth id), `-32602` (a `command` that isn't the plugin's), `-32012` (a `document` that isn't open).
 
 #### ui/pick
 

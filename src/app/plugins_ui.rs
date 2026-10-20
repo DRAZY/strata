@@ -67,7 +67,7 @@ impl PluginsState {
 
     /// Another window's, sharing the plugins.
     pub fn sharing(mgr: Rc<RefCell<Manager>>) -> Self {
-        Self { mgr, window: next_window(), panel: None, render: DocRender::default(), pick: None, manager_open: false, selected: None, installing: None, removing: None, refocus: false }
+        Self { mgr, window: next_window(), panel: None, render: DocRender::compact(), pick: None, manager_open: false, selected: None, installing: None, removing: None, refocus: false }
     }
 
     /// A question of the plugins' is up in this window (dialog keys are its).
@@ -116,12 +116,13 @@ impl StrataApp {
     pub(super) fn plugins_frame(&mut self, ctx: &egui::Context) {
         let window = self.plugins.window;
         let docs = self.plugin_docs();
+        let front = self.docs.get(self.active).filter(|d| d.binary.is_none()).map(|d| d.editor.id());
         let focused = ctx.input(|i| i.focused);
         let (requests, notes) = {
             let mut m = self.plugins.mgr.borrow_mut();
             m.set_context(ctx);
             m.set_user_settings(&self.settings.plugins);
-            m.sync_window(window, docs, self.sidebar.roots.clone(), focused);
+            m.sync_window(window, docs, self.sidebar.roots.clone(), focused, front);
             m.tick();
             let notes = if m.is_primary(window) { m.take_notes() } else { Vec::new() };
             (m.take_requests(window, REQUESTS_PER_FRAME), notes)
@@ -502,13 +503,13 @@ impl StrataApp {
     /// The status bar's plugin items as one text (to measure whether they fit).
     pub(super) fn plugin_status_text(&self) -> Option<String> {
         let m = self.plugins.mgr.borrow();
-        let items = m.status_items();
+        let items = m.status_items(self.plugins.window);
         (!items.is_empty()).then(|| items.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("  ·  "))
     }
 
     /// Draw the plugins' status bar items; one with a command runs it on a click.
     pub(super) fn plugin_status_ui(&mut self, ui: &mut egui::Ui) {
-        let items: Vec<manager::StatusItem> = self.plugins.mgr.borrow().status_items().into_iter().cloned().collect();
+        let items: Vec<manager::StatusItem> = self.plugins.mgr.borrow().status_items(self.plugins.window).into_iter().cloned().collect();
         let mut run = None;
         for (k, s) in items.iter().enumerate() {
             if k > 0 {

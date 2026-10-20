@@ -51,10 +51,20 @@ impl DocInfo {
     }
 }
 
+/// A window's open documents, the one in front, and its side bar folders.
+struct WindowDocs {
+    docs: Vec<DocInfo>,
+    front: Option<u64>,
+    folders: Vec<PathBuf>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct StatusItem {
     pub plugin: String,
     pub id: String,
+    /// Shown only in windows with this document in front (in place of the
+    /// plugin's item of the same id for every document, if any).
+    pub document: Option<u64>,
     pub text: String,
     pub tooltip: String,
     /// One of the plugin's commands, run on a click.
@@ -110,6 +120,8 @@ pub struct Plugin {
     sent_settings: Option<Value>,
     /// Documents it was told about: version, and when.
     told: HashMap<u64, (u64, Instant)>,
+    /// The document it was told is in front of each window.
+    fronts: HashMap<u64, u64>,
     commands: Vec<(Pending, String)>,
     inbox: VecDeque<Incoming>,
     /// Unknown settings already warned about.
@@ -133,6 +145,7 @@ impl Plugin {
             declined: false,
             sent_settings: None,
             told: HashMap::new(),
+            fronts: HashMap::new(),
             commands: Vec::new(),
             inbox: VecDeque::new(),
             warned: HashSet::new(),
@@ -170,6 +183,7 @@ impl Plugin {
         self.lock = None;
         self.status.clear();
         self.told.clear();
+        self.fronts.clear();
         self.commands.clear();
         self.inbox.clear();
         self.sent_settings = None;
@@ -202,8 +216,7 @@ pub struct Manager {
     ctx: Option<egui::Context>,
     path_env: Option<std::ffi::OsString>,
     user_settings: BTreeMap<String, Map<String, Value>>,
-    /// Each window's open documents and folders.
-    windows: BTreeMap<u64, (Vec<DocInfo>, Vec<PathBuf>)>,
+    windows: BTreeMap<u64, WindowDocs>,
     /// Documents already checked for `open:` activation.
     seen: HashSet<u64>,
     /// The window that answers requests not about one of another window's documents.
@@ -719,14 +732,15 @@ impl Manager {
 
     // ---- documents and windows ----------------------------------------------------------
 
-    /// A window's documents and side bar folders, each frame. The focused
-    /// window answers requests that aren't about another window's document.
-    pub fn sync_window(&mut self, window: u64, docs: Vec<DocInfo>, folders: Vec<PathBuf>, focused: bool) {
+    /// A window's documents (`front`: the one in front, if it's text) and
+    /// side bar folders, each frame. The focused window answers requests
+    /// that aren't about another window's document.
+    pub fn sync_window(&mut self, window: u64, docs: Vec<DocInfo>, folders: Vec<PathBuf>, focused: bool, front: Option<u64>) {
         if focused || self.primary.is_none_or(|p| !self.windows.contains_key(&p)) {
             self.primary = Some(window);
         }
-        let changed = self.windows.get(&window).is_none_or(|(_, f)| *f != folders);
-        self.windows.insert(window, (docs, folders));
+        let changed = self.windows.get(&window).is_none_or(|w| w.folders != folders);
+        self.windows.insert(window, WindowDocs { docs, front, folders });
         if changed {
             self.update_folders();
         }
@@ -747,8 +761,8 @@ impl Manager {
 
     fn update_folders(&mut self) {
         let mut all: Vec<PathBuf> = Vec::new();
-        for (_, folders) in self.windows.values() {
-            for f in folders {
+        for w in self.windows.values() {
+            for f in &w.folders {
                 if !all.contains(f) {
                     all.push(f.clone());
                 }
@@ -760,7 +774,7 @@ impl Manager {
     /// Every open document in every window.
     fn all_docs(&self) -> Vec<&DocInfo> {
         let mut seen = HashSet::new();
-        self.windows.values().flat_map(|(d, _)| d.iter()).filter(|d| seen.insert(d.id)).collect()
+        self.windows.values().flat_map(|w| w.docs.iter()).filter(|d| seen.insert(d.id)).collect()
     }
 
     fn document_events(&mut self, now: Instant, wake: &mut Option<Duration>) {
@@ -794,6 +808,8 @@ impl Manager {
         let ids: HashSet<u64> = docs.iter().map(|d| d.id).collect();
         self.seen.retain(|id| ids.contains(id));
         for p in &mut self.plugins {
+            // A closed document's status items go with it.
+            p.status.retain(|s| s.document.is_none_or(|d| ids.contains(&d)));
             if !matches!(p.state, State::Running) || !p.manifest.as_ref().is_ok_and(|m| m.permissions.contains(&Perm::ReadDocument)) {
                 continue;
             }
@@ -824,6 +840,22 @@ impl Manager {
                 h.notify("document/closed", json!({"document": {"id": id}}));
                 p.told.remove(&id);
             }
+            // The tab in front of each window, when it changes (a window
+            // opened, or another tab came to the front), after its `document/opened`.
+            p.fronts.retain(|w, _| self.windows.contains_key(w));
+            for (w, win) in &self.windows {
+                match win.front.and_then(|id| docs.iter().find(|d| d.id == id)) {
+                    Some(d) if p.told.contains_key(&d.id) && p.fronts.get(w) != Some(&d.id) => {
+                        if h.notify("document/activated", json!({"document": d.to_json()})) {
+                            p.fronts.insert(*w, d.id);
+                        }
+                    }
+                    Some(_) => {}
+                    None => {
+                        p.fronts.remove(w);
+                    }
+                }
+            }
         }
     }
 
@@ -853,7 +885,7 @@ impl Manager {
     /// the primary window) anything else. Each comes with its plugin's name
     /// and run (for `reply`). At most `max`.
     pub fn take_requests(&mut self, window: u64, max: usize) -> Vec<(String, u64, Incoming)> {
-        let mine: HashSet<u64> = self.windows.get(&window).map(|(d, _)| d.iter().map(|d| d.id).collect()).unwrap_or_default();
+        let mine: HashSet<u64> = self.windows.get(&window).map(|w| w.docs.iter().map(|d| d.id).collect()).unwrap_or_default();
         let anywhere: HashSet<u64> = self.all_docs().iter().map(|d| d.id).collect();
         let primary = self.primary == Some(window);
         let mut out = Vec::new();
@@ -925,6 +957,16 @@ impl Manager {
         let text = clean(params.get("text").and_then(Value::as_str).unwrap_or_default(), STATUS_TEXT);
         let tooltip = clean(params.get("tooltip").and_then(Value::as_str).unwrap_or_default(), 300);
         let command = params.get("command").and_then(Value::as_str).map(str::to_owned);
+        let document = match params.get("document") {
+            None | Some(Value::Null) => None,
+            Some(v) => {
+                let d = v.as_u64().ok_or_else(|| RpcError::params("\"document\" must be a document id"))?;
+                if !self.all_docs().iter().any(|o| o.id == d) {
+                    return Err(RpcError::new(api::NO_DOCUMENT, format!("no open document has the id {d}")));
+                }
+                Some(d)
+            }
+        };
         let i = self.index(name).ok_or_else(|| RpcError::new(api::INTERNAL_ERROR, "no such plugin"))?;
         let p = &mut self.plugins[i];
         if let Some(c) = &command
@@ -932,21 +974,39 @@ impl Manager {
         {
             return Err(RpcError::params(format!("\"command\" {c} isn't one of the plugin's commands")));
         }
-        let at = p.status.iter().position(|s| s.id == id);
+        let at = p.status.iter().position(|s| s.id == id && s.document == document);
+        // At most STATUS_ITEMS ids: a window shows each id once.
+        let new_id = !p.status.iter().any(|s| s.id == id);
+        let ids = p.status.iter().map(|s| s.id.as_str()).collect::<HashSet<_>>().len();
         match (at, text.is_empty()) {
             (Some(k), true) => {
                 p.status.remove(k);
             }
-            (Some(k), false) => p.status[k] = StatusItem { plugin: name.to_owned(), id, text, tooltip, command },
+            (Some(k), false) => p.status[k] = StatusItem { plugin: name.to_owned(), id, document, text, tooltip, command },
             (None, true) => {}
-            (None, false) if p.status.len() >= STATUS_ITEMS => return Err(RpcError::new(BUSY, format!("a plugin can show at most {STATUS_ITEMS} status bar items"))),
-            (None, false) => p.status.push(StatusItem { plugin: name.to_owned(), id, text, tooltip, command }),
+            (None, false) if new_id && ids >= STATUS_ITEMS => return Err(RpcError::new(BUSY, format!("a plugin can show at most {STATUS_ITEMS} status bar items"))),
+            (None, false) => p.status.push(StatusItem { plugin: name.to_owned(), id, document, text, tooltip, command }),
         }
         Ok(Value::Null)
     }
 
-    pub fn status_items(&self) -> Vec<&StatusItem> {
-        self.plugins.iter().filter(|p| matches!(p.state, State::Running)).flat_map(|p| p.status.iter()).collect()
+    /// The status bar items `window` shows: each plugin's items for every
+    /// document, with those for the document in front in their place.
+    pub fn status_items(&self, window: u64) -> Vec<&StatusItem> {
+        let front = self.windows.get(&window).and_then(|w| w.front);
+        let mut out = Vec::new();
+        for p in self.plugins.iter().filter(|p| matches!(p.state, State::Running)) {
+            let mine = |s: &&StatusItem| s.document.is_some() && s.document == front;
+            for s in &p.status {
+                match s.document {
+                    // Replaced by the front document's own, if it has one.
+                    None => out.push(p.status.iter().find(|o| o.id == s.id && mine(o)).unwrap_or(s)),
+                    Some(_) if mine(&s) && !p.status.iter().any(|o| o.id == s.id && o.document.is_none()) => out.push(s),
+                    Some(_) => {}
+                }
+            }
+        }
+        out
     }
 
     // ---- settings and keys --------------------------------------------------------------
