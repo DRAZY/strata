@@ -265,6 +265,11 @@ fn definitions(editor: Option<&FontSource>, ui: Option<&FontSource>) -> (egui::F
         defs.font_data.insert("macos-symbols".to_owned(), Arc::new(FontData::from_owned(bytes)));
         defs.families.entry(FontFamily::Proportional).or_default().push("macos-symbols".to_owned());
     }
+    // Last, the bundled Inter: it has the key symbols the fonts above lack
+    // (San Francisco has no ⇥, egui's fonts no ⌃ ⌥ ⇧ ⌘).
+    let inter = BUNDLED.iter().find(|f| f.name == "Inter").expect("Inter is bundled");
+    defs.font_data.insert("strata-symbols".to_owned(), Arc::new(FontData::from_static(inter.data)));
+    defs.families.entry(FontFamily::Proportional).or_default().push("strata-symbols".to_owned());
     (defs, errors)
 }
 
@@ -400,5 +405,33 @@ mod tests {
         let (defs, errors) = definitions(Some(&missing), None);
         assert_eq!(errors.len(), 1);
         assert!(!defs.font_data.contains_key("strata-editor"), "egui's own font stays in charge");
+    }
+
+    /// Every symbol a shortcut label can contain (⇧ ⌘ ⇥ ↩ ↑ …) is drawn by
+    /// the interface fonts, whichever is chosen, not as the "◻" box.
+    #[test]
+    fn shortcut_glyphs_are_drawn() {
+        use crate::keys;
+        let mut glyphs: Vec<char> = Vec::new();
+        for &key in egui::Key::ALL {
+            for mods in [keys::NONE, keys::CMD_ALT_SHIFT.plus(keys::CTRL)] {
+                glyphs.extend(keys::label(mods, key).chars().filter(|c| !c.is_ascii()));
+            }
+        }
+        glyphs.sort_unstable();
+        glyphs.dedup();
+        assert!(!keys::MAC || glyphs.contains(&'⇥'), "{glyphs:?}");
+        let ui_fonts = std::iter::once(None).chain(BUNDLED.iter().map(|f| Some(FontSource::Bundled(f))));
+        for ui in ui_fonts {
+            let ctx = Context::default();
+            assert!(apply(&ctx, None, ui.as_ref()).is_empty());
+            ctx.run_ui(RawInput::default(), |_| {}).textures_delta.clear();
+            let font = FontId::proportional(14.0);
+            let uv = |c: char| ctx.fonts_mut(|f| f.layout_no_wrap(c.to_string(), font.clone(), Color32::WHITE).rows[0].glyphs[0].uv_rect);
+            // `has_glyph` is false for glyphs of the face that also draws the
+            // box, so compare with the box itself as well.
+            let boxed: String = glyphs.iter().filter(|&&c| !ctx.fonts_mut(|f| f.has_glyph(&font, c)) && uv(c) == uv('◻')).collect();
+            assert!(boxed.is_empty(), "interface font {ui:?} draws {boxed} as a box");
+        }
     }
 }
