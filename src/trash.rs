@@ -27,6 +27,21 @@ mod imp {
     }
 }
 
+/// The Recycle Bin (`SHFileOperationW`) takes paths shorter than
+/// `MAX_PATH` (260 UTF-16 units with the closing NUL) in their ordinary
+/// spelling only: the `\\?\` spelling that reaches further is refused.
+#[cfg(any(windows, test))]
+const MAX_PATH: usize = 260;
+
+/// Whether the shell can take `path` (already in its ordinary spelling).
+#[cfg(any(windows, test))]
+fn fits_the_recycle_bin(path: &Path) -> bool {
+    path.to_string_lossy().encode_utf16().count() < MAX_PATH
+}
+
+#[cfg(windows)]
+const TOO_LONG: &str = "This file's path is too long for the Recycle Bin (260 characters or more), so it was left where it is. Move it to a shorter path, or delete it another way.";
+
 #[cfg(windows)]
 mod imp {
     use std::os::windows::ffi::OsStrExt;
@@ -38,6 +53,9 @@ mod imp {
         // refuses `\\?\C:\…`, which `canonicalize` gives), ending in two
         // NULs (it's a list).
         let path = crate::paths::plain(std::path::absolute(path)?);
+        if !super::fits_the_recycle_bin(&path) {
+            return Err(std::io::Error::other(super::TOO_LONG));
+        }
         let from: Vec<u16> = path.as_os_str().encode_wide().chain([0, 0]).collect();
         let mut op = SHFILEOPSTRUCTW {
             wFunc: FO_DELETE,
@@ -113,6 +131,16 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paths_the_recycle_bin_cant_take_are_told_apart() {
+        let dir = r"C:\Users\me\";
+        assert!(fits_the_recycle_bin(Path::new(&format!("{dir}{}", "a".repeat(259 - dir.len())))));
+        assert!(!fits_the_recycle_bin(Path::new(&format!("{dir}{}", "a".repeat(260 - dir.len())))));
+        // Counted as the shell counts: UTF-16 units, not bytes.
+        assert!(fits_the_recycle_bin(Path::new(&format!("{dir}{}", "é".repeat(259 - dir.len())))));
+        assert!(!fits_the_recycle_bin(Path::new(&format!("{dir}{}", "😀".repeat(130)))));
+    }
 
     #[test]
     fn missing_files_are_an_error() {
