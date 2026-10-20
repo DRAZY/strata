@@ -125,6 +125,35 @@ mod tests {
     }
 
     #[test]
+    fn a_server_that_never_starts_is_not_retried() {
+        let dir = scratch("nostart");
+        let file = dir.join("a.fake");
+        for builtin in [false, true] {
+            let mut hub = Hub::new(false);
+            let mut c = fake::config("fake", &["*.fake"], json!({"fail_to_start": true}));
+            c.builtin = builtin;
+            hub.use_servers(vec![c]);
+            hub.sync(1, &file, (1, 0), || Rope::from_str(""), None, &[]);
+            let notes = until("the failure", || {
+                hub.tick();
+                let n = hub.take_notes();
+                (!n.is_empty()).then_some(n)
+            });
+            assert!(notes[0].contains("couldn't start") && notes[0].contains("isn't really here"), "{notes:?}");
+            std::thread::sleep(Duration::from_millis(1200));
+            hub.tick();
+            assert_eq!(hub.pid_for(&file), None, "no new process");
+            match hub.state_for(&file) {
+                // A server the user set up says it failed; a built-in one stays quiet.
+                Some((_, State::Failed(why))) => assert!(!builtin && why.contains("isn't really here")),
+                None => assert!(builtin),
+                other => panic!("{other:?}"),
+            }
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn missing_programs_and_files_without_a_server() {
         let mut hub = Hub::new(false);
         let mut missing = fake::config("ghost", &["*.ghost"], json!({}));

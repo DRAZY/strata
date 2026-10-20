@@ -30,6 +30,21 @@ All notable changes to Strata are recorded here. The format follows
   status bar counts the rest. F8 and Shift+F8 step through the changes across
   files, and the Review commands are in Tools ▸ Review Changes and the command
   palette. See the new Review Changes page in the manual.
+- Language servers. When a language's server is installed (rust-analyzer,
+  typescript-language-server, pyright, gopls or clangd), Strata starts it in
+  the background and shows its problems as wavy underlines with a dot in the
+  gutter, puts its suggestions first in the completion list, shows type and
+  documentation when the mouse pointer rests on a name, and uses it for Go to
+  Definition and Go to Reference. New commands: **LSP: Rename Symbol…**
+  (across files, one Undo step per file), **LSP: Format Document**, **LSP:
+  Show Hover Info**, **LSP: Show Parameter Hints**, **LSP: Show Problems…**,
+  **LSP: Next Problem** / **Previous Problem** (F8 / Shift+F8) and **LSP:
+  Restart Language Servers**, also in Tools ▸ Language Server. The status bar
+  shows the server for the current file and its error and warning counts. A
+  server that stops is restarted after a pause. Strata never downloads or
+  installs servers. `lsp_servers` in settings.json changes the built-in
+  servers or adds others, and `lsp_enabled` turns the feature off. See
+  Languages and Syntaxes ▸ Language servers in the manual.
 
 ## [1.0.2] - 2026-10-15
 

@@ -12,7 +12,8 @@
 //! marker file so the restarted server stays up).
 //!
 //! `initializationOptions` set it up: `{"utf8": true}` prefers UTF-8
-//! columns, `"marker"` is the crash marker's path.
+//! columns, `"marker"` is the crash marker's path, `"fail_to_start": true`
+//! exits instead of answering `initialize`.
 
 use super::config::ServerConfig;
 use serde_json::{Value, json};
@@ -97,6 +98,11 @@ impl Fake {
         match method {
             "initialize" => {
                 let o = &p["initializationOptions"];
+                if o["fail_to_start"].as_bool() == Some(true) {
+                    // Like a rustup stub whose component isn't installed.
+                    eprintln!("error: this server isn't really here");
+                    std::process::exit(1);
+                }
                 let offered = p["capabilities"]["general"]["positionEncodings"].as_array().is_some_and(|a| a.iter().any(|e| e == "utf-8"));
                 self.utf8 = o["utf8"].as_bool().unwrap_or(false) && offered;
                 self.marker = o["marker"].as_str().map(PathBuf::from);

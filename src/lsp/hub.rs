@@ -48,6 +48,8 @@ struct Slot {
     retry_at: Option<Instant>,
     last_error: Option<String>,
     failed: Option<String>,
+    /// Some process of it answered `initialize`: it can work here.
+    worked: bool,
 }
 
 struct OpenDoc {
@@ -132,6 +134,12 @@ impl Hub {
         self.configs = configs;
     }
 
+    /// Use the configured (real) servers, as Strata does with a settings folder (tests).
+    #[cfg(test)]
+    pub fn activate(&mut self) {
+        self.active = true;
+    }
+
     fn on(&self) -> bool {
         self.active && self.enabled
     }
@@ -203,7 +211,7 @@ impl Hub {
         if let Some(i) = self.slots.iter().position(|s| s.config.name == config.name && s.root == root) {
             return Some(i);
         }
-        self.slots.push(Slot { config, root, program, server: None, run: 0, crashes: Vec::new(), retry_at: None, last_error: None, failed: None });
+        self.slots.push(Slot { config, root, program, server: None, run: 0, crashes: Vec::new(), retry_at: None, last_error: None, failed: None, worked: false });
         let i = self.slots.len() - 1;
         self.start(i);
         Some(i)
@@ -218,14 +226,30 @@ impl Hub {
         match Server::start(&slot.config, &slot.program, &slot.root, path_env.as_deref(), ctx) {
             Ok(s) => slot.server = Some(s),
             Err(e) => {
-                // Like a crash: tried again after a pause, up to the limit.
                 slot.last_error = Some(e.clone());
-                self.crashed(i, e);
+                self.stopped(i, e);
             }
         }
     }
 
-    /// A server stopped on its own: schedule a restart, or give up.
+    /// A server's process ended (or never started) without being asked to.
+    /// One that worked before is restarted; one that never got as far as
+    /// answering `initialize` (a program that isn't really a server, a
+    /// rustup stub without its component) would only fail again.
+    fn stopped(&mut self, i: usize, why: String) {
+        let slot = &mut self.slots[i];
+        slot.worked |= slot.server.as_ref().is_some_and(Server::was_ready);
+        if slot.worked {
+            return self.crashed(i, why);
+        }
+        slot.server = None;
+        slot.failed = Some(why.clone());
+        let name = slot.config.display_name();
+        self.note(format!("{name} couldn't start: {why}"));
+        self.docs.retain(|_, d| d.slot != i);
+    }
+
+    /// A server that worked stopped on its own: schedule a restart, or give up.
     fn crashed(&mut self, i: usize, why: String) {
         let now = Instant::now();
         let slot = &mut self.slots[i];
@@ -261,7 +285,7 @@ impl Hub {
             };
             if let Some(why) = stopped {
                 self.slots[i].last_error = Some(why.clone());
-                self.crashed(i, why);
+                self.stopped(i, why);
             }
             let slot = &self.slots[i];
             if slot.server.is_none() && slot.failed.is_none() && slot.retry_at.is_some_and(|t| t <= now) {
@@ -369,6 +393,11 @@ impl Hub {
         }
         let i = (*self.assigned.get(&uri::normalize(path))?)?;
         let slot = self.slots.get(i)?;
+        // A built-in server that never started is as good as not installed:
+        // said once in the status message, not shown on every file.
+        if slot.config.builtin && !slot.worked && slot.failed.is_some() {
+            return None;
+        }
         let name = slot.config.display_name();
         let state = match (&slot.server, &slot.failed) {
             (_, Some(why)) => State::Failed(why.clone()),

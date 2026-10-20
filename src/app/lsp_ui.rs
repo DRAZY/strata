@@ -27,6 +27,8 @@ use std::sync::Arc;
 const HOVER_DELAY: f64 = 0.5;
 /// References listed at most (each needs its line read).
 const MAX_LOCATIONS: usize = 500;
+/// What the status bar says when hover finds nothing.
+const NO_INFO: &str = "No information here";
 
 /// Problems at a spot: (severity, message).
 type Problems = Vec<(u8, String)>;
@@ -414,12 +416,15 @@ impl StrataApp {
             if let Ok(v) = reply
                 && let Some(text) = hover_markdown(&v)
             {
+                if self.status == NO_INFO {
+                    self.status.clear();
+                }
                 match &mut self.lsp.hover.shown {
                     Some(b) if b.at.view == at.view && b.at.at == at.at => b.info = Some(text),
                     _ => self.lsp.hover.shown = Some(HoverBox { at, problems: Vec::new(), info: Some(text), rect: None }),
                 }
             } else if !at.by_mouse && self.lsp.hover.shown.is_none() {
-                self.status = "No information here".into();
+                self.status = NO_INFO.into();
             }
         }
         if let Some(((view, line), reply)) = answered(&mut self.lsp.signature) {
@@ -1584,6 +1589,174 @@ mod tests {
         // And the server got every keystroke (it reports on the text it has).
         app.doc().editor.insert_text(" bad ");
         wait(&mut app, &ctx, "diagnostics on the big file", |a| markers(a).len() == 1);
+    }
+
+    /// Real servers, when asked for: `STRATA_LSP_REAL=<folder> cargo test
+    /// --release lsp_real_servers -- --nocapture` drives rust-analyzer (and
+    /// clangd, when installed) through the window on a small project and
+    /// saves screenshots of each step in the folder. `STRATA_LSP_REPO=<a
+    /// file in a big Rust project>` also tries hover and definition there.
+    #[test]
+    fn lsp_real_servers() {
+        let Some(shots) = std::env::var_os("STRATA_LSP_REAL").map(PathBuf::from) else { return };
+        std::fs::create_dir_all(&shots).unwrap();
+        let mut shooter = super::super::headless::Shooter::new(1200, 700, 2.0);
+        let mut shoot = |app: &mut StrataApp, ctx: &Context, name: &str| {
+            if let Some(s) = shooter.as_mut() {
+                s.shoot(ctx, app, 3, vec![], &shots.join(format!("{name}.ppm")));
+                eprintln!("saved {}", shots.join(format!("{name}.ppm")).display());
+            }
+        };
+        let wait_long = |app: &mut StrataApp, ctx: &Context, secs: u64, what: &str, done: &dyn Fn(&StrataApp) -> bool| {
+            let t = Instant::now();
+            while !done(app) {
+                assert!(t.elapsed() < Duration::from_secs(secs), "timed out waiting for {what} (status: {:?}, {})", app.lsp_status(), app.status);
+                frame(app, ctx, vec![]);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            eprintln!("{what}: {:.1} s", t.elapsed().as_secs_f32());
+        };
+        let find = |app: &StrataApp, needle: &str| app.docs[app.active].editor.buffer.slice(0..app.docs[app.active].editor.buffer.len_chars()).find(needle).map(|b| app.docs[app.active].editor.buffer.byte_to_char(b)).unwrap();
+
+        // A small cargo project with a type error.
+        let dir = temp_dir("lsp-real");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+        std::fs::write(dir.join("src/main.rs"), "mod util;\n\nfn main() {\n    let total = util::add_numbers(2, 3);\n    let wrong: i32 = \"text\";\n    println!(\"{total} {wrong}\");\n}\n").unwrap();
+        std::fs::write(dir.join("src/util.rs"), "/// Adds two numbers.\npub fn add_numbers(a: i32, b: i32) -> i32 {\n    a + b\n}\n\npub fn   messy( x:i32 )->i32{x}\n").unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(None, None);
+        app.settings.minimap = false;
+        app.lsp.hub.borrow_mut().activate();
+        app.open_folder(dir.clone());
+        app.open_path(dir.join("src/main.rs"), false);
+        wait_long(&mut app, &ctx, 180, "rust-analyzer's diagnostics", &|a| a.docs[a.active].editor.markers().iter().any(|m| m.style == 1));
+        let name = app.lsp_status().unwrap().0;
+        assert!(name.starts_with("rust-analyzer"), "{name}");
+        let err = app.docs[app.active].editor.markers().iter().find(|m| m.style == 1).unwrap().range.clone();
+        eprintln!("error marker on {:?}", app.docs[app.active].editor.buffer.slice(err.clone()));
+        shoot(&mut app, &ctx, "1-diagnostics");
+
+        // Hover on the function.
+        let call = find(&app, "add_numbers");
+        put_cursor(&mut app, call + 2);
+        frame(&mut app, &ctx, vec![]);
+        app.run(&ctx, Cmd::LspHover);
+        wait_long(&mut app, &ctx, 60, "hover", &|a| a.lsp.hover.shown.as_ref().and_then(|b| b.info.as_ref()).is_some_and(|i| i.contains("add_numbers")));
+        eprintln!("hover: {:?}", app.lsp.hover.shown.as_ref().unwrap().info);
+        shoot(&mut app, &ctx, "2-hover");
+
+        // Completion after `util::`.
+        let end = app.docs[app.active].editor.buffer.line_end(4);
+        put_cursor(&mut app, end);
+        app.settings.auto_complete = true;
+        frame(&mut app, &ctx, vec![press(egui::Key::Enter, Modifiers::NONE)]);
+        frame(&mut app, &ctx, vec![Event::Text("util::".into())]);
+        frame(&mut app, &ctx, vec![Event::Text("ad".into())]);
+        wait_long(&mut app, &ctx, 60, "completions", &|a| a.completion.labels().iter().any(|l| l.starts_with("add_numbers")));
+        eprintln!("completions: {:?}", app.completion.labels());
+        shoot(&mut app, &ctx, "3-completion");
+        frame(&mut app, &ctx, vec![press(egui::Key::Enter, Modifiers::NONE)]);
+        eprintln!("after accepting: {:?}", app.docs[app.active].editor.buffer.line_text(5));
+        assert!(app.docs[app.active].editor.buffer.line_text(5).contains("util::add_numbers"));
+        app.doc().editor.undo();
+        app.doc().editor.undo();
+        app.doc().editor.undo();
+        frame(&mut app, &ctx, vec![]);
+
+        // Go to definition: into util.rs.
+        put_cursor(&mut app, call + 2);
+        app.run(&ctx, Cmd::GotoDefinition);
+        wait_long(&mut app, &ctx, 60, "the definition", &|a| a.docs[a.active].path.as_ref().is_some_and(|p| p.ends_with("util.rs")));
+        let sel = app.docs[app.active].editor.primary().range();
+        assert_eq!(app.docs[app.active].editor.buffer.slice(sel), "add_numbers");
+        shoot(&mut app, &ctx, "4-definition");
+
+        // References from the definition: the declaration and the call.
+        app.run(&ctx, Cmd::GotoReference);
+        wait_long(&mut app, &ctx, 60, "references", &|a| a.palette.open || a.lsp.goto.is_none() && a.docs[a.active].path.as_ref().is_some_and(|p| p.ends_with("main.rs")));
+        if let Choosing::Locations(spots) = &app.choosing {
+            eprintln!("{} references", spots.len());
+        }
+        shoot(&mut app, &ctx, "5-references");
+        app.palette.open = false;
+        app.choosing = Choosing::Nothing;
+
+        // Rename across both files (main.rs open, util.rs too).
+        let i = app.docs.iter().position(|d| d.path.as_ref().is_some_and(|p| p.ends_with("util.rs"))).unwrap();
+        app.activate(i);
+        let at = find(&app, "add_numbers");
+        put_cursor(&mut app, at + 1);
+        frame(&mut app, &ctx, vec![]);
+        app.run(&ctx, Cmd::LspRename);
+        frame(&mut app, &ctx, vec![]);
+        frame(&mut app, &ctx, vec![Event::Text("sum_numbers".into())]);
+        shoot(&mut app, &ctx, "6-rename-box");
+        frame(&mut app, &ctx, vec![press(egui::Key::Enter, Modifiers::NONE)]);
+        let main = app.docs.iter().position(|d| d.path.as_ref().is_some_and(|p| p.ends_with("main.rs"))).unwrap();
+        wait_long(&mut app, &ctx, 60, "the rename", &|a| a.docs[main].editor.buffer.line_text(3).contains("util::sum_numbers"));
+        eprintln!("rename: {}", app.status);
+        shoot(&mut app, &ctx, "7-renamed");
+
+        // Format the messy function.
+        app.activate(i);
+        app.run(&ctx, Cmd::LspFormat);
+        wait_long(&mut app, &ctx, 60, "formatting", &|a| a.docs[i].editor.buffer.slice(0..a.docs[i].editor.buffer.len_chars()).contains("pub fn messy(x: i32) -> i32 {"));
+        shoot(&mut app, &ctx, "8-formatted");
+
+        // clangd, when installed: a C file with an error.
+        if crate::lsp::config::find_executable("clangd", &crate::build::augmented_path().or_else(|| std::env::var_os("PATH")).unwrap_or_default()).is_some() {
+            let cdir = temp_dir("lsp-real-c");
+            std::fs::write(cdir.join("compile_flags.txt"), "-std=c11\n").unwrap();
+            std::fs::write(cdir.join("main.c"), "#include <stdio.h>\n\nstatic int twice(int n) { return n * 2; }\n\nint main(void) {\n    printf(\"%d\\n\", twice(21));\n    return undefined_name;\n}\n").unwrap();
+            let ctx = Context::default();
+            let mut app = StrataApp::new(None, None);
+            app.settings.minimap = false;
+            app.lsp.hub.borrow_mut().activate();
+            app.open_folder(cdir.clone());
+            app.open_path(cdir.join("main.c"), false);
+            wait_long(&mut app, &ctx, 120, "clangd's diagnostics", &|a| a.docs[a.active].editor.markers().iter().any(|m| m.style == 1));
+            let at = find(&app, "twice(21)");
+            put_cursor(&mut app, at + 1);
+            frame(&mut app, &ctx, vec![]);
+            app.run(&ctx, Cmd::LspHover);
+            wait_long(&mut app, &ctx, 60, "clangd hover", &|a| a.lsp.hover.shown.as_ref().and_then(|b| b.info.as_ref()).is_some_and(|i| i.contains("twice")));
+            shoot(&mut app, &ctx, "c-clangd");
+            app.run(&ctx, Cmd::GotoDefinition);
+            wait_long(&mut app, &ctx, 60, "clangd definition", &|a| a.docs[a.active].editor.cursor_line_col().0 == 3);
+        }
+
+        // Optionally, a big real project.
+        if let Some(file) = std::env::var_os("STRATA_LSP_REPO").map(PathBuf::from) {
+            let ctx = Context::default();
+            let mut app = StrataApp::new(None, None);
+            app.settings.minimap = false;
+            app.lsp.hub.borrow_mut().activate();
+            app.open_path(file.clone(), false);
+            wait_long(&mut app, &ctx, 120, "the big project's server", &|a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+            let at = find(&app, "pub struct StrataApp") + "pub struct ".len();
+            put_cursor(&mut app, at + 3);
+            frame(&mut app, &ctx, vec![]);
+            // While it indexes, hover may come back empty: ask again now and then.
+            let t = Instant::now();
+            while !app.lsp.hover.shown.as_ref().and_then(|b| b.info.as_ref()).is_some_and(|i| i.contains("StrataApp")) {
+                assert!(t.elapsed() < Duration::from_secs(600), "no hover in the big project ({:?})", app.lsp_status());
+                app.run(&ctx, Cmd::LspHover);
+                for _ in 0..100 {
+                    frame(&mut app, &ctx, vec![]);
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+            eprintln!("hover in the big project after {:.1} s (status {:?})", t.elapsed().as_secs_f32(), app.lsp_status());
+            shoot(&mut app, &ctx, "9-repo-hover");
+            // A name defined in another file.
+            let at = find(&app, "lsp_ui::LspState::new") + "lsp_ui::".len();
+            put_cursor(&mut app, at + 2);
+            app.run(&ctx, Cmd::GotoDefinition);
+            wait_long(&mut app, &ctx, 120, "definition in the big project", &|a| a.docs[a.active].path.as_ref() != Some(&file));
+            eprintln!("definition of LspState: {:?} line {}", app.docs[app.active].path, app.docs[app.active].editor.cursor_line_col().0);
+            shoot(&mut app, &ctx, "10-repo-definition");
+        }
     }
 
     #[test]

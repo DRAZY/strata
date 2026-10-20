@@ -54,6 +54,9 @@ impl Shooter {
     pub fn run(&mut self, ctx: &Context, app: &mut StrataApp, frames: usize, mut events: Vec<Event>) -> Option<egui::FullOutput> {
         let screen = Rect::from_min_size(Pos2::ZERO, vec2(self.size[0] as f32 / self.ppp, self.size[1] as f32 / self.ppp));
         let mut last = None;
+        // Frames run elsewhere on this context may have moved its clock on;
+        // never go back in time, or animations (popups fading in) stall.
+        self.clock = self.clock.max(ctx.input(|i| i.time) + 0.25);
         for f in 0..frames {
             let time = Some(self.clock + f as f64 * 0.25);
             let mut raw = RawInput { screen_rect: Some(screen), events: std::mem::take(&mut events), time, ..Default::default() };

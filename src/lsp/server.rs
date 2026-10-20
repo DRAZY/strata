@@ -162,6 +162,8 @@ struct Shared {
     messages: Vec<String>,
     /// Shutting down on purpose: the process ending isn't a crash.
     stopping: bool,
+    /// It answered `initialize` (so stopping later is a crash, not a failure to start).
+    was_ready: bool,
 }
 
 /// To the writer thread.
@@ -272,6 +274,7 @@ impl Server {
             stderr: VecDeque::new(),
             messages: Vec::new(),
             stopping: false,
+            was_ready: false,
         }));
         let io = Io { shared, stdin: Arc::new(Mutex::new(stdin)), next_id: Arc::new(AtomicI64::new(1)), ctx };
         let child = Arc::new(Mutex::new(Some(child)));
@@ -294,6 +297,11 @@ impl Server {
 
     pub fn status(&self) -> Status {
         self.io.lock().status.clone()
+    }
+
+    /// It got as far as answering `initialize`, at some point.
+    pub fn was_ready(&self) -> bool {
+        self.io.lock().was_ready
     }
 
     pub fn is_ready(&self) -> bool {
@@ -530,6 +538,7 @@ fn write_loop(rx: Receiver<Out>, io: Io, params: Value) {
         s.caps = caps.clone();
         if s.status == Status::Starting {
             s.status = Status::Ready;
+            s.was_ready = true;
         }
     }
     io.write(&notification("initialized", json!({})));
