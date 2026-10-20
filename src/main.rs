@@ -51,6 +51,7 @@ mod markdown;
 mod notes;
 mod palette;
 mod panes;
+mod paths;
 mod pdf;
 mod permalink;
 mod plugins;

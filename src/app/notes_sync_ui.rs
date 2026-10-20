@@ -11,6 +11,7 @@
 use super::StrataApp;
 use crate::commands::Cmd;
 use crate::notes::sync::{self, Failure, Identity, Job, Remote, Resolution, VaultSync};
+use crate::paths::plain;
 use egui::Color32;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -127,19 +128,6 @@ fn real(p: &Path) -> PathBuf {
     }
 }
 
-/// Windows' `\\?\C:\…` and `\\?\UNC\server\…` (what `canonicalize` gives)
-/// as ordinary paths: Git (as a working folder) and settings.json read
-/// those better. Other paths are unchanged.
-fn plain(p: PathBuf) -> PathBuf {
-    let s = p.to_string_lossy();
-    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{rest}"));
-    }
-    match s.strip_prefix(r"\\?\") {
-        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
-        _ => p,
-    }
-}
 
 fn folder_name(p: &Path) -> String {
     p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())
@@ -860,14 +848,6 @@ mod tests {
 
     fn vault_key(app: &StrataApp) -> PathBuf {
         real(&app.sidebar.roots[0])
-    }
-
-    #[test]
-    fn windows_verbatim_paths_become_plain() {
-        assert_eq!(plain(PathBuf::from(r"\\?\C:\Users\me\Notes")), PathBuf::from(r"C:\Users\me\Notes"));
-        assert_eq!(plain(PathBuf::from(r"\\?\UNC\server\share\Notes")), PathBuf::from(r"\\server\share\Notes"));
-        assert_eq!(plain(PathBuf::from(r"\\?\Volume{1234}\x")), PathBuf::from(r"\\?\Volume{1234}\x"));
-        assert_eq!(plain(PathBuf::from("/Users/me/Notes")), PathBuf::from("/Users/me/Notes"));
     }
 
     #[test]

@@ -34,8 +34,10 @@ mod imp {
     use windows_sys::Win32::UI::Shell::{FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, SHFILEOPSTRUCTW, SHFileOperationW};
 
     pub fn trash(path: &Path) -> std::io::Result<()> {
-        // The shell wants an absolute path, ending in two NULs (it's a list).
-        let path = std::path::absolute(path)?;
+        // The shell wants an absolute path in its ordinary spelling (it
+        // refuses `\\?\C:\…`, which `canonicalize` gives), ending in two
+        // NULs (it's a list).
+        let path = crate::paths::plain(std::path::absolute(path)?);
         let from: Vec<u16> = path.as_os_str().encode_wide().chain([0, 0]).collect();
         let mut op = SHFILEOPSTRUCTW {
             wFunc: FO_DELETE,
