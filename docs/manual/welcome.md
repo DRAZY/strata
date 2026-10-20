@@ -128,7 +128,8 @@ See [Find and Replace](find.md) for search, symbols and Go to Definition.
 - [Review Changes](review.md): review and keep or revert what a coding agent changed.
 - [AI Helpers](ai.md): optional summaries and explanations of changes from a model you choose. Off until you turn them on.
 - [Markdown Preview](markdown.md): live preview and HTML export.
-- [Notes](notes.md): Obsidian-compatible notes with wikilinks, backlinks, tags, daily notes and templates.
+- [Notes](notes.md): Obsidian-compatible notes with wikilinks, backlinks, tags, daily notes and templates, [runnable code blocks](notes.md#running-code-blocks) and optional [Git sync](notes.md#git-sync).
+- [Plugins](plugins.md): install extensions written in any language, and write your own.
 - [Appearance](appearance.md) and [Settings](settings.md): make Strata look and behave the way you like.
 - [Keyboard Shortcuts](shortcuts.md) and [Customizing Key Bindings](keybindings.md).
 - [Languages](languages.md): syntax highlighting, symbols, and language servers for problems, completions, hover information and rename.

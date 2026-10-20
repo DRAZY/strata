@@ -17,7 +17,8 @@ It opens in a blink, stays smooth on files of hundreds of megabytes, and gives y
 | Languages | Syntax highlighting for about 190 [languages](languages.md) and file formats, with symbols and smart indentation for many of them. [Language servers](languages.md#language-servers), when installed, add problems, completions, hover information, rename and formatting. |
 | Look and feel | 35 [color schemes](appearance.md#color-schemes) that can follow your system's light or dark mode, bundled coding fonts, a minimap, and an [interface size](appearance.md#interface-size) of its own (View ▸ Interface Size) for easier reading. |
 | Writing | [Spell check](editing.md#spell-check) for comments, strings and prose, with US and UK English dictionaries built in. |
-| Notes | [Notes](notes.md) on plain Markdown files that work alongside Obsidian: wikilinks with completion, backlinks, tags, daily notes, templates, and renames that update every link. |
+| Safety | [Hidden and direction-changing characters](editing.md#hidden-and-direction-changing-characters) shown as labeled boxes, so a file can't make code read differently from what it is. |
+| Notes | [Notes](notes.md) on plain Markdown files that work alongside Obsidian: wikilinks with completion, backlinks, tags, daily notes, templates, renames that update every link, [code blocks you can run](notes.md#running-code-blocks), and optional [Git sync](notes.md#git-sync). |
 | Git | [Change bars](git.md) in the gutter for lines changed since the last commit, the current branch in the status bar, Compare with HEAD, and [Review Changes](review.md) for keeping or reverting what a coding agent changed. |
 | AI helpers | Optional [AI helpers](ai.md) that summarize a review, explain a change or a selection, flag risky edits and draft commit messages, with a model you choose on your computer, your network or online. Off until you turn them on. |
 | Files | [Hot exit](welcome.md#hot-exit), so quitting never asks and nothing is lost; 40 [encodings](encodings.md); atomic saves; [printing and PDF export](printing.md); and a [large-file mode](troubleshooting.md#very-large-files). |
@@ -86,7 +87,7 @@ Strata is built on open-source projects, and it ships fonts, color schemes and s
 
 ## Not in Strata yet
 
-These are planned: plugins, a Vim mode, official Linux support, and screen reader support in the editor.
+These are planned: a Vim mode, official Linux support, and screen reader support in the editor.
 
 ## Getting help
 

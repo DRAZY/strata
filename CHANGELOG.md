@@ -6,6 +6,13 @@ All notable changes to Strata are recorded here. The format follows
 
 ## [Unreleased]
 
+The next release adds Obsidian-compatible notes (with runnable code blocks
+and optional Git sync), Review Changes, language servers, clickable file
+locations and Send to Terminal in the terminal, optional AI helpers, plugins,
+and markers for hidden and direction-changing characters. Everything that
+runs other programs or reaches the network is off, or asks, until you turn it
+on; see Security below.
+
 ### Added
 
 - Notes: Obsidian-compatible notes on plain Markdown files. Open your notes
@@ -55,7 +62,7 @@ All notable changes to Strata are recorded here. The format follows
   asks again. Files outside the open folders ask every time, and a block
   with invisible or text-reordering characters never runs. See Notes ▸ Running code blocks in the manual.
 - Notes: optional Git sync, off until you turn it on for a vault with
-  **Notes: Enable Git Sync for This Vault** (which says first that the
+  **Notes: Enable Git Sync for This Vault…** (which says first that the
   repository's hooks, filters and credential helpers will run). **Notes: Sync
   Notes** saves the vault's notes, commits what changed in the vault
   (respecting `.gitignore`, with a message from `notes_sync_message`),
@@ -199,6 +206,41 @@ All notable changes to Strata are recorded here. The format follows
 
 - Compare: Japanese, Chinese and Korean text loads the same fonts as the
   editor, so Compare tabs no longer show boxes in place of those characters.
+
+### Security
+
+- Nothing new runs or connects by itself. Language servers start only in
+  folders you trust; code blocks run only when you ask, after Strata shows
+  exactly what will run; Git sync is off until you turn it on for a vault;
+  plugins ask before their first run; AI helpers are off until you turn them
+  on and ask before sending text off your computer or network.
+- Hidden and direction-changing characters can't disguise text: they're
+  shown as markers on every surface, and a code block holding one (or
+  another control character) never runs.
+- Code blocks: "Don't ask again" is tied to the file's real path, its
+  identity on disk and a SHA-256 of its bytes, so a replaced or changed file
+  asks again. A captured block runs in its own process group (a job object
+  on Windows, started suspended so nothing gets out first), and what it
+  started is stopped when it ends or times out.
+- Git sync: runs only in the repository it was turned on for (its Git
+  folder, remote and first commit, checked before any Git runs), never
+  forces a push, never prompts for credentials, allows only SSH, HTTPS and
+  local remotes, and redacts tokens from error text. It undoes only a rebase
+  it started itself (a record sealed with this installation's key), only
+  after backing up every file the rebase touched, and fails closed. A Git
+  that runs too long is stopped with its hooks. The read-only Git used for
+  the gutter, Compare and Review Changes no longer inherits `GIT_DIR` and
+  similar variables.
+- Plugins: consent is for an exact package (SHA-256); each start runs a
+  read-only copy of it that's checked again just before starting. Plugins
+  start without environment variables that load code from elsewhere, every
+  request is checked against the permissions you gave, file access stays in
+  the open folders and refuses links and hard-linked files, and zips with
+  unsafe paths, links or oversized contents are refused. On Windows,
+  language servers and plugins start suspended and run only once they're in
+  a job object.
+- The temporary file used when creating the private undo key has a random
+  name, so two threads can't remove each other's file.
 
 ## [1.0.2] - 2026-10-15
 

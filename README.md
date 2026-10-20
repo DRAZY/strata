@@ -27,7 +27,8 @@ and replace, split panes, a built-in terminal, a live Markdown preview, notes
 with wikilinks and backlinks, and language server support are all there out of
 the box, with no accounts and no telemetry. Optional AI helpers can summarize
 and explain changes with a model you choose, on your own computer or remote;
-they stay off until you turn them on.
+they stay off until you turn them on. Plugins, written in any language, add
+commands and panels with only the permissions you give them.
 
 > **Status: 1.0.** The first stable release. Please [report
 > problems](https://github.com/DRAZY/strata/issues) (Help ▸ Report a Problem…
@@ -69,12 +70,36 @@ they stay off until you turn them on.
   a backlinks panel under each note, `#tags`, daily notes and templates.
   Renaming a note offers to update every link to it, and Undo Rename puts it
   all back. Strata reads the vault's Obsidian settings but never changes them.
+- **Runnable code blocks**: shell, Python, Node and Ruby blocks in any
+  Markdown file get a **▶ Run** button in the preview. Shell blocks go to the
+  terminal, language blocks to a REPL tab, and **Run Code Block and Capture
+  Output** puts what a block prints in an `output` block under it. Nothing
+  runs until you click, and Strata shows exactly what will run and asks
+  before a file's first block.
+- **Git sync for notes**, off until you turn it on for a vault: commit what
+  changed, rebase onto the remote and push (never forced), when you choose
+  Sync Notes or on a timer. When a note changed on both sides, nothing is
+  pulled or pushed; Strata lists the notes, compares each with the remote's
+  version and lets you keep yours. Git uses your own credential helper or SSH
+  agent.
 - **AI helpers**, off until you turn them on: ask a model you choose to
   summarize a review, explain a change or a selection, flag risky edits or
   draft a commit message. Use Ollama or LM Studio on your computer or network,
   an OpenAI-compatible or Anthropic API, or the `claude` and `codex`
   command-line tools with your own login. Answers stream into a panel as
   Markdown and never hold up the editor.
+- **Plugins**: separate programs, in any language, that talk to Strata over
+  JSON-RPC like language servers. They add commands, keys, status bar items,
+  panels and pick lists, and can read and edit open files and the files in
+  the open folders, but only with the permissions you allowed when Strata
+  asked before their first run (asked again whenever the package changes).
+  Install them from a folder or a zip. A plugin that crashes is restarted,
+  and one that floods Strata with messages can't hold up the editor.
+- **Hidden and direction-changing characters** (such as U+202E RIGHT-TO-LEFT
+  OVERRIDE and zero-width spaces) show as small labeled boxes in the editor,
+  Compare and Review Changes, and as named markers everywhere else, so a file
+  can't make code read differently from what it is ("Trojan Source"). The
+  status bar counts them and **Find Hidden Characters** steps through them.
 - **About 190 languages** highlighted, with symbols, smart indentation and
   comment toggling for many of them.
 - **35 color schemes** (One Dark, Dracula, Nord, Solarized, Gruvbox, Tokyo
@@ -113,8 +138,9 @@ they stay off until you turn them on.
   you choose Help ▸ Check for Updates…); it sends nothing else. The optional
   AI helpers are off until you turn them on and pick a provider, and they show
   exactly what they'll send, and ask, before anything goes to a provider
-  outside your computer or network. Logs and crash reports stay on your
-  computer.
+  outside your computer or network. Git sync for notes reaches only your own
+  remote, and only in vaults you turned it on for. Logs and crash reports
+  stay on your computer.
 - **Signed updates**: a new version is offered in the app and installs with
   one click; every download is checked against an ed25519 signature (and, on
   macOS, Strata's Developer ID) before it replaces anything, and the previous
@@ -147,14 +173,22 @@ they stay off until you turn them on.
     <td><img src="docs/screenshots/notes.png" alt="A note in a small vault: wikilinks underlined in the editor, the live preview with the note's properties, links, tags and an embedded section of another note, and the backlinks panel listing the four notes that link to it"><br><sub>Notes with live preview and backlinks</sub></td>
     <td><img src="docs/screenshots/ai.png" alt="Review Changes with the AI panel below it: a Markdown summary of the four changed files from a local model, labelled localhost:11434 · llama3.2 · local"><br><sub>An AI summary of a review, from a local model</sub></td>
   </tr>
+  <tr>
+    <td><img src="docs/screenshots/run-blocks.png" alt="A runbook note beside its preview: each shell and Python block has a Run button, and the first two blocks have their captured output in output blocks under them"><br><sub>Runnable code blocks with captured output</sub></td>
+    <td><img src="docs/screenshots/notes-sync.png" alt="Git sync stopped because two notes changed here and on origin/main: Trip plan.md compared with the remote's version, and a box listing the notes in conflict with Compare and Keep My Versions and Sync; the status bar says Sync: conflict"><br><sub>Git sync for notes, stopped at a conflict</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/plugins.png" alt="The Plugins window with Sort Unique and Word Count installed: Word Count is running, with its permissions, command, settings and log, and its word count in the status bar"><br><sub>The Plugins manager</sub></td>
+    <td><img src="docs/screenshots/hidden-characters.png" alt="A JavaScript file whose admin check hides in a comment through right-to-left override characters: each hidden character drawn as a labeled box, a tooltip naming U+202E RIGHT-TO-LEFT OVERRIDE, the file compared with its last commit, and the status bar counting 8 hidden characters"><br><sub>Hidden and direction-changing characters</sub></td>
+  </tr>
 </table>
 
 ## What's next
 
 On `main` for the next release: clickable file locations and Send to Terminal
-in the terminal, Review Changes, language servers, notes and the optional AI
-helpers. Being worked on: runnable code blocks in notes, Git sync for notes,
-and plugins. Planned after that (details in
+in the terminal, Review Changes, language servers, notes with runnable code
+blocks and Git sync, the optional AI helpers, plugins, and markers for hidden
+and direction-changing characters. Planned after that (details in
 [`docs/ROADMAP.md`](docs/ROADMAP.md)): a Vim mode, official Linux support and
 screen reader support in the editor.
 
@@ -231,8 +265,8 @@ The user manual is built into the app: **Help ▸ Documentation** (F1, or
 "Help: Documentation" in the command palette). It covers editing, find and
 replace, snippets, projects, panes and windows, comparing files, printing, the
 terminal, Markdown preview, notes, build systems, Git, Review Changes, the AI
-helpers, language servers, appearance, every setting, key bindings, the command line and
-troubleshooting, with search across all pages.
+helpers, plugins, language servers, appearance, every setting, key bindings,
+the command line and troubleshooting, with search across all pages.
 It opens in its own window so you can read along while you work. **Help ▸
 Keyboard Shortcuts** lists every command and its keys, generated from the key
 bindings in effect (your `keybindings.json` included).
@@ -498,7 +532,14 @@ bindings, with comments and trailing commas allowed:
   (following Obsidian's Daily notes and Templates settings), Rename Note… with
   a preview of every link it changes and an all-or-nothing Undo Rename, and a
   notice with Compare for sync conflict copies. The Markdown preview shows
-  wikilinks, tags, properties and embedded images and notes.
+  wikilinks, tags, properties and embedded images and notes. Run Code Block
+  and Run Code Block and Capture Output (and the preview's ▶ Run buttons) run
+  `bash`, `sh`, `zsh`, `fish`, `pwsh`, `powershell`, `cmd`, `python`, `node`
+  and `ruby` blocks, asking before a file's first block runs
+  (`code_block_timeout_seconds` limits a capture). Enable Git Sync for This Vault…, Sync Notes and an
+  optional timer (`notes_git_sync`) commit, rebase and push with your own
+  `git`; a conflict changes nothing and is settled with Compare and Keep My
+  Versions and Sync.
 - **AI helpers** (Tools ▸ AI, off until `ai_enabled`): Summarize Changes (the
   whole review or one file), Explain Change, Flag Risks, Draft Commit Message
   and Explain Selection, answered by an OpenAI-compatible server (Ollama, LM
@@ -508,6 +549,17 @@ bindings, with comments and trailing commas allowed:
   Always for This Provider, Cancel). Secret-looking, ignored and binary files
   are never sent, and `ai_max_prompt_kb` caps the size. Keys live in the
   system keychain.
+- **Plugins** (Tools ▸ Plugins): Install from Folder… or Install from Zip…
+  into the settings folder's `Plugins/`, and Manage Plugins… to turn them on
+  and off, start and stop them, see their permissions and log, and remove
+  them. A plugin runs only after you've allowed its permissions for that
+  exact package (by SHA-256), from a read-only copy of it; its settings go in
+  `plugins` in `settings.json`. The API (`strata.plugin/1`) is on the
+  manual's Plugins page, and two examples are in `examples/plugins`.
+- **Hidden characters**: invisible and direction-changing characters drawn
+  as labeled boxes (`show_hidden_characters`, View ▸ Editor Extras ▸ Hidden
+  Characters), a count in the status bar, and Find ▸ Find Hidden Characters
+  to step through them.
 - **Right-click menus** everywhere: the editor (Show Unsaved
   Changes as a diff, Cut/Copy/Paste, Select All, Reveal in Finder, Copy File
   Path, Reveal in Side Bar, Goto Definition, Toggle Comment, Fold), the line
@@ -541,8 +593,8 @@ each). Tools ▸ Text has JSON format/minify, Base64/URL/HTML codecs, UUID and
 date; Tools ▸ On Save trims whitespace, adds a final newline, or saves on
 focus loss.
 
-Known gaps: no plugin or package system yet, and Strata quits with its last
-window (macOS too). Word wrap turns off for files over about 8 million
+Known gaps: there's no online plugin directory (plugins are installed from a
+folder or a zip), and Strata quits with its last window (macOS too). Word wrap turns off for files over about 8 million
 characters. The bundled grammars come from syntect's defaults and the bat
 project (via the `two-face` crate, MIT/Apache-2.0); each grammar's own license
 text ships in Help ▸ Licenses.
@@ -674,7 +726,15 @@ files are shown in the file manager, other schemes are refused; see
 (a localhost-only port with a random token on Windows). The terminal, build
 systems and language servers run the programs you choose (language servers
 only in folders you trust), and Git integration only reads your local
-repository.
+repository, except for Git sync in the vaults you turned it on for.
+
+Code blocks in notes run only when you click Run or choose a Run Code Block
+command, after Strata has shown exactly what will run and you've said yes.
+Plugins are programs of their own: Strata asks before each one first runs,
+listing what it may do through Strata, and checks every request against
+that, but it can't sandbox the program, so what a plugin does outside Strata
+(including using the network) isn't limited. Install plugins only from
+people you trust.
 
 ## Development
 

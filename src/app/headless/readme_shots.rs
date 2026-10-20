@@ -548,7 +548,12 @@ fn projects() -> (PathBuf, PathBuf) {
 
 /// A window on `folder` in `scheme`, with the README's look.
 fn window(sh: &mut Shooter, ctx: &Context, folder: Option<&Path>, scheme: &str) -> StrataApp {
-    let mut app = StrataApp::new(folder.map(Path::to_path_buf), None);
+    window_with(sh, ctx, folder, None, scheme)
+}
+
+/// `window`, with a settings folder of its own.
+fn window_with(sh: &mut Shooter, ctx: &Context, folder: Option<&Path>, config: Option<&Path>, scheme: &str) -> StrataApp {
+    let mut app = StrataApp::new(folder.map(Path::to_path_buf), config.map(Path::to_path_buf));
     app.settings.theme_mode = "fixed".into();
     app.settings.theme = scheme.into();
     app.settings.font_face = "JetBrains Mono".into();
@@ -912,6 +917,244 @@ fn readme_shots() {
         settle(&mut sh, &ctx, &mut app, |_| true);
         sh.shoot(&ctx, &mut app, 3, vec![], &shot("ai"));
     }
+
+    // Hidden characters: a contributed change that hides a check in a
+    // comment (Trojan Source), compared with the last commit: each
+    // invisible or direction-changing character boxed, the pointer resting
+    // on one.
+    {
+        let dir = std::env::temp_dir().join("strata-readme-shots/billing");
+        write_tree(&dir, &[("src/access.js", TROJAN_BEFORE)]);
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "Billing access"]);
+        let file = dir.join("src/access.js");
+        std::fs::write(&file, TROJAN).unwrap();
+        let ctx = Context::default();
+        let mut app = window(&mut sh, &ctx, Some(&dir), "Night Owl");
+        app.settings.minimap = false;
+        let i = open(&mut app, file.clone());
+        let _ = app.sidebar.reveal(&file);
+        settle(&mut sh, &ctx, &mut app, |a| !a.docs[a.active].git_changes.is_empty());
+        // The file on the left, its Compare with HEAD on the right.
+        app.run(&ctx, Cmd::LayoutColumns2);
+        app.compare_with_head(i);
+        app.move_to_pane(1);
+        app.activate(i);
+        app.focus_pane(0);
+        settle(&mut sh, &ctx, &mut app, |_| true);
+        // Where the pointer will rest: on the first RLO.
+        let k = i;
+        let rlo = TROJAN.chars().position(|c| c == '\u{202E}').unwrap();
+        app.docs[k].editor.select_ranges(&[rlo..rlo], 0);
+        sh.run(&ctx, &mut app, 2, vec![]);
+        let caret = app.docs[k].view.caret_rect().unwrap();
+        let pointer = caret.center() + egui::vec2(10.0, 0.0);
+        let end = TROJAN.chars().count();
+        app.docs[k].editor.select_ranges(&[end..end], 0);
+        settle(&mut sh, &ctx, &mut app, |_| true);
+        // Moved once, then still, so the tooltip shows.
+        sh.run(&ctx, &mut app, 1, vec![Event::PointerMoved(pointer)]);
+        for _ in 0..8 {
+            sh.run(&ctx, &mut app, 1, vec![]);
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        app.status.clear();
+        sh.shoot(&ctx, &mut app, 3, vec![], &shot("hidden-characters"));
+    }
+
+    // Runnable code blocks: a runbook whose two blocks were run with Notes:
+    // Run Code Block and Capture Output, after the one confirmation.
+    {
+        let dir = std::env::temp_dir().join("strata-readme-shots/runbook");
+        write_tree(&dir, RUNBOOK_FILES);
+        let file = dir.join("Weekly report.md");
+        let ctx = Context::default();
+        let mut app = window(&mut sh, &ctx, Some(&dir), "Rosé Pine Moon");
+        app.settings.minimap = false;
+        let i = open(&mut app, file.clone());
+        let _ = app.sidebar.reveal(&file);
+        app.settings.markdown_preview = true;
+        settle(&mut sh, &ctx, &mut app, |_| true);
+        let text = |app: &StrataApp| {
+            let b = &app.docs[i].editor.buffer;
+            b.slice(0..b.len_chars())
+        };
+        let capture = |sh: &mut Shooter, app: &mut StrataApp, needle: &str, outputs: usize| {
+            let t = text(app);
+            let at = app.docs[i].editor.buffer.byte_to_char(t.find(needle).unwrap());
+            app.docs[i].editor.select_ranges(&[at..at], 0);
+            app.run(&ctx, Cmd::NotesRunCodeBlockCapture);
+            if app.code_run.asking() {
+                click(sh, &ctx, app, "Run");
+                assert!(!app.code_run.asking(), "the Run button was clicked");
+            }
+            settle(sh, &ctx, app, |a| text(a).matches("```output").count() == outputs);
+            assert_eq!(text(app).matches("```output").count(), outputs, "{}", app.status);
+        };
+        capture(&mut sh, &mut app, "grep -c", 1);
+        capture(&mut sh, &mut app, "for line in", 2);
+        // The caret back at the top, out of the way.
+        app.docs[i].editor.select_ranges(&[0..0], 0);
+        settle(&mut sh, &ctx, &mut app, |_| true);
+        sh.shoot(&ctx, &mut app, 4, vec![], &shot("run-blocks"));
+    }
+
+    // Plugins: the two examples installed, Word Count allowed and running
+    // (its count in the status bar), and the Plugins manager on it.
+    {
+        // A short settings folder path, as the manager shows it.
+        let dir = PathBuf::from("/tmp/strata-readme-shots");
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = dir.join("Strata");
+        std::fs::create_dir_all(&config).unwrap();
+        let ctx = Context::default();
+        let mut app = window_with(&mut sh, &ctx, Some(&orbit), Some(&config), "Ayu Mirage");
+        app.settings.minimap = false;
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/plugins");
+        for name in ["sort-unique", "word-count"] {
+            app.plugin_install_from(&ctx, examples.join(name), false);
+            settle(&mut sh, &ctx, &mut app, |a| !a.plugin_installing_now());
+        }
+        open(&mut app, orbit.join("src/api.ts"));
+        let _ = app.sidebar.reveal(&orbit.join("src/api.ts"));
+        settle(&mut sh, &ctx, &mut app, |a| a.plugins.mgr.borrow().question().is_some());
+        app.plugins.mgr.borrow_mut().answer(true);
+        settle(&mut sh, &ctx, &mut app, |a| a.plugin_status_text().is_some_and(|t| t.starts_with("Word Count")));
+        assert!(app.plugin_status_text().is_some(), "Word Count runs (python3 is needed)");
+        // The manager by its title, from the top left to the middle.
+        drag(&mut sh, &ctx, &mut app, egui::pos2(300.0, 35.0), egui::pos2(720.0, 215.0));
+        settle(&mut sh, &ctx, &mut app, |_| true);
+        sh.shoot(&ctx, &mut app, 4, vec![], &shot("plugins"));
+    }
+
+    // Git sync for notes: a note changed here and on another computer, so
+    // the sync stopped and listed it; one of them open in Compare against
+    // origin/main.
+    {
+        let (vault, env, backups) = sync_repos(&std::env::temp_dir().join("strata-readme-shots/sync"));
+        let ctx = Context::default();
+        let mut app = window(&mut sh, &ctx, Some(&vault), "Solarized Dark");
+        app.settings.minimap = false;
+        app.notes.sync.env = env;
+        app.notes.sync.backup_root = Some(backups);
+        let key = std::fs::canonicalize(&vault).unwrap().to_string_lossy().into_owned();
+        let repository = crate::notes::sync::identity(&vault).expect("a repository");
+        app.settings.notes_git_sync.insert(key, crate::notes::sync::VaultSync { interval_minutes: 15, repository });
+        open(&mut app, vault.join("Trip plan.md"));
+        let _ = app.sidebar.reveal(&vault.join("Trip plan.md"));
+        app.notes.index.wait();
+        settle(&mut sh, &ctx, &mut app, |_| true);
+        app.run(&ctx, Cmd::NotesSync);
+        settle(&mut sh, &ctx, &mut app, |a| !a.notes.sync.running());
+        assert!(app.notes.sync.conflict.is_some(), "a conflict ({})", app.status);
+        app.compare_with_remote("Trip plan.md");
+        settle(&mut sh, &ctx, &mut app, |_| true);
+        sh.shoot(&ctx, &mut app, 4, vec![], &shot("notes-sync"));
+    }
+}
+
+/// Click the button labelled exactly `label` (found through AccessKit).
+fn click(sh: &mut Shooter, ctx: &Context, app: &mut StrataApp, label: &str) {
+    ctx.enable_accesskit();
+    let mut at = None;
+    // Found twice in a row: a dialog that just opened takes a frame or two to be laid out.
+    let mut seen = 0;
+    for _ in 0..40 {
+        let out = sh.run(ctx, app, 1, vec![]).unwrap();
+        if let Some(update) = out.platform_output.accesskit_update {
+            at = update.nodes.iter().find(|(_, n)| n.label() == Some(label)).and_then(|(_, n)| n.bounds()).map(|b| egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32));
+        }
+        seen = if at.is_some() { seen + 1 } else { 0 };
+        if seen == 3 {
+            break;
+        }
+    }
+    let at = at.unwrap_or_else(|| panic!("no {label} button"));
+    let button = |pressed| Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    sh.run(ctx, app, 1, vec![Event::PointerMoved(at), button(true)]);
+    sh.run(ctx, app, 1, vec![button(false)]);
+    sh.run(ctx, app, 1, vec![Event::PointerGone]);
+}
+
+/// The billing check before the change below.
+const TROJAN_BEFORE: &str = "// Who may see the billing page.\n\nexport function canSeeBilling(user) {\n    return user.role === \"admin\";\n}\n\nexport function displayName(user) {\n    return (user.first + \" \" + user.last).trim();\n}\n";
+
+/// A Trojan Source file: the check looks commented out but runs, and a
+/// name holds a zero-width space.
+const TROJAN: &str = "// Who may see the billing page.\n\nexport function canSeeBilling(user) {\n    const isAdmin = user.role === \"admin\";\n    /*\u{202E} } \u{2066}if (isAdmin)\u{2069} \u{2066} begin admins only */\n        return true;\n    /* end admins only \u{202E} { \u{2066}*/\n    return false;\n}\n\nexport function displayName(user) {\n    const user\u{200B}Name = user.first + \" \" + user.last;\n    return user\u{200B}Name.trim();\n}\n";
+
+/// A runbook and the logs its blocks read, for the run blocks scene.
+const RUNBOOK_FILES: &[(&str, &str)] = &[
+    (
+        "Weekly report.md",
+        "# Weekly report\n\nClick ▶ Run in the preview, or put the cursor in a block and choose Notes: Run Code Block.\n\n## 1. Check the logs\n\n```sh\ngrep -c . logs/*.log\n```\n\n## 2. Total by project\n\n```python\nfrom collections import Counter\nfrom pathlib import Path\n\ndef minutes(d):\n    h, _, m = d.rpartition(\"h\")\n    return int(h or 0) * 60 + int(m.rstrip(\"m\") or 0)\n\ntotals = Counter()\nfor log in sorted(Path(\"logs\").glob(\"*.log\")):\n    for line in log.read_text().splitlines():\n        date, time, project = line.split()[:3]\n        totals[project] += minutes(time)\nfor project, total in totals.most_common():\n    print(f\"{project:<8} {total // 60}h{total % 60:02}\")\n```\n\n## 3. Send it\n\n```bash\ntally --csv logs/*.log > report.csv\n```\n",
+    ),
+    ("logs/week-41.log", "2026-10-05  2h    strata   release workflow\n2026-10-06  45m   inbox\n2026-10-07  1h30  garden   seed order\n"),
+    ("logs/week-42.log", "2026-10-12  1h30  strata   README screenshots\n2026-10-13  2h    strata   notes sync\n2026-10-14  30m   inbox\n"),
+];
+
+/// The notes vault for the Git sync scene, as first committed.
+const SYNC_NOTES: &[(&str, &str)] = &[
+    (".gitignore", ".obsidian/workspace.json\n.trash/\n"),
+    ("Trip plan.md", "# Trip plan\n\nFour days on the coast in May. See [[Reading list]] for the train.\n\n## Days\n\n1. Train up, check in, walk the harbour.\n2. Lighthouse trail (about 12 km).\n3. Boat to the island if the weather holds.\n4. Market in the morning, train back.\n\n## Packing\n\n- [ ] Rain jacket\n- [ ] Walking boots\n- [ ] Binoculars\n"),
+    ("Reading list.md", "# Reading list\n\n- [ ] The Peregrine\n- [ ] A Field Guide to Getting Lost\n- [x] The Old Ways\n"),
+    ("Ideas.md", "# Ideas\n\n- A tide table in the [[Trip plan]]\n- #garden Raised beds by the fence\n"),
+    ("Journal/2026-10-18.md", "# 2026-10-18\n\nBooked the train for the [[Trip plan]].\n"),
+];
+
+/// Git for the sync scene: none of the machine's own configuration.
+fn sync_git(env: &[(String, String)], dir: &Path, args: &[&str]) {
+    let ok = Command::new("git").args(args).current_dir(dir).envs(env.iter().map(|(k, v)| (k, v))).stdin(std::process::Stdio::null()).output().is_ok_and(|o| o.status.success());
+    assert!(ok, "git {args:?}");
+}
+
+/// A remote with the notes vault, cloned twice: "laptop" commits and pushes
+/// changes to two notes, and "Notes" (the vault Strata syncs) changes the
+/// same lines without committing. (The vault, Git's environment, a folder
+/// for sync backups.)
+fn sync_repos(base: &Path) -> (PathBuf, Vec<(String, String)>, PathBuf) {
+    let _ = std::fs::remove_dir_all(base);
+    std::fs::create_dir_all(base).unwrap();
+    let base = std::fs::canonicalize(base).unwrap();
+    let config = base.join("gitconfig");
+    std::fs::write(&config, "[user]\n\tname = Sample\n\temail = sample@example.com\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n").unwrap();
+    let env = crate::notes::sync::repo_tests::git_env(&config);
+    let git = |dir: &Path, args: &[&str]| sync_git(&env, dir, args);
+    git(&base, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+    git(&base, &["clone", "-q", "remote.git", "seed"]);
+    let seed = base.join("seed");
+    for (name, text) in SYNC_NOTES {
+        let p = seed.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    git(&seed, &["add", "-A"]);
+    git(&seed, &["commit", "-q", "-m", "Notes sync: 5 changed"]);
+    git(&seed, &["push", "-q", "-u", "origin", "main"]);
+    git(&base, &["clone", "-q", "remote.git", "Notes"]);
+    git(&base, &["clone", "-q", "remote.git", "laptop"]);
+    let laptop = base.join("laptop");
+    edit(
+        &laptop,
+        &[
+            ("Trip plan.md", "3. Boat to the island if the weather holds.", "3. Kayak round the bay in the morning.\n4. Boat to the island in the afternoon."),
+            ("Trip plan.md", "4. Market in the morning, train back.", "5. Market, then the train back."),
+            ("Reading list.md", "- [ ] The Peregrine", "- [x] The Peregrine"),
+        ],
+    );
+    git(&laptop, &["commit", "-q", "-am", "Notes sync: 2 changed"]);
+    git(&laptop, &["push", "-q"]);
+    let vault = base.join("Notes");
+    edit(
+        &vault,
+        &[
+            ("Trip plan.md", "3. Boat to the island if the weather holds.", "3. Boat to the island, with a picnic."),
+            ("Trip plan.md", "- [ ] Binoculars", "- [ ] Binoculars\n- [ ] Tide table"),
+            ("Reading list.md", "- [ ] The Peregrine", "- [ ] The Peregrine (library copy)"),
+        ],
+    );
+    (vault, env, base.join("backups"))
 }
 
 /// What the terminal links scene runs: a build that fails with a rustc

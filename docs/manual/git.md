@@ -1,6 +1,6 @@
 # Git Integration
 
-When a file belongs to a Git repository, Strata marks the lines you've changed since the last commit and shows the current branch. It's a light touch: Strata shows changes but doesn't run Git commands that change anything.
+When a file belongs to a Git repository, Strata marks the lines you've changed since the last commit and shows the current branch. It's a light touch: Strata shows changes but doesn't run Git commands that change anything. The one exception is [Git sync for notes](notes.md#git-sync), which commits, pulls and pushes a notes vault, and only in vaults you turn it on for.
 
 ## Change bars
 

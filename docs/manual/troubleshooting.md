@@ -267,7 +267,7 @@ Often, yes. `keybindings.json` uses a common JSON keymap format, and many comman
 Yes. Put `.tmTheme` or `.sublime-color-scheme` files in `Themes/`, and `.sublime-syntax` files in `Syntaxes/`, then restart Strata. See [Importing color schemes](appearance.md#importing-color-schemes) and [Adding your own syntaxes](languages.md#adding-your-own-syntaxes).
 
 **Does Strata have plugins or packages?**
-Not yet. You can add snippets, syntaxes, color schemes and build systems as files, but there's no plugin system.
+Yes. Plugins are separate programs, in any language, that you install from a folder or a zip; there's no online directory. Strata asks before a plugin first runs and lets it do only what you allowed. See [Plugins](plugins.md). Snippets, syntaxes, color schemes and build systems are plain files you add to the settings folder.
 
 **Can I use Strata with my Obsidian vault?**
 Yes. Open the vault folder and links, backlinks, tags, daily notes and templates work as in Obsidian. Strata reads the vault's `.obsidian` settings but never changes them, so you can keep the vault open in both. See [Notes](notes.md).
