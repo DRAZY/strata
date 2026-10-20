@@ -154,6 +154,8 @@ pub struct StrataApp {
     delayed_save: delayed_save::DelayedSave,
     /// Review Changes (see `review_ui`).
     review: review_ui::ReviewState,
+    /// Language servers (see `lsp_ui`), shared by the windows.
+    lsp: lsp_ui::LspState,
 }
 
 mod autosave;
@@ -179,6 +181,7 @@ mod keymap_ui;
 mod large_files;
 mod launch;
 mod lookup;
+mod lsp_ui;
 mod macro_files;
 pub(crate) mod menu_model;
 mod more;
@@ -246,6 +249,8 @@ impl StrataApp {
     /// A window with no tabs yet, no session lock and nothing restored.
     fn with_settings(config: Option<PathBuf>, settings: Settings, status: String) -> Self {
         let settings_mtime = config.as_deref().and_then(|d| std::fs::metadata(Settings::path(d)).and_then(|m| m.modified()).ok());
+        // No settings folder means a test: no language server starts unless the test asks.
+        let lsp = lsp_ui::LspState::new(config.is_some());
         let mut app = Self {
             docs: Vec::new(),
             active: 0,
@@ -322,6 +327,7 @@ impl StrataApp {
             doc_cfg: Default::default(),
             delayed_save: Default::default(),
             review: Default::default(),
+            lsp,
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -1076,6 +1082,7 @@ impl StrataApp {
             Cmd::CopyRelativePath => self.copy_relative_path(ctx, self.active),
             Cmd::CopyPermalink => self.copy_permalink(ctx, self.active),
             Cmd::SaveMacro => self.save_macro(),
+            Cmd::LspHover | Cmd::LspRename | Cmd::LspFormat | Cmd::LspProblems | Cmd::LspNextProblem | Cmd::LspPrevProblem | Cmd::LspSignatureHelp | Cmd::LspRestart => self.lsp_command(ctx, cmd),
             Cmd::NextFindResult => self.step_find_result(true),
             Cmd::PrevFindResult => self.step_find_result(false),
             Cmd::CancelFindInFiles => self.sidebar.search.stop(),
@@ -1098,7 +1105,11 @@ impl StrataApp {
             Cmd::NextInStack => self.stack_step(ctx.input(|i| i.time), true),
             Cmd::PrevInStack => self.stack_step(ctx.input(|i| i.time), false),
             Cmd::SwitchHeader => self.switch_header(),
-            Cmd::GotoReference => self.goto_reference(),
+            Cmd::GotoReference => {
+                if !self.lsp_goto(false) {
+                    self.goto_reference();
+                }
+            }
             Cmd::GotoSymbolInProject => self.goto_symbol_in_project(ctx),
             Cmd::CopyAsHtml => self.copy_as_html(),
             Cmd::ToggleMarkdownPreview => {
@@ -1174,6 +1185,7 @@ impl StrataApp {
             Cmd::ShowCompletions => {
                 self.completion.open(&mut self.docs[self.active], true, &self.snippets.lib);
                 self.snippet_from_completion();
+                self.lsp_completion("", true);
             }
             Cmd::CloseWindow => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::NewWindow => self.link.requests.new_window = true,
@@ -1209,7 +1221,12 @@ impl StrataApp {
             }
             Cmd::JumpBack => self.jump(true),
             Cmd::JumpForward => self.jump(false),
-            Cmd::GotoDefinition => self.goto_definition_in(Some(ctx.clone())),
+            // The language server when there's one, else Strata's own symbol search.
+            Cmd::GotoDefinition => {
+                if !self.lsp_goto(true) {
+                    self.goto_definition_in(Some(ctx.clone()));
+                }
+            }
             Cmd::OpenProject => self.open_project(),
             Cmd::SaveProjectAs => self.save_project_as(),
             Cmd::AddFolder => {
@@ -1283,7 +1300,7 @@ impl StrataApp {
     /// Files' question, Print), or a menu: window and editor commands wait,
     /// and the dialog alone sees Esc and Enter.
     fn modal_open(&self, ctx: &egui::Context) -> bool {
-        self.sidebar.modal_open() || self.print.is_open() || self.review.confirming() || egui::Popup::is_any_open(ctx)
+        self.sidebar.modal_open() || self.print.is_open() || self.review.confirming() || self.lsp.renaming() || egui::Popup::is_any_open(ctx)
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -1967,6 +1984,8 @@ enum StatusLeft {
     Conflict,
     Deleted,
     Lossy,
+    /// The file's language server.
+    Lsp,
     Branch,
     Review,
     Words,
@@ -1976,7 +1995,7 @@ enum StatusLeft {
 struct StatusFit {
     /// "12:5" instead of "Line 12, Column 5".
     short_pos: bool,
-    left: [bool; 6],
+    left: [bool; 7],
     /// Syntax, encoding, line endings, indentation, theme.
     right: [bool; 5],
     /// Each right item's width (with its separator) when last drawn.
@@ -1985,10 +2004,11 @@ struct StatusFit {
 
 /// Choose the status bar items that fit its width, by priority: the cursor
 /// position and the syntax always; then the encoding, line endings,
-/// indentation and theme menus; then the warnings, the branch, the count of
-/// files to review and the word count; the message gets what's left (at
-/// least a little).
-fn status_fit(ui: &egui::Ui, pos: &str, conflict: bool, deleted: bool, lossy: bool, (branch, review): (Option<&str>, Option<&str>), words: Option<&str>) -> StatusFit {
+/// indentation and theme menus; then the warnings, the language server,
+/// the branch, the count of files to review and the word count; the
+/// message gets what's left (at least a little).
+#[allow(clippy::too_many_arguments)]
+fn status_fit(ui: &egui::Ui, pos: &str, conflict: bool, deleted: bool, lossy: bool, lsp: Option<&str>, (branch, review): (Option<&str>, Option<&str>), words: Option<&str>) -> StatusFit {
     let right_widths: [f32; 5] = ui.ctx().data(|d| d.get_temp(egui::Id::new("status-bar-widths"))).unwrap_or([100.0, 70.0, 40.0, 90.0, 70.0]);
     let font = egui::TextStyle::Body.resolve(ui.style());
     let gap = ui.spacing().item_spacing.x;
@@ -2013,15 +2033,16 @@ fn status_fit(ui: &egui::Ui, pos: &str, conflict: bool, deleted: bool, lossy: bo
         room -= full - short;
     }
     let button = 2.0 * ui.spacing().button_padding.x;
-    let wanted: [(bool, f32); 6] = [
+    let wanted: [(bool, f32); 7] = [
         (conflict, sep + text_w("Changed on disk") + text_w("Reload") + button),
         (deleted, sep + text_w("Deleted on disk (save to recreate)")),
         (lossy, sep + text_w("Decoding errors")),
+        (lsp.is_some(), sep + lsp.map_or(0.0, text_w) + button),
         (branch.is_some(), sep + branch.map_or(0.0, |b| text_w(&format!("⎇ {b}")))),
         (review.is_some(), sep + review.map_or(0.0, text_w) + button),
         (words.is_some(), sep + words.map_or(0.0, text_w)),
     ];
-    let mut left = [false; 6];
+    let mut left = [false; 7];
     for (k, (on, w)) in wanted.into_iter().enumerate() {
         if on && w <= room {
             left[k] = true;
@@ -2376,9 +2397,10 @@ impl StrataApp {
         if selected > 0 {
             pos.push_str(&format!("  ·  {selected} selected"));
         }
+        let lsp = self.lsp_status();
         // Narrow windows: items drop out by priority rather than overlap.
         let review = self.review_remaining().map(|n| if n == 0 { "All reviewed".to_owned() } else { format!("{n} to review") });
-        let fit = status_fit(ui, &pos, d.conflict, d.deleted, d.editor.buffer.lossy, (branch.as_deref(), review.as_deref()), words.as_deref());
+        let fit = status_fit(ui, &pos, d.conflict, d.deleted, d.editor.buffer.lossy, lsp.as_ref().map(|l| l.0.as_str()), (branch.as_deref(), review.as_deref()), words.as_deref());
         ui.horizontal(|ui| {
             let d = &mut self.docs[self.active];
             ui.label(if fit.short_pos && binary.is_none() { format!("{line}:{col}") } else { pos });
@@ -2396,6 +2418,16 @@ impl StrataApp {
                 // Asks first, like Revert; Undo brings the edits back.
                 if ui.small_button("Reload").on_hover_text("Discard your edits and load the file from disk (asks first)").clicked() {
                     self.revert();
+                }
+            }
+            if let Some((text, color, tip, restart)) = lsp.filter(|_| fit.left[StatusLeft::Lsp as usize]) {
+                ui.separator();
+                let label = match color {
+                    Some(c) => egui::RichText::new(text).color(c),
+                    None => egui::RichText::new(text),
+                };
+                if ui.add(egui::Button::new(label).frame(false)).on_hover_text(tip).clicked() {
+                    self.lsp_status_clicked(ui.ctx(), restart);
                 }
             }
             if let Some(branch) = branch.filter(|_| fit.left[StatusLeft::Branch as usize]) {
@@ -2563,9 +2595,13 @@ impl eframe::App for StrataApp {
         self.build.poll(ctx);
         self.poll_lookup(ctx);
         let typed_word = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t.chars().all(|c| c.is_alphanumeric() || c == '_'))));
+        let typed_text: String = ctx.input(|i| i.events.iter().filter_map(|e| if let egui::Event::Text(t) = e { Some(t.as_str()) } else { None }).collect());
         if self.completion.is_open() {
             let d = &mut self.docs[self.active];
             self.completion.keys(ctx, d);
+            if self.completion.take_dismissed() {
+                self.lsp.drop_completion();
+            }
         }
         self.snippet_keys(ctx);
         let typed = self.devshot.tick(ctx);
@@ -2781,7 +2817,7 @@ impl eframe::App for StrataApp {
             (d.editor.auto_indent, d.editor.smart_indent) = (d.local.effective.auto_indent, d.local.effective.smart_indent);
             d.editor.indent_rules = crate::indent::rules_for(d.highlighter.syntax_name());
         }
-        if self.sidebar.modal_open() || self.print.is_open() {
+        if self.sidebar.modal_open() || self.print.is_open() || self.lsp.renaming() {
             // The dialog's field keeps the keyboard.
             self.cancel_editor_focus();
         }
@@ -2790,15 +2826,23 @@ impl eframe::App for StrataApp {
             ctx.request_repaint();
         }
         self.compare_actions(ctx);
+        // After this frame's edits: language servers hear of them, and answer later.
+        self.lsp_frame(ctx);
         {
             let d = &mut self.docs[self.active];
             let auto = d.local.effective.auto_complete;
             if auto || self.completion.is_open() {
                 self.completion.after_edit(d, typed_word && auto, &self.snippets.lib);
             }
+        }
+        self.lsp_completion(&typed_text, false);
+        {
+            let d = &mut self.docs[self.active];
             self.completion.show(ctx, d);
         }
         self.snippet_from_completion();
+        self.lsp_insert_completion();
+        self.lsp_popups(ctx);
         self.help_window(ctx);
         self.settings_window(ctx);
         self.print_dialog(ctx);

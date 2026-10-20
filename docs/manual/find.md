@@ -257,7 +257,7 @@ Symbols are found by recognizing common declaration patterns line by line, so th
 
 ## Go to Definition
 
-{{key:goto_definition}} (Goto ▸ Goto Definition…) jumps to where the word under the cursor (or the selected text) is defined. Strata looks for a symbol with exactly that name:
+{{key:goto_definition}} (Goto ▸ Goto Definition…) jumps to where the word under the cursor (or the selected text) is defined. When a [language server](languages.md#language-servers) runs for the file, it answers, across the whole project; when there's more than one place, they're listed in the command palette. Without a server, or when the server knows nothing about the word, Strata looks for a symbol with exactly that name:
 
 1. in the current file,
 2. then in the other open tabs,
@@ -267,7 +267,7 @@ The folder is searched in the background (the status bar says "Searching the fol
 
 ## Go to Reference
 
-{{key:goto_reference}} (Goto ▸ Goto Reference…) searches the open folders for the word under the cursor, as a whole word and case sensitive. The results appear in the side bar's Search tab; step through them with Next Result and Previous Result (see [Find in Files](find.md#find-in-files)). With no folder open, it opens the find bar with the word instead.
+{{key:goto_reference}} (Goto ▸ Goto Reference…) lists every use of the symbol under the cursor in the command palette when a [language server](languages.md#language-servers) runs for the file. Otherwise it searches the open folders for the word under the cursor, as a whole word and case sensitive. The results appear in the side bar's Search tab; step through them with Next Result and Previous Result (see [Find in Files](find.md#find-in-files)). With no folder open, it opens the find bar with the word instead.
 
 ## Jump back and forward
 

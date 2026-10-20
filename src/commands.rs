@@ -170,6 +170,15 @@ pub enum Cmd {
     ReviewKeepFile,
     ReviewRevertFile,
     ReviewMarkReviewed,
+    // Language servers (see `app/lsp_ui.rs`).
+    LspHover,
+    LspRename,
+    LspFormat,
+    LspProblems,
+    LspNextProblem,
+    LspPrevProblem,
+    LspSignatureHelp,
+    LspRestart,
 }
 
 impl Cmd {
@@ -335,6 +344,14 @@ impl Cmd {
         Cmd::ReviewKeepFile,
         Cmd::ReviewRevertFile,
         Cmd::ReviewMarkReviewed,
+        Cmd::LspHover,
+        Cmd::LspRename,
+        Cmd::LspFormat,
+        Cmd::LspProblems,
+        Cmd::LspNextProblem,
+        Cmd::LspPrevProblem,
+        Cmd::LspSignatureHelp,
+        Cmd::LspRestart,
     ];
 
     pub fn name(self) -> &'static str {
@@ -500,6 +517,14 @@ impl Cmd {
             Cmd::ReviewKeepFile => "Review: Keep File",
             Cmd::ReviewRevertFile => "Review: Revert File",
             Cmd::ReviewMarkReviewed => "Review: Mark File as Reviewed",
+            Cmd::LspHover => "LSP: Show Hover Info",
+            Cmd::LspRename => "LSP: Rename Symbol…",
+            Cmd::LspFormat => "LSP: Format Document",
+            Cmd::LspProblems => "LSP: Show Problems…",
+            Cmd::LspNextProblem => "LSP: Next Problem",
+            Cmd::LspPrevProblem => "LSP: Previous Problem",
+            Cmd::LspSignatureHelp => "LSP: Show Parameter Hints",
+            Cmd::LspRestart => "LSP: Restart Language Servers",
         }
     }
 
@@ -666,6 +691,12 @@ impl Cmd {
             // Ctrl+Alt+F8 switches to a text console on Linux.
             Cmd::ReviewMarkReviewed => if MAC || cfg!(windows) { &[(CMD_ALT, Key::F8)] } else { &[] },
             Cmd::ReviewStart | Cmd::ReviewEnd | Cmd::ReviewShowChanges | Cmd::ReviewKeepFile | Cmd::ReviewRevertFile => &[],
+            // F8 is free in Strata on both systems. Hover, rename, format and
+            // the problem list are ⌘K / Ctrl+K chords (see `Keymap::defaults`).
+            Cmd::LspNextProblem => &[(NONE, Key::F8)],
+            Cmd::LspPrevProblem => &[(SHIFT, Key::F8)],
+            Cmd::LspSignatureHelp => &[(CMD_SHIFT, Key::Space)],
+            Cmd::LspHover | Cmd::LspRename | Cmd::LspFormat | Cmd::LspProblems | Cmd::LspRestart => &[],
         }
     }
 
@@ -839,6 +870,14 @@ impl Cmd {
             Cmd::ReviewKeepFile => "review_keep_file",
             Cmd::ReviewRevertFile => "review_revert_file",
             Cmd::ReviewMarkReviewed => "review_mark_reviewed",
+            Cmd::LspHover => "lsp_hover",
+            Cmd::LspRename => "lsp_rename",
+            Cmd::LspFormat => "lsp_format",
+            Cmd::LspProblems => "lsp_problems",
+            Cmd::LspNextProblem => "lsp_next_problem",
+            Cmd::LspPrevProblem => "lsp_prev_problem",
+            Cmd::LspSignatureHelp => "lsp_signature_help",
+            Cmd::LspRestart => "lsp_restart",
         }
     }
 }

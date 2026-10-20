@@ -106,6 +106,15 @@ fn next_key() -> u64 {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// A range of text with a style and an id the app gives meaning to (see
+/// `Editor::set_markers`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Marker {
+    pub range: Range<usize>,
+    pub style: u8,
+    pub id: u32,
+}
+
 /// One text replacement as applied to the buffer, for mirroring an edit
 /// into the other views of the same buffer (see `Editor::new_view`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,6 +171,10 @@ pub struct Editor {
     tracked: Vec<Range<usize>>,
     /// Find ▸ In Selection's ranges; they follow edits like `tracked`.
     find_scope: Option<Vec<Range<usize>>>,
+    /// Decorations the app places (a language server's diagnostics); they
+    /// follow edits like `tracked`, so they stay on their text until the
+    /// server sends new ones.
+    markers: Vec<Marker>,
     /// Edits are ignored (views like Show Unsaved Changes); selection still works.
     pub read_only: bool,
 }
@@ -508,6 +521,7 @@ impl Editor {
             rng: Rng::from_time(),
             tracked: Vec::new(),
             find_scope: None,
+            markers: Vec::new(),
             read_only: false,
         }
     }
@@ -560,6 +574,23 @@ impl Editor {
 
     pub fn find_scope(&self) -> Option<&[Range<usize>]> {
         self.find_scope.as_deref()
+    }
+
+    /// Replace the markers (sorted by start; clamped to the text). Like
+    /// `set_tracked`'s ranges they follow every later edit; text deleted
+    /// around a marker shrinks it to an empty range.
+    pub fn set_markers(&mut self, mut markers: Vec<Marker>) {
+        let len = self.buffer.len_chars();
+        for m in &mut markers {
+            m.range.end = m.range.end.min(len);
+            m.range.start = m.range.start.min(m.range.end);
+        }
+        markers.sort_by_key(|m| m.range.start);
+        self.markers = markers;
+    }
+
+    pub fn markers(&self) -> &[Marker] {
+        &self.markers
     }
 
     /// Whole text as one string, cached until the next edit (for regex search).
@@ -833,7 +864,7 @@ impl Editor {
         self.buffer.remove(at..at + remove);
         self.buffer.insert(at, text);
         let n = text.chars().count();
-        for r in self.tracked.iter_mut().chain(self.find_scope.iter_mut().flatten()) {
+        for r in self.tracked.iter_mut().chain(self.find_scope.iter_mut().flatten()).chain(self.markers.iter_mut().map(|m| &mut m.range)) {
             *r = track_edit(r, at, remove, n);
         }
         if self.bookmarks.is_empty() && self.marks.is_empty() {
@@ -2172,6 +2203,21 @@ impl Editor {
         let sels = ranges.iter().map(|r| Selection { anchor: r.start, head: r.end, goal: None }).collect();
         self.set_selections(sels, ranges[primary.min(ranges.len() - 1)].end);
         self.can_coalesce = false;
+    }
+
+    /// Replace several ranges (non-overlapping) as one undo step, each
+    /// selection staying on the same text (a rename or reformat around the
+    /// cursors leaves them where they were).
+    pub fn apply_edits(&mut self, edits: Vec<Edit>) {
+        if !edits.is_empty() {
+            self.apply_mapped(edits, None);
+        }
+    }
+
+    /// Replace several ranges (non-overlapping) as one undo step, then put
+    /// a single cursor at `cursor` (a position in the text after the edits).
+    pub fn apply_edits_then(&mut self, edits: Vec<Edit>, cursor: usize) {
+        self.apply_then(edits, None, vec![Selection::cursor(cursor)], cursor);
     }
 
     /// Replace several ranges (sorted, non-overlapping) as one undo step.
@@ -4614,6 +4660,42 @@ mod tests {
         e.delete_word_backward();
         assert_eq!(text(&e), " baz");
         assert_eq!(ranges(&e), vec![0..0]);
+    }
+
+    #[test]
+    fn markers_follow_edits_and_undo() {
+        let mut e = ed("let bad = 1;\nlet meh = 2;\n");
+        let m = |r: Range<usize>, id| Marker { range: r, style: 1, id };
+        e.set_markers(vec![m(17..20, 1), m(4..7, 0), m(90..99, 2)]);
+        assert_eq!(e.markers().iter().map(|m| (m.range.clone(), m.id)).collect::<Vec<_>>(), [(4..7, 0), (17..20, 1), (26..26, 2)], "sorted and clamped");
+        // Typing before a marker shifts it; on another line too.
+        e.click(0, false);
+        e.insert_text("// ");
+        assert_eq!(e.markers()[0].range, 7..10);
+        assert_eq!(e.markers()[1].range, 20..23);
+        assert_eq!(e.buffer.slice(e.markers()[1].range.clone()), "meh");
+        // Undo puts them back.
+        e.undo();
+        assert_eq!(e.markers()[0].range, 4..7);
+        // Deleting the marked text leaves an empty marker where it was.
+        e.select_ranges(&[3..8], 0);
+        e.backspace(false);
+        assert_eq!(e.markers()[0].range, 3..3);
+        assert_eq!(e.markers()[1].range, 12..15);
+    }
+
+    #[test]
+    fn applying_edits_keeps_or_places_the_cursor() {
+        let mut e = ed("one two one\n");
+        e.click(5, false);
+        e.apply_edits(vec![(8..11, "three".into()), (0..3, "three".into())]);
+        assert_eq!(text(&e), "three two three\n");
+        assert_eq!(ranges(&e), vec![7..7], "the cursor stays inside `two`");
+        e.undo();
+        assert_eq!(text(&e), "one two one\n", "one undo step");
+        e.apply_edits_then(vec![(0..0, "use x;\n".into()), (4..7, "TWO()".into())], 16);
+        assert_eq!(text(&e), "use x;\none TWO() one\n");
+        assert_eq!(ranges(&e), vec![16..16]);
     }
 }
 

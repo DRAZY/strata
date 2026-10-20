@@ -131,7 +131,7 @@ pub fn expand_keys(src: &str) -> (String, Vec<String>) {
 
 /// Contents sections of the shortcuts page, by the prefix of command names.
 const CATEGORIES: &[&str] = &[
-    "File", "Edit", "Selection", "Find", "Goto", "View", "Code Folding", "Layout", "Tools", "Review", "Markdown", "Terminal", "Project", "Preferences", "Help", "Strata",
+    "File", "Edit", "Selection", "Find", "Goto", "LSP", "View", "Code Folding", "Layout", "Tools", "Review", "Markdown", "Terminal", "Project", "Preferences", "Help", "Strata",
 ];
 
 /// Keyboard Shortcuts, from the keymap in effect: defaults plus keybindings.json.

@@ -111,6 +111,8 @@ impl StrataApp {
         app.clip_history.clone_from(&self.clip_history);
         // Fonts belong to the egui context, which every window shares.
         app.fonts_key.clone_from(&self.fonts_key);
+        // So do the language servers.
+        app.lsp = super::lsp_ui::LspState::sharing(self.lsp.hub.clone());
         // A shell starts on launch only in the first window.
         app.terminal_started = true;
         // Dev aids act on the first window.

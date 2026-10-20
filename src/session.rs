@@ -133,6 +133,11 @@ pub struct Settings {
     pub syntax_settings: std::collections::BTreeMap<String, crate::doc_settings::Layer>,
     /// Follow `.editorconfig` files.
     pub editorconfig: bool,
+    /// Use language servers (see `lsp`) for the files they handle.
+    pub lsp_enabled: bool,
+    /// Language servers by name: changes to the built-in ones and servers of
+    /// the user's own (see `lsp::config::ServerSetting`).
+    pub lsp_servers: std::collections::BTreeMap<String, crate::lsp::config::ServerSetting>,
     /// Checking GitHub for new versions: "ask" (once), "auto" (at launch and
     /// every `update_check_interval_hours`) or "off" (only Help ▸ Check for Updates…).
     pub update_check: String,
@@ -207,6 +212,8 @@ impl Default for Settings {
             file_exclude_patterns: vec![".git".into(), ".DS_Store".into()],
             syntax_settings: Default::default(),
             editorconfig: true,
+            lsp_enabled: true,
+            lsp_servers: Default::default(),
             update_check: "ask".into(),
             update_check_interval_hours: 4,
             update_channel: "stable".into(),

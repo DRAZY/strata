@@ -246,6 +246,13 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `syntax_settings` | object | `{}` | Settings for one syntax, by name: for example `{"Python": {"tab_size": 4}, "Markdown": {"spell_check": true}}`. See [Settings for one syntax](#settings-for-one-syntax). |
 | `editorconfig` | true/false | `true` | Follow `.editorconfig` files. See [EditorConfig](#editorconfig). |
 
+### Language servers
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `lsp_enabled` | true/false | `true` | Use language servers for completions, problems, hover information, rename and formatting, when one is installed for the file's language. Strata never downloads or installs a server. See [Language Servers](languages.md#language-servers). |
+| `lsp_servers` | object | `{}` | Changes to the built-in language servers, and servers of your own, by name: for example `{"rust": {"args": ["--log-file", "/tmp/ra.log"]}, "go": {"enabled": false}}`. See [Setting up servers](languages.md#setting-up-servers). |
+
 ### Find and spelling
 
 | Setting | Type | Default | Description |

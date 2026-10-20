@@ -42,6 +42,7 @@ mod menus;
 mod lang;
 mod links;
 mod logging;
+mod lsp;
 #[cfg(target_os = "macos")]
 mod mac_open;
 mod markdown;

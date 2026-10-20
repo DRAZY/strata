@@ -720,6 +720,11 @@ impl Keymap {
         let (fold, scroll) = if MAC { (CMD_ALT, CTRL_ALT) } else { (CTRL_SHIFT, CTRL) };
         add(one((fold, Key::OpenBracket)), Target::View("fold"));
         add(one((fold, Key::CloseBracket)), Target::View("unfold"));
+        // Language server commands.
+        add(k_then(Key::I), Target::Cmd(Cmd::LspHover));
+        add(k_then(Key::R), Target::Cmd(Cmd::LspRename));
+        add(k_then(Key::F), Target::Cmd(Cmd::LspFormat));
+        add(k_then(Key::M), Target::Cmd(Cmd::LspProblems));
         add(k_then(Key::Num1), Target::View("fold_all"));
         add(k_then(Key::J), Target::View("unfold_all"));
         add(k_then(Key::Num0), Target::View("unfold_all"));

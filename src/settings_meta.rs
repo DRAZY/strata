@@ -127,6 +127,7 @@ pub static SETTINGS: &[Meta] = &[
     m("smooth_scroll", Editor, "Smooth scrolling", Toggle),
     m("git_gutter", Editor, "Git gutter", Toggle),
     m("markdown_preview", Editor, "Markdown preview", Toggle),
+    m("lsp_enabled", Editor, "Language servers", Toggle),
     // Files & Saving
     m("hot_exit", Files, "Hot exit", Toggle),
     m("trim_trailing_white_space_on_save", Files, "Trim trailing whitespace on save", Toggle),
@@ -159,6 +160,7 @@ pub static SETTINGS: &[Meta] = &[
     // Advanced
     m("editorconfig", Editor, "Follow .editorconfig files", Toggle),
     m("syntax_settings", Advanced, "Settings per language", Json),
+    m("lsp_servers", Advanced, "Language server setup", Json),
     m("theme_overrides", Advanced, "Color overrides", Json),
     m("theme_overrides_by_theme", Advanced, "Color overrides per scheme", Json),
 ];
