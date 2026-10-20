@@ -23,9 +23,11 @@
 Strata is a native editor for macOS and Windows, written in Rust. It opens
 instantly, stays smooth on files of hundreds of megabytes, and keeps every
 command a keystroke away. Multiple cursors, Goto Anything, project-wide search
-and replace, split panes, a built-in terminal, a live Markdown preview and
-language server support are all there out of the box, with no accounts and no
-telemetry.
+and replace, split panes, a built-in terminal, a live Markdown preview, notes
+with wikilinks and backlinks, and language server support are all there out of
+the box, with no accounts and no telemetry. Optional AI helpers can summarize
+and explain changes with a model you choose, on your own computer or remote;
+they stay off until you turn them on.
 
 > **Status: 1.0.** The first stable release. Please [report
 > problems](https://github.com/DRAZY/strata/issues) (Help ▸ Report a Problem…
@@ -62,6 +64,17 @@ telemetry.
   **Revert** for every change. Reverting is an ordinary edit you can undo.
 - **Live Markdown preview** with GitHub-style tables, task lists, alerts,
   footnotes and highlighted code, plus HTML export.
+- **Notes** on plain Markdown files, in the same folder Obsidian uses:
+  `[[wikilinks]]` you can ⌘-click (Ctrl+click), completion as you type `[[`,
+  a backlinks panel under each note, `#tags`, daily notes and templates.
+  Renaming a note offers to update every link to it, and Undo Rename puts it
+  all back. Strata reads the vault's Obsidian settings but never changes them.
+- **AI helpers**, off until you turn them on: ask a model you choose to
+  summarize a review, explain a change or a selection, flag risky edits or
+  draft a commit message. Use Ollama or LM Studio on your computer or network,
+  an OpenAI-compatible or Anthropic API, or the `claude` and `codex`
+  command-line tools with your own login. Answers stream into a panel as
+  Markdown and never hold up the editor.
 - **About 190 languages** highlighted, with symbols, smart indentation and
   comment toggling for many of them.
 - **35 color schemes** (One Dark, Dracula, Nord, Solarized, Gruvbox, Tokyo
@@ -98,9 +111,10 @@ telemetry.
 - **Private by design**: no accounts, no telemetry. Strata only contacts
   GitHub to check for and download updates, and only if you allow it (or when
   you choose Help ▸ Check for Updates…); it sends nothing else. The optional
-  AI helpers are off until you turn them on and pick a model, and they show
-  exactly what they'll send before anything goes to a provider outside your
-  computer or network. Logs and crash reports stay on your computer.
+  AI helpers are off until you turn them on and pick a provider, and they show
+  exactly what they'll send, and ask, before anything goes to a provider
+  outside your computer or network. Logs and crash reports stay on your
+  computer.
 - **Signed updates**: a new version is offered in the app and installs with
   one click; every download is checked against an ed25519 signature (and, on
   macOS, Strata's Developer ID) before it replaces anything, and the previous
@@ -129,14 +143,20 @@ telemetry.
     <td><img src="docs/screenshots/terminal-links.png" alt="A failed cargo build in the terminal, with the error's file location underlined while the Command key is held"><br><sub>Clickable file locations in the terminal</sub></td>
     <td><img src="docs/screenshots/help.png" alt="The built-in manual open at Find and Replace"><br><sub>The built-in manual</sub></td>
   </tr>
+  <tr>
+    <td><img src="docs/screenshots/notes.png" alt="A note in a small vault: wikilinks underlined in the editor, the live preview with the note's properties, links, tags and an embedded section of another note, and the backlinks panel listing the four notes that link to it"><br><sub>Notes with live preview and backlinks</sub></td>
+    <td><img src="docs/screenshots/ai.png" alt="Review Changes with the AI panel below it: a Markdown summary of the four changed files from a local model, labelled localhost:11434 · llama3.2 · local"><br><sub>An AI summary of a review, from a local model</sub></td>
+  </tr>
 </table>
 
 ## What's next
 
 On `main` for the next release: clickable file locations and Send to Terminal
-in the terminal, Review Changes, and language servers. Planned after that
-(details in [`docs/ROADMAP.md`](docs/ROADMAP.md)): plugins, a Vim mode,
-official Linux support and screen reader support in the editor.
+in the terminal, Review Changes, language servers, notes and the optional AI
+helpers. Being worked on: runnable code blocks in notes, Git sync for notes,
+and plugins. Planned after that (details in
+[`docs/ROADMAP.md`](docs/ROADMAP.md)): a Vim mode, official Linux support and
+screen reader support in the editor.
 
 ## Accessibility
 
@@ -210,8 +230,8 @@ scripts/package-macos.sh           # → dist/Strata.app and dist/Strata-<versio
 The user manual is built into the app: **Help ▸ Documentation** (F1, or
 "Help: Documentation" in the command palette). It covers editing, find and
 replace, snippets, projects, panes and windows, comparing files, printing, the
-terminal, Markdown preview, build systems, Git, Review Changes, language
-servers, appearance, every setting, key bindings, the command line and
+terminal, Markdown preview, notes, build systems, Git, Review Changes, the AI
+helpers, language servers, appearance, every setting, key bindings, the command line and
 troubleshooting, with search across all pages.
 It opens in its own window so you can read along while you work. **Help ▸
 Keyboard Shortcuts** lists every command and its keys, generated from the key
@@ -467,6 +487,27 @@ bindings, with comments and trailing commas allowed:
   for the whole file; reverting is an ordinary edit (Undo brings it back,
   nothing is written until you save). Tick files off as reviewed; F8 /
   Shift+F8 step through the changes across files. No AI is involved.
+- **Notes** (Tools ▸ Notes): open a folder of Markdown notes, an Obsidian
+  vault or any other, and links, backlinks and tags work across it, indexed in
+  the background and kept up to date as Obsidian, a sync tool or Git changes
+  files. Wikilinks with headings, block ids, aliases and embeds, and Markdown
+  links to notes; ⌘-click (Ctrl+click) or Notes: Follow Link opens them,
+  offering to create a note that doesn't exist yet. `[[` completes note names,
+  aliases, headings and block ids. Also: the backlinks panel
+  (`notes_backlinks`), Find Tag…, Open Daily Note and New Note from Template…
+  (following Obsidian's Daily notes and Templates settings), Rename Note… with
+  a preview of every link it changes and an all-or-nothing Undo Rename, and a
+  notice with Compare for sync conflict copies. The Markdown preview shows
+  wikilinks, tags, properties and embedded images and notes.
+- **AI helpers** (Tools ▸ AI, off until `ai_enabled`): Summarize Changes (the
+  whole review or one file), Explain Change, Flag Risks, Draft Commit Message
+  and Explain Selection, answered by an OpenAI-compatible server (Ollama, LM
+  Studio, OpenRouter, OpenAI…), the Anthropic API, or the `claude` or `codex`
+  command-line tool. Local providers are used without asking; before the first
+  request to any other, Strata shows the exact text and the host (Allow Once,
+  Always for This Provider, Cancel). Secret-looking, ignored and binary files
+  are never sent, and `ai_max_prompt_kb` caps the size. Keys live in the
+  system keychain.
 - **Right-click menus** everywhere: the editor (Show Unsaved
   Changes as a diff, Cut/Copy/Paste, Select All, Reveal in Finder, Copy File
   Path, Reveal in Side Bar, Goto Definition, Toggle Comment, Fold), the line
@@ -597,11 +638,29 @@ own are update checks and downloads from GitHub, and only if you allow them
 Updates…; they send nothing but the request itself. Updates are fetched with
 the system's `curl` (HTTPS only) and verified against an ed25519 key built
 into the app before anything is installed; see [docs/UPDATES.md](docs/UPDATES.md).
+Notes never use the network: links, backlinks and embedded images come only
+from files in the vault.
+
 The optional AI helpers ([docs/manual/ai.md](docs/manual/ai.md)) are off by
-default; once you turn them on, they contact only the provider you choose,
-show the exact text and the host before the first request to anything that
-isn't on your computer or local network, and keep API keys in the system
-keychain.
+default, and nothing is sent anywhere until you turn them on and choose a
+provider. Then:
+
+- **Local providers** (Ollama or LM Studio on this computer or your local
+  network, judged from the address as you typed it, never from what a name
+  looks up to) are used without asking: the text stays on your computer or
+  network.
+- **Any other provider**, including the Anthropic API and the `claude` and
+  `codex` command-line tools, gets nothing until Strata has shown you exactly
+  what it will send and where, and you've chosen Allow Once or Always for This
+  Provider. Remote addresses must use `https://`.
+- **Only what you asked about is sent**: the review's diffs, the change at the
+  caret, or the selection. Files that look like secrets (`.env`, keys,
+  `.ssh/`, `credentials*` and so on), files Git ignores, binary files and
+  symbolic links are never sent, and `ai_max_prompt_kb` caps the size.
+- **API keys** live in the macOS Keychain or Windows Credential Manager, are
+  only sent to the address they were saved for, and are never written to
+  `settings.json` or the log.
+
 Markdown images aren't fetched. A link you click (in
 the Markdown preview, the manual, or Help ▸ Report a Problem…) opens in your
 browser; only `http`, `https` and `mailto` links leave Strata (other local

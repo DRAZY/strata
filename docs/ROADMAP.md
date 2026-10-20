@@ -48,20 +48,37 @@ They aren't in 1.0.x.
   typescript-language-server, pyright, gopls, clangd, or any other set in
   `lsp_servers`). Servers start only in project folders you trust, and Strata
   never downloads them.
+- **Notes**: Obsidian-compatible notes on plain Markdown files. `[[wikilinks]]`
+  (with headings, block references, aliases and embeds) that ⌘-click
+  (Ctrl+click) follows, completion as you type `[[`, a backlinks panel,
+  `#tags`, daily notes and templates that follow the vault's Obsidian
+  settings, renaming a note with its links updated (and an all-or-nothing
+  Undo Rename), and notices for sync conflict copies. The Markdown preview
+  shows wikilinks, tags, properties and embeds. Strata reads `.obsidian` but
+  never writes it, and notes never use the network.
+- **Optional AI helpers** ([#10](https://github.com/DRAZY/strata/issues/10)):
+  summarize a review, explain a change or a selection, flag risky edits and
+  draft a commit message, with a model you choose: Ollama or LM Studio on your
+  computer or network, an OpenAI-compatible or Anthropic API, or the `claude`
+  and `codex` command-line tools. Off until you turn them on; nothing goes to
+  a provider outside your computer or network until you've seen exactly what
+  will be sent and said yes. Keys are kept in the system keychain.
 
 ## In progress
 
 Being worked on, but not finished or merged yet. What they include may change
 before they ship.
 
-- **Notes mode.**
-- **Optional AI helpers** ([#10](https://github.com/DRAZY/strata/issues/10)).
+- **Runnable code blocks** ([#11](https://github.com/DRAZY/strata/issues/11)):
+  run a fenced code block in a note and see its output.
+- **Git sync for notes** ([#12](https://github.com/DRAZY/strata/issues/12)):
+  keep a notes vault in step with a Git remote.
+- **Plugins**: an extension API and a way to install packages.
 
 ## After that
 
 These are planned, in no particular order.
 
-- **Plugins**: an extension API and a way to install packages.
 - **Vim mode**: modal editing (normal, insert and visual modes, motions,
   operators and registers).
 - **Linux as an official platform**: the code builds and mostly runs on

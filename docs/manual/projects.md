@@ -60,7 +60,7 @@ Right-click a file, a folder, or a top folder's name:
 |---|---|
 | New File… | Ask for a name and create an empty file in that folder (the clicked file's folder, for a file), then open it. A name like `src/util.rs` also creates the missing folders. |
 | New Folder… | Ask for a name and create the folder. Nested names like `a/b/c` work. |
-| Rename… | Rename the file or folder. Open tabs of renamed files, or of files inside a renamed folder, follow the new name, in every window. Changing only the case of a name (`readme.md` to `README.md`) works too, also on disks that ignore case. Not offered for top folders. |
+| Rename… | Rename the file or folder. Open tabs of renamed files, or of files inside a renamed folder, follow the new name, in every window. Changing only the case of a name (`readme.md` to `README.md`) works too, also on disks that ignore case. Renaming a Markdown note also offers to update the links to it (see [Renaming notes](notes.md#renaming-notes)). Not offered for top folders. |
 | Move to Trash… | After asking, move the file or folder (and everything in it) to the Trash (the Recycle Bin on Windows), where you can put it back. Its tabs close, in every window; a tab with unsaved changes stays open, marked "Deleted on disk", so nothing you typed is lost. Not offered for top folders. |
 | Copy Path | Copy the full path to the clipboard. |
 | Reveal in Finder | Show the item in your file manager. On Windows it's called Show in Explorer, and on Linux Open Containing Folder. |

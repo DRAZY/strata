@@ -137,6 +137,22 @@ Strata reads these from the vault's `.obsidian` folder, and never writes them. E
 
 Obsidian's attachment folder only matters for files you paste or drop into a note, which Strata doesn't do, so it isn't used.
 
+## Commands
+
+Every notes command is in Tools ▸ Notes and the command palette. None has a key; you can bind any of them in your [key bindings](keybindings.md).
+
+| Command | Command id |
+|---|---|
+| Notes: Follow Link | `follow_link` |
+| Notes: Open Daily Note | `open_daily_note` |
+| Notes: New Note… | `new_note` |
+| Notes: New Note from Template… | `new_note_from_template` |
+| Notes: Find Tag… | `find_tag` |
+| Notes: Rename Note… | `rename_note` |
+| Notes: Undo Rename | `undo_note_rename` |
+| Notes: Toggle Backlinks | `toggle_backlinks` |
+| Notes: Compare with Conflict Copy | `compare_conflict_copy` |
+
 ## Settings
 
 | Setting | Default | What it does |
@@ -146,3 +162,5 @@ Obsidian's attachment folder only matters for files you paste or drop into a not
 ## What isn't here yet
 
 There's no graph view, no list of unlinked mentions, and links aren't updated when a folder is renamed. Names are matched ignoring case but not Unicode normalization, so a name typed with a separate accent mark (rare; some older macOS tools did this) won't match one written with the accented letter.
+
+If links, backlinks or tags don't seem to update, see [Notes don't update](troubleshooting.md#notes-dont-update) in Troubleshooting.
