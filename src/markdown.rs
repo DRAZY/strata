@@ -810,7 +810,8 @@ impl Draw<'_> {
                 let missing = url.strip_prefix(NOTE_LINK).is_some_and(|t| self.notes.is_some_and(|n| !n.resolves(t)));
                 f.color = if missing { mix(self.pal.link, self.pal.bg, 0.35) } else { self.pal.link };
             }
-            job.append(&inline.text[run.range.clone()], 0.0, f);
+            // Hidden characters show as markers (see `hidden::append`), never raw.
+            crate::hidden::append(&mut job, &inline.text[run.range.clone()], 0.0, f);
         }
         job
     }
@@ -818,11 +819,12 @@ impl Draw<'_> {
 
 /// What a link's tooltip says: the target, without the markers of wikilinks and tags.
 fn link_tip(url: &str) -> String {
-    match (url.strip_prefix(NOTE_LINK), url.strip_prefix(TAG_LINK)) {
+    let tip = match (url.strip_prefix(NOTE_LINK), url.strip_prefix(TAG_LINK)) {
         (Some(t), _) => t.to_owned(),
         (_, Some(t)) => format!("#{t}"),
         _ => url.to_owned(),
-    }
+    };
+    crate::hidden::plain(&tip).into_owned()
 }
 
 /// The link under `pos` in a laid-out inline, if the pointer is over its text.
@@ -837,7 +839,8 @@ fn link_under<'a>(galley: &Galley, inline: &'a Inline, local: egui::Vec2) -> Opt
         if let Some(r) = char_rect(i)
             && r.expand(1.0).contains(local.to_pos2())
         {
-            let byte = inline.text.char_indices().nth(i).map(|(b, _)| b)?;
+            // Markers are longer than the char they stand for.
+            let byte = inline.text.char_indices().nth(crate::hidden::source_index(&inline.text, i)).map(|(b, _)| b)?;
             return inline.link_at(byte);
         }
     }
@@ -881,7 +884,7 @@ fn embed_block(ui: &mut Ui, d: &mut Draw, target: &str, wiki: bool) {
             let w = ui.available_width();
             let scale = (w / tex.size.x).min(1.0);
             let resp = ui.add(egui::Image::from_texture(tex).fit_to_exact_size(tex.size * scale).sense(Sense::click()));
-            resp.on_hover_text_at_pointer(target.to_owned());
+            resp.on_hover_text_at_pointer(crate::hidden::plain(target).into_owned());
         }
         Embed::Note { title, blocks: inner } => {
             let top = ui.cursor().top();
@@ -907,7 +910,7 @@ fn embed_block(ui: &mut Ui, d: &mut Draw, target: &str, wiki: bool) {
             ui.painter().rect_filled(Rect::from_x_y_ranges(left + 2.0..=left + 5.0, r.top()..=r.bottom()), 1.5, mix(pal.link, pal.bg, 0.4));
         }
         Embed::Loading => {
-            ui.label(egui::RichText::new(format!("Loading {target}…")).color(pal.dim).italics());
+            ui.label(egui::RichText::new(format!("Loading {}…", crate::hidden::plain(target))).color(pal.dim).italics());
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
         Embed::Link(label) => link_line(ui, d, format!("↪ {label}")),
@@ -981,7 +984,7 @@ fn block(ui: &mut Ui, d: &mut Draw, b: &Block, depth: usize, dim: bool, index: u
         }
         Block::Html(html) => {
             let f = TextFormat { font_id: FontId::monospace(d.size * 0.85), color: pal.dim, ..Default::default() };
-            let mut job = LayoutJob::single_section(html.clone(), f);
+            let mut job = crate::hidden::job(html, f);
             job.wrap.max_width = ui.available_width();
             ui.label(job);
         }
@@ -990,7 +993,7 @@ fn block(ui: &mut Ui, d: &mut Draw, b: &Block, depth: usize, dim: bool, index: u
             let top = ui.cursor().top();
             let left = ui.max_rect().left();
             let small = d.small;
-            ui.painter().text(pos2(left, top + small * 0.75), egui::Align2::LEFT_CENTER, format!("{label}."), FontId::new(small, d.family.clone()), pal.link);
+            ui.painter().text(pos2(left, top + small * 0.75), egui::Align2::LEFT_CENTER, format!("{}.", crate::hidden::plain(label)), FontId::new(small, d.family.clone()), pal.link);
             let inner = Rect::from_min_max(pos2(left + 28.0, top), pos2(ui.max_rect().right(), top + 1e6));
             let saved = d.size;
             d.size = small;
@@ -1030,21 +1033,21 @@ fn code_block(ui: &mut Ui, d: &mut Draw, lang: &str, code: &str, run: Option<usi
                     let mut end = 0;
                     for s in spans.iter() {
                         if let Some(piece) = code.get(s.range.clone()) {
-                            job.append(piece, 0.0, fmt(s.color, s.italic));
+                            crate::hidden::append(&mut job, piece, 0.0, fmt(s.color, s.italic));
                             end = s.range.end;
                         }
                     }
                     if end < code.len() {
-                        job.append(&code[end..], 0.0, fmt(pal.fg, false));
+                        crate::hidden::append(&mut job, &code[end..], 0.0, fmt(pal.fg, false));
                     }
                 }
-                None => job.append(code, 0.0, fmt(pal.fg, false)),
+                None => crate::hidden::append(&mut job, code, 0.0, fmt(pal.fg, false)),
             }
             let galley = ui.painter().layout_job(job);
             if let Some(at) = runnable {
                 // A row of its own above the code: the language, and Run at the right.
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(lang).size(d.small * 0.9).color(pal.dim));
+                    ui.label(egui::RichText::new(crate::hidden::plain(lang)).size(d.small * 0.9).color(pal.dim));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let b = egui::Button::new(egui::RichText::new("▶ Run").size(d.small * 0.9)).small();
                         if ui.add(b).on_hover_text("Run this block in the terminal (Strata shows it and asks first)").clicked() {
@@ -1059,7 +1062,7 @@ fn code_block(ui: &mut Ui, d: &mut Draw, lang: &str, code: &str, run: Option<usi
             }
             // The language sits in the top-right corner. When the first line
             // reaches under it, the label gets a row of its own above the code.
-            let label = (!lang.is_empty()).then(|| ui.painter().layout_no_wrap(lang.to_owned(), FontId::proportional(d.small * 0.9), pal.dim));
+            let label = (!lang.is_empty()).then(|| ui.painter().layout_no_wrap(crate::hidden::plain(lang).into_owned(), FontId::proportional(d.small * 0.9), pal.dim));
             let r = ui.max_rect();
             if let Some(label) = &label {
                 let room = ui.available_width() + 6.0 - label.size().x - 8.0;
@@ -1732,6 +1735,43 @@ mod tests {
             let rows = &found.iter().find(|(t, _)| t.starts_with(&code[..5])).unwrap().1;
             assert!(!rows[0].intersects(label.shrink(0.5)), "label {label:?} overlaps {code:.12}… at {:?}", rows[0]);
         }
+    }
+
+    #[test]
+    fn hidden_characters_show_as_markers_everywhere_in_the_preview() {
+        let r = "\u{202E}";
+        let src = format!("# Head{r}ing\n\nPara{r} with [li{r}nk](https://x.dev/{r}) and `co{r}de`.\n\n- item{r}\n\n| A{r} | B |\n|--|--|\n| c{r} | d |\n\n```rust{r}\nlet x{r} = 1;\n```\n\n<div>ht{r}ml</div>\n\nNote[^1].\n\n[^1]: foot{r}\n");
+        let mut doc = Document::from_buffer(Some(PathBuf::from("/tmp/hidden.md")), crate::buffer::Buffer::from_str(&src));
+        doc.highlighter.set_syntax("Markdown");
+        let mut preview = Preview::default();
+        let ctx = egui::Context::default();
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(700.0, 900.0))), ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                preview.show(ui, &mut doc);
+            });
+            out.textures_delta.clear();
+            shapes = out.shapes;
+        }
+        let texts = drawn(&shapes);
+        assert!(texts.iter().all(|t| !crate::hidden::any(t)), "raw control drawn: {texts:?}");
+        for want in ["Heading", "Para", "link", "code", "item", "A", "c", "x", "html"] {
+            assert!(texts.iter().any(|t| t.contains("RLO") && t.replace("\u{2009}RLO\u{2009}", "").contains(want)), "{want} isn't marked: {texts:?}");
+        }
+        assert!(texts.iter().any(|t| t == "rust[RLO]"), "the language label: {texts:?}");
+        // The link under its marked text still resolves to the link.
+        let d_inline = match &parse(&src)[1].block {
+            Block::Paragraph(i) => i.clone(),
+            _ => unreachable!(),
+        };
+        let mut job = LayoutJob::default();
+        crate::hidden::append(&mut job, &d_inline.text, 0.0, TextFormat::default());
+        let at = job.text.find('l').unwrap();
+        let shown_char = job.text[..at].chars().count() + 3;
+        let src_char = crate::hidden::source_index(&d_inline.text, shown_char);
+        let byte = d_inline.text.char_indices().nth(src_char).unwrap().0;
+        assert_eq!(d_inline.link_at(byte), Some("https://x.dev/\u{202E}"));
     }
 
     /// Every text drawn into `shapes`.

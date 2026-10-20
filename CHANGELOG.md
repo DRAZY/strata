@@ -124,7 +124,10 @@ All notable changes to Strata are recorded here. The format follows
   changed; rest the pointer on it to see what it is. The status bar counts
   them, and **Find: Find Hidden Characters** steps through them.
   `show_hidden_characters` (View ▸ Editor Extras ▸ Hidden Characters) turns
-  the boxes off.
+  the boxes off. The Markdown preview, help, language server hovers and
+  completions, tab titles, the side bar, the palette, Find in Files results,
+  the status bar and AI answers show them as named markers too, and a
+  completion holding one is marked with ⚠.
 
 ### Changed
 

@@ -425,7 +425,7 @@ impl StrataApp {
                     let rel = vault.files.path(src);
                     crate::fonts::ensure_cjk(ui.ctx(), rel);
                     let src_path = vault.path_of(src);
-                    if ui.add(egui::Label::new(RichText::new(without_md(rel)).strong()).sense(egui::Sense::click())).on_hover_text(src_path.display().to_string()).clicked() {
+                    if ui.add(egui::Label::new(RichText::new(crate::hidden::plain(without_md(rel)).into_owned()).strong()).sense(egui::Sense::click())).on_hover_text(src_path.display().to_string()).clicked() {
                         open = Some((src_path.clone(), 0));
                     }
                     for &(n, k) in links.iter().filter(|(n, _)| *n == src) {
@@ -433,7 +433,7 @@ impl StrataApp {
                         crate::fonts::ensure_cjk(ui.ctx(), &l.context);
                         let mut job = egui::text::LayoutJob::default();
                         job.append(&format!("{:>5}  ", l.line + 1), 0.0, egui::TextFormat::simple(mono.clone(), ui.visuals().weak_text_color()));
-                        job.append(&l.context, 0.0, egui::TextFormat::simple(mono.clone(), ui.visuals().text_color()));
+                        crate::hidden::append(&mut job, &l.context, 0.0, egui::TextFormat::simple(mono.clone(), ui.visuals().text_color()));
                         // One row per link, cut short with … (the tooltip has it all).
                         let resp = ui.add(egui::Label::new(job).truncate().sense(egui::Sense::click()));
                         if resp.hovered() {
@@ -483,7 +483,7 @@ impl StrataApp {
             if let Some(o) = original {
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(WARN, "⚠");
-                    ui.label(format!("This is a sync conflict copy of “{}”: another version, left by a sync tool.", name(o)));
+                    ui.label(crate::hidden::plain(&format!("This is a sync conflict copy of “{}”: another version, left by a sync tool.", name(o))).into_owned());
                     let op = vault.path_of(o);
                     if ui.small_button("Compare with Original").clicked() {
                         act = Some((0, op.clone(), path.clone()));
@@ -511,7 +511,7 @@ impl StrataApp {
             for c in copies {
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(WARN, "⚠");
-                    ui.label(format!("Sync conflict: “{}” is another version of this note.", name(c)));
+                    ui.label(crate::hidden::plain(&format!("Sync conflict: “{}” is another version of this note.", name(c))).into_owned());
                     let cp = vault.path_of(c);
                     if ui.small_button("Compare").on_hover_text("Side by side; copy what you want to keep into this note").clicked() {
                         act = Some((0, cp.clone(), path.clone()));
@@ -623,7 +623,7 @@ impl StrataApp {
                 egui::Modal::new(egui::Id::new("notes-create")).show(ctx, |ui| {
                     ui.set_width(380.0);
                     crate::fonts::ensure_cjk(ui.ctx(), &link);
-                    ui.label(RichText::new(format!("Create “{link}”?")).strong());
+                    ui.label(RichText::new(crate::hidden::plain(&format!("Create “{link}”?")).into_owned()).strong());
                     ui.add_space(4.0);
                     let shown = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
                     ui.label(RichText::new(format!("There's no note called that yet. It would be a new, empty note: {shown}")).small().weak());
@@ -685,10 +685,10 @@ impl StrataApp {
                     ui.set_width(380.0);
                     let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
                     crate::fonts::ensure_cjk(ui.ctx(), &name);
-                    ui.label(RichText::new(format!("Move “{name}” to the {trash}?")).strong());
+                    ui.label(RichText::new(crate::hidden::plain(&format!("Move “{name}” to the {trash}?")).into_owned()).strong());
                     ui.add_space(4.0);
                     let of = original.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-                    ui.label(RichText::new(format!("It's a sync conflict copy of “{of}”. Compare them first if you haven't; you can put it back from the {trash}.")).small().weak());
+                    ui.label(RichText::new(crate::hidden::plain(&format!("It's a sync conflict copy of “{of}”. Compare them first if you haven't; you can put it back from the {trash}.")).into_owned()).small().weak());
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         yes = ui.button(format!("Move to {trash}")).clicked() || enter;
@@ -761,14 +761,14 @@ impl StrataApp {
             if plan.waiting {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(format!("Looking for links to “{from_name}”…"));
+                    ui.label(crate::hidden::plain(&format!("Looking for links to “{from_name}”…")).into_owned());
                 });
                 no = ui.button("Don't Update").clicked() || esc;
                 return;
             }
             let links: usize = plan.files.iter().map(|f| f.count).sum();
             let s = |n: usize| if n == 1 { "" } else { "s" };
-            ui.label(format!("“{from_name}” is now “{to_name}”. Update {links} link{} in {} note{} to the new name?", s(links), plan.files.len(), s(plan.files.len())));
+            ui.label(crate::hidden::plain(&format!("“{from_name}” is now “{to_name}”. Update {links} link{} in {} note{} to the new name?", s(links), plan.files.len(), s(plan.files.len()))).into_owned());
             let in_tabs = plan.files.iter().filter(|f| f.in_tab).count();
             let mut note = String::new();
             if in_tabs > 0 {
@@ -786,7 +786,7 @@ impl StrataApp {
             egui::ScrollArea::vertical().max_height((ctx.content_rect().height() * 0.5).max(160.0)).auto_shrink([false, true]).show(ui, |ui| {
                 for f in &plan.files {
                     crate::fonts::ensure_cjk(ui.ctx(), &f.rel);
-                    ui.label(RichText::new(&f.rel).strong());
+                    ui.label(RichText::new(crate::hidden::plain(&f.rel).into_owned()).strong());
                     for (line, old, new) in &f.lines {
                         crate::fonts::ensure_cjk(ui.ctx(), old);
                         crate::fonts::ensure_cjk(ui.ctx(), new);
@@ -794,7 +794,7 @@ impl StrataApp {
                             let mut job = egui::text::LayoutJob::default();
                             let head = if mark == "−" { format!("{:>5} {mark} ", line + 1) } else { format!("{:>5} {mark} ", "") };
                             job.append(&head, 0.0, egui::TextFormat::simple(mono.clone(), ui.visuals().weak_text_color()));
-                            job.append(text.trim(), 0.0, egui::TextFormat::simple(mono.clone(), color));
+                            crate::hidden::append(&mut job, text.trim(), 0.0, egui::TextFormat::simple(mono.clone(), color));
                             job.wrap.max_rows = 1;
                             job.wrap.max_width = ui.available_width();
                             ui.label(job);

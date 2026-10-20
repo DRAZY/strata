@@ -71,6 +71,53 @@ mod tests {
         assert_eq!(app.docs[app.active].editor.buffer.slice(0..app.docs[app.active].editor.buffer.len_chars()), text);
     }
 
+    /// Every text a frame drew, raw controls included.
+    fn drawn(out: &egui::FullOutput) -> Vec<String> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut texts));
+        texts
+    }
+
+    #[test]
+    fn no_surface_draws_a_raw_hidden_character() {
+        let dir = crate::app::ui_tests::temp_dir("hidden-surfaces");
+        // A file name that reads "evilrs.png" shown raw, and text that hides a check.
+        let name = "evil\u{202E}gnp.rs";
+        let path = dir.join(name);
+        std::fs::write(&path, "fn main() { let x\u{202E} = 1; }\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(None, None);
+        app.open_folder(dir.clone());
+        app.open_path(path.clone(), false);
+        app.status = format!("Saved {name}");
+        let mut out = crate::app::ui_tests::frame(&mut app, &ctx, vec![]);
+        for _ in 0..3 {
+            out = crate::app::ui_tests::frame(&mut app, &ctx, vec![]);
+        }
+        let texts = drawn(&out);
+        let raw: Vec<&String> = texts.iter().filter(|t| hidden::any(t)).collect();
+        assert!(raw.is_empty(), "raw hidden characters drawn: {raw:?}");
+        let marked = texts.iter().filter(|t| t.contains("evil\u{2009}RLO\u{2009}gnp.rs")).count();
+        assert!(marked >= 2, "the tab title and the side bar mark it: {texts:?}");
+        assert!(texts.iter().any(|t| t == "Saved evil\u{2009}RLO\u{2009}gnp.rs"), "the status message: {texts:?}");
+        // The window title, drawn by the system, spells it out.
+        assert!(app.last_title.contains("evil[RLO]gnp.rs"), "{}", app.last_title);
+        // Goto Anything lists it marked too.
+        app.open_palette(&ctx, crate::palette::Mode::Files, "evil");
+        crate::app::ui_tests::frame(&mut app, &ctx, vec![]);
+        out = crate::app::ui_tests::frame(&mut app, &ctx, vec![]);
+        let texts = drawn(&out);
+        assert!(texts.iter().all(|t| !hidden::any(t)), "{texts:?}");
+        assert!(texts.iter().any(|t| t.contains("\u{2009}RLO\u{2009}gnp.rs")), "the palette row: {texts:?}");
+    }
+
     /// `cargo test --release hidden_large_file_bench -- --ignored --nocapture`:
     /// typing in a 64 MB file full of hidden characters, and its long line.
     #[test]

@@ -170,6 +170,116 @@ impl Counter {
     }
 }
 
+// ---- interface text -------------------------------------------------------------
+//
+// Everything that isn't the editor or Compare (the Markdown preview, help,
+// hover and completion popups, tab titles, the side bar, the palette, Find
+// in Files, status messages) shows text through these. A hidden character
+// becomes its label in plain letters on a warning tint: the letters exist
+// in every interface font (symbol brackets don't), and the control itself
+// never reaches the shaper, so it can't reorder what's around it. The text
+// itself is never changed; only how it's drawn.
+
+/// Whether `s` holds any hidden character (fast for ASCII).
+pub fn any(s: &str) -> bool {
+    !s.is_ascii() && s.chars().any(is_hidden)
+}
+
+/// What `c` shows as in interface text: its label between thin spaces.
+fn marker(h: Hidden) -> String {
+    format!("\u{2009}{}\u{2009}", h.short)
+}
+
+/// Chars `c` takes in interface text (1 unless it's hidden).
+fn shown_len(c: char) -> usize {
+    info(c).map_or(1, |h| h.short.len() + 2)
+}
+
+/// The warning color for text drawn in `color`: darker on light backgrounds.
+fn warn_for(color: Color32) -> Color32 {
+    let light = color.r() as u32 + color.g() as u32 + color.b() as u32 <= 3 * 128;
+    crate::view::marker_color(2, light).unwrap_or(color)
+}
+
+/// Append `text` to `job` in `fmt`, each hidden character as its marker.
+pub fn append(job: &mut egui::text::LayoutJob, text: &str, leading_space: f32, fmt: egui::text::TextFormat) {
+    if !any(text) {
+        job.append(text, leading_space, fmt);
+        return;
+    }
+    let warn = warn_for(fmt.color);
+    let mut mark = fmt.clone();
+    mark.color = warn;
+    mark.background = warn.gamma_multiply(0.18);
+    // Same size as the text: a smaller font would sit off its baseline in some layouts.
+    mark.expand_bg = 0.0;
+    mark.italics = false;
+    let (mut start, mut lead) = (0, leading_space);
+    for (b, c) in text.char_indices() {
+        let Some(h) = info(c) else { continue };
+        if b > start {
+            job.append(&text[start..b], lead, fmt.clone());
+            lead = 0.0;
+        }
+        job.append(&marker(h), lead, mark.clone());
+        lead = 0.0;
+        start = b + c.len_utf8();
+    }
+    if start < text.len() {
+        job.append(&text[start..], lead, fmt);
+    }
+}
+
+/// `text` laid out in one format, hidden characters as markers.
+pub fn job(text: &str, fmt: egui::text::TextFormat) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    append(&mut job, text, 0.0, fmt);
+    job
+}
+
+/// For a label or button: `text` as is when it has no hidden characters,
+/// otherwise laid out in `font` and `color` with markers. Labels keep their
+/// usual look; only text that needs markers takes the longer path.
+pub fn widget(text: &str, font: FontId, color: Color32) -> egui::WidgetText {
+    if !any(text) {
+        return egui::RichText::new(text).font(font).color(color).into();
+    }
+    let mut j = job(text, egui::text::TextFormat::simple(font, color));
+    j.wrap.max_width = f32::INFINITY;
+    j.into()
+}
+
+/// [`widget`] in the interface's body font and text color.
+pub fn label(ui: &egui::Ui, text: &str) -> egui::WidgetText {
+    if !any(text) {
+        return text.into();
+    }
+    widget(text, egui::TextStyle::Body.resolve(ui.style()), ui.visuals().text_color())
+}
+
+/// `s` with each hidden character spelled `[RLO]`, for text that can only be
+/// a plain string (window titles, tooltips, system notifications).
+pub fn plain(s: &str) -> std::borrow::Cow<'_, str> {
+    if !any(s) {
+        return s.into();
+    }
+    s.chars().map(|c| info(c).map_or_else(|| c.to_string(), |h| format!("[{}]", h.short))).collect::<String>().into()
+}
+
+/// The char of `text` at char `shown` of its laid-out form (see `append`),
+/// for hit-testing links in a galley.
+pub fn source_index(text: &str, shown: usize) -> usize {
+    let (mut at, mut k) = (0, 0);
+    for c in text.chars() {
+        at += shown_len(c);
+        if at > shown {
+            return k;
+        }
+        k += 1;
+    }
+    k
+}
+
 /// Draw `c`'s box over `cell` (the columns it takes): a rounded outline in
 /// `color` with the label inside, in a font sized to fit.
 pub fn paint(painter: &egui::Painter, cell: Rect, c: char, color: Color32, font_size: f32) {
@@ -178,6 +288,14 @@ pub fn paint(painter: &egui::Painter, cell: Rect, c: char, color: Color32, font_
     painter.rect_filled(r, 3.0, color.gamma_multiply(0.14));
     painter.rect_stroke(r, 3.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
     painter.text(r.center(), Align2::CENTER_CENTER, h.short, FontId::proportional((font_size * 0.62).max(7.0)), color);
+}
+
+/// A job's laid-out text, after checking no raw hidden character is left
+/// in it (for tests of each surface).
+#[cfg(test)]
+pub fn shown(job: &egui::text::LayoutJob) -> String {
+    assert!(!any(&job.text), "a raw hidden character reached the layout: {:?}", job.text);
+    job.text.clone()
 }
 
 #[cfg(test)]
@@ -247,6 +365,26 @@ mod tests {
         // Small texts are counted at once.
         let mut small = Counter::default();
         assert_eq!(small.get(&Buffer::from_str("x\u{2066}y"), 7, &ctx), Some(1));
+    }
+
+    #[test]
+    fn interface_text_gets_markers_and_keeps_its_order() {
+        let fmt = egui::text::TextFormat::simple(FontId::proportional(14.0), Color32::WHITE);
+        let j = job("a\u{202E}bc\u{200B}", fmt.clone());
+        assert_eq!(shown(&j), "a\u{2009}RLO\u{2009}bc\u{2009}ZWSP\u{2009}");
+        assert_eq!(j.sections.len(), 4);
+        assert_ne!(j.sections[1].format.background, Color32::TRANSPARENT, "markers sit on a tint");
+        assert_eq!(j.sections[1].format.color, crate::view::marker_color(2, false).unwrap());
+        // Dark text (a light theme) gets the darker warning color.
+        let dark = job("\u{2066}", egui::text::TextFormat::simple(FontId::proportional(14.0), Color32::BLACK));
+        assert_eq!(dark.sections[0].format.color, crate::view::marker_color(2, true).unwrap());
+        // Clean text is one section, untouched.
+        assert_eq!(job("plain é", fmt).sections.len(), 1);
+        assert_eq!(plain("x\u{202E}y"), "x[RLO]y");
+        assert!(matches!(plain("clean"), std::borrow::Cow::Borrowed(_)));
+        // Galley chars map back to the source: "a", then RLO's 5, then "b".
+        let t = "a\u{202E}b";
+        assert_eq!((0..8).map(|i| source_index(t, i)).collect::<Vec<_>>(), [0, 1, 1, 1, 1, 1, 2, 3]);
     }
 
     #[test]

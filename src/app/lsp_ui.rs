@@ -1403,7 +1403,7 @@ impl StrataApp {
                         ui.horizontal_wrapped(|ui| {
                             let color = crate::view::marker_color(*sev, light).unwrap_or(ui.visuals().weak_text_color());
                             ui.label(egui::RichText::new(severity_name(*sev)).color(color).strong().size(size));
-                            ui.label(egui::RichText::new(msg).size(size));
+                            ui.label(crate::hidden::widget(msg, egui::FontId::proportional(size), ui.visuals().text_color()));
                         });
                     }
                     if let Some(info) = &b.info {
@@ -1436,13 +1436,13 @@ impl StrataApp {
         }
         let mut at = 0;
         if let Some(r) = s.active.clone().filter(|r| r.end <= s.label.len() && s.label.is_char_boundary(r.start) && s.label.is_char_boundary(r.end)) {
-            job.append(&s.label[..r.start], 0.0, egui::TextFormat::simple(font.clone(), fg));
+            crate::hidden::append(&mut job, &s.label[..r.start], 0.0, egui::TextFormat::simple(font.clone(), fg));
             let mut strong = egui::TextFormat::simple(font.clone(), accent);
             strong.underline = egui::Stroke::new(1.0, accent);
-            job.append(&s.label[r.clone()], 0.0, strong);
+            crate::hidden::append(&mut job, &s.label[r.clone()], 0.0, strong);
             at = r.end;
         }
-        job.append(&s.label[at..], 0.0, egui::TextFormat::simple(font, fg));
+        crate::hidden::append(&mut job, &s.label[at..], 0.0, egui::TextFormat::simple(font, fg));
         egui::Area::new(egui::Id::new("lsp-signature")).order(egui::Order::Foreground).pivot(egui::Align2::LEFT_BOTTOM).fixed_pos(caret.left_top() - vec2(4.0, 2.0)).constrain(true).interactable(false).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).inner_margin(6.0).show(ui, |ui| {
                 ui.set_max_width(640.0);
@@ -1463,7 +1463,7 @@ impl StrataApp {
         let mut cancel = false;
         egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(b.anchor + vec2(-4.0, 4.0)).constrain(true).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).inner_margin(8.0).show(ui, |ui| {
-                ui.label(egui::RichText::new(format!("Rename {} to", b.old)).weak());
+                ui.label(egui::RichText::new(format!("Rename {} to", crate::hidden::plain(&b.old))).weak());
                 let resp = ui.add(egui::TextEdit::singleline(&mut b.text).id(id).desired_width(260.0).font(egui::TextStyle::Monospace));
                 if b.first {
                     b.first = false;
@@ -1632,7 +1632,7 @@ fn block(ui: &mut egui::Ui, b: &crate::markdown::Block, size: f32) {
         Block::Code { code, .. } => {
             let fill = ui.visuals().faint_bg_color;
             egui::Frame::new().fill(fill).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
-                ui.label(egui::RichText::new(code.trim_end()).monospace().size(size));
+                ui.label(crate::hidden::widget(code.trim_end(), egui::FontId::monospace(size), ui.visuals().text_color()));
             });
         }
         Block::Quote { blocks, .. } | Block::Footnote { blocks, .. } => {
@@ -1650,7 +1650,7 @@ fn block(ui: &mut egui::Ui, b: &crate::markdown::Block, size: f32) {
         Block::Table { head, rows, .. } => {
             for row in std::iter::once(head).chain(rows) {
                 let text = row.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join("  |  ");
-                ui.label(egui::RichText::new(text).size(size));
+                ui.label(crate::hidden::widget(&text, egui::FontId::proportional(size), ui.visuals().text_color()));
             }
         }
         Block::Rule => {
@@ -1658,7 +1658,7 @@ fn block(ui: &mut egui::Ui, b: &crate::markdown::Block, size: f32) {
         }
         // (Embeds come only from notes, never from a hover.)
         Block::Html(s) | Block::Embed { target: s, .. } => {
-            ui.label(egui::RichText::new(s).size(size).weak());
+            ui.label(crate::hidden::widget(s, egui::FontId::proportional(size), ui.visuals().weak_text_color()));
         }
     }
 }
@@ -1679,7 +1679,7 @@ fn inline_job(ui: &egui::Ui, inl: &crate::markdown::Inline, size: f32, heading: 
         if run.link.is_some() {
             f.underline = egui::Stroke::new(1.0, text.gamma_multiply(0.5));
         }
-        job.append(s, 0.0, f);
+        crate::hidden::append(&mut job, s, 0.0, f);
     }
     job
 }
@@ -1691,6 +1691,28 @@ mod tests {
     use crate::lsp::fake;
     use egui::{Context, Event, Modifiers};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn hover_markdown_marks_hidden_characters_everywhere() {
+        let r = "\u{202E}";
+        let src = format!("Para{r} `co{r}de`\n\n```rust\nlet x{r} = 1;\n```\n\n| A{r} | B |\n|--|--|\n| c | d |\n\n<b>ht{r}ml</b>\n\n- it{r}em\n");
+        let ctx = Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| show_markdown(ui, &src, 13.0));
+        out.textures_delta.clear();
+        fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut texts));
+        assert!(texts.iter().all(|t| !crate::hidden::any(t)), "raw control: {texts:?}");
+        for want in ["Para", "co", "let x", "A", "ht", "it"] {
+            assert!(texts.iter().any(|t| t.contains(want) && t.contains("\u{2009}RLO\u{2009}")), "{want}: {texts:?}");
+        }
+    }
 
     /// A window with the fake server for `*.fake` files, the folder open and
     /// the first file in a tab, once the server has answered for it.

@@ -578,7 +578,7 @@ impl StrataApp {
         let answer = rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Warning)
             .set_title("Unsaved changes")
-            .set_description(format!("Save changes to {} before closing?", self.docs[i].name()))
+            .set_description(crate::hidden::plain(&format!("Save changes to {} before closing?", self.docs[i].name())).into_owned())
             .set_buttons(rfd::MessageButtons::YesNoCancel)
             .show();
         match answer {
@@ -673,7 +673,7 @@ impl StrataApp {
             let ok = rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Warning)
                 .set_title("Can't save in this encoding")
-                .set_description(format!("{msg}.\n\nSave {} as UTF-8 instead?", d.name()))
+                .set_description(crate::hidden::plain(&format!("{msg}.\n\nSave {} as UTF-8 instead?", d.name())).into_owned())
                 .set_buttons(rfd::MessageButtons::OkCancelCustom("Save as UTF-8".into(), "Cancel".into()))
                 .show();
             if !matches!(ok, rfd::MessageDialogResult::Ok | rfd::MessageDialogResult::Yes) && ok != rfd::MessageDialogResult::Custom("Save as UTF-8".into()) {
@@ -690,7 +690,7 @@ impl StrataApp {
         let ok = rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Warning)
             .set_title(if read_only { "File is read-only" } else { "Overwrite file?" })
-            .set_description(format!("{}\n\n{}", d.name(), reasons.join("\n\n")))
+            .set_description(crate::hidden::plain(&format!("{}\n\n{}", d.name(), reasons.join("\n\n"))).into_owned())
             .set_buttons(rfd::MessageButtons::OkCancelCustom("Save Anyway".into(), "Cancel".into()))
             .show();
         matches!(ok, rfd::MessageDialogResult::Ok | rfd::MessageDialogResult::Yes) || ok == rfd::MessageDialogResult::Custom("Save Anyway".into())
@@ -1698,7 +1698,8 @@ impl StrataApp {
         egui::Panel::top("titlebar").exact_size(28.0).frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
             let rect = ui.max_rect();
             let resp = ui.interact(rect, egui::Id::new("titlebar"), Sense::click_and_drag());
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, title, FontId::proportional(size), ui.visuals().text_color());
+            let g = ui.painter().layout_job(crate::hidden::job(&title, egui::TextFormat::simple(FontId::proportional(size), ui.visuals().text_color())));
+            ui.painter().galley(rect.center() - g.size() / 2.0, g, ui.visuals().text_color());
             if resp.double_clicked() {
                 let zoomed = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!zoomed));
@@ -2197,7 +2198,7 @@ impl StrataApp {
                 for &i in &tabs {
                     let name = &names[i];
                     let d = &self.docs[i];
-                    let galley = ui.painter().layout_no_wrap(name.clone(), font.clone(), fg);
+                    let galley = ui.painter().layout_job(crate::hidden::job(name, egui::TextFormat::simple(font.clone(), fg)));
                     let w = (galley.size().x + 52.0).clamp(90.0, 260.0);
                     let (rect, resp) = ui.allocate_exact_size(vec2(w, height), Sense::click_and_drag());
                     tab_rects.push((i, rect));
@@ -2215,7 +2216,8 @@ impl StrataApp {
                         ui.painter().line_segment([rect.left_top() + vec2(6.0, 0.5), rect.right_top() + vec2(-6.0, 0.5)], Stroke::new(2.0, accent));
                     }
                     let text_color = if active { fg } else { ui.visuals().weak_text_color() };
-                    let mut job = egui::text::LayoutJob::single_section(name.clone(), egui::TextFormat { font_id: font.clone(), color: text_color, italics: d.preview, ..Default::default() });
+                    // A file name can hold hidden characters too: markers, never raw.
+                    let mut job = crate::hidden::job(name, egui::TextFormat { font_id: font.clone(), color: text_color, italics: d.preview, ..Default::default() });
                     job.wrap.max_width = w - 44.0;
                     job.wrap.max_rows = 1;
                     job.wrap.break_anywhere = true;
@@ -2241,7 +2243,7 @@ impl StrataApp {
                     if active && reveal {
                         resp.scroll_to_me(None);
                     }
-                    let resp = resp.on_hover_text(d.path.as_ref().map_or_else(|| "Unsaved new file".to_owned(), |p| p.display().to_string()));
+                    let resp = resp.on_hover_text(d.path.as_ref().map_or_else(|| "Unsaved new file".to_owned(), |p| crate::hidden::plain(&p.display().to_string()).into_owned()));
                     if resp.middle_clicked() || (resp.clicked() && over_close) {
                         action = Some(TabAction::Close(i));
                     } else if resp.drag_started() {
@@ -2592,7 +2594,8 @@ impl StrataApp {
                 ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("status-bar-widths"), widths));
                 // The message takes whatever room is left, cut short with … rather than overlapping.
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add(egui::Label::new(&self.status).truncate()).on_hover_text(&self.status);
+                    // Messages quote file names and server text: markers, never raw.
+                    ui.add(egui::Label::new(crate::hidden::label(ui, &self.status)).truncate()).on_hover_text(crate::hidden::plain(&self.status));
                 });
             });
         });
@@ -2784,7 +2787,8 @@ impl eframe::App for StrataApp {
             d.view.minimap = minimap && d.large.is_none();
         }
         self.git_marks_on = self.settings.git_gutter;
-        let title = self.title();
+        // The system draws the title bar: spell hidden characters out.
+        let title = crate::hidden::plain(&self.title()).into_owned();
         if title != self.last_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.last_title = title;

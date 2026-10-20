@@ -190,7 +190,7 @@ pub(super) fn settings_row(draft: &mut String, ui: &mut egui::Ui, look: &AiLook,
     });
     match &look.result {
         Some(Ok(m)) => {
-            ui.add(egui::Label::new(RichText::new(m).size(small)).wrap());
+            ui.add(egui::Label::new(RichText::new(crate::hidden::plain(m).into_owned()).size(small)).wrap());
         }
         Some(Err(e)) => {
             ui.add(egui::Label::new(RichText::new(e).size(small).color(ui.visuals().error_fg_color)).wrap());
@@ -671,7 +671,7 @@ fn panel_ui(a: &mut AiState, ui: &mut egui::Ui, hl: &crate::highlight::Highlight
         if running {
             ui.add(egui::Spinner::new().size(12.0));
         }
-        ui.label(RichText::new(if a.title.is_empty() { "AI" } else { &a.title }).strong());
+        ui.label(RichText::new(crate::hidden::plain(if a.title.is_empty() { "AI" } else { &a.title }).into_owned()).strong());
         if !a.provider_label.is_empty() {
             ui.label(RichText::new(&a.provider_label).weak().small());
         }
