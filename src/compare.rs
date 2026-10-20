@@ -6,6 +6,7 @@
 //! diff, at once for small files and after a short pause for big ones.
 
 use crate::buffer::Buffer;
+use crate::commands::Cmd;
 use crate::diff::{self, Hunk, Row, RowKind};
 use crate::editor::Editor;
 use crate::highlight::{Highlighter, Span};
@@ -47,6 +48,13 @@ pub enum HeaderAction {
     Prev,
     Swap,
     IgnoreWhitespace,
+    // Review Changes (see `app::review_ui`).
+    Keep,
+    Revert,
+    KeepFile,
+    RevertFile,
+    Reviewed,
+    NextFile,
 }
 
 pub struct Compare {
@@ -82,6 +90,9 @@ pub struct Compare {
     /// Hunk the last Next/Previous Difference landed on.
     current: Option<usize>,
     wants_focus: bool,
+    /// A Review Changes tab: the file under review (the header offers Keep
+    /// and Revert).
+    pub review: Option<std::path::PathBuf>,
     /// Header buttons pressed this frame.
     pub actions: Vec<HeaderAction>,
 }
@@ -91,7 +102,7 @@ type Words = (Vec<Range<usize>>, Vec<Range<usize>>);
 
 /// Split like a buffer: lines end at `\n`, `\r\n` or a lone `\r` (ropey's
 /// `cr_lines`), and a final break is followed by an empty last line.
-fn buffer_lines(s: &str) -> Vec<&str> {
+pub(crate) fn buffer_lines(s: &str) -> Vec<&str> {
     let b = s.as_bytes();
     let mut lines = Vec::new();
     let (mut start, mut i) = (0, 0);
@@ -140,6 +151,7 @@ impl Compare {
             show_row: None,
             last_head: None,
             current: None,
+            review: None,
             wants_focus: true,
             actions: Vec::new(),
         }
@@ -160,7 +172,6 @@ impl Compare {
         }
     }
 
-    #[cfg(test)]
     pub fn base_text(&self) -> &str {
         &self.base_text
     }
@@ -249,13 +260,54 @@ impl Compare {
             (true, _) => rows.iter().position(|&r| r > here).unwrap_or(0),
             (false, _) => rows.iter().rposition(|&r| r < here).unwrap_or(n - 1),
         };
+        Some(self.go_to_hunk(ed, k))
+    }
+
+    /// Put the caret at the start of changed block `k` and scroll to it.
+    /// Returns (block, of blocks), counting from 1.
+    pub fn go_to_hunk(&mut self, ed: &mut Editor, k: usize) -> (usize, usize) {
+        let n = self.aligned.hunks.len();
+        let k = k.min(n.saturating_sub(1));
+        if n == 0 {
+            return (0, 0);
+        }
         self.current = Some(k);
         let line = self.aligned.hunks[k].b.start.min(ed.buffer.len_lines() - 1);
         let at = ed.buffer.line_start(line);
         ed.select_ranges(&[at..at], 0);
         self.last_head = Some(at);
-        self.show_row = Some(rows[k]);
-        Some((k + 1, n))
+        self.show_row = Some(self.aligned.hunk_rows[k]);
+        (k + 1, n)
+    }
+
+    /// The changed blocks, as of the last refresh.
+    pub fn hunks(&self) -> &[Hunk] {
+        &self.aligned.hunks
+    }
+
+    /// The changed block the caret is in (for a deletion, the line it sits
+    /// at): the one Keep and Revert act on. The block last stepped to wins
+    /// when blocks share the caret's line.
+    pub fn hunk_at_caret(&self, ed: &Editor) -> Option<usize> {
+        let line = ed.buffer.line_of(ed.primary().head);
+        let last = ed.buffer.len_lines() - 1;
+        let at = |h: &Hunk| h.b.contains(&line) || (h.b.is_empty() && h.b.start.min(last) == line);
+        let hunks = &self.aligned.hunks;
+        match self.current {
+            Some(c) if c < hunks.len() && at(&hunks[c]) => Some(c),
+            _ => hunks.iter().position(at),
+        }
+    }
+
+    /// The block after (or before) the caret's, without wrapping around.
+    pub fn next_hunk(&self, ed: &Editor, forward: bool) -> Option<usize> {
+        let n = self.aligned.hunks.len();
+        if let Some(k) = self.hunk_at_caret(ed) {
+            return if forward { (k + 1 < n).then_some(k + 1) } else { k.checked_sub(1) };
+        }
+        let here = self.right_row(ed.buffer.line_of(ed.primary().head));
+        let rows = &self.aligned.hunk_rows;
+        if forward { rows.iter().position(|&r| r > here) } else { rows.iter().rposition(|&r| r < here) }
     }
 
     /// The header, both sides and the overview. `id` is the tab's view id, so
@@ -386,6 +438,7 @@ impl Compare {
                 }
                 let (buf, high) = if fixed { (&self.base, &self.base_hl) } else { (&ed.buffer, &*hl) };
                 let text = buf.line_text(line);
+                crate::fonts::ensure_cjk(ui.ctx(), &text);
                 let words = self.inline.get(&r).map(|(a, b)| if fixed { a.as_slice() } else { b.as_slice() }).unwrap_or(&[]);
                 let spans = high.line(line);
                 let (job, cols) = line_job(&text, spans.as_deref().map(|v| v.as_slice()), &geo, fg, words, colors.word_bg(side.removed_side()));
@@ -459,6 +512,7 @@ impl Compare {
         ui.painter().rect_filled(names, 0.0, blend(bg, fg, 0.025));
         ui.painter().hline(rect.x_range(), names.top() + 0.5, Stroke::new(1.0, blend(bg, fg, 0.08)));
         let label = |ui: &Ui, r: Rect, text: &str, color: Color32| {
+            crate::fonts::ensure_cjk(ui.ctx(), text);
             let mut job = LayoutJob::simple_singleline(text.to_owned(), small.clone(), color);
             job.wrap.max_width = (r.width() - 16.0).max(10.0);
             job.wrap.max_rows = 1;
@@ -477,7 +531,7 @@ impl Compare {
         };
         let bar = Rect::from_min_size(rect.min, vec2(rect.width(), toolbar_h));
         let mut actions = Vec::new();
-        ui.painter().text(pos2(bar.left() + 8.0, bar.center().y), Align2::LEFT_CENTER, &summary, small.clone(), fg);
+        let summary_w = ui.painter().text(pos2(bar.left() + 8.0, bar.center().y), Align2::LEFT_CENTER, &summary, small.clone(), fg).width();
         ui.scope_builder(egui::UiBuilder::new().max_rect(bar.shrink2(vec2(8.0, 3.0))).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             ui.style_mut().override_font_id = Some(small.clone());
@@ -485,7 +539,35 @@ impl Compare {
             if ui.checkbox(&mut ws, "Ignore whitespace").changed() {
                 actions.push(HeaderAction::IgnoreWhitespace);
             }
-            if ui.small_button("Swap Sides").on_hover_text("Show the other side on the left").clicked() {
+            if self.review.is_some() {
+                // Right to left: the file's buttons, then the change's next to ▲▼.
+                let key = |c: Cmd| c.shortcut_label().map(|k| format!(" ({k})")).unwrap_or_default();
+                // In a narrow tab the file's buttons give way (they're also in
+                // Tools ▸ Review Changes); Keep, Revert, ▲▼ and the summary stay.
+                let width = |ui: &Ui, s: &str| ui.painter().layout_no_wrap(s.to_owned(), small.clone(), fg).size().x + 2.0 * ui.spacing().button_padding.x + 6.0;
+                let reserve = summary_w + 24.0 + width(ui, "Keep") + width(ui, "Revert") + 2.0 * width(ui, "▲") + 12.0;
+                let fits = |ui: &Ui, s: &str| ui.available_width() - width(ui, s) > reserve;
+                let file_buttons: [(&str, String, HeaderAction); 4] = [
+                    ("Next File", format!("Open the next file to review{}", key(Cmd::ReviewNextFile)), HeaderAction::NextFile),
+                    ("Mark Reviewed", format!("Tick this file off in the Changes list{}", key(Cmd::ReviewMarkReviewed)), HeaderAction::Reviewed),
+                    ("Revert File", "Put the whole file back as it was in the base (undoable; save to keep it)".into(), HeaderAction::RevertFile),
+                    ("Keep File", "Accept every change in this file".into(), HeaderAction::KeepFile),
+                ];
+                let mut room = true;
+                for (label, hint, action) in file_buttons {
+                    room = room && fits(ui, label);
+                    if room && ui.small_button(label).on_hover_text(hint).clicked() {
+                        actions.push(action);
+                    }
+                }
+                ui.separator();
+                if ui.add_enabled(n > 0, egui::Button::new("Revert").small()).on_hover_text(format!("Undo the change at the caret (undoable; save to keep it){}", key(Cmd::ReviewRevertChange))).clicked() {
+                    actions.push(HeaderAction::Revert);
+                }
+                if ui.add_enabled(n > 0, egui::Button::new("Keep").small()).on_hover_text(format!("Accept the change at the caret{}", key(Cmd::ReviewKeepChange))).clicked() {
+                    actions.push(HeaderAction::Keep);
+                }
+            } else if ui.small_button("Swap Sides").on_hover_text("Show the other side on the left").clicked() {
                 actions.push(HeaderAction::Swap);
             }
             if ui.add_enabled(n > 0, egui::Button::new("▼").small()).on_hover_text("Next difference").clicked() {

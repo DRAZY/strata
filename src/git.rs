@@ -61,18 +61,58 @@ const NO_HOOKS: &str = if cfg!(windows) { "core.hooksPath=NUL" } else { "core.ho
 /// be someone else's repository, so nothing in its config gets to run a
 /// program: no fsmonitor, hooks, pager or textconv (`head_text`), and the
 /// system-wide config is skipped too.
-fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    git_io(dir, args, None, MAX_HEAD_BYTES, GIT_TIMEOUT)
+}
+
+/// `git`, with `input` written to its standard input, at most `limit` bytes
+/// of output (one more means "too much": callers check the length) and a
+/// time limit of its own. Only use commands that read the repository or
+/// take files as they are: anything that compares the working tree through
+/// Git (status, diff, add) can run filter programs named in its config.
+pub(crate) fn git_io(dir: &Path, args: &[&str], input: Option<Vec<u8>>, limit: usize, timeout: Duration) -> Option<Vec<u8>> {
+    run(command(dir, args), input, limit, timeout)
+}
+
+/// The value of config `key` as Git itself would see it, the system-wide
+/// config included (Git for Windows sets `core.autocrlf` there). Reading a
+/// value runs nothing. `system` points Git at another system config file
+/// (tests).
+pub(crate) fn config_value(dir: &Path, key: &str, system: Option<&Path>) -> Option<String> {
+    let mut cmd = command(dir, &["config", "--get", key]);
+    cmd.env_remove("GIT_CONFIG_NOSYSTEM");
+    if let Some(file) = system {
+        cmd.env("GIT_CONFIG_SYSTEM", file);
+    }
+    let out = run(cmd, None, 1 << 16, GIT_TIMEOUT)?;
+    let s = String::from_utf8_lossy(&out).trim().to_owned();
+    (!s.is_empty()).then_some(s)
+}
+
+/// A git command for `dir` that can't run anything from the repository's
+/// config (see `git`), prompt, or reach the network.
+fn command(dir: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
-    cmd.args(["-c", "core.fsmonitor=false", "-c", NO_HOOKS, "-c", "core.quotepath=false", "--no-pager"])
+    // No transport may run either: a partial clone would fetch a missing
+    // object (through the repository's own ssh command or ext:: helper)
+    // instead of failing. Older git has no GIT_NO_LAZY_FETCH, and a
+    // repository's `protocol.<name>.allow` outranks `protocol.allow`, so
+    // each protocol is turned off by name too (the command line wins).
+    cmd.args(["-c", "core.fsmonitor=false", "-c", NO_HOOKS, "-c", "core.quotepath=false", "-c", "protocol.allow=never"]);
+    for p in ["ssh", "ext", "file", "git", "http", "https"] {
+        cmd.args(["-c", &format!("protocol.{p}.allow=never")]);
+    }
+    cmd.arg("--no-pager")
         .args(args)
         .current_dir(dir)
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_PROTOCOL_FROM_USER", "0")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_ASKPASS", "")
         .env("SSH_ASKPASS", "")
         .env("LC_ALL", "C")
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     #[cfg(windows)]
@@ -81,15 +121,29 @@ fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
+    cmd
+}
+
+/// Run `cmd` (see `git_io` for `input`, `limit` and `timeout`).
+fn run(mut cmd: Command, input: Option<Vec<u8>>, limit: usize, timeout: Duration) -> Option<Vec<u8>> {
+    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() });
     let mut child = cmd.spawn().ok()?;
     let stdout = child.stdout.take()?;
+    // Write on a helper thread too: git may fill its output pipe before it
+    // has read all of its input.
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = stdin.write_all(&input);
+        });
+    }
     // Read on a helper thread so a full pipe can't deadlock the timeout loop.
     // Past the limit the pipe closes, and git stops (or the timeout ends it).
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
-        stdout.take(MAX_HEAD_BYTES as u64 + 1).read_to_end(&mut buf).map(|_| buf)
+        stdout.take(limit as u64 + 1).read_to_end(&mut buf).map(|_| buf)
     });
-    let deadline = Instant::now() + GIT_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break s,
@@ -704,6 +758,35 @@ mod tests {
         assert_eq!(head_text(&file).as_deref(), Some("one\ntwo\nthree\n"), "the committed bytes, not a textconv");
         let _ = repo_info(&file);
         assert!(!marker.exists(), "a program from the repository's config ran");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A partial clone fetches missing objects on demand, through the
+    /// repository's own ssh command: reading a missing blob must fail
+    /// instead of running it.
+    #[cfg(unix)]
+    #[test]
+    fn missing_objects_are_never_fetched() {
+        let Some(dir) = temp_repo("lazy") else { return };
+        let marker = dir.join("fetched");
+        let set = |k: &str, v: &str| assert!(git(&dir, &["config", k, v]).is_some(), "{k}");
+        set("core.repositoryformatversion", "1");
+        set("extensions.partialclone", "origin");
+        set("remote.origin.url", "ssh://example.invalid/repo");
+        set("remote.origin.promisor", "true");
+        set("core.sshCommand", &format!("touch {} #", marker.display()));
+        let missing = "0123456789abcdef0123456789abcdef01234567";
+        // Git older than 2.44 has no GIT_NO_LAZY_FETCH, and the repository
+        // allows ssh by name: the command line still says no.
+        set("protocol.ssh.allow", "always");
+        let mut old = command(&dir, &["cat-file", "blob", missing]);
+        old.env_remove("GIT_NO_LAZY_FETCH");
+        assert_eq!(run(old, None, 1 << 20, GIT_TIMEOUT), None);
+        assert!(!marker.exists(), "the repository's ssh command ran without GIT_NO_LAZY_FETCH");
+        assert_eq!(git(&dir, &["cat-file", "blob", missing]), None);
+        let batch = git_io(&dir, &["cat-file", "--batch"], Some(format!("{missing}\n").into_bytes()), 1 << 20, GIT_TIMEOUT);
+        assert!(batch.is_none_or(|b| String::from_utf8_lossy(&b).contains("missing")));
+        assert!(!marker.exists(), "the repository's ssh command ran");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

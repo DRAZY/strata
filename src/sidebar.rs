@@ -19,6 +19,8 @@ const WATCH_SECS: f64 = 2.0;
 pub enum Tab {
     Files,
     Search,
+    /// Review Changes' list, drawn by the app (see `app::review_ui`).
+    Changes,
 }
 
 pub enum Action {
@@ -181,10 +183,10 @@ impl Sidebar {
         self.roots.iter().filter(|r| path.starts_with(r)).max_by_key(|r| r.components().count()).map(PathBuf::as_path)
     }
 
-    /// The sidebar panel is drawn: there are folders, or the Search tab is
-    /// up (find in files works without a folder).
+    /// The sidebar panel is drawn: there are folders, or the Search or
+    /// Changes tab is up (both work without a folder).
     pub fn shown(&self) -> bool {
-        self.visible && (!self.roots.is_empty() || self.tab == Tab::Search)
+        self.visible && (!self.roots.is_empty() || self.tab != Tab::Files)
     }
 
     /// `path` for display: relative to its folder, after the folder's name
@@ -429,13 +431,12 @@ impl Sidebar {
         let prompted = self.prompt(ui.ctx()).or(confirmed).or(deleted).or(finished);
         let roots = self.roots.clone();
         ui.horizontal(|ui| {
-            if roots.is_empty() {
-                // No folder: only find in files (open files) is on offer.
-                ui.label(RichText::new("Search").strong());
-            } else {
+            // No folder: find in files (in open files) and the changes list are on offer.
+            if !roots.is_empty() {
                 ui.selectable_value(&mut self.tab, Tab::Files, "Files");
-                ui.selectable_value(&mut self.tab, Tab::Search, "Search");
             }
+            ui.selectable_value(&mut self.tab, Tab::Search, "Search");
+            ui.selectable_value(&mut self.tab, Tab::Changes, "Changes");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if self.tab == Tab::Files && ui.small_button("⟳").on_hover_text("Refresh").clicked() {
                     self.refresh();
@@ -493,6 +494,7 @@ impl Sidebar {
                 action
             }
             Tab::Search => self.search_tab(ui, open),
+            Tab::Changes => None,
         };
         prompted.or(action)
     }

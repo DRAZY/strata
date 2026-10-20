@@ -659,6 +659,27 @@ impl StrataApp {
                 c("Save Macro…", Cmd::SaveMacro).enabled(!self.macro_last.is_empty() && self.config.is_some()),
                 sub("Macros", self.saved_macro_items()),
                 SEP(),
+                sub("Review Changes", {
+                    let reviewing = self.review.reviewing();
+                    vec![
+                        c("Show Changes", Cmd::ReviewShowChanges),
+                        c("Start Review", Cmd::ReviewStart),
+                        c("End Review", Cmd::ReviewEnd).enabled(reviewing),
+                        SEP(),
+                        c("Next Change", Cmd::ReviewNextChange),
+                        c("Previous Change", Cmd::ReviewPrevChange),
+                        c("Next File", Cmd::ReviewNextFile),
+                        c("Previous File", Cmd::ReviewPrevFile),
+                        SEP(),
+                        c("Keep Change", Cmd::ReviewKeepChange),
+                        c("Revert Change", Cmd::ReviewRevertChange),
+                        c("Keep File", Cmd::ReviewKeepFile),
+                        c("Revert File", Cmd::ReviewRevertFile),
+                        SEP(),
+                        c("Mark File as Reviewed", Cmd::ReviewMarkReviewed),
+                    ]
+                }),
+                SEP(),
                 sub("Developer", vec![c("New Snippet…", Cmd::NewSnippet)]),
                 SEP(),
                 sub(

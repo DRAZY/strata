@@ -157,6 +157,19 @@ pub enum Cmd {
     CopyPermalink,
     // See `app/macro_files.rs`.
     SaveMacro,
+    // Review Changes (see `app/review_ui.rs`).
+    ReviewStart,
+    ReviewEnd,
+    ReviewShowChanges,
+    ReviewNextChange,
+    ReviewPrevChange,
+    ReviewNextFile,
+    ReviewPrevFile,
+    ReviewKeepChange,
+    ReviewRevertChange,
+    ReviewKeepFile,
+    ReviewRevertFile,
+    ReviewMarkReviewed,
 }
 
 impl Cmd {
@@ -310,6 +323,18 @@ impl Cmd {
         Cmd::CopyRelativePath,
         Cmd::CopyPermalink,
         Cmd::SaveMacro,
+        Cmd::ReviewStart,
+        Cmd::ReviewEnd,
+        Cmd::ReviewShowChanges,
+        Cmd::ReviewNextChange,
+        Cmd::ReviewPrevChange,
+        Cmd::ReviewNextFile,
+        Cmd::ReviewPrevFile,
+        Cmd::ReviewKeepChange,
+        Cmd::ReviewRevertChange,
+        Cmd::ReviewKeepFile,
+        Cmd::ReviewRevertFile,
+        Cmd::ReviewMarkReviewed,
     ];
 
     pub fn name(self) -> &'static str {
@@ -463,6 +488,18 @@ impl Cmd {
             Cmd::CopyRelativePath => "File: Copy Relative Path",
             Cmd::CopyPermalink => "File: Copy Permalink",
             Cmd::SaveMacro => "Tools: Save Macro…",
+            Cmd::ReviewStart => "Review: Start Review",
+            Cmd::ReviewEnd => "Review: End Review",
+            Cmd::ReviewShowChanges => "Review: Show Changes",
+            Cmd::ReviewNextChange => "Review: Next Change",
+            Cmd::ReviewPrevChange => "Review: Previous Change",
+            Cmd::ReviewNextFile => "Review: Next File",
+            Cmd::ReviewPrevFile => "Review: Previous File",
+            Cmd::ReviewKeepChange => "Review: Keep Change",
+            Cmd::ReviewRevertChange => "Review: Revert Change",
+            Cmd::ReviewKeepFile => "Review: Keep File",
+            Cmd::ReviewRevertFile => "Review: Revert File",
+            Cmd::ReviewMarkReviewed => "Review: Mark File as Reviewed",
         }
     }
 
@@ -619,6 +656,16 @@ impl Cmd {
             Cmd::NextMisspelling => &[(CTRL, Key::F6)],
             Cmd::PrevMisspelling => &[(CTRL_SHIFT, Key::F6)],
             Cmd::CopyRelativePath | Cmd::CopyPermalink | Cmd::SaveMacro => &[],
+            // F8 is free in Strata; the review keys are F8 with modifiers.
+            Cmd::ReviewNextChange => &[(NONE, Key::F8)],
+            Cmd::ReviewPrevChange => &[(SHIFT, Key::F8)],
+            Cmd::ReviewNextFile => &[(ALT, Key::F8)],
+            Cmd::ReviewPrevFile => &[(ALT_SHIFT, Key::F8)],
+            Cmd::ReviewKeepChange => &[(CMD, Key::F8)],
+            Cmd::ReviewRevertChange => &[(CMD_SHIFT, Key::F8)],
+            // Ctrl+Alt+F8 switches to a text console on Linux.
+            Cmd::ReviewMarkReviewed => if MAC || cfg!(windows) { &[(CMD_ALT, Key::F8)] } else { &[] },
+            Cmd::ReviewStart | Cmd::ReviewEnd | Cmd::ReviewShowChanges | Cmd::ReviewKeepFile | Cmd::ReviewRevertFile => &[],
         }
     }
 
@@ -780,6 +827,18 @@ impl Cmd {
             Cmd::CopyRelativePath => "copy_relative_path",
             Cmd::CopyPermalink => "copy_permalink",
             Cmd::SaveMacro => "save_macro",
+            Cmd::ReviewStart => "review_start",
+            Cmd::ReviewEnd => "review_end",
+            Cmd::ReviewShowChanges => "review_show_changes",
+            Cmd::ReviewNextChange => "review_next_change",
+            Cmd::ReviewPrevChange => "review_prev_change",
+            Cmd::ReviewNextFile => "review_next_file",
+            Cmd::ReviewPrevFile => "review_prev_file",
+            Cmd::ReviewKeepChange => "review_keep_change",
+            Cmd::ReviewRevertChange => "review_revert_change",
+            Cmd::ReviewKeepFile => "review_keep_file",
+            Cmd::ReviewRevertFile => "review_revert_file",
+            Cmd::ReviewMarkReviewed => "review_mark_reviewed",
         }
     }
 }

@@ -142,7 +142,7 @@ impl StrataApp {
     }
 
     /// Add a Compare tab: `base` on the fixed side, a new view of tab `r` editable.
-    fn open_compare(&mut self, r: usize, base: &str, base_name: String, base_path: Option<&Path>, syntax: &str, live: Option<(Id, u64)>) {
+    pub(super) fn open_compare(&mut self, r: usize, base: &str, base_name: String, base_path: Option<&Path>, syntax: &str, live: Option<(Id, u64)>) {
         let right_name = self.docs[r].compare.as_ref().map_or_else(|| self.docs[r].name(), |c| c.right_name.clone());
         let base_label = label(&base_name, base_path, &right_name);
         let right_label = label(&right_name, self.docs[r].path.as_deref(), &base_name);
@@ -178,6 +178,21 @@ impl StrataApp {
                     HeaderAction::Prev => self.step_difference_in(i, false),
                     HeaderAction::Swap => self.docs[i].compare.as_mut().expect("compare tab").swap(),
                     HeaderAction::IgnoreWhitespace => self.docs[i].compare.as_mut().expect("compare tab").toggle_ignore_whitespace(),
+                    HeaderAction::Keep => self.review_keep_change(i),
+                    HeaderAction::Revert => self.review_revert_change(i),
+                    HeaderAction::KeepFile => self.review_keep_file(i),
+                    HeaderAction::RevertFile => self.review_revert_file(i),
+                    // These open and close tabs: the indices here are stale after them.
+                    HeaderAction::Reviewed | HeaderAction::NextFile => {
+                        self.activate(i);
+                        if a == HeaderAction::Reviewed {
+                            self.review_mark_current();
+                        } else {
+                            self.review_step_file(true, false);
+                        }
+                        ctx.request_repaint();
+                        return;
+                    }
                 }
                 ctx.request_repaint();
             }
@@ -214,7 +229,7 @@ impl StrataApp {
         }
     }
 
-    fn step_difference_in(&mut self, i: usize, forward: bool) {
+    pub(super) fn step_difference_in(&mut self, i: usize, forward: bool) {
         let d = &mut self.docs[i];
         let Some(c) = d.compare.as_mut() else { return };
         c.refresh(&mut d.editor, 0.0, true);
@@ -324,6 +339,27 @@ mod tests {
         assert_eq!(app.docs.len(), n + 1);
         assert!(app.docs[app.active].compare.is_none());
         assert!(app.docs[app.active].editor.shares_history(&app.docs[0].editor));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Japanese (or any CJK) text on either side loads the CJK fonts, like
+    /// the editor does, even when nothing else on screen has any.
+    #[test]
+    fn cjk_text_in_a_comparison_loads_the_cjk_fonts() {
+        let dir = temp_dir("cjk");
+        let (a, b) = (dir.join("old.txt"), dir.join("new.txt"));
+        std::fs::write(&a, "plain\n日本語のテキスト\n").unwrap();
+        std::fs::write(&b, "plain\n日本語の文章\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(Some(b.clone()), None);
+        app.compare_with_file(0, &a);
+        assert!(app.docs[app.active].compare.is_some());
+        let loaded = || ctx.data(|d| d.get_temp::<bool>(egui::Id::new("strata-cjk-fonts")).is_some());
+        assert!(!loaded());
+        for _ in 0..3 {
+            super::super::ui_tests::frame(&mut app, &ctx, vec![]);
+        }
+        assert!(loaded(), "the comparison's CJK text didn't load the CJK fonts");
         std::fs::remove_dir_all(dir).ok();
     }
 

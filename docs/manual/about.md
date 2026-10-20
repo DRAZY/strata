@@ -17,7 +17,7 @@ It opens in a blink, stays smooth on files of hundreds of megabytes, and gives y
 | Languages | Syntax highlighting for about 190 [languages](languages.md) and file formats, with symbols and smart indentation for many of them. |
 | Look and feel | 35 [color schemes](appearance.md#color-schemes) that can follow your system's light or dark mode, bundled coding fonts, a minimap, and an [interface size](appearance.md#interface-size) of its own (View ▸ Interface Size) for easier reading. |
 | Writing | [Spell check](editing.md#spell-check) for comments, strings and prose, with US and UK English dictionaries built in. |
-| Git | [Change bars](git.md) in the gutter for lines changed since the last commit, the current branch in the status bar, and Compare with HEAD. |
+| Git | [Change bars](git.md) in the gutter for lines changed since the last commit, the current branch in the status bar, Compare with HEAD, and [Review Changes](review.md) for keeping or reverting what a coding agent changed. |
 | Files | [Hot exit](welcome.md#hot-exit), so quitting never asks and nothing is lost; 40 [encodings](encodings.md); atomic saves; [printing and PDF export](printing.md); and a [large-file mode](troubleshooting.md#very-large-files). |
 | Customizing | [Settings](settings.md) and [key bindings](keybindings.md) in plain JSON files that apply as soon as you save, plus your own [snippets](snippets.md), syntaxes and color schemes. |
 

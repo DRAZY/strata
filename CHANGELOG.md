@@ -19,6 +19,17 @@ All notable changes to Strata are recorded here. The format follows
   sends the selection, or the current line, to the terminal and presses
   Enter, starting a terminal if none is running. Multi-line text goes as one
   bracketed paste when the shell or REPL supports it.
+- Review Changes, for checking what a coding agent changed and keeping or
+  undoing each change (no AI involved). The **Changes** tab of the side bar
+  lists every file that differs from the last commit, or from a snapshot taken
+  with **Start Review**, with its status (modified, new, deleted, renamed) and
+  lines added and removed, and updates while the agent works. Clicking a file
+  opens its changes side by side with **Keep** and **Revert** for each change
+  or the whole file; reverting is an ordinary edit, so Undo brings the change
+  back and nothing is written until you save. Tick files off as reviewed; the
+  status bar counts the rest. F8 and Shift+F8 step through the changes across
+  files, and the Review commands are in Tools ▸ Review Changes and the command
+  palette. See the new Review Changes page in the manual.
 
 ## [1.0.2] - 2026-10-15
 

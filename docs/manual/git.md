@@ -73,4 +73,6 @@ Strata never asks for passwords and doesn't contact remote servers; it only read
 
 ## What isn't supported
 
+To go through everything that changed since the last commit (or since you started a review), file by file, and keep or revert each change, see [Review Changes](review.md).
+
 Strata doesn't have its own Git interface. To commit, stage, switch branches, pull, push, view history or blame, or discard changes, use Git in the [terminal](terminal.md) or another Git tool. The side bar doesn't color files by their Git status.
