@@ -2657,6 +2657,8 @@ impl eframe::App for StrataApp {
         if !self.window_focused && focused {
             // Back from another app, which may have changed the folders.
             self.sidebar.refresh();
+            // Or replaced files: which file each tab is, for its language server.
+            self.lsp.hub.borrow_mut().recheck_files();
         }
         self.window_focused = focused;
         if now - self.last_disk_check > 1.0 {

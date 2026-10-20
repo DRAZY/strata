@@ -96,6 +96,9 @@ struct Resolved {
     /// resolved, the last one too), or another name of the same file (a
     /// hard link) that a tab opened first.
     doc: PathBuf,
+    /// The file's modification time when last looked at: a change means
+    /// it was saved, reloaded or changed on disk, so it's looked at again.
+    seen: Option<SystemTime>,
 }
 
 pub struct Hub {
@@ -487,7 +490,17 @@ impl Hub {
         }
         let tab = uri::normalize(path);
         let Some(i) = self.slot_for(&tab, roots, window) else { return };
-        let r = self.resolve(&tab);
+        // Saved, reloaded or changed on disk: is it still its document's file?
+        if let Some(r) = self.resolved.get(&tab)
+            && r.seen != mtime
+        {
+            let doc = r.doc.clone();
+            self.recheck_doc(&doc);
+            if let Some(r) = self.resolved.get_mut(&tab) {
+                r.seen = mtime;
+            }
+        }
+        let r = self.resolve(&tab, mtime);
         let me = (window, tab.clone());
         if let Some(d) = self.docs.get_mut(&r.doc)
             && !d.tabs.contains(&me)
@@ -523,7 +536,7 @@ impl Hub {
     }
 
     /// The real file behind a tab's path, worked out once while the tab is open.
-    fn resolve(&mut self, tab: &Path) -> Resolved {
+    fn resolve(&mut self, tab: &Path, mtime: Option<SystemTime>) -> Resolved {
         if let Some(r) = self.resolved.get(tab) {
             return r.clone();
         }
@@ -532,7 +545,7 @@ impl Hub {
             .map_or_else(|| tab.to_owned(), |p| uri::normalize(&p));
         // Already open under another name for the same file (a hard link)?
         let doc = if self.docs.contains_key(&real) { real.clone() } else { self.doc_key_by_identity(tab).unwrap_or_else(|| real.clone()) };
-        let r = Resolved { doc };
+        let r = Resolved { doc, seen: mtime };
         self.resolved.insert(tab.to_owned(), r.clone());
         r
     }
@@ -605,30 +618,74 @@ impl Hub {
         self.docs.keys().find(|k| file_key(k) == Some(id)).cloned()
     }
 
-    /// The open document a path from a server means: by name if it's the
-    /// name the server was sent, else by which file it is (a link, another
-    /// spelling, a different case on a case-insensitive disk).
-    fn doc_for(&self, path: &Path) -> Option<&OpenDoc> {
-        let path = uri::normalize(path);
-        if let Some(d) = self.docs.get(&path) {
-            return Some(d);
-        }
-        self.docs.get(&self.doc_key_by_identity(&path)?)
-    }
-
     /// A tab showing the file a server named, in `window` if it has one;
     /// for a file no tab shows, its real path (never rebuilt from a folder
     /// name a link could point elsewhere by now).
     pub fn client_path(&self, window: u64, path: &Path) -> PathBuf {
-        match self.doc_for(path) {
-            Some(d) => d.tabs.iter().find(|t| t.0 == window).or(d.tabs.first()).map(|t| t.1.clone()).expect("a document has tabs"),
-            None => real_path(path).map_or_else(|| uri::normalize(path), |p| uri::normalize(&p)),
+        match self.client_paths(window, &[path.to_owned()]).pop() {
+            Some(Mapped::Tab { path, .. }) | Some(Mapped::Unopened(path)) => path,
+            None => uri::normalize(path),
         }
     }
 
-    /// Some tab, in any window, shows the file at `path`.
-    pub fn is_open(&self, path: &Path) -> bool {
-        self.doc_for(path).is_some()
+    /// Where each of a server's paths leads (see `Mapped`). Exact names
+    /// cost nothing; for the others, each open document's file and each
+    /// distinct path are stat'ed once.
+    pub fn client_paths(&self, window: u64, paths: &[PathBuf]) -> Vec<Mapped> {
+        map_paths(&self.doc_tabs(), window, paths)
+    }
+
+    /// Every open document's key and its tabs, for mapping paths (here or on a worker).
+    pub fn doc_tabs(&self) -> DocTabs {
+        self.docs.iter().map(|(k, d)| (k.clone(), d.tabs.clone())).collect()
+    }
+
+    /// Distinct paths among `paths` that aren't an open document's exact
+    /// name (each would need a stat to map).
+    pub fn count_inexact(&self, paths: &[PathBuf]) -> usize {
+        let mut seen = std::collections::HashSet::new();
+        paths.iter().map(|p| uri::normalize(p)).filter(|p| !self.docs.contains_key(p) && seen.insert(p.clone())).count()
+    }
+
+    /// Look again at which file every tab is (the window came back to the front).
+    pub fn recheck_files(&mut self) {
+        let keys: Vec<PathBuf> = self.docs.keys().cloned().collect();
+        for k in keys {
+            self.recheck_doc(&k);
+        }
+    }
+
+    /// Tabs of a document whose file isn't the document's file any more
+    /// (another program replaced one of two hard-linked names, so they're
+    /// two files now) leave it: their next sync gives them their own.
+    fn recheck_doc(&mut self, key: &Path) {
+        let Some(d) = self.docs.get(key) else { return };
+        let key_id = file_key(key);
+        let leaving: Vec<(u64, PathBuf)> = d
+            .tabs
+            .iter()
+            .filter(|(_, t)| {
+                let real = real_path(t).map(|r| uri::normalize(&r));
+                real.as_deref() != Some(key) && (key_id.is_none() || file_key(t) != key_id)
+            })
+            .cloned()
+            .collect();
+        if leaving.is_empty() {
+            return;
+        }
+        for (_, t) in &leaving {
+            self.resolved.remove(t);
+        }
+        let d = self.docs.get_mut(key).expect("checked");
+        let before = d.tabs.first().cloned();
+        d.tabs.retain(|t| !leaving.contains(t));
+        if d.tabs.is_empty() {
+            self.close(key);
+        } else if d.tabs.first() != before.as_ref() {
+            d.text_key = (0, 0);
+            d.handoff = true;
+            self.handoffs += 1;
+        }
     }
 
     /// The tab's file is open in a server through another tab (another
@@ -667,7 +724,18 @@ impl Hub {
         let mut out = Vec::new();
         for s in self.slots.iter().filter_map(|s| s.server.as_ref()) {
             let enc = s.caps().encoding;
-            out.extend(s.all_diagnostics().into_iter().map(|(p, d)| (self.client_path(window, &p), d, enc)));
+            let found = s.all_diagnostics();
+            let paths: Vec<PathBuf> = found.iter().map(|(p, _)| p.clone()).collect();
+            // Many files nobody has open: named as the server names them
+            // (a click maps the one chosen), rather than stat'ing them all here.
+            let names: Vec<PathBuf> = if self.count_inexact(&paths) > MAX_INEXACT {
+                paths
+            } else {
+                self.client_paths(window, &paths).into_iter().map(|m| match m {
+                    Mapped::Tab { path, .. } | Mapped::Unopened(path) => path,
+                }).collect()
+            };
+            out.extend(names.into_iter().zip(found).map(|(p, (_, d))| (p, d, enc)));
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
@@ -742,6 +810,8 @@ fn path_parent_real(path: &Path) -> Option<PathBuf> {
 /// Which file `path` is, following links: device and inode, or on Windows
 /// volume serial number and file index.
 fn file_key(path: &Path) -> Option<(u64, u64)> {
+    #[cfg(test)]
+    IDENTITY_STATS.with(|c| c.set(c.get() + 1));
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -765,6 +835,70 @@ fn file_key(path: &Path) -> Option<(u64, u64)> {
         let _ = path;
         None
     }
+}
+
+/// More paths needing a stat than this, and the mapping isn't done on the UI thread.
+pub const MAX_INEXACT: usize = 200;
+
+/// Open documents' keys and their tabs (see `Hub::doc_tabs`).
+pub type DocTabs = Vec<(PathBuf, Vec<(u64, PathBuf)>)>;
+
+/// Where each path from a server leads, given the open documents: by exact
+/// name, else by identity (a link, another spelling or case, a hard link).
+/// Each document's file and each distinct path are stat'ed at most once,
+/// and only if some path isn't an exact name. Runs on any thread.
+pub fn map_paths(docs: &DocTabs, window: u64, paths: &[PathBuf]) -> Vec<Mapped> {
+    let mut ids: Option<HashMap<(u64, u64), usize>> = None;
+    let mut seen: HashMap<PathBuf, Mapped> = HashMap::new();
+    let tab_of = |k: usize| {
+        let tabs = &docs[k].1;
+        let t = tabs.iter().find(|t| t.0 == window).or(tabs.first()).expect("a document has tabs");
+        Mapped::Tab { window: t.0, path: t.1.clone() }
+    };
+    paths
+        .iter()
+        .map(|p| {
+            let n = uri::normalize(p);
+            if let Some(m) = seen.get(&n) {
+                return m.clone();
+            }
+            let doc = docs.iter().position(|(k, _)| *k == n).or_else(|| {
+                let ids = ids.get_or_insert_with(|| docs.iter().enumerate().filter_map(|(k, (key, _))| file_key(key).map(|id| (id, k))).collect());
+                file_key(&n).and_then(|id| ids.get(&id).copied())
+            });
+            let m = match doc {
+                Some(k) => tab_of(k),
+                None => Mapped::Unopened(real_path(&n).map_or_else(|| n.clone(), |r| uri::normalize(&r))),
+            };
+            seen.insert(n, m.clone());
+            m
+        })
+        .collect()
+}
+
+/// Where a path from a server leads.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Mapped {
+    /// A tab shows that file (in `window`).
+    Tab { window: u64, path: PathBuf },
+    /// No tab shows it: its real path.
+    Unopened(PathBuf),
+}
+
+#[cfg(test)]
+thread_local! {
+    static IDENTITY_STATS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Identity lookups since `reset_identity_stats` on this thread (tests).
+#[cfg(test)]
+pub fn identity_stats() -> usize {
+    IDENTITY_STATS.with(|c| c.get())
+}
+
+#[cfg(test)]
+pub fn reset_identity_stats() {
+    IDENTITY_STATS.with(|c| c.set(0));
 }
 
 /// A server that waits for its folder to be trusted.

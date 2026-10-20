@@ -13,6 +13,7 @@ use crate::editor::Marker;
 use crate::lsp::edit::{self, FileEdit};
 use crate::lsp::position::{self, Encoding, Pos};
 use crate::lsp::server::{Diagnostic, Pending, Reply, RpcError};
+use crate::lsp::hub::{MAX_INEXACT, Mapped};
 use crate::lsp::{Hub, State, Trust, uri};
 use egui::{Color32, Key, Pos2, Rect, vec2};
 use serde_json::{Value, json};
@@ -55,6 +56,14 @@ struct Applying {
     open: Vec<OpenEdit>,
     back_to: egui::Id,
     count: usize,
+}
+
+/// A change waiting for its paths to be mapped on a worker.
+struct Mapping {
+    rx: std::sync::mpsc::Receiver<Vec<Mapped>>,
+    files: Vec<FileEdit>,
+    enc: Encoding,
+    asked: Option<Vec<(PathBuf, (u64, u64))>>,
 }
 
 /// Lines read for a location list: (row, text).
@@ -180,6 +189,8 @@ pub(super) struct LspState {
     labels: Option<(std::sync::mpsc::Receiver<LineTexts>, Vec<String>)>,
     /// A rename whose unopened files are being read.
     applying: Option<Applying>,
+    /// A rename whose files are being told apart by identity, off the UI thread.
+    mapping: Option<Mapping>,
 }
 
 fn next_window() -> u64 {
@@ -217,6 +228,7 @@ impl LspState {
             pending_problem: None,
             labels: None,
             applying: None,
+            mapping: None,
         }
     }
 
@@ -443,6 +455,7 @@ impl StrataApp {
     fn lsp_answers(&mut self, ctx: &egui::Context) {
         let epoch = self.lsp.hub.borrow().handoffs();
         // Before a new rename answer, so its files are read on a later frame.
+        self.lsp_mapped();
         self.lsp_applied();
         if let Some((what, reply)) = answered(&mut self.lsp.completion, epoch) {
             self.lsp_completion_answer(what, reply);
@@ -457,7 +470,7 @@ impl StrataApp {
             self.lsp_goto_answer(ctx, what, reply);
         }
         if let Some((what, reply)) = answered(&mut self.lsp.rename, epoch) {
-            match reply.map_err(|e| e.message).and_then(|v| edit::workspace_edit(&v)).map(|files| self.client_files(files)) {
+            match reply.map_err(|e| e.message).and_then(|v| edit::workspace_edit(&v)) {
                 Ok(files) if files.iter().all(|f| f.edits.is_empty()) => self.status = "Nothing to rename here".into(),
                 Ok(files) => match self.lsp_apply_workspace_edit(files, what.enc, Some(&what.texts)) {
                     Ok(msg) => self.status = msg,
@@ -791,7 +804,18 @@ impl StrataApp {
 
     fn lsp_goto_answer(&mut self, ctx: &egui::Context, what: GotoFor, reply: Reply) {
         let found = match reply {
-            Ok(v) => locations(&v).into_iter().map(|(p, r)| (self.lsp.hub.borrow().client_path(self.lsp.window, &p), r)).collect(),
+            Ok(v) => {
+                let found = locations(&v);
+                let paths: Vec<PathBuf> = found.iter().map(|(p, _)| p.clone()).collect();
+                let hub = self.lsp.hub.borrow();
+                // Many files: listed by the server's names; the one chosen is mapped then.
+                if hub.count_inexact(&paths) > MAX_INEXACT {
+                    found
+                } else {
+                    let mapped = hub.client_paths(self.lsp.window, &paths);
+                    found.into_iter().zip(mapped).map(|((_, r), m)| (match m { Mapped::Tab { path, .. } | Mapped::Unopened(path) => path }, r)).collect()
+                }
+            }
             Err(e) if e.is_benign() => return,
             Err(_) => Vec::new(),
         };
@@ -864,6 +888,8 @@ impl StrataApp {
 
     /// Open `path` and select `range` (server positions in `enc`).
     pub(super) fn lsp_open_location(&mut self, path: &Path, range: (Pos, Pos), enc: Encoding) {
+        // The tab showing that file, if one does (lists of many files aren't mapped ahead).
+        let path = &self.lsp.hub.borrow().client_path(self.lsp.window, path);
         let open = self.docs.iter().position(|d| d.path.as_deref().is_some_and(|dp| uri::normalize(dp) == uri::normalize(path)));
         match open {
             Some(i) => self.activate(i),
@@ -943,15 +969,6 @@ impl StrataApp {
         }
     }
 
-    /// A server's edits by the tabs' names for their files.
-    fn client_files(&self, mut files: Vec<FileEdit>) -> Vec<FileEdit> {
-        let hub = self.lsp.hub.borrow();
-        for f in &mut files {
-            f.path = hub.client_path(self.lsp.window, &f.path);
-        }
-        files
-    }
-
     /// (path, (editor id, editor version)) of every file open in this window.
     fn open_texts(&self) -> Vec<(PathBuf, (u64, u64))> {
         self.docs.iter().filter_map(|d| Some((uri::normalize(d.path.as_deref()?), (d.editor.id(), d.editor.version())))).collect()
@@ -967,14 +984,68 @@ impl StrataApp {
     /// when the server was asked: an edit for a file changed since is refused.
     /// Returns the status message.
     pub(super) fn lsp_apply_workspace_edit(&mut self, files: Vec<FileEdit>, enc: Encoding, asked: Option<&[(PathBuf, (u64, u64))]>) -> Result<String, String> {
-        if self.lsp.applying.is_some() {
+        if self.lsp.applying.is_some() || self.lsp.mapping.is_some() {
             return Err("another change is still being applied".into());
         }
+        let paths: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+        let hub = self.lsp.hub.borrow();
+        if hub.count_inexact(&paths) <= MAX_INEXACT {
+            let mapped = hub.client_paths(self.lsp.window, &paths);
+            drop(hub);
+            return self.lsp_apply_mapped(files, mapped, enc, asked);
+        }
+        // Many files to tell apart by identity: stat them on a worker first.
+        let (docs, window, ctx) = (hub.doc_tabs(), self.lsp.window, hub.context());
+        drop(hub);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let count = files.len();
+        std::thread::Builder::new()
+            .name("lsp-map".into())
+            .spawn(move || {
+                let _ = tx.send(crate::lsp::hub::map_paths(&docs, window, &paths));
+                if let Some(ctx) = ctx {
+                    ctx.request_repaint();
+                }
+            })
+            .map_err(|e| format!("couldn't start looking at the files: {e}"))?;
+        self.lsp.mapping = Some(Mapping { rx, files, enc, asked: asked.map(<[_]>::to_vec) });
+        Ok(format!("Renaming… ({count} files)"))
+    }
+
+    /// A change's paths were mapped on a worker: go on with it.
+    fn lsp_mapped(&mut self) {
+        let Some(m) = &self.lsp.mapping else { return };
+        let mapped = match m.rx.try_recv() {
+            Ok(mapped) => mapped,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Vec::new(),
+        };
+        let m = self.lsp.mapping.take().expect("checked");
+        if mapped.len() != m.files.len() {
+            self.status = "Couldn't rename: looking at the files failed".into();
+            return;
+        }
+        self.status = match self.lsp_apply_mapped(m.files, mapped, m.enc, m.asked.as_deref()) {
+            Ok(msg) => msg,
+            Err(e) => format!("Couldn't rename: {e}"),
+        };
+    }
+
+    /// `lsp_apply_workspace_edit` once each file's path is mapped to a tab
+    /// (in this window, or another: refused) or to its real path.
+    fn lsp_apply_mapped(&mut self, files: Vec<FileEdit>, mapped: Vec<Mapped>, enc: Encoding, asked: Option<&[(PathBuf, (u64, u64))]>) -> Result<String, String> {
         let window = self.lsp.window;
         let mut open: Vec<OpenEdit> = Vec::new();
         let mut unread: Vec<(PathBuf, Vec<edit::TextEdit>, FileId)> = Vec::new();
-        for f in files.into_iter().filter(|f| !f.edits.is_empty()) {
-            let at = self.docs.iter().position(|d| d.path.as_deref().is_some_and(|p| uri::normalize(p) == f.path));
+        for (mut f, m) in files.into_iter().zip(mapped).filter(|(f, _)| !f.edits.is_empty()) {
+            let server_name = f.path.clone();
+            f.path = match m {
+                Mapped::Tab { window: w, path } if w == window => path,
+                Mapped::Tab { .. } => return Err(format!("{} is open in another window: rename from there, or close it there", file_name(&f.path))),
+                Mapped::Unopened(real) => real,
+            };
+            // (A tab the servers don't know of, a large file say, still counts by its name.)
+            let at = self.docs.iter().position(|d| d.path.as_deref().is_some_and(|p| uri::normalize(p) == f.path || uri::normalize(p) == server_name));
             let then = asked.map(|a| a.iter().find(|(p, _)| *p == f.path).map(|(_, k)| *k));
             match at {
                 Some(i) => {
@@ -999,7 +1070,7 @@ impl StrataApp {
                         // Open (maybe with unsaved edits) when asked, closed now.
                         return Err(changed(&f.path));
                     }
-                    if self.link.is_open_elsewhere(&f.path) || self.lsp.hub.borrow().is_open(&f.path) {
+                    if self.link.is_open_elsewhere(&f.path) || self.link.is_open_elsewhere(&server_name) {
                         return Err(format!("{} is open in another window: rename from there, or close it there", file_name(&f.path)));
                     }
                     // The file as the server's answer found it (a stat, no read).
@@ -1075,9 +1146,12 @@ impl StrataApp {
                 None => return Err("a file was closed meanwhile; try again".into()),
             }
         }
-        for (loaded, _, id) in &new {
+        // Opened meanwhile (here, in another window, under any name)?
+        let paths: Vec<PathBuf> = new.iter().map(|(l, _, _)| l.path.clone()).collect();
+        let now_open = self.lsp.hub.borrow().client_paths(self.lsp.window, &paths);
+        for ((loaded, _, id), m) in new.iter().zip(&now_open) {
             let p = &loaded.path;
-            if self.docs.iter().any(|d| d.path.as_deref().is_some_and(|dp| uri::normalize(dp) == uri::normalize(p))) || self.link.is_open_elsewhere(p) || self.lsp.hub.borrow().is_open(p) || crate::document::file_id(p) != Some(*id) {
+            if matches!(m, Mapped::Tab { .. }) || self.docs.iter().any(|d| d.path.as_deref().is_some_and(|dp| uri::normalize(dp) == uri::normalize(p))) || self.link.is_open_elsewhere(p) || crate::document::file_id(p) != Some(*id) {
                 return Err(changed(p));
             }
         }
@@ -1969,6 +2043,25 @@ mod tests {
         let f3 = app.docs.iter().find(|d| is(d, &dir.join("f3.fake"))).unwrap();
         assert_eq!(f3.editor.buffer.line_text(1), "use new;");
         assert!(app.status.contains("7 files"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_rename_touching_many_files_maps_them_off_the_ui_thread() {
+        let n = crate::lsp::hub::MAX_INEXACT + 10;
+        let files: Vec<(String, String)> = (0..n).map(|k| (format!("f{k:03}.fake"), "use old;\n".to_owned())).collect();
+        let mut all: Vec<(&str, &str)> = vec![("a.fake", "old = 1;\n")];
+        all.extend(files.iter().map(|(a, b)| (a.as_str(), b.as_str())));
+        let (mut app, ctx, dir) = app_with("rename-many", &all, json!({}));
+        wait(&mut app, &ctx, "ready", |a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+        rename(&mut app, &ctx, 1, "new");
+        wait(&mut app, &ctx, "the answer", |a| a.lsp.rename.is_none());
+        assert!(app.lsp.mapping.is_some(), "the paths go to a worker first: {}", app.status);
+        assert_eq!(app.docs.len(), 1);
+        wait(&mut app, &ctx, "the rename", |a| a.lsp.mapping.is_none() && a.lsp.applying.is_none());
+        assert_eq!(text(&app), "new = 1;\n", "{}", app.status);
+        assert_eq!(app.docs.len(), n + 1);
+        let last = app.docs.iter().find(|d| is(d, &dir.join(format!("f{:03}.fake", n - 1)))).unwrap();
+        assert_eq!(last.editor.buffer.line_text(0), "use new;");
     }
 
     #[test]

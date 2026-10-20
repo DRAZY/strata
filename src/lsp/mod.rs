@@ -391,6 +391,67 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn hard_links_separated_by_a_replace_become_two_documents() {
+        for trigger in ["change", "focus"] {
+            let dir = scratch(&format!("hard-split-{trigger}"));
+            std::fs::write(dir.join("a.fake"), "fine\n").unwrap();
+            std::fs::hard_link(dir.join("a.fake"), dir.join("b.fake")).unwrap();
+            let (a, b) = (dir.join("a.fake"), dir.join("b.fake"));
+            let t0 = std::fs::metadata(&a).unwrap().modified().ok();
+            let mut hub = Hub::new(false);
+            hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+            hub.sync(1, &a, (1, 0), || Rope::from_str("fine\n"), t0, &[]);
+            hub.sync(1, &b, (2, 0), || Rope::from_str("fine bad\n"), t0, &[]);
+            until("ready", || hub.server_for(1, &a).map(|_| ()));
+            assert!(hub.server_for(1, &b).is_none(), "one document while they're one file");
+            // Another program replaces a.fake: b.fake keeps the old file.
+            save_atomically(&a, "fine\n");
+            match trigger {
+                // Strata notices a.fake changed on disk: its modification time.
+                "change" => {
+                    let t1 = std::fs::metadata(&a).unwrap().modified().ok();
+                    hub.sync(1, &a, (1, 0), || Rope::from_str("fine\n"), t1, &[]);
+                }
+                _ => hub.recheck_files(),
+            }
+            hub.sync(1, &b, (2, 0), || Rope::from_str("fine bad\n"), t0, &[]);
+            assert_ne!(hub.server_path(&b), hub.server_path(&a), "{trigger}: two files now");
+            let d = until("b's own diagnostics", || hub.diagnostics(1, &b).filter(|d| !d.items.is_empty()));
+            assert_eq!(d.items.len(), 1, "{trigger}");
+            assert!(hub.server_for(1, &a).is_some(), "{trigger}: a keeps its document");
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    #[test]
+    fn mapping_server_paths_stats_each_file_once() {
+        let dir = scratch("map-cost");
+        let mut hub = Hub::new(false);
+        hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        for k in 0..10 {
+            let p = dir.join(format!("open{k}.fake"));
+            std::fs::write(&p, "x\n").unwrap();
+            hub.sync(1, &p, (k, 0), || Rope::from_str("x\n"), None, &[]);
+        }
+        // 50 locations: 20 in open files (by their exact names), 30 in 15 other files.
+        let mut paths: Vec<PathBuf> = (0..20).map(|k| hub.server_path(&dir.join(format!("open{}.fake", k % 10)))).collect();
+        for k in 0..30 {
+            let p = dir.join(format!("other{}.fake", k % 15));
+            std::fs::write(&p, "y\n").unwrap();
+            paths.push(p);
+        }
+        hub::reset_identity_stats();
+        let mapped = hub.client_paths(1, &paths);
+        assert_eq!(mapped.len(), 50);
+        assert!(mapped[..20].iter().all(|m| matches!(m, hub::Mapped::Tab { .. })));
+        assert!(mapped[20..].iter().all(|m| matches!(m, hub::Mapped::Unopened(_))));
+        // The 10 open files once each, the 15 other files once each; the exact names none.
+        assert_eq!(hub::identity_stats(), 25);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     /// Replace `path` as an atomic save does (Strata's, for a file with one
     /// name): a new file renamed over it, so a new inode.
     fn save_atomically(path: &Path, text: &str) {
