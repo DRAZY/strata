@@ -28,6 +28,8 @@
 //! was made by something else and is never acted on. Nothing a user wrote
 //! is ever deleted.
 
+mod key;
+
 use crate::claim::{self, Moved, imp};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -45,41 +47,38 @@ const MARKER_MAX: u64 = 64 * 1024;
 
 // ---- the journal's seal ---------------------------------------------------------
 
-/// This installation's key for sealing journals: 32 random bytes in an
-/// owner-only file in the config folder (made on first use). Tests use a
-/// key of their own, in memory.
-fn key() -> &'static [u8; 32] {
+/// This installation's key for sealing journals (see `key`); None when
+/// there's no key that can be trusted, and then no journaled undo starts.
+/// Tests use a key of their own, in memory.
+fn key() -> Option<&'static [u8; 32]> {
     static KEY: OnceLock<[u8; 32]> = OnceLock::new();
-    KEY.get_or_init(load_key)
+    #[cfg(test)]
+    if NO_KEY.with(std::cell::Cell::get) {
+        return None;
+    }
+    if let Some(k) = KEY.get() {
+        return Some(k);
+    }
+    // Not cached when missing: a later undo tries again.
+    #[cfg(test)]
+    let k = Some(random_bytes());
+    #[cfg(not(test))]
+    let k = crate::session::config_dir().and_then(|d| key::load_from(&d));
+    let k = k?;
+    Some(KEY.get_or_init(|| k))
 }
+
+/// Why an undo can't start without a key.
+const NO_KEY_WHY: &str = "Strata couldn't set up the private key that protects its undo records (claim.key in its settings folder must be a private file of yours), so it won't start this undo";
 
 #[cfg(test)]
-fn load_key() -> [u8; 32] {
-    random_bytes()
-}
-
-#[cfg(not(test))]
-fn load_key() -> [u8; 32] {
-    let Some(dir) = crate::session::config_dir() else { return random_bytes() };
-    let path = dir.join(KEY_FILE);
-    let read = |p: &Path| std::fs::read(p).ok().and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
-    if let Some(k) = read(&path) {
-        return k;
-    }
-    let k = random_bytes();
-    let _ = crate::private::create_dir_all(&dir);
-    // A new file only: two Strata starting at once settle on one key.
-    match crate::private::options().write(true).create_new(true).open(&path) {
-        Ok(mut f) => {
-            let _ = f.write_all(&k).and_then(|()| f.sync_all());
-            k
-        }
-        Err(_) => read(&path).unwrap_or(k),
-    }
+thread_local! {
+    /// Tests: act as if there were no usable key.
+    pub static NO_KEY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The key's file name in the config folder.
-pub const KEY_FILE: &str = "claim.key";
+pub const KEY_FILE: &str = key::FILE;
 
 #[cfg(unix)]
 fn random_bytes() -> [u8; 32] {
@@ -128,7 +127,7 @@ fn hex(bytes: &[u8]) -> String {
 /// A marker's text: the claim line, the journal, and their seal.
 fn marker_text(stamp: &str, journal: &serde_json::Value) -> Vec<u8> {
     let body = format!("strata-claim {stamp}\n{journal}\n");
-    let seal = hex(&hmac(key(), body.as_bytes()));
+    let seal = hex(&hmac(key().expect("an undo only starts with a key"), body.as_bytes()));
     format!("{body}{seal}\n").into_bytes()
 }
 
@@ -146,7 +145,7 @@ fn read_marker(stage: &Path) -> Option<(serde_json::Value, bool)> {
     let seal = lines.next().map(str::trim).unwrap_or("");
     let body = format!("{head}{json}");
     // Compared whole; a forged seal is as wrong as a missing one.
-    let sealed = seal.len() == 64 && seal == hex(&hmac(key(), body.as_bytes()));
+    let sealed = seal.len() == 64 && key().is_some_and(|k| seal == hex(&hmac(k, body.as_bytes())));
     Some((journal, sealed))
 }
 
@@ -420,6 +419,21 @@ fn prepare(op: &str, item: &Item, i: usize, total: usize, hook: &mut dyn FnMut(S
     if let Err(e) = imp::sync_dir(&p.parent).and_then(|()| imp::sync_dir(p.stage())) {
         return Err((format!("couldn't flush it to disk: {e}"), Some(p.put_back())));
     }
+    // Which file was claimed, and its text, in the journal before anything
+    // else happens: recovery checks both before it moves or writes it.
+    let id = imp::id_at(p.stage(), &p.name);
+    let now = imp::open_file_at(p.stage(), &p.name).ok().and_then(|mut f| {
+        let len = f.metadata().ok()?.len();
+        Some((len, claim::fingerprint_file(&mut f)?))
+    });
+    let (Some(id), Some(now)) = (id, now) else {
+        return Err(("couldn't read it".into(), Some(p.put_back())));
+    };
+    p.journal["id"] = vec![id.0, id.1].into();
+    p.journal["claimed"] = vec![now.0, now.1].into();
+    if let Err(e) = p.phase(CLAIMING) {
+        return Err((format!("couldn't record its progress: {e}"), Some(p.put_back())));
+    }
     hook(Step::Claimed(i));
     let mut claimed = match imp::open_file_at(p.stage(), &p.name) {
         Ok(f) => f,
@@ -440,8 +454,6 @@ fn prepare(op: &str, item: &Item, i: usize, total: usize, hook: &mut dyn FnMut(S
     if item.original.is_some() && !p.untouched && imp::open_write_at(p.stage(), &p.name).is_err() {
         return Err(("can't be written (it's read-only)".into(), Some(p.put_back())));
     }
-    // Which file this is, for recovery to check before it writes anything.
-    p.journal["id"] = imp::id_at(p.stage(), &p.name).map(|(a, b)| vec![a, b]).into();
     if let Err(e) = p.phase(PREPARED) {
         return Err((format!("couldn't record its progress: {e}"), Some(p.put_back())));
     }
@@ -521,6 +533,9 @@ pub fn restore_all(items: &[Item]) -> Outcome {
 
 /// `restore_all`, calling `hook` between the steps.
 pub fn restore_all_with(op: &str, items: &[Item], hook: &mut dyn FnMut(Step)) -> Outcome {
+    if key().is_none() {
+        return Outcome::Refused(items.iter().map(|i| (i.path.clone(), NO_KEY_WHY.to_owned())).collect(), Vec::new());
+    }
     let mut prepared: Vec<Prepared> = Vec::new();
     let mut problems: Vec<(PathBuf, String)> = Vec::new();
     let mut states: Vec<(PathBuf, State)> = Vec::new();
@@ -654,24 +669,22 @@ pub fn put_back_leftover(top: &Path, stage: &Path) -> Result<PathBuf, String> {
     let claimed = imp::open_file_at(&st, &name).is_ok();
     if claimed {
         // The file must be the one the journal describes before anything is done to it.
-        let id = pair(j.get("id"));
-        if id.is_some() && imp::id_at(&st, &name) != id {
+        let id = pair(j.get("id")).ok_or("its journal doesn't say which file it set aside: move it back yourself")?;
+        if imp::id_at(&st, &name) != Some(id) {
             return Err("the file in it isn't the one its journal names".into());
         }
         let check = |key: &str| -> Result<(), String> {
             match pair(j.get(key)) {
                 Some(want) if imp::open_file_at(&st, &name).is_ok_and(|mut f| matches(&mut f, want)) => Ok(()),
                 Some(_) => Err("the file in it has changed since".into()),
-                None => Ok(()),
+                None => Err("its journal has no fingerprint for it".into()),
             }
         };
         match left.phase.as_str() {
-            PREPARED => check("expected")?,
+            // Not changed yet: it must still be what was claimed.
+            CLAIMING | PREPARED | MOVING => check("claimed")?,
             REWRITTEN => check("original")?,
             REWRITING => {
-                if id.is_none() {
-                    return Err("its journal doesn't say which file to finish".into());
-                }
                 // Finish the rewrite from the recovery copy, if it's whole.
                 let want = pair(j.get("original")).ok_or("its journal has no fingerprint for the old text")?;
                 let mut bytes = Vec::new();
@@ -1142,6 +1155,63 @@ mod tests {
         fs::write(stage.join("b.txt"), "someone else's").unwrap();
         assert!(put_back_leftover(&d, &stage).is_err());
         assert!(!b.exists());
+        fs::remove_dir_all(d).ok();
+    }
+
+    /// Without a key that can be trusted, no undo starts (rather than seal
+    /// journals with a key someone else may know, or one that's gone later).
+    #[test]
+    fn without_a_key_no_undo_starts() {
+        let d = temp("no-key");
+        let a = d.join("a.txt");
+        NO_KEY.with(|c| c.set(true));
+        let out = restore_all(&[item(&d, &a, "old a", "new a")]);
+        NO_KEY.with(|c| c.set(false));
+        let Outcome::Refused(why, kept) = out else { panic!("{out:?}") };
+        assert!(why[0].1.contains("claim.key"), "{why:?}");
+        assert!(kept.is_empty());
+        assert_eq!(fs::read_to_string(&a).unwrap(), "new a");
+        assert!(stages(&d).is_empty(), "nothing set aside");
+        fs::remove_dir_all(d).ok();
+    }
+
+    /// Cut off just after the claim, or while renaming back: the journal
+    /// already names the file, and Put Back checks it before moving it.
+    #[test]
+    fn put_back_checks_the_file_while_claiming_and_moving() {
+        let d = temp("claiming");
+        let a = d.join("a.txt");
+        crash_at(&[item(&d, &a, "old a", "new a")], Step::Claimed(0));
+        let stage = stages(&d).pop().unwrap();
+        assert_eq!(leftover(&stage).unwrap().phase, "claiming");
+        // Changed in place (same file, other text): refused.
+        fs::write(stage.join("a.txt"), "other").unwrap();
+        assert!(put_back_leftover(&d, &stage).is_err());
+        assert!(!a.exists());
+        // Swapped for another file with the claimed text: refused.
+        fs::remove_file(stage.join("a.txt")).unwrap();
+        fs::write(stage.join("a.txt"), "new a").unwrap();
+        assert!(put_back_leftover(&d, &stage).is_err());
+        assert!(!a.exists());
+        fs::remove_dir_all(&stage).unwrap();
+        // A genuine one goes back.
+        fs::write(&a, "new a").unwrap();
+        crash_at(&[item(&d, &a, "old a", "new a")], Step::Claimed(0));
+        let stage = stages(&d).pop().unwrap();
+        assert_eq!(put_back_leftover(&d, &stage).unwrap(), a);
+        assert_eq!(fs::read_to_string(&a).unwrap(), "new a");
+        // Renaming back (the file moves, its text isn't rewritten).
+        let (new, old) = (d.join("New.md"), d.join("Old.md"));
+        fs::write(&new, "note").unwrap();
+        let back = Item { top: d.clone(), path: new.clone(), original: None, expected: Some(identity_of(b"note")), unchanged: None, install_as: old.clone() };
+        crash_at(&[back], Step::BeforeInstall(0));
+        let stage = stages(&d).pop().unwrap();
+        reseal(&stage, |j| j["phase"] = "moving".into());
+        fs::write(stage.join("New.md"), "someone else's").unwrap();
+        assert!(put_back_leftover(&d, &stage).is_err());
+        assert!(!new.exists() && !old.exists());
+        fs::write(stage.join("New.md"), "note").unwrap();
+        assert_eq!(put_back_leftover(&d, &stage).unwrap(), new, "a rename back that didn't happen returns to its name");
         fs::remove_dir_all(d).ok();
     }
 

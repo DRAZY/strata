@@ -107,7 +107,8 @@ All notable changes to Strata are recorded here. The format follows
   restored in place (keeping permissions, owner, extended attributes and hard
   links), also through links inside the replaced folders. An undo interrupted
   by a crash is listed in the Changes tab with **Put Back**. Its record is
-  sealed with a key only this installation has and is flushed to disk at
+  sealed with a private key only this installation has (an undo is refused
+  if the key file isn't private) and is flushed to disk at
   every step; Put Back only acts on its own sealed records, never outside the
   folder it was in, and only after checking the file is the one it set aside.
 
