@@ -100,6 +100,10 @@ All notable changes to Strata are recorded here. The format follows
   across the whole project, and fall back to Strata's own symbol search when
   there's no server or it has no answer.
 - The completion list stays inside the window; long details are cut with "…".
+- Undo Replace in Files is all or nothing: if any rewritten file changed
+  since the replace, nothing is restored and those files are listed. It never
+  overwrites a file written while it runs (by a sync tool, say): what it
+  couldn't put back stays in a marked folder next to the file.
 
 ### Fixed
 

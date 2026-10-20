@@ -214,7 +214,7 @@ A file on disk is left alone, and listed under "N skipped" with the reason, when
 
 ### Undo Replace in Files
 
-After a replace, an **Undo Replace in Files** button appears in the Search tab. It restores every file the last replace rewrote on disk. A file you've changed since the replace is left alone and listed as skipped.
+After a replace, an **Undo Replace in Files** button appears in the Search tab. It restores every file the last replace rewrote on disk, all or nothing: Strata first checks that every one of them is still exactly as the replace left it, and if any has changed since (you edited it, or a sync tool or another app wrote it), nothing is restored and those files are listed. Put them back as they were, or leave them, and try again. A file written while the undo runs is never overwritten: the undo stops, and anything it couldn't put back stays in a `.strata-trash-…` folder next to it, which the message names.
 
 - Undo covers only the most recent Replace in Files, and only until you close the window or its folder.
 - Files in open tabs aren't part of it: use Undo in each tab.

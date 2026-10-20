@@ -115,6 +115,11 @@ fn typing_double_brackets_completes_note_names_and_headings() {
     frame(&mut app, &ctx, vec![press(Key::Escape, Modifiers::NONE)]);
     assert!(!app.notes_completing());
     assert!(text(&app).ends_with("\n[[al]]"));
+    // Moving the cursor into a link (a click, the arrows) doesn't open the list: only typing does.
+    app.docs[app.active].editor.select_ranges(&[2..2], 0);
+    frame(&mut app, &ctx, vec![]);
+    frame(&mut app, &ctx, vec![]);
+    assert!(!app.notes_completing(), "the cursor just moved");
     std::fs::remove_dir_all(dir).ok();
 }
 
@@ -482,6 +487,86 @@ fn a_conflict_copy_replaced_while_asking_is_not_trashed() {
     assert_eq!(std::fs::read_to_string(dir.join("Plan (conflict).md")).unwrap(), "a newer version, not the one shown\n", "still there");
     assert!(app.status.contains("changed"), "{}", app.status);
     std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn open_tabs_count_toward_the_undo_limit() {
+    let dir = temp_dir("notes-undo-tab-limit");
+    write(&dir, "Old.md", "x\n");
+    write(&dir, "B.md", "an open note with a link: [[Old]] and some more words\n");
+    let ctx = Context::default();
+    let mut app = open_vault(&dir, "B.md", &ctx);
+    // B's text before and after (about 110 bytes) is over the limit; nothing on disk is.
+    app.notes.undo_limit = Some(80);
+    assert!(app.rename_note(&dir.join("Old.md"), "New").is_ok());
+    for _ in 0..6 {
+        app.notes.index.wait();
+        frame(&mut app, &ctx, vec![]);
+    }
+    let out = frame(&mut app, &ctx, vec![]);
+    assert!(texts(&out).iter().any(|t| t.contains("1 file is too large to undo")), "{:?}", texts(&out));
+    frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+    app.notes.disk.wait_until_done();
+    frame(&mut app, &ctx, vec![]);
+    app.run(&ctx, Cmd::NotesUndoRename);
+    assert!(app.status.contains("can't be undone"), "{}", app.status);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn undo_rename_rolls_back_when_the_old_name_is_taken_at_the_last_moment() {
+    let dir = temp_dir("notes-undo-commit-fail");
+    write(&dir, "Old.md", "x\n");
+    write(&dir, "A.md", "[[Old]]\n");
+    write(&dir, "C.md", "also [[Old]]\n");
+    let ctx = Context::default();
+    let mut app = open_vault(&dir, "Old.md", &ctx);
+    rename_and_update(&mut app, &ctx, &dir);
+    assert_eq!(std::fs::read_to_string(dir.join("A.md")).unwrap(), "[[New]]\n");
+    // Between the checks and the commit, something takes the old name.
+    let old = dir.join("Old.md");
+    app.notes.disk.undo_hook = Some(std::sync::Arc::new(move |p: &Path| {
+        if p.ends_with("New.md") {
+            std::fs::write(&old, "made meanwhile\n").unwrap();
+        }
+    }));
+    app.run(&ctx, Cmd::NotesUndoRename);
+    app.notes.disk.wait_until_done();
+    frame(&mut app, &ctx, vec![]);
+    assert!(app.status.contains("stopped partway"), "{}", app.status);
+    // The rename back goes first: it failed, so every link was put back as it was.
+    assert_eq!(std::fs::read_to_string(dir.join("A.md")).unwrap(), "[[New]]\n");
+    assert_eq!(std::fs::read_to_string(dir.join("C.md")).unwrap(), "also [[New]]\n");
+    assert_eq!(std::fs::read_to_string(dir.join("Old.md")).unwrap(), "made meanwhile\n");
+    assert!(dir.join("New.md").exists());
+    let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with(crate::claim::STAGING)).collect();
+    assert!(leftovers.is_empty(), "nothing left in staging");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_folder_swapped_for_a_link_after_the_check_is_never_written_through() {
+    let base = temp_dir("notes-swap-link");
+    let dir = base.join("vault");
+    let elsewhere = base.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    write(&dir, "Home.md", "See [[Daily/Plan]]\n");
+    std::fs::create_dir_all(dir.join("Daily")).unwrap();
+    let ctx = Context::default();
+    let mut app = open_vault(&dir, "Home.md", &ctx);
+    let (daily, out) = (dir.join("Daily"), elsewhere.clone());
+    app.notes.make_hook = Some(Box::new(move || {
+        std::fs::remove_dir_all(&daily).unwrap();
+        std::os::unix::fs::symlink(&out, &daily).unwrap();
+    }));
+    app.docs[app.active].editor.select_ranges(&[6..6], 0);
+    app.run(&ctx, Cmd::NotesFollowLink);
+    frame(&mut app, &ctx, vec![]);
+    frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+    assert!(app.status.contains("outside the vault"), "{}", app.status);
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0, "nothing written through the link");
+    std::fs::remove_dir_all(base).ok();
 }
 
 #[test]

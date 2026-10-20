@@ -393,7 +393,12 @@ impl Sidebar {
         let d = &self.disk;
         let plural = |n: usize, w: &str| format!("{n} {w}{}", if n == 1 { "" } else { "s" });
         let mut text = if d.undoing {
-            format!("Undo Replace in Files: restored {}", plural(d.files, "file"))
+            match &d.undo {
+                // All or nothing: the files in the way are listed below.
+                Some(crate::swap::Outcome::Refused(..)) => "Undo Replace in Files: nothing was restored, because some files changed since the replace".to_owned(),
+                Some(crate::swap::Outcome::Partial(..)) => format!("Undo Replace in Files stopped partway: restored {}", plural(d.files, "file")),
+                _ => format!("Undo Replace in Files: restored {}", plural(d.files, "file")),
+            }
         } else {
             let (n, files) = (self.in_tabs.0 + d.replaced, self.in_tabs.1 + d.files);
             let mut t = format!("Replaced {} in {}", plural(n, "occurrence"), plural(files, "file"));
@@ -813,8 +818,8 @@ impl Sidebar {
         }
         if busy {
             let (done, total) = self.disk.progress();
-            let what = if self.disk.undoing { "Restoring" } else { "Replacing" };
-            ui.label(RichText::new(format!("{what}… {done} of {total} files")).small().weak());
+            let label = if self.disk.undoing { "Checking files, then restoring them…".to_owned() } else { format!("Replacing… {done} of {total} files") };
+            ui.label(RichText::new(label).small().weak());
         }
         if let Some((text, skipped)) = &self.report {
             ui.label(RichText::new(text).small());

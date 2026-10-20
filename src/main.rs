@@ -63,6 +63,7 @@ mod snippets;
 mod spell;
 mod shell_command;
 mod sidebar;
+mod swap;
 mod terminal;
 mod trash;
 mod update;

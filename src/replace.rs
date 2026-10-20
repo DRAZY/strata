@@ -176,7 +176,8 @@ pub struct Job {
 /// What happened to one file.
 pub enum Outcome {
     Replaced { path: PathBuf, count: usize, original: Vec<u8>, after: After },
-    Restored,
+    /// An undo ran (see `swap`); refused, it hands the kept originals back.
+    Undone(crate::swap::Outcome, Vec<Kept>),
     Skipped { path: PathBuf, reason: String },
 }
 
@@ -212,38 +213,31 @@ pub fn replace_file(job: &Job, r: &Replacer) -> Result<(usize, Vec<u8>), String>
     Ok((count, file.bytes))
 }
 
-/// What a file looked like right after the replace wrote it: its stamp and
-/// a fingerprint of every byte (a same-size edit within the same second
-/// doesn't change the stamp).
+/// What a file looked like right after the replace wrote it: its size and
+/// a fingerprint of every byte (see `swap::identity`); an undo puts the old
+/// text back only over exactly that.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct After {
-    stamp: Option<Stamp>,
-    hash: Option<u64>,
-}
+pub struct After(Option<(u64, u64)>);
 
 impl After {
     fn of(path: &Path) -> After {
-        After { stamp: Stamp::of(path).ok(), hash: std::fs::read(path).ok().map(|b| crate::claim::fingerprint(&b)) }
-    }
-
-    /// Is the file at `path` still exactly as the replace left it?
-    fn holds(&self, path: &Path) -> bool {
-        self.stamp.is_some() && self.hash.is_some() && Stamp::of(path).ok() == self.stamp && std::fs::read(path).ok().map(|b| crate::claim::fingerprint(&b)) == self.hash
+        After(crate::swap::identity(path))
     }
 }
 
-/// Put back what Undo kept, unless the file changed since the replace.
-fn restore_file(path: &Path, original: &[u8], after: &After) -> Result<(), String> {
-    if !after.holds(path) {
-        return Err("changed since the replace".into());
-    }
-    crate::buffer::write_atomic(path, |out| std::io::Write::write_all(out, original)).map_err(|e| format!("couldn't write: {e}"))
-}
-
-struct Kept {
+pub struct Kept {
     path: PathBuf,
-    original: Vec<u8>,
+    original: Arc<Vec<u8>>,
     after: After,
+}
+
+/// Why an undo didn't restore a file, for a report.
+fn describe(state: &crate::swap::State) -> String {
+    match state {
+        crate::swap::State::Restored => "restored".into(),
+        crate::swap::State::Unchanged => "left as it was".into(),
+        crate::swap::State::KeptAt(p) => format!("couldn't go back; it's kept at {}", p.display()),
+    }
 }
 
 /// The background disk job (replace, or undo of the last replace) and its
@@ -267,7 +261,15 @@ pub struct DiskReplace {
     pub not_undoable: usize,
     /// Most bytes of originals kept for undo (None: `UNDO_BYTES`); kept across jobs.
     pub limit: Option<usize>,
+    /// How the last undo went.
+    pub undo: Option<crate::swap::Outcome>,
+    /// Tests: called with each file the undo has checked, just before it's put back.
+    #[cfg(test)]
+    pub undo_hook: Option<UndoHook>,
 }
+
+#[cfg(test)]
+pub type UndoHook = Arc<dyn Fn(&Path) + Send + Sync>;
 
 impl DiskReplace {
     pub fn running(&self) -> bool {
@@ -281,12 +283,6 @@ impl DiskReplace {
     /// Files Undo Replace in Files would restore.
     pub fn undoable(&self) -> usize {
         self.kept.len()
-    }
-
-    /// The files the last replace wrote that have changed since (and why),
-    /// so an undo can be refused as a whole before anything is restored.
-    pub fn undo_problems(&self) -> Vec<(PathBuf, String)> {
-        self.kept.iter().filter(|k| !k.after.holds(&k.path)).map(|k| (k.path.clone(), "changed since the update".to_owned())).collect()
     }
 
     pub fn cancel(&self) {
@@ -304,12 +300,48 @@ impl DiskReplace {
 
     /// Restore the files the last replace wrote.
     pub fn start_undo(&mut self, ctx: Option<egui::Context>) {
+        self.start_restore(Vec::new(), None, ctx);
+    }
+
+    /// Restore the files the last replace wrote, and `extra` (more files, a
+    /// rename back), all or nothing, off the UI thread (see `swap`). Files
+    /// inside `top` are reached from it without following links; others
+    /// from their own folder.
+    pub fn start_restore(&mut self, extra: Vec<crate::swap::Item>, top: Option<PathBuf>, ctx: Option<egui::Context>) {
         let kept = std::mem::take(&mut self.kept);
-        *self = DiskReplace { total: kept.len(), undoing: true, limit: self.limit, ..Default::default() };
-        self.spawn(ctx, |k: &Kept| match restore_file(&k.path, &k.original, &k.after) {
-            Ok(()) => Outcome::Restored,
-            Err(reason) => Outcome::Skipped { path: k.path.clone(), reason },
-        }, kept);
+        #[cfg(test)]
+        let hook = self.undo_hook.clone();
+        *self = DiskReplace { total: 1, undoing: true, limit: self.limit, ..Default::default() };
+        let batch = vec![(kept, extra)];
+        self.spawn(ctx, move |(kept, extra): &(Vec<Kept>, Vec<crate::swap::Item>)| {
+            let top_of = |p: &Path| top.clone().filter(|t| p.starts_with(t)).unwrap_or_else(|| p.parent().map(Path::to_owned).unwrap_or_default());
+            let mut items: Vec<crate::swap::Item> = Vec::new();
+            for k in kept {
+                // Never over a file whose state after the replace wasn't known.
+                let expected = k.after.0.unwrap_or((u64::MAX, 0));
+                let mut item = crate::swap::Item::restore(top_of(&k.path), k.path.clone(), k.original.clone(), expected);
+                // The same file renamed back: its old text goes in under the old name.
+                if let Some(back) = extra.iter().find(|e| e.original.is_none() && e.path == k.path) {
+                    item.install_as = back.install_as.clone();
+                }
+                items.push(item);
+            }
+            items.extend(extra.iter().filter(|e| e.original.is_some() || !kept.iter().any(|k| k.path == e.path)).cloned());
+            let paths: Vec<PathBuf> = items.iter().map(|i| i.path.clone()).collect();
+            #[cfg(test)]
+            let mut step = |s: crate::swap::Step| {
+                if let (crate::swap::Step::BeforeInstall(i), Some(h)) = (s, &hook) {
+                    h(&paths[i]);
+                }
+            };
+            #[cfg(not(test))]
+            let mut step = |_: crate::swap::Step| {
+                let _ = &paths;
+            };
+            let out = crate::swap::restore_all_with(&items, &mut step);
+            let back = if matches!(out, crate::swap::Outcome::Refused(..)) { kept.iter().map(|k| Kept { path: k.path.clone(), original: k.original.clone(), after: k.after }).collect() } else { Vec::new() };
+            Outcome::Undone(out, back)
+        }, batch);
     }
 
     fn spawn<T: Send + 'static>(&mut self, ctx: Option<egui::Context>, work: impl Fn(&T) -> Outcome + Send + 'static, items: Vec<T>) {
@@ -348,12 +380,30 @@ impl DiskReplace {
                     self.files += 1;
                     if self.kept_bytes + original.len() <= self.limit.unwrap_or(UNDO_BYTES) {
                         self.kept_bytes += original.len();
-                        self.kept.push(Kept { path, original, after });
+                        self.kept.push(Kept { path, original: Arc::new(original), after });
                     } else {
                         self.not_undoable += 1;
                     }
                 }
-                Ok(Outcome::Restored) => self.files += 1,
+                Ok(Outcome::Undone(out, back)) => {
+                    use crate::swap::{Outcome as O, State};
+                    match &out {
+                        O::Done(states) => self.files = states.iter().filter(|(_, s)| *s == State::Restored).count(),
+                        O::Refused(why, kept) => {
+                            self.skipped.extend(why.iter().cloned());
+                            self.skipped.extend(kept.iter().map(|(p, s)| (p.clone(), describe(s))));
+                            // Nothing changed: the undo can be tried again.
+                            self.kept_bytes = back.iter().map(|k| k.original.len()).sum();
+                            self.kept = back;
+                        }
+                        O::Partial(states, why) => {
+                            self.files = states.iter().filter(|(_, s)| *s == State::Restored).count();
+                            self.skipped.extend(states.iter().filter(|(_, s)| *s != State::Restored).map(|(p, s)| (p.clone(), describe(s))));
+                            self.skipped.push((PathBuf::new(), why.clone()));
+                        }
+                    }
+                    self.undo = Some(out);
+                }
                 Ok(Outcome::Skipped { path, reason }) => self.skipped.push((path, reason)),
                 Err(TryRecvError::Empty) => return false,
                 Err(TryRecvError::Disconnected) => {
@@ -502,6 +552,33 @@ mod tests {
         fs::remove_dir_all(d).ok();
     }
 
+    /// A sync tool writes the file after the undo checked it but before it
+    /// puts the old text back: the newer content must survive.
+    #[test]
+    fn undo_never_overwrites_a_write_that_lands_after_its_check() {
+        let d = dir("undo-race");
+        let a = d.join("a.txt");
+        fs::write(&a, "one x\n").unwrap();
+        let mut task = DiskReplace::default();
+        task.start(vec![job(&a, 1)], Replacer::new(&Query::literal("x", false), "y").unwrap(), None);
+        task.wait_until_done();
+        assert!(task.poll());
+        let target = a.clone();
+        task.undo_hook = Some(Arc::new(move |p: &Path| {
+            if p == target {
+                fs::write(p, "the sync tool's newer text\n").unwrap();
+            }
+        }));
+        task.start_undo(None);
+        task.wait_until_done();
+        task.poll();
+        assert_eq!(fs::read_to_string(&a).unwrap(), "the sync tool's newer text\n");
+        // Strata's own version is kept aside, marked, and the report says where.
+        assert!(matches!(task.undo, Some(crate::swap::Outcome::Partial(..))));
+        assert!(task.skipped.iter().any(|(_, why)| why.contains("kept at")), "{:?}", task.skipped);
+        fs::remove_dir_all(d).ok();
+    }
+
     #[test]
     fn background_job_reports_and_undoes() {
         let d = dir("job");
@@ -517,14 +594,24 @@ mod tests {
         assert_eq!((task.replaced, task.files, task.skipped.len(), task.undoable()), (3, 2, 1, 2));
         assert_eq!(fs::read_to_string(&b).unwrap(), "two y y\n");
 
-        // b changes after the replace: undo leaves it alone and says so.
+        // b changes after the replace: the undo is all or nothing, so nothing
+        // is restored, b is named, and it can be tried again.
         fs::write(&b, "edited later\n").unwrap();
         task.start_undo(None);
         task.wait_until_done();
         assert!(task.poll());
-        assert_eq!(fs::read_to_string(&a).unwrap(), "one x\n");
+        assert_eq!(fs::read_to_string(&a).unwrap(), "one y\n");
         assert_eq!(fs::read_to_string(&b).unwrap(), "edited later\n");
-        assert_eq!((task.files, task.skipped.len(), task.undoable()), (1, 1, 0));
+        assert_eq!((task.files, task.skipped.len(), task.undoable()), (0, 1, 2));
+        assert_eq!(task.skipped[0].0, b);
+        // b back as the replace left it: now everything comes back.
+        fs::write(&b, "two y y\n").unwrap();
+        task.start_undo(None);
+        task.wait_until_done();
+        assert!(task.poll());
+        assert_eq!(fs::read_to_string(&a).unwrap(), "one x\n");
+        assert_eq!(fs::read_to_string(&b).unwrap(), "two x x\n");
+        assert_eq!((task.files, task.skipped.len(), task.undoable()), (2, 0, 0));
         fs::remove_dir_all(d).ok();
     }
 }

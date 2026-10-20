@@ -68,6 +68,8 @@ pub(super) struct PlanFile {
     /// The file as read (None: it's open in a tab and changes there).
     pub stamp: Option<Stamp>,
     pub in_tab: bool,
+    /// An open tab's text size: Undo Rename keeps it before and after the update.
+    pub tab_bytes: usize,
     pub count: usize,
     /// (0-based line, before, after).
     pub lines: Vec<(usize, String, String)>,
@@ -106,9 +108,18 @@ impl LinkPlan {
     }
 
     pub fn ready(&mut self, rename: Arc<Rename>, files: Vec<PlanFile>, skipped: Vec<(PathBuf, String)>, limit: usize) {
-        // As the disk job keeps them: originals in order, while they fit.
+        // The open tabs' texts (before and after) first, then the disk job's
+        // originals in order, while they fit.
         let mut kept = 0u64;
         self.too_large = 0;
+        for f in files.iter().filter(|f| f.in_tab) {
+            let len = 2 * f.tab_bytes as u64;
+            if kept + len <= limit as u64 {
+                kept += len;
+            } else {
+                self.too_large += 1;
+            }
+        }
         for f in files.iter().filter(|f| !f.in_tab) {
             let len = f.stamp.map_or(0, |s| s.len);
             if kept + len <= limit as u64 {
@@ -697,7 +708,7 @@ impl StrataApp {
         }
         let text = match naming {
             Naming::FromTemplate(t) => {
-                let template = crate::search::read_text(t).map_err(|e| format!("Couldn't read the template: {e}"))?.text;
+                let template = super::notes_ui::read_vault_text(root, t).map_err(|e| format!("Couldn't read the template: {e}"))?;
                 let title = name.rsplit('/').next().unwrap_or(name);
                 notes::fill_template(&template, title, &dates::DateTime::now(), &config.templates.date_format, &config.templates.time_format)
             }
