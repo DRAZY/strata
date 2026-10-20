@@ -12,7 +12,7 @@ use super::manifest::Manifest;
 use super::store::Store;
 use super::{API, Perm, package};
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -107,6 +107,11 @@ pub struct Plugin {
     pub state: State,
     pub log: Arc<Mutex<Log>>,
     host: Option<Host>,
+    /// What the running process may do: its approved snapshot's
+    /// permissions (empty when it isn't running). The manifest on disk can
+    /// change meanwhile; that only counts from the next start, which asks
+    /// again for a package not consented to.
+    perms: BTreeSet<Perm>,
     /// The shared lock on the snapshot it runs from (see `package::open_snapshot`).
     lock: Option<std::fs::File>,
     /// Counts starts, so an answer meant for an earlier process never reaches a new one.
@@ -137,6 +142,7 @@ impl Plugin {
             state: State::Stopped,
             log: Default::default(),
             host: None,
+            perms: BTreeSet::new(),
             lock: None,
             run: 0,
             crashes: Vec::new(),
@@ -182,6 +188,7 @@ impl Plugin {
         }
         self.lock = None;
         self.status.clear();
+        self.perms.clear();
         self.told.clear();
         self.fronts.clear();
         self.commands.clear();
@@ -285,6 +292,19 @@ impl Manager {
         for f in found {
             match self.plugins.iter_mut().find(|p| p.name == f.name) {
                 Some(p) => {
+                    // A running plugin keeps what it was approved for; one
+                    // whose manifest now asks for less stops (what it was
+                    // told goes with it) rather than keep a permission the
+                    // package no longer declares. Starting again checks the
+                    // new package, asking first if it wasn't consented to.
+                    let narrower = !f.manifest.as_ref().is_ok_and(|m| p.perms.is_subset(&m.permissions));
+                    if narrower && let Some(h) = &p.host {
+                        h.kill();
+                        p.drop_host();
+                        p.queued.clear();
+                        p.state = State::Stopped;
+                        p.log("Stopped: its manifest changed on disk and no longer asks for every permission it was started with");
+                    }
                     p.dir = f.dir;
                     p.manifest = f.manifest;
                 }
@@ -506,6 +526,7 @@ impl Manager {
         p.log(format!("Starting {} {}", manifest.title, manifest.version));
         p.sent_settings = Some(settings);
         p.host = Some(host);
+        p.perms = manifest.permissions.clone();
         p.manifest = Ok(manifest);
         p.state = State::Starting { init };
     }
@@ -716,7 +737,7 @@ impl Manager {
         let p = &mut self.plugins[i];
         let title = p.manifest.as_ref().ok().and_then(|m| m.commands.iter().find(|c| c.id == cmd)).map_or_else(|| cmd.to_owned(), |c| c.title.clone());
         // Which file is in front (its path) is the document's business: only for plugins allowed to read or edit it.
-        let may_see = p.manifest.as_ref().is_ok_and(|m| m.permissions.contains(&Perm::ReadDocument) || m.permissions.contains(&Perm::EditDocument));
+        let may_see = p.perms.contains(&Perm::ReadDocument) || p.perms.contains(&Perm::EditDocument);
         let Some(h) = &p.host else { return };
         let pending = h.request("command/execute", json!({"command": cmd, "document": doc.filter(|_| may_see).map(DocInfo::to_json)}), timeout);
         p.commands.push((pending, title));
@@ -810,7 +831,7 @@ impl Manager {
         for p in &mut self.plugins {
             // A closed document's status items go with it.
             p.status.retain(|s| s.document.is_none_or(|d| ids.contains(&d)));
-            if !matches!(p.state, State::Running) || !p.manifest.as_ref().is_ok_and(|m| m.permissions.contains(&Perm::ReadDocument)) {
+            if !matches!(p.state, State::Running) || !p.perms.contains(&Perm::ReadDocument) {
                 continue;
             }
             let Some(h) = &p.host else { continue };
@@ -868,7 +889,7 @@ impl Manager {
                 self.activate(i, false);
             }
             let p = &mut self.plugins[i];
-            if !matches!(p.state, State::Running) || !p.manifest.as_ref().is_ok_and(|m| m.permissions.contains(&Perm::ReadDocument)) {
+            if !matches!(p.state, State::Running) || !p.perms.contains(&Perm::ReadDocument) {
                 continue;
             }
             let Some(h) = &p.host else { continue };
@@ -962,11 +983,11 @@ impl Manager {
             None | Some(Value::Null) => None,
             Some(v) => {
                 let d = v.as_u64().ok_or_else(|| RpcError::params("\"document\" must be a document id"))?;
-                // Only a document the plugin was told of (which takes
-                // read_document) and that's still open; one it may not know
+                // Only a document the plugin, running with read_document,
+                // was told of and that's still open; one it may not know
                 // of gets the same answer as one that doesn't exist, so ids
                 // can't be probed.
-                if !self.plugins[i].told.contains_key(&d) || !self.all_docs().iter().any(|o| o.id == d) {
+                if !self.plugins[i].perms.contains(&Perm::ReadDocument) || !self.plugins[i].told.contains_key(&d) || !self.all_docs().iter().any(|o| o.id == d) {
                     return Err(RpcError::new(api::NO_DOCUMENT, format!("no open document has the id {d}")));
                 }
                 Some(d)

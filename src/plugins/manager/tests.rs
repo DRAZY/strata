@@ -573,6 +573,51 @@ fn status_items_for_a_document_need_read_permission() {
     std::fs::remove_dir_all(config).ok();
 }
 
+/// A running plugin's permissions are the ones it was started with: its
+/// manifest on disk losing read_document stops it (what it learned goes with
+/// it), and one gaining permissions gives the running process nothing new.
+#[test]
+fn a_manifest_changed_on_disk_never_widens_and_a_narrower_one_stops_it() {
+    let config = temp("mgr-reload-perms");
+    install_fake(&config, "fake", &[], &["read_document", "notify"], json!({}));
+    install_fake(&config, "grows", &[], &["notify"], json!({}));
+    let mut m = Manager::new(Some(&config), None);
+    let doc = DocInfo { id: 7, path: None, name: "doc7".into(), version: 1, syntax: "Plain Text".into() };
+    m.sync_window(1, vec![doc], Vec::new(), true, Some(7));
+    start_granted(&mut m, "fake");
+    start_granted(&mut m, "grows");
+    until(&mut m, "told of the document", |m| m.plugins[m.index("fake").unwrap()].told.contains_key(&7).then_some(()));
+    m.set_status_item("fake", &json!({"id": "w", "document": 7, "text": "ok while permitted"})).unwrap();
+    // Both manifests change on disk: one loses read_document, the other gains it.
+    let edit = |name: &str, perms: &[&str]| {
+        let path = config.join("Plugins").join(name).join(crate::plugins::manifest::FILE);
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v["permissions"] = json!(perms);
+        std::fs::write(&path, v.to_string()).unwrap();
+    };
+    edit("fake", &["notify"]);
+    edit("grows", &["read_document", "notify"]);
+    m.reload();
+    let fake = m.index("fake").unwrap();
+    assert!(!running(&m, "fake"), "stopped: {}", state(&m, "fake"));
+    assert!(m.plugins[fake].told.is_empty() && m.plugins[fake].fronts.is_empty());
+    assert!(m.status_items(1).is_empty());
+    let known = m.set_status_item("fake", &json!({"id": "w", "document": 7, "text": "x"})).unwrap_err();
+    let unknown = m.set_status_item("fake", &json!({"id": "w", "document": 8, "text": "x"})).unwrap_err();
+    assert_eq!((known.code, known.message.replace('7', "N")), (unknown.code, unknown.message.replace('8', "N")));
+    // The other keeps running with what it was approved for: no document events.
+    assert!(running(&m, "grows"));
+    for _ in 0..10 {
+        m.tick();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let r = command(&mut m, "grows", "events", json!({}), |_, _, _, _| {}).unwrap();
+    assert!(r.as_array().unwrap().iter().all(|e| !e["method"].as_str().unwrap().starts_with("document/")), "{r}");
+    assert_eq!(m.set_status_item("grows", &json!({"id": "w", "document": 7, "text": "x"})).unwrap_err().code, api::NO_DOCUMENT);
+    drop(m);
+    std::fs::remove_dir_all(config).ok();
+}
+
 /// Each window hears which tab is in front (a new window, a tab switched
 /// to) and shows the status items for its own front document.
 #[test]
