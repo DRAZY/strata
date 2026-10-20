@@ -134,6 +134,8 @@ These commands are also in **Tools ▸ Language Server**.
 
 The status bar shows the server for the current file and how it's doing: "starting…", what it's working on (rust-analyzer says "Indexing" while it reads a project), the problem counts once it's ready, or "restarting" if it stopped. A server that stops on its own is started again after a short pause (longer each time); after five stops in a few minutes Strata waits until you run **LSP: Restart Language Servers** or click the status bar. Messages about a server appear in the status bar, never in a dialog.
 
+Servers see files by their real paths, with links resolved, so a file reached through a link, or under another spelling, is still the same file. If one file is open in more than one tab (in two windows, or opened through two different paths), its server follows the tab that opened it first; the others show no problems and get no completions or other server features until that tab closes. Files a rename opens appear under their real paths.
+
 Strata talks to servers only on your computer, through their input and output: it doesn't download servers, and makes no network connections for them. Large files opened in [large-file mode](troubleshooting.md#very-large-files) aren't sent to servers.
 
 ### Trusting a project

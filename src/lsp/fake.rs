@@ -58,6 +58,11 @@ struct Fake {
     utf8: bool,
     marker: Option<PathBuf>,
     root: Option<PathBuf>,
+    /// didOpen notifications per document (shown in hover).
+    opens: HashMap<String, usize>,
+    /// Name files in rename answers in upper case (as a server on a
+    /// case-insensitive file system may spell them).
+    shout: bool,
 }
 
 fn send(msg: &Value) {
@@ -113,6 +118,7 @@ impl Fake {
                 self.utf8 = o["utf8"].as_bool().unwrap_or(false) && offered;
                 self.marker = o["marker"].as_str().map(PathBuf::from);
                 self.root = p["rootUri"].as_str().and_then(super::uri::to_path);
+                self.shout = o["shout_paths"].as_bool().unwrap_or(false);
                 reply(json!({"capabilities": {
                     "positionEncoding": if self.utf8 { "utf-8" } else { "utf-16" },
                     "textDocumentSync": {"openClose": true, "change": 2, "save": true},
@@ -130,6 +136,7 @@ impl Fake {
             "textDocument/didOpen" => {
                 let uri = p["textDocument"]["uri"].as_str().unwrap_or_default().to_owned();
                 self.docs.insert(uri.clone(), p["textDocument"]["text"].as_str().unwrap_or_default().to_owned());
+                *self.opens.entry(uri.clone()).or_default() += 1;
                 self.changed(&uri, p["textDocument"]["version"].as_i64());
             }
             "textDocument/didChange" => {
@@ -162,7 +169,7 @@ impl Fake {
             "textDocument/hover" => {
                 let (uri, word) = self.word_at(p);
                 let result = match word {
-                    Some((w, _)) if !w.is_empty() => json!({"contents": {"kind": "markdown", "value": format!("```rust\nfn {w}()\n```\nHover for `{w}` in {}", uri.rsplit('/').next().unwrap_or_default())}}),
+                    Some((w, _)) if !w.is_empty() => json!({"contents": {"kind": "markdown", "value": format!("```rust\nfn {w}()\n```\nHover for `{w}` in {} (opens={})", uri.rsplit('/').next().unwrap_or_default(), self.opens.get(&uri).copied().unwrap_or(0))}}),
                     _ => Value::Null,
                 };
                 reply(result);
@@ -200,6 +207,12 @@ impl Fake {
                 for (u, t) in texts {
                     let edits: Vec<Value> = find_words(&t, &w).into_iter().map(|at| json!({"range": self.range_of(&t, at, at + w.len()), "newText": new_name})).collect();
                     if !edits.is_empty() {
+                        let u = if self.shout {
+                            let (dir, name) = u.rsplit_once('/').unwrap_or(("", &u));
+                            format!("{dir}/{}", name.to_uppercase())
+                        } else {
+                            u
+                        };
                         changes.insert(u, Value::Array(edits));
                     }
                 }

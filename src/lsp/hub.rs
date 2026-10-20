@@ -57,8 +57,6 @@ struct Slot {
     config: ServerConfig,
     /// The project folder's real path, where the server runs.
     root: PathBuf,
-    /// The same folder as the tab that started it named it (maybe through a link).
-    lexical: PathBuf,
     program: PathBuf,
     server: Option<Server>,
     /// Bumped each time a process starts: open files are sent to it again.
@@ -71,6 +69,8 @@ struct Slot {
     worked: bool,
 }
 
+/// A file open in a server: one per real file, whatever paths and windows
+/// its tabs reach it by.
 struct OpenDoc {
     slot: usize,
     run: u64,
@@ -78,10 +78,22 @@ struct OpenDoc {
     version: i32,
     /// (editor id, editor version) of the text last sent.
     text_key: (u64, u64),
-    /// The window whose tab the server is told about.
-    window: u64,
     /// Modification time of the file when last seen: a change means it was saved.
     mtime: Option<SystemTime>,
+    /// Which file it is (device and inode; volume and file index on Windows).
+    id: Option<(u64, u64)>,
+    /// The tabs showing it: (window, the tab's path). The first one speaks
+    /// for the file: its text is what the server has, and only it gets the
+    /// server's answers. When it closes, the next one takes over.
+    tabs: Vec<(u64, PathBuf)>,
+}
+
+/// A tab's file as servers know it: its real path (links resolved, the
+/// last one too) and which file it is.
+#[derive(Clone)]
+struct Resolved {
+    real: PathBuf,
+    id: Option<(u64, u64)>,
 }
 
 pub struct Hub {
@@ -111,10 +123,8 @@ pub struct Hub {
     waiting: HashMap<PathBuf, (PathBuf, String)>,
     /// The file remembered folders are kept in (None in tests: nothing is written).
     trust_file: Option<PathBuf>,
-    /// The name each open file has for its server: its real path (the
-    /// server runs in the project's real folder), and back.
-    to_server: HashMap<PathBuf, PathBuf>,
-    from_server: HashMap<PathBuf, PathBuf>,
+    /// The real file behind each tab's path (worked out once per tab).
+    resolved: HashMap<PathBuf, Resolved>,
 }
 
 impl Hub {
@@ -137,8 +147,7 @@ impl Hub {
             asking: Vec::new(),
             waiting: HashMap::new(),
             trust_file: None,
-            to_server: HashMap::new(),
-            from_server: HashMap::new(),
+            resolved: HashMap::new(),
         }
     }
 
@@ -379,7 +388,7 @@ impl Hub {
             }
             return Err(Untrusted);
         };
-        self.slots.push(Slot { config, root: real, lexical: root, program, server: None, run: 0, crashes: Vec::new(), retry_at: None, last_error: None, failed: None, worked: false });
+        self.slots.push(Slot { config, root: real, program, server: None, run: 0, crashes: Vec::new(), retry_at: None, last_error: None, failed: None, worked: false });
         let i = self.slots.len() - 1;
         self.start(i);
         Ok(Some(i))
@@ -462,53 +471,84 @@ impl Hub {
         }
     }
 
-    /// Keep the server in step with a window's tab showing `path`: open it
-    /// the first time, send its text when `text_key` changes (`text` makes
-    /// the snapshot only then), and `didSave` when the file's
-    /// modification time changes. Tabs the server doesn't handle, and a
-    /// file another window already told the server about, are skipped.
+    /// Keep the server in step with a window's tab showing `path`: open the
+    /// file the first time any tab shows it, send this tab's text when
+    /// `text_key` changes (`text` makes the snapshot only then) if it's the
+    /// tab that speaks for the file, and `didSave` when the file's
+    /// modification time changes. Tabs the server doesn't handle are skipped.
     pub fn sync(&mut self, window: u64, path: &Path, text_key: (u64, u64), text: impl FnOnce() -> Rope, mtime: Option<SystemTime>, roots: &[PathBuf]) {
         if !self.on() {
             return;
         }
-        let path = uri::normalize(path);
-        if self.docs.get(&path).is_some_and(|d| d.window != window) {
-            return;
+        let tab = uri::normalize(path);
+        let Some(i) = self.slot_for(&tab, roots, window) else { return };
+        let r = self.resolve(&tab);
+        let me = (window, tab.clone());
+        if let Some(d) = self.docs.get_mut(&r.real)
+            && !d.tabs.contains(&me)
+        {
+            d.tabs.push(me.clone());
         }
-        let Some(i) = self.slot_for(&path, roots, window) else { return };
-        let spath = self.learn_server_path(&path);
         let slot = &self.slots[i];
         let Some(server) = slot.server.as_ref().filter(|s| !matches!(s.status(), Status::Stopped(_))) else { return };
-        match self.docs.get_mut(&path) {
+        match self.docs.get_mut(&r.real) {
+            // Another tab (another path to the same file, or another window) speaks for it.
+            Some(d) if d.tabs.first() != Some(&me) => {}
             Some(d) if d.slot == i && d.run == slot.run => {
                 if d.text_key != text_key {
                     d.text_key = text_key;
                     d.version += 1;
-                    server.change(&spath, d.version, text());
+                    server.change(&r.real, d.version, text());
                 }
                 if d.mtime != mtime {
                     d.mtime = mtime;
                     if mtime.is_some() {
-                        server.saved(&spath);
+                        server.saved(&r.real);
                     }
                 }
             }
             _ => {
-                let language = slot.config.language_id.clone().unwrap_or_else(|| config::language_id(&path, &slot.config.name));
-                server.open(&spath, language, 1, text());
-                self.docs.insert(path, OpenDoc { slot: i, run: slot.run, version: 1, text_key, window, mtime });
+                let language = slot.config.language_id.clone().unwrap_or_else(|| config::language_id(&r.real, &slot.config.name));
+                server.open(&r.real, language, 1, text());
+                let tabs = self.docs.remove(&r.real).map_or_else(|| vec![me.clone()], |d| d.tabs);
+                self.docs.insert(r.real.clone(), OpenDoc { slot: i, run: slot.run, version: 1, text_key, mtime, id: r.id, tabs });
             }
         }
     }
 
-    /// After a window synced its tabs: files of that window that aren't
-    /// open anymore are closed in their servers.
+    /// The real file behind a tab's path, worked out once while the tab is open.
+    fn resolve(&mut self, tab: &Path) -> Resolved {
+        if let Some(r) = self.resolved.get(tab) {
+            return r.clone();
+        }
+        let real = real_path(tab)
+            .or_else(|| path_parent_real(tab))
+            .map_or_else(|| tab.to_owned(), |p| uri::normalize(&p));
+        let r = Resolved { real, id: file_key(tab) };
+        self.resolved.insert(tab.to_owned(), r.clone());
+        r
+    }
+
+    /// After a window synced its tabs: its tabs that aren't open anymore
+    /// let go of their files; a file no tab shows is closed in its server.
     pub fn end_frame(&mut self, window: u64, open: &[PathBuf]) {
         let open: Vec<PathBuf> = open.iter().map(|p| uri::normalize(p)).collect();
-        let gone: Vec<PathBuf> = self.docs.iter().filter(|(p, d)| d.window == window && !open.contains(p)).map(|(p, _)| p.clone()).collect();
-        for p in gone {
-            self.close(&p);
+        let mut gone = Vec::new();
+        for (real, d) in self.docs.iter_mut() {
+            let before = d.tabs.first().cloned();
+            d.tabs.retain(|(w, t)| *w != window || open.contains(t));
+            if d.tabs.is_empty() {
+                gone.push(real.clone());
+            } else if d.tabs.first() != before.as_ref() {
+                // A new tab speaks for the file: its text goes out on its next sync.
+                d.text_key = (0, 0);
+            }
         }
+        for real in gone {
+            self.close(&real);
+        }
+        let shown: Vec<PathBuf> = self.docs.values().flat_map(|d| d.tabs.iter().map(|t| t.1.clone())).collect();
+        self.resolved.retain(|tab, _| shown.contains(tab) || open.contains(tab));
     }
 
     /// A window closed: its files are closed in their servers.
@@ -520,67 +560,86 @@ impl Hub {
         self.waiting.retain(|_, w| !roots.contains(&w.0));
     }
 
-    fn close(&mut self, path: &Path) {
-        if let Some(d) = self.docs.remove(path)
+    fn close(&mut self, real: &Path) {
+        if let Some(d) = self.docs.remove(real)
             && let Some(slot) = self.slots.get(d.slot)
             && slot.run == d.run
             && let Some(s) = &slot.server
         {
-            s.close(&self.server_path(path));
+            s.close(real);
         }
     }
 
-    /// The real path of `path` (a tab's), remembered both ways.
-    fn learn_server_path(&mut self, path: &Path) -> PathBuf {
-        if let Some(p) = self.to_server.get(path) {
-            return p.clone();
-        }
-        let real = path.parent().and_then(real_path).zip(path.file_name()).map_or_else(|| path.to_owned(), |(dir, name)| uri::normalize(&dir.join(name)));
-        self.to_server.insert(path.to_owned(), real.clone());
-        self.from_server.insert(real.clone(), path.to_owned());
-        real
-    }
-
-    /// The name the server knows a tab's file by (for requests about it).
+    /// The name the server knows a tab's file by: its real path.
     pub fn server_path(&self, path: &Path) -> PathBuf {
-        let path = uri::normalize(path);
-        self.to_server.get(&path).cloned().unwrap_or(path)
+        let tab = uri::normalize(path);
+        self.resolved.get(&tab).map_or(tab, |r| r.real.clone())
     }
 
-    /// The tab's name for a path from a server (locations, edits,
-    /// diagnostics); a file that isn't open keeps the server's name.
-    pub fn client_path(&self, path: &Path) -> PathBuf {
+    /// The open document a path from a server means: by name if it's the
+    /// name the server was sent, else by which file it is (a link, another
+    /// spelling, a different case on a case-insensitive disk).
+    fn doc_for(&self, path: &Path) -> Option<&OpenDoc> {
         let path = uri::normalize(path);
-        if let Some(p) = self.from_server.get(&path) {
-            return p.clone();
+        if let Some(d) = self.docs.get(&path) {
+            return Some(d);
         }
-        // Not open: named as under the folder the user opened, not its real path.
-        self.slots.iter().find_map(|s| path.strip_prefix(&s.root).ok().map(|rest| s.lexical.join(rest))).unwrap_or(path)
+        let id = file_key(&path)?;
+        self.docs.values().find(|d| d.id == Some(id))
     }
 
-    /// The running server that has `path` open for this window, and the
-    /// document version it was last sent.
+    /// A tab showing the file a server named, in `window` if it has one;
+    /// for a file no tab shows, its real path (never rebuilt from a folder
+    /// name a link could point elsewhere by now).
+    pub fn client_path(&self, window: u64, path: &Path) -> PathBuf {
+        match self.doc_for(path) {
+            Some(d) => d.tabs.iter().find(|t| t.0 == window).or(d.tabs.first()).map(|t| t.1.clone()).expect("a document has tabs"),
+            None => real_path(path).map_or_else(|| uri::normalize(path), |p| uri::normalize(&p)),
+        }
+    }
+
+    /// Some tab, in any window, shows the file at `path`.
+    pub fn is_open(&self, path: &Path) -> bool {
+        self.doc_for(path).is_some()
+    }
+
+    /// The tab's file is open in a server through another tab (another
+    /// window, or another path to it), which the server follows.
+    pub fn follows_other_tab(&self, window: u64, path: &Path) -> bool {
+        let tab = uri::normalize(path);
+        self.resolved.get(&tab).and_then(|r| self.docs.get(&r.real)).is_some_and(|d| d.tabs.first().is_some_and(|t| *t != (window, tab.clone())))
+    }
+
+    /// The tab's document when this tab speaks for it.
+    fn doc_of_tab(&self, window: u64, path: &Path) -> Option<(&OpenDoc, &Path)> {
+        let tab = uri::normalize(path);
+        let r = self.resolved.get(&tab)?;
+        let d = self.docs.get(&r.real).filter(|d| d.tabs.first().is_some_and(|t| t.0 == window && t.1 == tab))?;
+        Some((d, &r.real))
+    }
+
+    /// The running server that has `path` open for this window (its tab
+    /// speaking for the file), and the document version it was last sent.
     pub fn server_for(&self, window: u64, path: &Path) -> Option<(&Server, i32)> {
-        let d = self.docs.get(&uri::normalize(path)).filter(|d| d.window == window)?;
+        let (d, _) = self.doc_of_tab(window, path)?;
         let slot = self.slots.get(d.slot).filter(|s| s.run == d.run)?;
         Some((slot.server.as_ref().filter(|s| s.is_ready())?, d.version))
     }
 
     /// The latest diagnostics for an open file, from its server.
     pub fn diagnostics(&self, window: u64, path: &Path) -> Option<DiagSet> {
-        let path = uri::normalize(path);
-        let d = self.docs.get(&path).filter(|d| d.window == window)?;
+        let (d, real) = self.doc_of_tab(window, path)?;
         let slot = self.slots.get(d.slot).filter(|s| s.run == d.run)?;
-        slot.server.as_ref()?.diagnostics(&self.server_path(&path))
+        slot.server.as_ref()?.diagnostics(real)
     }
 
-    /// Every file with diagnostics, from every server, with the position
-    /// encoding of the server that sent them.
-    pub fn all_diagnostics(&self) -> Vec<(PathBuf, Arc<Vec<Diagnostic>>, Encoding)> {
+    /// Every file with diagnostics, from every server (named as `window`'s
+    /// tabs name them), with the position encoding of the server that sent them.
+    pub fn all_diagnostics(&self, window: u64) -> Vec<(PathBuf, Arc<Vec<Diagnostic>>, Encoding)> {
         let mut out = Vec::new();
         for s in self.slots.iter().filter_map(|s| s.server.as_ref()) {
             let enc = s.caps().encoding;
-            out.extend(s.all_diagnostics().into_iter().map(|(p, d)| (self.client_path(&p), d, enc)));
+            out.extend(s.all_diagnostics().into_iter().map(|(p, d)| (self.client_path(window, &p), d, enc)));
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
@@ -645,6 +704,39 @@ fn strip_verbatim(p: &str) -> PathBuf {
         return PathBuf::from(format!(r"\\{unc}"));
     }
     PathBuf::from(p.strip_prefix(r"\\?\").unwrap_or(p))
+}
+
+/// A missing file's real path: its folder's, plus its name.
+fn path_parent_real(path: &Path) -> Option<PathBuf> {
+    Some(real_path(path.parent()?)?.join(path.file_name()?))
+}
+
+/// Which file `path` is, following links: device and inode, or on Windows
+/// volume serial number and file index.
+fn file_key(path: &Path) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(path).ok()?;
+        Some((m.dev(), m.ino()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+        let file = std::fs::File::open(path).ok()?;
+        // SAFETY: plain data, filled in by the call on a valid handle.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
+            return None;
+        }
+        Some((info.dwVolumeSerialNumber as u64, (info.nFileIndexHigh as u64) << 32 | info.nFileIndexLow as u64))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 /// A server that waits for its folder to be trusted.

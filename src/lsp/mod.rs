@@ -293,6 +293,81 @@ mod tests {
         std::fs::remove_dir_all(base).ok();
     }
 
+    /// The fake server's hover at the start of `path`'s word `at`: says how often it was opened.
+    fn hover_text(hub: &Hub, window: u64, path: &Path, col: u32) -> Option<String> {
+        let (server, _) = hub.server_for(window, path)?;
+        let mut p = server.request("textDocument/hover", json!({"textDocument": {"uri": uri::from_path(&hub.server_path(path))}, "position": {"line": 0, "character": col}}));
+        let r = p.wait(Duration::from_secs(10))?.ok()?;
+        r["contents"]["value"].as_str().map(str::to_owned)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_file_is_sent_and_matched_as_the_file_it_points_to() {
+        let dir = scratch("link-file");
+        std::fs::write(dir.join("real.fake"), "x bad\n").unwrap();
+        std::os::unix::fs::symlink("real.fake", dir.join("link.fake")).unwrap();
+        let (link, real) = (dir.join("link.fake"), std::fs::canonicalize(dir.join("real.fake")).unwrap());
+        let mut hub = Hub::new(false);
+        hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        hub.sync(1, &link, (1, 0), || Rope::from_str("x bad\n"), None, &[]);
+        assert_eq!(hub.server_path(&link), real, "the server hears of the file the link points to");
+        // Its answers about real.fake land on the tab named link.fake.
+        let d = until("diagnostics", || hub.diagnostics(1, &link).filter(|d| !d.items.is_empty()));
+        assert_eq!(d.items.len(), 1);
+        assert_eq!(hub.client_path(1, &real), uri::normalize(&link));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_file_reached_two_ways_is_one_document() {
+        let base = scratch("two-aliases");
+        let real = base.join("d");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("x.fake"), "thing\n").unwrap();
+        std::os::unix::fs::symlink(&real, base.join("a1")).unwrap();
+        std::os::unix::fs::symlink(&real, base.join("a2")).unwrap();
+        let (t1, t2) = (base.join("a1/x.fake"), base.join("a2/x.fake"));
+        let mut hub = Hub::new(false);
+        hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        hub.sync(1, &t1, (1, 0), || Rope::from_str("thing\n"), None, &[]);
+        hub.sync(1, &t2, (2, 0), || Rope::from_str("thing\n"), None, &[]);
+        until("ready", || hub.server_for(1, &t1).map(|_| ()));
+        assert!(hover_text(&hub, 1, &t1, 1).unwrap().contains("opens=1"), "opened once");
+        // The first tab speaks for the file; the second has no server of its own.
+        assert!(hub.server_for(1, &t2).is_none());
+        // Closing the first hands the document to the second; the server keeps it.
+        hub.end_frame(1, std::slice::from_ref(&t2));
+        assert!(hover_text(&hub, 1, &t2, 1).unwrap().contains("opens=1"), "not closed and opened again");
+        hub.end_frame(1, &[]);
+        assert!(hub.server_for(1, &t2).is_none());
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn two_windows_spelling_a_file_differently_share_its_document() {
+        let base = scratch("two-windows");
+        let real = base.join("d");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("x.fake"), "thing\n").unwrap();
+        std::os::unix::fs::symlink(&real, base.join("alias")).unwrap();
+        let (t1, t2) = (base.join("alias/x.fake"), real.join("x.fake"));
+        let mut hub = Hub::new(false);
+        hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        hub.sync(1, &t1, (1, 0), || Rope::from_str("thing\n"), None, &[]);
+        hub.sync(2, &t2, (2, 0), || Rope::from_str("thing\n"), None, &[]);
+        assert_eq!(hub.pid_for(&t1), hub.pid_for(&t2), "one server");
+        until("ready", || hub.server_for(1, &t1).map(|_| ()));
+        assert!(hub.server_for(2, &t2).is_none(), "window 1 opened it first");
+        assert_eq!(hub.client_path(2, &std::fs::canonicalize(&t2).unwrap()), uri::normalize(&t2), "each window gets its own tab's name");
+        assert_eq!(hub.client_path(1, &std::fs::canonicalize(&t2).unwrap()), uri::normalize(&t1));
+        hub.forget_window(1);
+        assert!(hover_text(&hub, 2, &t2, 1).unwrap().contains("opens=1"));
+        std::fs::remove_dir_all(base).ok();
+    }
+
     #[test]
     fn missing_programs_and_files_without_a_server() {
         let mut hub = Hub::new(false);

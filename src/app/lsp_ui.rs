@@ -751,6 +751,9 @@ impl StrataApp {
         if !self.settings.lsp_enabled {
             return format!("{what}: language servers are off (lsp_enabled)");
         }
+        if d.path.as_ref().is_some_and(|p| self.lsp.hub.borrow().follows_other_tab(self.lsp.window, p)) {
+            return format!("{what}: this file is also open in another tab (or window), which its language server follows");
+        }
         match d.path.as_ref().and_then(|p| self.lsp.hub.borrow().state_for(p)) {
             None => format!("{what}: no language server for this file"),
             Some((name, State::Starting)) => format!("{what}: {name} is still starting"),
@@ -781,7 +784,7 @@ impl StrataApp {
 
     fn lsp_goto_answer(&mut self, ctx: &egui::Context, what: GotoFor, reply: Reply) {
         let found = match reply {
-            Ok(v) => locations(&v).into_iter().map(|(p, r)| (self.lsp.hub.borrow().client_path(&p), r)).collect(),
+            Ok(v) => locations(&v).into_iter().map(|(p, r)| (self.lsp.hub.borrow().client_path(self.lsp.window, &p), r)).collect(),
             Err(e) if e.is_benign() => return,
             Err(_) => Vec::new(),
         };
@@ -937,7 +940,7 @@ impl StrataApp {
     fn client_files(&self, mut files: Vec<FileEdit>) -> Vec<FileEdit> {
         let hub = self.lsp.hub.borrow();
         for f in &mut files {
-            f.path = hub.client_path(&f.path);
+            f.path = hub.client_path(self.lsp.window, &f.path);
         }
         files
     }
@@ -989,7 +992,7 @@ impl StrataApp {
                         // Open (maybe with unsaved edits) when asked, closed now.
                         return Err(changed(&f.path));
                     }
-                    if self.link.is_open_elsewhere(&f.path) {
+                    if self.link.is_open_elsewhere(&f.path) || self.lsp.hub.borrow().is_open(&f.path) {
                         return Err(format!("{} is open in another window: rename from there, or close it there", file_name(&f.path)));
                     }
                     // The file as the server's answer found it (a stat, no read).
@@ -1067,7 +1070,7 @@ impl StrataApp {
         }
         for (loaded, _, id) in &new {
             let p = &loaded.path;
-            if self.docs.iter().any(|d| d.path.as_deref().is_some_and(|dp| uri::normalize(dp) == uri::normalize(p))) || self.link.is_open_elsewhere(p) || crate::document::file_id(p) != Some(*id) {
+            if self.docs.iter().any(|d| d.path.as_deref().is_some_and(|dp| uri::normalize(dp) == uri::normalize(p))) || self.link.is_open_elsewhere(p) || self.lsp.hub.borrow().is_open(p) || crate::document::file_id(p) != Some(*id) {
                 return Err(changed(p));
             }
         }
@@ -1138,7 +1141,7 @@ impl StrataApp {
 
     /// Every problem the servers report, in the palette.
     fn lsp_problems(&mut self, ctx: &egui::Context) {
-        let all = self.lsp.hub.borrow().all_diagnostics();
+        let all = self.lsp.hub.borrow().all_diagnostics(self.lsp.window);
         let mut rows: Vec<(PathBuf, Diagnostic, Encoding)> = all.into_iter().flat_map(|(p, items, enc)| items.iter().map(move |d| (p.clone(), d.clone(), enc)).collect::<Vec<_>>()).collect();
         rows.retain(|(_, d, _)| d.severity <= 3);
         if rows.is_empty() {
@@ -1640,6 +1643,13 @@ mod tests {
         app.docs[app.active].editor.markers().iter().map(|m| (m.range.clone(), m.style)).collect()
     }
 
+    /// Tab `d` shows the file at `path`, whichever path it was opened by
+    /// (files a rename opens go by their real path).
+    fn is(d: &crate::document::Document, path: &Path) -> bool {
+        let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_owned());
+        d.path.as_deref().is_some_and(|p| real(p) == real(path))
+    }
+
     fn put_cursor(app: &mut StrataApp, at: usize) {
         app.doc().editor.select_ranges(&[at..at], 0);
     }
@@ -1868,9 +1878,9 @@ mod tests {
         assert_eq!(app.lsp.rename_box.as_ref().unwrap().text, "new");
         frame(&mut app, &ctx, vec![press(egui::Key::Enter, Modifiers::NONE)]);
         assert!(!app.lsp.renaming());
-        wait(&mut app, &ctx, "the rename", |a| a.docs.iter().any(|d| d.path.as_deref() == Some(&dir.join("b.fake"))));
-        let a = app.docs.iter().position(|d| d.path.as_deref() == Some(&dir.join("a.fake"))).unwrap();
-        let b = app.docs.iter().position(|d| d.path.as_deref() == Some(&dir.join("b.fake"))).unwrap();
+        wait(&mut app, &ctx, "the rename", |a| a.docs.iter().any(|d| is(d, &dir.join("b.fake"))));
+        let a = app.docs.iter().position(|d| is(d, &dir.join("a.fake"))).unwrap();
+        let b = app.docs.iter().position(|d| is(d, &dir.join("b.fake"))).unwrap();
         let all = |app: &StrataApp, i: usize| app.docs[i].editor.buffer.slice(0..app.docs[i].editor.buffer.len_chars());
         assert_eq!(all(&app, a), "new = 1;\nprint(new);\n");
         assert_eq!(all(&app, b), "use new;\n");
@@ -1915,7 +1925,7 @@ mod tests {
         wait(&mut app, &ctx, "the answer", |a| a.lsp.rename.is_none() && a.lsp.applying.is_none());
         assert_eq!(text(&app), "old = 1;\n", "all or nothing");
         assert!(app.status.contains("b.fake"), "says which file: {}", app.status);
-        assert!(!app.docs.iter().any(|d| d.path.as_deref() == Some(&dir.join("b.fake"))), "nothing opened");
+        assert!(!app.docs.iter().any(|d| is(d, &dir.join("b.fake"))), "nothing opened");
     }
 
     #[test]
@@ -1927,7 +1937,7 @@ mod tests {
         rename(&mut app, &ctx, 5, "bar");
         wait(&mut app, &ctx, "the rename", |a| a.lsp.rename.is_none() && a.lsp.applying.is_none());
         assert_eq!(text(&app), "use bar;\n", "{}", app.status);
-        let line = |app: &StrataApp, name: &str, n: usize| app.docs.iter().find(|d| d.path.as_deref() == Some(&dir.join(name))).map(|d| d.editor.buffer.line_text(n));
+        let line = |app: &StrataApp, name: &str, n: usize| app.docs.iter().find(|d| is(d, &dir.join(name))).map(|d| d.editor.buffer.line_text(n));
         assert_eq!(line(&app, "b.fake", 0).as_deref(), Some("fn bar() {}"));
         assert_eq!(line(&app, "c.fake", 1).as_deref(), Some("fn bar() {}"));
         assert_eq!(line(&app, "c.fake", 0).as_deref(), Some("// café"));
@@ -1949,7 +1959,7 @@ mod tests {
         wait(&mut app, &ctx, "the rename", |a| a.lsp.applying.is_none());
         assert_eq!(app.docs.len(), 7, "{}", app.status);
         assert_eq!(text(&app), "new = 1;\n");
-        let f3 = app.docs.iter().find(|d| d.path.as_deref() == Some(&dir.join("f3.fake"))).unwrap();
+        let f3 = app.docs.iter().find(|d| is(d, &dir.join("f3.fake"))).unwrap();
         assert_eq!(f3.editor.buffer.line_text(1), "use new;");
         assert!(app.status.contains("7 files"), "{}", app.status);
     }
@@ -1983,7 +1993,7 @@ mod tests {
         wait(&mut app, &ctx, "the end of the rename", |a| a.lsp.applying.is_none());
         assert_eq!(text(&app), "old = 1;\n", "nothing applied: {}", app.status);
         assert!(app.status.contains("b.fake"), "{}", app.status);
-        assert!(!app.docs.iter().any(|d| d.path.as_deref() == Some(b.as_path())));
+        assert!(!app.docs.iter().any(|d| is(d, &b)));
     }
 
     #[test]
@@ -1993,11 +2003,57 @@ mod tests {
         rename(&mut app, &ctx, 1, "new");
         wait(&mut app, &ctx, "the rename", |a| a.lsp.rename.is_none() && a.lsp.applying.is_none());
         let b = dir.join("b.fake");
-        let i = app.docs.iter().position(|d| d.path.as_deref() == Some(b.as_path())).expect("opened");
+        let i = app.docs.iter().position(|d| is(d, &b)).expect("opened");
         assert!(app.docs[i].is_dirty() && !app.docs[i].check_disk(), "unsaved, and nothing changed yet");
         std::fs::write(&b, "// someone else's edit\nuse old;\n").unwrap();
         assert!(!app.docs[i].check_disk(), "the unsaved rename isn't thrown away");
         assert!(app.docs[i].conflict, "but the tab says the file changed on disk");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn swapping_the_folder_link_before_the_answer_doesnt_redirect_the_rename() {
+        let base = temp_dir("lsp-alias-swap");
+        let (r1, r2) = (base.join("r1"), base.join("r2"));
+        std::fs::create_dir_all(&r1).unwrap();
+        std::fs::create_dir_all(&r2).unwrap();
+        std::fs::write(r1.join("a.fake"), "old = 1;\n").unwrap();
+        std::fs::write(r1.join("b.fake"), "use old;\n").unwrap();
+        std::fs::write(r2.join("b.fake"), "use old; // elsewhere\n").unwrap();
+        let alias = base.join("alias");
+        std::os::unix::fs::symlink(&r1, &alias).unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(None, None);
+        app.lsp.hub.borrow_mut().use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        app.settings.lsp_trust_all = true;
+        app.open_folder(alias.clone());
+        app.open_path(alias.join("a.fake"), false);
+        wait(&mut app, &ctx, "ready", |a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+        rename(&mut app, &ctx, 1, "new");
+        // The link now points elsewhere before the answer is applied.
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&r2, &alias).unwrap();
+        wait(&mut app, &ctx, "the rename", |a| a.lsp.rename.is_none() && a.lsp.applying.is_none());
+        assert_eq!(std::fs::read_to_string(r2.join("b.fake")).unwrap(), "use old; // elsewhere\n");
+        let b = app.docs.iter().find(|d| d.path.as_ref().is_some_and(|p| p.ends_with("b.fake"))).expect("b opened");
+        assert_eq!(b.path.as_deref(), Some(std::fs::canonicalize(r1.join("b.fake")).unwrap().as_path()), "opened by its real path");
+        assert_eq!(b.editor.buffer.line_text(0), "use new;");
+    }
+
+    #[test]
+    fn a_differently_cased_path_from_the_server_finds_the_open_tab() {
+        let (mut app, ctx, dir) = app_with("rename-case", &[("a.fake", "old = 1;\n")], json!({"shout_paths": true}));
+        if !dir.join("A.FAKE").exists() {
+            return; // A case-sensitive file system: no such thing as a differently cased same file.
+        }
+        wait(&mut app, &ctx, "ready", |a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+        // Unsaved edits the file on disk doesn't have.
+        app.doc().editor.insert_text("// unsaved\n");
+        frame(&mut app, &ctx, vec![]);
+        rename(&mut app, &ctx, 12, "new");
+        wait(&mut app, &ctx, "the rename", |a| a.lsp.rename.is_none() && a.lsp.applying.is_none());
+        assert_eq!(app.docs.len(), 1, "no second tab from the stale file on disk: {}", app.status);
+        assert_eq!(text(&app), "// unsaved\nnew = 1;\n");
     }
 
     #[test]
@@ -2009,7 +2065,7 @@ mod tests {
         let files = vec![FileEdit { path: uri::normalize(&dir.join("a.fake")), version: None, edits: vec![edit(0)] }, FileEdit { path: uri::normalize(&dir.join("ro.fake")), version: None, edits: vec![edit(0)] }];
         let err = app.lsp_apply_workspace_edit(files, Encoding::Utf16, None).unwrap_err();
         assert!(err.contains("read-only"), "{err}");
-        let a = app.docs.iter().find(|d| d.path.as_deref() == Some(&dir.join("a.fake"))).unwrap();
+        let a = app.docs.iter().find(|d| is(d, &dir.join("a.fake"))).unwrap();
         assert_eq!(a.editor.buffer.line_text(0), "one", "nothing changed");
         // A missing file is also refused up front.
         let files = vec![FileEdit { path: dir.join("gone.fake"), version: None, edits: vec![edit(0)] }];
