@@ -186,6 +186,13 @@ pub(super) struct NotesState {
     ctx: Option<egui::Context>,
     /// Git sync (see `notes_sync_ui`).
     pub sync: super::notes_sync_ui::SyncState,
+    /// Open notes' text as the backlinks panel last read it, by editor id.
+    pub live: HashMap<u64, super::notes_panel::LiveNote>,
+    /// How many times an open note was read for backlinks (tests).
+    #[cfg(test)]
+    pub live_reads: usize,
+    /// The panel's last list, and what it was made from.
+    pub backlinks: Option<(super::notes_panel::BacklinksKey, Arc<Vec<super::notes_panel::Backlink>>)>,
 }
 
 impl NotesState {

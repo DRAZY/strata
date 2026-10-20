@@ -422,6 +422,9 @@ pub struct Session {
     /// Find bar and Find in Files history (see `find_history`).
     #[serde(skip_serializing_if = "crate::find_history::FindHistory::is_empty")]
     pub find_history: crate::find_history::FindHistory,
+    /// When each vault with Git sync last synced (see `notes::sync::note_synced`).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub notes_synced: std::collections::BTreeMap<PathBuf, String>,
     /// Every window, first one first. Empty in sessions saved before Strata
     /// had several windows: the fields above are then the one window.
     pub windows: Vec<WindowState>,
@@ -497,7 +500,7 @@ impl Session {
     /// shares); the first window is also written the old way.
     pub fn of_windows(windows: Vec<WindowState>) -> Self {
         let first = windows.first().cloned().unwrap_or_default();
-        Self { folder: first.folder, sidebar_visible: first.sidebar_visible, active: first.active, tabs: first.tabs, layout: first.layout, windows, find_history: crate::find_history::snapshot(), ..Default::default() }
+        Self { folder: first.folder, sidebar_visible: first.sidebar_visible, active: first.active, tabs: first.tabs, layout: first.layout, windows, find_history: crate::find_history::snapshot(), notes_synced: crate::notes::sync::synced_snapshot(), ..Default::default() }
     }
 
     /// The windows to reopen. An old single-window session is one window.

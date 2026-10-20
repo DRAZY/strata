@@ -171,7 +171,7 @@ fn host_methods_and_permission_refusals() {
     install_fake(&config, "full", &[], &["read_workspace", "write_workspace", "notify"], json!({}));
     install_fake(&config, "none", &[], &[], json!({}));
     let mut m = Manager::new(Some(&config), None);
-    m.sync_window(1, Vec::new(), vec![project.clone()], true);
+    m.sync_window(1, Vec::new(), vec![project.clone()], true, None);
     start_granted(&mut m, "full");
     start_granted(&mut m, "none");
 
@@ -226,8 +226,8 @@ fn window_methods_reach_the_window_that_has_the_document() {
     install_fake(&config, "fake", &[], &["read_document", "edit_document", "panel", "notify"], json!({}));
     let mut m = Manager::new(Some(&config), None);
     let doc = |id: u64| DocInfo { id, path: None, name: format!("doc{id}"), version: 1, syntax: "Plain Text".into() };
-    m.sync_window(1, vec![doc(10)], Vec::new(), true);
-    m.sync_window(2, vec![doc(20)], Vec::new(), false);
+    m.sync_window(1, vec![doc(10)], Vec::new(), true, None);
+    m.sync_window(2, vec![doc(20)], Vec::new(), false, None);
     start_granted(&mut m, "fake");
     // A request about window 2's document goes to window 2 only.
     let mut p = m.request("fake", "command/execute", json!({"command": "call", "args": {"method": "document/read", "params": {"document": 20}}})).unwrap();
@@ -248,7 +248,7 @@ fn window_methods_reach_the_window_that_has_the_document() {
     };
     assert_eq!(r.unwrap(), json!({"result": {"text": "from window 2"}}));
     // Requests about no document go to the focused window.
-    m.sync_window(1, vec![doc(10)], Vec::new(), true);
+    m.sync_window(1, vec![doc(10)], Vec::new(), true, None);
     let r = command(&mut m, "fake", "notify", json!({}), |m, name, run, inc| {
         assert_eq!(inc.method, "ui/notify");
         assert_eq!(inc.params["message"], "Hello from the fake plugin");
@@ -300,7 +300,7 @@ fn a_flooding_plugin_is_held_back_without_stalling_the_window() {
     let config = temp("mgr-flood");
     install_fake(&config, "fake", &[], &["notify"], json!({}));
     let mut m = Manager::new(Some(&config), None);
-    m.sync_window(1, Vec::new(), Vec::new(), true);
+    m.sync_window(1, Vec::new(), Vec::new(), true, None);
     start_granted(&mut m, "fake");
     let mut flood = m.request("fake", "command/execute", json!({"command": "flood", "args": {"count": 50000}})).unwrap();
     let started = Instant::now();
@@ -422,7 +422,7 @@ fn documents_are_reported_only_with_read_permission() {
     install_fake(&config, "blind", &[], &[], json!({}));
     let mut m = Manager::new(Some(&config), None);
     let doc = |v: u64| DocInfo { id: 7, path: Some(PathBuf::from("/tmp/notes.md")), name: "notes.md".into(), version: v, syntax: "Markdown".into() };
-    m.sync_window(1, vec![doc(1)], Vec::new(), true);
+    m.sync_window(1, vec![doc(1)], Vec::new(), true, None);
     start_granted(&mut m, "reader");
     start_granted(&mut m, "blind");
     let events = |m: &mut Manager, name: &str| -> Vec<String> {
@@ -430,10 +430,10 @@ fn documents_are_reported_only_with_read_permission() {
         r.as_array().unwrap().iter().map(|e| e["method"].as_str().unwrap().to_owned()).collect()
     };
     until(&mut m, "opened", |m| events(m, "reader").contains(&"document/opened".to_owned()).then_some(()));
-    m.sync_window(1, vec![doc(2)], Vec::new(), true);
+    m.sync_window(1, vec![doc(2)], Vec::new(), true, None);
     until(&mut m, "changed", |m| events(m, "reader").contains(&"document/changed".to_owned()).then_some(()));
     m.saved(&doc(2));
-    m.sync_window(1, Vec::new(), Vec::new(), true);
+    m.sync_window(1, Vec::new(), Vec::new(), true, None);
     let got = until(&mut m, "closed", |m| {
         let e = events(m, "reader");
         e.contains(&"document/closed".to_owned()).then_some(e)
@@ -454,12 +454,12 @@ fn opening_or_saving_a_matching_file_starts_a_plugin() {
     install_fake(&config, "rs", &[], &[], json!({"activation": ["save:*.rs"]}));
     let mut m = Manager::new(Some(&config), None);
     let doc = |id: u64, name: &str| DocInfo { id, path: Some(PathBuf::from(format!("/tmp/{name}"))), name: name.into(), version: 1, syntax: String::new() };
-    m.sync_window(1, vec![doc(1, "a.txt")], Vec::new(), true);
+    m.sync_window(1, vec![doc(1, "a.txt")], Vec::new(), true, None);
     for _ in 0..10 {
         m.tick();
     }
     assert!(m.question().is_none(), "a .txt starts neither");
-    m.sync_window(1, vec![doc(1, "a.txt"), doc(2, "b.md")], Vec::new(), true);
+    m.sync_window(1, vec![doc(1, "a.txt"), doc(2, "b.md")], Vec::new(), true, None);
     let asked = until(&mut m, "the question for md", |m| m.question().map(|(p, _, _)| p.name.clone()));
     assert_eq!(asked, "md");
     m.answer(true);
@@ -472,7 +472,7 @@ fn opening_or_saving_a_matching_file_starts_a_plugin() {
     // A turned-off plugin doesn't start.
     m.set_enabled("md", false);
     assert!(!running(&m, "md"));
-    m.sync_window(1, vec![doc(4, "c.md")], Vec::new(), true);
+    m.sync_window(1, vec![doc(4, "c.md")], Vec::new(), true, None);
     for _ in 0..20 {
         m.tick();
     }
@@ -530,19 +530,153 @@ fn status_items_are_limited_and_checked() {
     for k in 0..STATUS_ITEMS {
         m.set_status_item("fake", &json!({"id": format!("i{k}"), "text": format!("item {k}\nsecond line")})).unwrap();
     }
-    assert_eq!(m.status_items().len(), STATUS_ITEMS);
-    assert_eq!(m.status_items()[0].text, "item 0", "one line");
+    assert_eq!(m.status_items(1).len(), STATUS_ITEMS);
+    assert_eq!(m.status_items(1)[0].text, "item 0", "one line");
     assert_eq!(m.set_status_item("fake", &json!({"id": "more", "text": "x"})).unwrap_err().code, BUSY);
     m.set_status_item("fake", &json!({"id": "i0", "text": ""})).unwrap();
-    assert_eq!(m.status_items().len(), STATUS_ITEMS - 1);
+    assert_eq!(m.status_items(1).len(), STATUS_ITEMS - 1);
     let long = "w".repeat(500);
     m.set_status_item("fake", &json!({"id": "i1", "text": long, "command": "read"})).unwrap();
-    assert_eq!(m.status_items().iter().find(|s| s.id == "i1").unwrap().text.chars().count(), STATUS_TEXT);
+    assert_eq!(m.status_items(1).iter().find(|s| s.id == "i1").unwrap().text.chars().count(), STATUS_TEXT);
     assert!(m.set_status_item("fake", &json!({"id": "i1", "text": "x", "command": "not-ours"})).is_err());
     // A crash takes its items away.
     m.run_command("fake", "crash", None);
     until(&mut m, "the crash", |m| (!running(m, "fake")).then_some(()));
-    assert!(m.status_items().is_empty());
+    assert!(m.status_items(1).is_empty());
+    drop(m);
+    std::fs::remove_dir_all(config).ok();
+}
+
+/// A plugin without read_document never hears which document is in front,
+/// and can't show an item for one: an open document's id gets the same
+/// answer as a made-up one, so ids can't be probed.
+#[test]
+fn status_items_for_a_document_need_read_permission() {
+    let config = temp("mgr-front-blind");
+    install_fake(&config, "blind", &[], &["notify"], json!({}));
+    let mut m = Manager::new(Some(&config), None);
+    let doc = DocInfo { id: 7, path: None, name: "doc7".into(), version: 1, syntax: "Plain Text".into() };
+    m.sync_window(1, vec![doc], Vec::new(), true, Some(7));
+    start_granted(&mut m, "blind");
+    for _ in 0..10 {
+        m.tick();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let r = command(&mut m, "blind", "events", json!({}), |_, _, _, _| {}).unwrap();
+    assert!(r.as_array().unwrap().iter().all(|e| !e["method"].as_str().unwrap().starts_with("document/")), "{r}");
+    let open = m.set_status_item("blind", &json!({"id": "x", "document": 7, "text": "guessed"})).unwrap_err();
+    let made_up = m.set_status_item("blind", &json!({"id": "x", "document": 8, "text": "guessed"})).unwrap_err();
+    assert_eq!((open.code, open.message.replace('7', "N")), (made_up.code, made_up.message.replace('8', "N")));
+    assert_eq!(open.code, api::NO_DOCUMENT);
+    assert!(m.status_items(1).is_empty(), "nothing shows in the window");
+    drop(m);
+    std::fs::remove_dir_all(config).ok();
+}
+
+/// A running plugin's permissions are the ones it was started with: its
+/// manifest on disk losing read_document stops it (what it learned goes with
+/// it), and one gaining permissions gives the running process nothing new.
+#[test]
+fn a_manifest_changed_on_disk_never_widens_and_a_narrower_one_stops_it() {
+    let config = temp("mgr-reload-perms");
+    install_fake(&config, "fake", &[], &["read_document", "notify"], json!({}));
+    install_fake(&config, "grows", &[], &["notify"], json!({}));
+    let mut m = Manager::new(Some(&config), None);
+    let doc = DocInfo { id: 7, path: None, name: "doc7".into(), version: 1, syntax: "Plain Text".into() };
+    m.sync_window(1, vec![doc], Vec::new(), true, Some(7));
+    start_granted(&mut m, "fake");
+    start_granted(&mut m, "grows");
+    until(&mut m, "told of the document", |m| m.plugins[m.index("fake").unwrap()].told.contains_key(&7).then_some(()));
+    m.set_status_item("fake", &json!({"id": "w", "document": 7, "text": "ok while permitted"})).unwrap();
+    // Both manifests change on disk: one loses read_document, the other gains it.
+    let edit = |name: &str, perms: &[&str]| {
+        let path = config.join("Plugins").join(name).join(crate::plugins::manifest::FILE);
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v["permissions"] = json!(perms);
+        std::fs::write(&path, v.to_string()).unwrap();
+    };
+    edit("fake", &["notify"]);
+    edit("grows", &["read_document", "notify"]);
+    m.reload();
+    let fake = m.index("fake").unwrap();
+    assert!(!running(&m, "fake"), "stopped: {}", state(&m, "fake"));
+    assert!(m.plugins[fake].told.is_empty() && m.plugins[fake].fronts.is_empty());
+    assert!(m.status_items(1).is_empty());
+    let known = m.set_status_item("fake", &json!({"id": "w", "document": 7, "text": "x"})).unwrap_err();
+    let unknown = m.set_status_item("fake", &json!({"id": "w", "document": 8, "text": "x"})).unwrap_err();
+    assert_eq!((known.code, known.message.replace('7', "N")), (unknown.code, unknown.message.replace('8', "N")));
+    // The other keeps running with what it was approved for: no document events.
+    assert!(running(&m, "grows"));
+    for _ in 0..10 {
+        m.tick();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let r = command(&mut m, "grows", "events", json!({}), |_, _, _, _| {}).unwrap();
+    assert!(r.as_array().unwrap().iter().all(|e| !e["method"].as_str().unwrap().starts_with("document/")), "{r}");
+    assert_eq!(m.set_status_item("grows", &json!({"id": "w", "document": 7, "text": "x"})).unwrap_err().code, api::NO_DOCUMENT);
+    drop(m);
+    std::fs::remove_dir_all(config).ok();
+}
+
+/// Each window hears which tab is in front (a new window, a tab switched
+/// to) and shows the status items for its own front document.
+#[test]
+fn each_window_shows_the_status_items_of_its_front_document() {
+    let config = temp("mgr-front");
+    install_fake(&config, "fake", &[], &["read_document", "notify"], json!({}));
+    let mut m = Manager::new(Some(&config), None);
+    let doc = |id: u64| DocInfo { id, path: None, name: format!("doc{id}"), version: 1, syntax: "Plain Text".into() };
+    m.sync_window(1, vec![doc(10), doc(11)], Vec::new(), true, Some(10));
+    start_granted(&mut m, "fake");
+    let events = |m: &mut Manager| -> Vec<(String, u64)> {
+        let r = command(m, "fake", "events", json!({}), |_, _, _, _| {}).unwrap();
+        r.as_array().unwrap().iter().filter(|e| e["method"].as_str().unwrap().starts_with("document/")).map(|e| (e["method"].as_str().unwrap().to_owned(), e["params"]["document"]["id"].as_u64().unwrap())).collect()
+    };
+    let activated = |e: &[(String, u64)]| e.iter().filter(|(m, _)| m == "document/activated").map(|(_, id)| *id).collect::<Vec<_>>();
+    until(&mut m, "the front tab", |m| (activated(&events(m)) == [10]).then_some(()));
+    // Opened before activated.
+    let e = events(&mut m);
+    assert!(e.iter().position(|x| *x == ("document/opened".into(), 10)) < e.iter().position(|x| *x == ("document/activated".into(), 10)), "{e:?}");
+    // A second window opens; the first switches tabs.
+    m.sync_window(2, vec![doc(20)], Vec::new(), false, Some(20));
+    m.sync_window(1, vec![doc(10), doc(11)], Vec::new(), true, Some(11));
+    until(&mut m, "both", |m| (activated(&events(m)) == [10, 11, 20]).then_some(()));
+    // Nothing more while nothing changes.
+    for _ in 0..5 {
+        m.tick();
+    }
+    assert_eq!(activated(&events(&mut m)), [10, 11, 20]);
+
+    // Items for a document show only where it's in front, in place of the one for every document.
+    m.set_status_item("fake", &json!({"id": "words", "text": "Words: ?"})).unwrap();
+    m.set_status_item("fake", &json!({"id": "other", "text": "Other"})).unwrap();
+    for id in [10, 11, 20] {
+        m.set_status_item("fake", &json!({"id": "words", "document": id, "text": format!("Words: {id}")})).unwrap();
+    }
+    let shown = |m: &Manager, w: u64| m.status_items(w).iter().map(|s| s.text.clone()).collect::<Vec<_>>();
+    assert_eq!(shown(&m, 1), ["Words: 11", "Other"]);
+    assert_eq!(shown(&m, 2), ["Words: 20", "Other"]);
+    m.sync_window(1, vec![doc(10), doc(11)], Vec::new(), true, Some(10));
+    assert_eq!(shown(&m, 1), ["Words: 10", "Other"]);
+    // No item for the front document: the one for every document.
+    m.set_status_item("fake", &json!({"id": "words", "document": 10, "text": ""})).unwrap();
+    assert_eq!(shown(&m, 1), ["Words: ?", "Other"]);
+    m.set_status_item("fake", &json!({"id": "words", "text": ""})).unwrap();
+    assert_eq!(shown(&m, 1), ["Other"]);
+    assert_eq!(shown(&m, 2), ["Other", "Words: 20"], "in the order they came");
+    // Closing the document takes its items away.
+    m.sync_window(2, Vec::new(), Vec::new(), false, None);
+    m.tick();
+    assert_eq!(shown(&m, 2), ["Other"]);
+    assert!(m.plugins[0].status.iter().all(|s| s.document != Some(20)));
+    // Only open documents, and still at most STATUS_ITEMS ids.
+    assert_eq!(m.set_status_item("fake", &json!({"id": "words", "document": 99, "text": "x"})).unwrap_err().code, api::NO_DOCUMENT);
+    assert!(m.set_status_item("fake", &json!({"id": "words", "document": "10", "text": "x"})).is_err());
+    for k in 0..STATUS_ITEMS - 2 {
+        m.set_status_item("fake", &json!({"id": format!("i{k}"), "document": 10, "text": "x"})).unwrap();
+    }
+    assert_eq!(m.set_status_item("fake", &json!({"id": "more", "document": 11, "text": "x"})).unwrap_err().code, BUSY);
+    m.set_status_item("fake", &json!({"id": "i0", "document": 11, "text": "y"})).unwrap();
     drop(m);
     std::fs::remove_dir_all(config).ok();
 }
@@ -597,7 +731,7 @@ fn oversized_requests_are_refused_before_reaching_a_window() {
     let config = temp("mgr-big");
     install_fake(&config, "fake", &[], &["panel", "notify"], json!({}));
     let mut m = Manager::new(Some(&config), None);
-    m.sync_window(1, Vec::new(), Vec::new(), true);
+    m.sync_window(1, Vec::new(), Vec::new(), true, None);
     start_granted(&mut m, "fake");
     let big = "x".repeat(3 << 20);
     let r = call(&mut m, "fake", "ui/showPanel", json!({"title": "t", "markdown": big}));
@@ -619,7 +753,7 @@ fn big_answers_are_never_dropped_however_many_are_asked_for() {
     let config = temp("mgr-burst");
     install_fake(&config, "fake", &[], &["read_document"], json!({}));
     let mut m = Manager::new(Some(&config), None);
-    m.sync_window(1, Vec::new(), Vec::new(), true);
+    m.sync_window(1, Vec::new(), Vec::new(), true, None);
     start_granted(&mut m, "fake");
     // Twelve reads at once, each answered with 10 MB: far over what Strata
     // keeps queued for a plugin, so it has to wait between them.
@@ -662,7 +796,7 @@ fn answers_to_an_earlier_run_never_reach_a_new_one() {
     let config = temp("mgr-runs");
     install_fake(&config, "fake", &[], &["notify"], json!({}));
     let mut m = Manager::new(Some(&config), None);
-    m.sync_window(1, Vec::new(), Vec::new(), true);
+    m.sync_window(1, Vec::new(), Vec::new(), true, None);
     start_granted(&mut m, "fake");
     let mut p = m.request("fake", "command/execute", json!({"command": "notify"})).unwrap();
     let (name, run, inc) = until(&mut m, "the request", |m| m.take_requests(1, 1).into_iter().next());

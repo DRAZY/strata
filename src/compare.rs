@@ -22,6 +22,71 @@ fn header_metrics(ui: &Ui) -> (f32, f32, f32) {
     let text = crate::fonts::secondary_size(egui::TextStyle::Body.resolve(ui.style()).size);
     (text, (text + 16.0).max(28.0), (text + 10.0).max(22.0))
 }
+/// Space between the toolbar's buttons.
+const TOOLBAR_GAP: f32 = 6.0;
+/// At least this much between the summary and the buttons.
+const SUMMARY_GAP: f32 = 16.0;
+
+/// Widths of the toolbar's items, each with the gap after it (0: not offered).
+struct ToolbarWidths {
+    /// The summary's forms, longest first.
+    summaries: [f32; 3],
+    arrows: f32,
+    /// Keep, Revert and the separator (a review tab).
+    change: f32,
+    ignore: f32,
+    swap: f32,
+    /// The file's buttons, in the order they give way last to first.
+    files: [f32; 4],
+}
+
+/// What the toolbar shows.
+#[derive(Debug, PartialEq)]
+struct ToolbarFit {
+    /// Which of the summary's forms, if any.
+    summary: Option<usize>,
+    change: bool,
+    ignore: bool,
+    swap: bool,
+    /// How many of the file's buttons.
+    files: usize,
+}
+
+/// Choose the toolbar items that fit in `room`, by priority (like the status
+/// bar): ▲▼ always; then Keep and Revert, the short summary, the summary
+/// without line counts, Ignore whitespace, Swap Sides, the full summary,
+/// and the file's buttons.
+fn toolbar_fit(room: f32, w: &ToolbarWidths) -> ToolbarFit {
+    fn take(room: &mut f32, w: f32) -> bool {
+        let fits = w > 0.0 && w <= *room;
+        if fits {
+            *room -= w;
+        }
+        fits
+    }
+    // A longer form of the summary costs only what it adds to the one shown.
+    fn grow(room: &mut f32, summary: &mut Option<usize>, w: &[f32; 3], k: usize) {
+        let extra = w[k] + SUMMARY_GAP - summary.map_or(0.0, |s| w[s] + SUMMARY_GAP);
+        if extra <= 0.0 || take(room, extra) {
+            *summary = Some(k);
+        }
+    }
+    let mut room = room - w.arrows;
+    let change = take(&mut room, w.change);
+    let mut summary = None;
+    grow(&mut room, &mut summary, &w.summaries, 2);
+    if summary.is_some() {
+        grow(&mut room, &mut summary, &w.summaries, 1);
+    }
+    let ignore = take(&mut room, w.ignore);
+    let swap = take(&mut room, w.swap);
+    if summary == Some(1) {
+        grow(&mut room, &mut summary, &w.summaries, 0);
+    }
+    let files = w.files.iter().take_while(|&&f| take(&mut room, f)).count();
+    ToolbarFit { summary, change, ignore, swap, files }
+}
+
 const OVERVIEW_W: f32 = 14.0;
 const DIVIDER_W: f32 = 6.0;
 /// Re-diff after typing pauses this long, unless diffing is cheap.
@@ -543,51 +608,77 @@ impl Compare {
         label(ui, fixed, &format!("{}  ·  read-only", self.base_name), weak);
         label(ui, edit, &self.right_name, fg);
         let (n, removed, added) = self.stats();
-        let summary = if n == 0 {
-            if self.ignore_ws { "No differences (ignoring whitespace)".to_owned() } else { "No differences".to_owned() }
+        // Longest first: a narrow toolbar shows a shorter one.
+        let summaries: [String; 3] = if n == 0 {
+            let full = if self.ignore_ws { "No differences (ignoring whitespace)" } else { "No differences" };
+            [full.into(), "No differences".into(), "Same".into()]
         } else {
             let at = self.current.map(|c| format!("{} of ", c + 1)).unwrap_or_default();
-            format!("{at}{n} change{}  ·  −{removed}  +{added}", if n == 1 { "" } else { "s" })
+            let changes = format!("{at}{n} change{}", if n == 1 { "" } else { "s" });
+            [format!("{changes}  ·  −{removed}  +{added}"), changes, self.current.map_or_else(|| format!("{n}"), |c| format!("{}/{n}", c + 1))]
         };
         let bar = Rect::from_min_size(rect.min, vec2(rect.width(), toolbar_h));
+        let inner = bar.shrink2(vec2(8.0, 3.0));
+        let review = self.review.is_some();
+        // Right to left: the file's buttons, then the change's next to ▲▼.
+        let key = |c: Cmd| c.shortcut_label().map(|k| format!(" ({k})")).unwrap_or_default();
+        let file_buttons: [(&str, String, HeaderAction); 4] = [
+            ("Next File", format!("Open the next file to review{}", key(Cmd::ReviewNextFile)), HeaderAction::NextFile),
+            ("Mark Reviewed", format!("Tick this file off in the Changes list{}", key(Cmd::ReviewMarkReviewed)), HeaderAction::Reviewed),
+            ("Revert File", "Put the whole file back as it was in the base (undoable; save to keep it)".into(), HeaderAction::RevertFile),
+            ("Keep File", "Accept every change in this file".into(), HeaderAction::KeepFile),
+        ];
+        // Each item's width with the gap after it.
+        let fit = {
+            let text_w = |s: &str| ui.painter().layout_no_wrap(s.to_owned(), small.clone(), fg).size().x;
+            let pad = 2.0 * ui.spacing().button_padding.x;
+            let button = |s: &str| text_w(s) + pad + TOOLBAR_GAP;
+            toolbar_fit(
+                inner.width(),
+                &ToolbarWidths {
+                    summaries: [text_w(&summaries[0]), text_w(&summaries[1]), text_w(&summaries[2])],
+                    arrows: button("▲") + button("▼"),
+                    // A separator is its own width (the default spacing) and a gap.
+                    change: if review { button("Keep") + button("Revert") + 2.0 * TOOLBAR_GAP } else { 0.0 },
+                    ignore: ui.spacing().icon_width + ui.spacing().icon_spacing + button("Ignore whitespace"),
+                    swap: if review { 0.0 } else { button("Swap Sides") },
+                    files: if review { file_buttons.each_ref().map(|(label, ..)| button(label)) } else { [0.0; 4] },
+                },
+            )
+        };
         let mut actions = Vec::new();
-        let summary_w = ui.painter().text(pos2(bar.left() + 8.0, bar.center().y), Align2::LEFT_CENTER, &summary, small.clone(), fg).width();
-        ui.scope_builder(egui::UiBuilder::new().max_rect(bar.shrink2(vec2(8.0, 3.0))).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
+        if let Some(k) = fit.summary {
+            let r = ui.painter().text(pos2(inner.left(), bar.center().y), Align2::LEFT_CENTER, &summaries[k], small.clone(), fg);
+            if k > 0 {
+                ui.interact(r, ui.id().with("compare-summary"), Sense::hover()).on_hover_text(&summaries[0]);
+            }
+        }
+        ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = TOOLBAR_GAP;
             ui.style_mut().override_font_id = Some(small.clone());
+            // Ignore whitespace and Swap Sides are also in File ▸ Compare.
             let mut ws = self.ignore_ws;
-            if ui.checkbox(&mut ws, "Ignore whitespace").changed() {
+            if fit.ignore && ui.checkbox(&mut ws, "Ignore whitespace").changed() {
                 actions.push(HeaderAction::IgnoreWhitespace);
             }
-            if self.review.is_some() {
-                // Right to left: the file's buttons, then the change's next to ▲▼.
-                let key = |c: Cmd| c.shortcut_label().map(|k| format!(" ({k})")).unwrap_or_default();
-                // In a narrow tab the file's buttons give way (they're also in
-                // Tools ▸ Review Changes); Keep, Revert, ▲▼ and the summary stay.
-                let width = |ui: &Ui, s: &str| ui.painter().layout_no_wrap(s.to_owned(), small.clone(), fg).size().x + 2.0 * ui.spacing().button_padding.x + 6.0;
-                let reserve = summary_w + 24.0 + width(ui, "Keep") + width(ui, "Revert") + 2.0 * width(ui, "▲") + 12.0;
-                let fits = |ui: &Ui, s: &str| ui.available_width() - width(ui, s) > reserve;
-                let file_buttons: [(&str, String, HeaderAction); 4] = [
-                    ("Next File", format!("Open the next file to review{}", key(Cmd::ReviewNextFile)), HeaderAction::NextFile),
-                    ("Mark Reviewed", format!("Tick this file off in the Changes list{}", key(Cmd::ReviewMarkReviewed)), HeaderAction::Reviewed),
-                    ("Revert File", "Put the whole file back as it was in the base (undoable; save to keep it)".into(), HeaderAction::RevertFile),
-                    ("Keep File", "Accept every change in this file".into(), HeaderAction::KeepFile),
-                ];
-                let mut room = true;
-                for (label, hint, action) in file_buttons {
-                    room = room && fits(ui, label);
-                    if room && ui.small_button(label).on_hover_text(hint).clicked() {
+            if review {
+                // In a narrow tab the file's buttons give way first (they're
+                // also in Tools ▸ Review Changes), then Keep and Revert.
+                for (label, hint, action) in file_buttons.into_iter().take(fit.files) {
+                    if ui.small_button(label).on_hover_text(hint).clicked() {
                         actions.push(action);
                     }
                 }
-                ui.separator();
-                if ui.add_enabled(n > 0, egui::Button::new("Revert").small()).on_hover_text(format!("Undo the change at the caret (undoable; save to keep it){}", key(Cmd::ReviewRevertChange))).clicked() {
-                    actions.push(HeaderAction::Revert);
+                if fit.change {
+                    ui.separator();
+                    if ui.add_enabled(n > 0, egui::Button::new("Revert").small()).on_hover_text(format!("Undo the change at the caret (undoable; save to keep it){}", key(Cmd::ReviewRevertChange))).clicked() {
+                        actions.push(HeaderAction::Revert);
+                    }
+                    if ui.add_enabled(n > 0, egui::Button::new("Keep").small()).on_hover_text(format!("Accept the change at the caret{}", key(Cmd::ReviewKeepChange))).clicked() {
+                        actions.push(HeaderAction::Keep);
+                    }
                 }
-                if ui.add_enabled(n > 0, egui::Button::new("Keep").small()).on_hover_text(format!("Accept the change at the caret{}", key(Cmd::ReviewKeepChange))).clicked() {
-                    actions.push(HeaderAction::Keep);
-                }
-            } else if ui.small_button("Swap Sides").on_hover_text("Show the other side on the left").clicked() {
+            } else if fit.swap && ui.small_button("Swap Sides").on_hover_text("Show the other side on the left").clicked() {
                 actions.push(HeaderAction::Swap);
             }
             if ui.add_enabled(n > 0, egui::Button::new("▼").small()).on_hover_text("Next difference").clicked() {
@@ -1064,5 +1155,64 @@ mod tests {
         frame(&mut c, &mut ed, vec![Event::Text("X".into())]);
         assert!(ed.buffer.line_text(0).starts_with('X'), "the editable side has focus and takes typing");
         assert_eq!(c.stats(), (2, 2, 3));
+    }
+
+    /// The toolbar's texts (summary, buttons, checkbox) never draw on top
+    /// of each other or past its ends, whatever the width; the arrows stay.
+    #[test]
+    fn the_toolbar_drops_items_rather_than_overlap() {
+        for review in [false, true] {
+            for width in [180.0, 260.0, 340.0, 420.0, 520.0, 640.0, 760.0, 900.0, 1400.0] {
+                let ctx = egui::Context::default();
+                let mut c = Compare::new("one\ntwo\nthree\nfour\n", "fruits.txt (review start)".into(), "Plain Text", "fruits.txt".into());
+                c.review = review.then(|| "fruits.txt".into());
+                let mut ed = editor("one\n2\nthree\nfour\nfive\n");
+                let mut hl = Highlighter::new();
+                let id = Id::new("compare-test");
+                let mut texts = Vec::new();
+                for step in 0..3 {
+                    let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 400.0))), ..Default::default() };
+                    let mut bar = Rect::NOTHING;
+                    let mut out = ctx.run_ui(input, |ui| {
+                        egui::CentralPanel::default().show(ui, |ui| {
+                            let top = ui.available_rect_before_wrap();
+                            bar = Rect::from_min_size(top.min, vec2(top.width(), header_metrics(ui).1));
+                            c.show(ui, &mut ed, &mut hl, id, 14.0);
+                        });
+                    });
+                    out.textures_delta.clear();
+                    if step == 0 {
+                        // "1 of 2 changes" from here on.
+                        c.step(&mut ed, true);
+                    }
+                    texts = out
+                        .shapes
+                        .iter()
+                        .filter_map(|s| match &s.shape {
+                            egui::Shape::Text(t) if bar.contains(t.visual_bounding_rect().center()) && !t.galley.text().is_empty() => Some((t.galley.text().to_owned(), t.visual_bounding_rect(), bar)),
+                            _ => None,
+                        })
+                        .collect();
+                }
+                let names: Vec<&str> = texts.iter().map(|t| t.0.as_str()).collect();
+                assert!(names.contains(&"▲") && names.contains(&"▼"), "{width} {review}: {names:?}");
+                for (k, (a, ra, bar)) in texts.iter().enumerate() {
+                    assert!(ra.left() >= bar.left() && ra.right() <= bar.right(), "{width} {review}: {a:?} {ra:?} sticks out of {bar:?}");
+                    for (b, rb, _) in &texts[k + 1..] {
+                        assert!(!ra.shrink(0.5).intersects(rb.shrink(0.5)), "{width} {review}: {a:?} {ra:?} overlaps {b:?} {rb:?}");
+                    }
+                }
+                if width >= 900.0 {
+                    let want: &[&str] = if review { &["Keep", "Revert", "Keep File", "Revert File", "Mark Reviewed", "Next File", "Ignore whitespace"] } else { &["Swap Sides", "Ignore whitespace"] };
+                    for w in want {
+                        assert!(names.contains(w), "{width} {review}: {w} missing from {names:?}");
+                    }
+                    assert!(names.iter().any(|n| n.starts_with("1 of 2 changes") && n.contains('+')), "{width} {review}: {names:?}");
+                }
+                if width >= 420.0 && review {
+                    assert!(names.contains(&"Keep") && names.contains(&"Revert"), "{width}: {names:?}");
+                }
+            }
+        }
     }
 }

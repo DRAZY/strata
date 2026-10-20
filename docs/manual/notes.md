@@ -68,7 +68,7 @@ Type `[[` and a list of notes appears under the cursor. Keep typing to narrow it
 
 Under a note, the backlinks panel lists the other notes that link to it, each with the line that holds the link. Click a note's name to open it, or a line to open it there. The panel also shows the note's tags; click one to see the notes with that tag.
 
-The panel shows for notes in an Obsidian vault, and in any folder whose notes use wikilinks. Hide it with the × at its right or **Notes: Toggle Backlinks** (also Tools ▸ Notes ▸ Backlinks), which shows it again. Drag its top edge to resize it. Backlinks come from the notes as they are on disk, so a link you've typed but not saved yet shows up once it's saved.
+The panel shows for notes in an Obsidian vault, and in any folder whose notes use wikilinks. Hide it with the × at its right or **Notes: Toggle Backlinks** (also Tools ▸ Notes ▸ Backlinks), which shows it again. Drag its top edge to resize it. Backlinks count the notes open in tabs as they are now, saved or not (so a link you've just typed, or one a rename has just updated, shows up right away, or in a very long note once you pause typing), and the other notes as they are on disk.
 
 ## Tags
 
@@ -167,7 +167,7 @@ Tick **Also sync every … minutes** to sync on a timer while the vault is open 
 3. Fetches, and rebases your commits onto the remote's, so the history stays a straight line. When your unpushed commits include a merge Strata made to settle a conflict (see below), it merges instead, so the conflict isn't replayed.
 4. Pushes, never forced. If the remote moved on in the meantime, Strata goes round once more.
 
-The status bar shows when the vault last synced ("Synced 14:05"), or "Sync failed" with the reason in its tooltip. Only one sync runs at a time, and the timer waits while a rename's link updates or their undo, Review Changes or Replace in Files is under way. While Git rewrites files during the rebase (usually a split second), saving a file in that repository waits: the status bar asks you to save again, and your text stays in the tab.
+The status bar shows when the vault last synced ("Synced 14:05", or the date for an earlier day; Strata remembers it when you quit), or "Sync failed" with the reason in its tooltip. Only one sync runs at a time, and the timer waits while a rename's link updates or their undo, Review Changes or Replace in Files is under way. While Git rewrites files during the rebase (usually a split second), saving a file in that repository waits: the status bar asks you to save again, and your text stays in the tab.
 
 When something's in the way, nothing is changed and the status bar says what: the branch has no upstream, the remote can't be reached, it refused the sign-in, a rebase or merge is already under way, the remote's history has nothing in common with yours (it was replaced), files outside the vault have uncommitted changes (commit or stash them first), the remote would replace files this computer ignores, or a hook refused the commit. If Git takes longer than two minutes it is stopped, and a rebase it began is undone. A commit made before the problem stays in your repository and goes up with the next sync.
 

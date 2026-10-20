@@ -414,7 +414,9 @@ fn run_script(program: &Path, name: &str, args: &[&str], ext: &str, code: &str, 
     // its process group (background jobs, pipelines), and on a timeout also
     // the descendants that moved to groups of their own while it's alive to
     // find them by.
-    tree::stop(&child, timed_out);
+    for problem in tree::stop(&child, timed_out) {
+        log::warn!("{problem}");
+    }
     #[cfg(windows)]
     job.terminate();
     if timed_out {
@@ -486,9 +488,11 @@ mod tree {
     /// group. Everything is frozen first: the kernel signals a group one
     /// process at a time, so a shell whose `sleep` was killed first could
     /// otherwise go on to its next command before its own signal lands.
+    /// What couldn't be stopped, in words (for the log).
     #[cfg(unix)]
-    pub fn stop(child: &Child, descendants: bool) {
-        let Ok(pgid) = i32::try_from(child.id()) else { return };
+    pub fn stop(child: &Child, descendants: bool) -> Vec<String> {
+        let mut problems = Vec::new();
+        let Ok(pgid) = i32::try_from(child.id()) else { return problems };
         // SAFETY: kill(2) on our unreaped child's own process group; no memory involved.
         unsafe {
             libc::kill(-pgid, libc::SIGSTOP);
@@ -521,18 +525,47 @@ mod tree {
                 // SAFETY: verified just now; it's frozen, so it can't exit and
                 // free its id between the check and the signal.
                 if unsafe { libc::kill(s.pid, libc::SIGKILL) } != 0 {
-                    log::warn!("couldn't stop process {} started by a code block: {}", s.pid, std::io::Error::last_os_error());
+                    problems.push(format!("couldn't stop process {} started by a code block: {}", s.pid, std::io::Error::last_os_error()));
                 }
             }
         }
         // SAFETY: as above.
         if unsafe { libc::kill(-pgid, libc::SIGKILL) } != 0 {
             let e = std::io::Error::last_os_error();
-            // No such group: everything in it has already ended.
-            if e.raw_os_error() != Some(libc::ESRCH) {
-                log::warn!("couldn't stop a code block's processes: {e}");
+            // No such group: everything in it has already ended. macOS says
+            // EPERM for a group whose only member is the interpreter that
+            // ended (unreaped, so its id can't be reused): nothing is left
+            // there either.
+            let gone = match e.raw_os_error() {
+                Some(libc::ESRCH) => true,
+                Some(libc::EPERM) => ended(child) && group(pgid) == [pgid],
+                _ => false,
+            };
+            if !gone {
+                problems.push(format!("couldn't stop a code block's processes: {e}"));
             }
         }
+        problems
+    }
+
+    /// The processes in process group `pgid`, ended ones not yet reaped included.
+    #[cfg(target_os = "macos")]
+    pub(super) fn group(pgid: i32) -> Vec<i32> {
+        const PROC_PGRP_ONLY: u32 = 2;
+        list(PROC_PGRP_ONLY, pgid)
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub(super) fn group(pgid: i32) -> Vec<i32> {
+        let Ok(dir) = std::fs::read_dir("/proc") else { return Vec::new() };
+        dir.flatten()
+            .filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok())
+            .filter(|p| {
+                // After the name in parentheses: state, parent, process group (field 5).
+                let stat = std::fs::read_to_string(format!("/proc/{p}/stat")).unwrap_or_default();
+                stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(2)?.parse::<i32>().ok()) == Some(pgid)
+            })
+            .collect()
     }
 
     /// A process as it was when found: its id, its parent's, and when it
@@ -571,18 +604,26 @@ mod tree {
     }
 
     #[cfg(not(unix))]
-    pub fn stop(_child: &Child, _descendants: bool) {}
+    pub fn stop(_child: &Child, _descendants: bool) -> Vec<String> {
+        Vec::new()
+    }
 
     /// The processes whose parent is `pid`.
     #[cfg(target_os = "macos")]
     fn children(pid: i32) -> Vec<i32> {
+        const PROC_PPID_ONLY: u32 = 6;
+        list(PROC_PPID_ONLY, pid)
+    }
+
+    /// `proc_listpids` of `kind` (by parent, by group) for `arg`.
+    #[cfg(target_os = "macos")]
+    fn list(kind: u32, arg: i32) -> Vec<i32> {
         unsafe extern "C" {
             fn proc_listpids(kind: u32, typeinfo: u32, buffer: *mut std::ffi::c_void, size: i32) -> i32;
         }
-        const PROC_PPID_ONLY: u32 = 6;
         let mut buf = vec![0i32; 1024];
         // SAFETY: the buffer is as long as the size given; the result is bytes filled.
-        let n = unsafe { proc_listpids(PROC_PPID_ONLY, pid as u32, buf.as_mut_ptr().cast(), (buf.len() * 4) as i32) };
+        let n = unsafe { proc_listpids(kind, arg as u32, buf.as_mut_ptr().cast(), (buf.len() * 4) as i32) };
         buf.truncate((n.max(0) as usize / 4).min(1024));
         buf.retain(|&p| p > 0);
         buf
@@ -1182,6 +1223,28 @@ mod tests {
         child.wait().unwrap();
         assert!(!tree::still(&s), "gone");
         assert!(tree::seen(pid).is_none_or(|now| now != s));
+    }
+
+    /// A block that ended with nothing left running stops without a
+    /// complaint (macOS refuses to signal a group whose only member is the
+    /// unreaped interpreter); one that left a job behind still has it stopped.
+    #[cfg(unix)]
+    #[test]
+    fn stopping_an_ended_block_reports_nothing() {
+        use std::os::unix::process::CommandExt;
+        for (script, left) in [("exit 0", false), ("sleep 30 &\nexit 0", true)] {
+            let mut child = std::process::Command::new("sh").args(["-c", script]).process_group(0).spawn().unwrap();
+            while !tree::ended(&child) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let members = tree::group(child.id() as i32);
+            assert_eq!(tree::stop(&child, false), Vec::<String>::new(), "{script:?}");
+            child.wait().unwrap();
+            if left {
+                let job = members.into_iter().find(|&p| p != child.id() as i32).expect("the background sleep");
+                assert!(gone(job), "the job left behind ({job}) was stopped");
+            }
+        }
     }
 
     #[cfg(unix)]

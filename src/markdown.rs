@@ -1556,6 +1556,8 @@ pub struct DocRender {
     code: HashMap<u64, Option<Arc<Vec<Span>>>>,
     code_theme: String,
     font_attempt: u64,
+    /// Flush left with small margins (a panel), not centered on a page.
+    compact: bool,
 }
 
 /// What a document frame produced: a clicked link, and (slug, y) for every
@@ -1566,6 +1568,11 @@ pub struct DocFrame {
 }
 
 impl DocRender {
+    /// For a panel: flush left with small margins, not centered on a page.
+    pub fn compact() -> Self {
+        Self { compact: true, ..Self::default() }
+    }
+
     /// Draw `blocks` at `size` points, at most `MAX_WIDTH` wide, into `ui`
     /// (normally the inside of a scroll area).
     pub fn show(&mut self, ui: &mut Ui, hl: &Highlighter, size: f32, blocks: &[TopBlock]) -> DocFrame {
@@ -1577,9 +1584,12 @@ impl DocRender {
         }
         let (family, variable) = body_font(&ctx, &mut self.font_attempt);
         let full = ui.available_width();
-        let width = (full - 2.0 * MARGIN).clamp(60.0, MAX_WIDTH);
+        // (left and top margin, bottom margin)
+        let (margin, bottom) = if self.compact { (4.0, 8.0) } else { (MARGIN, MARGIN * 2.0) };
+        let width = (full - 2.0 * margin).clamp(60.0, MAX_WIDTH);
         let origin = ui.max_rect().min;
-        let rect = Rect::from_min_size(origin + vec2(((full - width) / 2.0).max(8.0), MARGIN * 0.75), vec2(width, 1e7));
+        let left = if self.compact { margin } else { ((full - width) / 2.0).max(8.0) };
+        let rect = Rect::from_min_size(origin + vec2(left, if self.compact { margin } else { MARGIN * 0.75 }), vec2(width, 1e7));
         let mut child = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)).id_salt("doc-blocks"));
         let mut d = Draw { pal: &pal, family, variable, size, theme: hl.theme_name(), code: &mut self.code, clicked: None, small: size * 0.9, notes: None, depth: 0, run: false, run_clicked: None };
         let mut headings = Vec::new();
@@ -1594,7 +1604,7 @@ impl DocRender {
         }
         let clicked = d.clicked.take();
         let used = child.min_rect();
-        ui.set_min_size(vec2(full, used.bottom() - origin.y + MARGIN * 2.0));
+        ui.set_min_size(vec2(full, used.bottom() - origin.y + bottom));
         DocFrame { clicked, headings }
     }
 }

@@ -12,7 +12,7 @@ use super::manifest::Manifest;
 use super::store::Store;
 use super::{API, Perm, package};
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -51,10 +51,20 @@ impl DocInfo {
     }
 }
 
+/// A window's open documents, the one in front, and its side bar folders.
+struct WindowDocs {
+    docs: Vec<DocInfo>,
+    front: Option<u64>,
+    folders: Vec<PathBuf>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct StatusItem {
     pub plugin: String,
     pub id: String,
+    /// Shown only in windows with this document in front (in place of the
+    /// plugin's item of the same id for every document, if any).
+    pub document: Option<u64>,
     pub text: String,
     pub tooltip: String,
     /// One of the plugin's commands, run on a click.
@@ -97,6 +107,11 @@ pub struct Plugin {
     pub state: State,
     pub log: Arc<Mutex<Log>>,
     host: Option<Host>,
+    /// What the running process may do: its approved snapshot's
+    /// permissions (empty when it isn't running). The manifest on disk can
+    /// change meanwhile; that only counts from the next start, which asks
+    /// again for a package not consented to.
+    perms: BTreeSet<Perm>,
     /// The shared lock on the snapshot it runs from (see `package::open_snapshot`).
     lock: Option<std::fs::File>,
     /// Counts starts, so an answer meant for an earlier process never reaches a new one.
@@ -110,6 +125,8 @@ pub struct Plugin {
     sent_settings: Option<Value>,
     /// Documents it was told about: version, and when.
     told: HashMap<u64, (u64, Instant)>,
+    /// The document it was told is in front of each window.
+    fronts: HashMap<u64, u64>,
     commands: Vec<(Pending, String)>,
     inbox: VecDeque<Incoming>,
     /// Unknown settings already warned about.
@@ -125,6 +142,7 @@ impl Plugin {
             state: State::Stopped,
             log: Default::default(),
             host: None,
+            perms: BTreeSet::new(),
             lock: None,
             run: 0,
             crashes: Vec::new(),
@@ -133,6 +151,7 @@ impl Plugin {
             declined: false,
             sent_settings: None,
             told: HashMap::new(),
+            fronts: HashMap::new(),
             commands: Vec::new(),
             inbox: VecDeque::new(),
             warned: HashSet::new(),
@@ -169,7 +188,9 @@ impl Plugin {
         }
         self.lock = None;
         self.status.clear();
+        self.perms.clear();
         self.told.clear();
+        self.fronts.clear();
         self.commands.clear();
         self.inbox.clear();
         self.sent_settings = None;
@@ -202,8 +223,7 @@ pub struct Manager {
     ctx: Option<egui::Context>,
     path_env: Option<std::ffi::OsString>,
     user_settings: BTreeMap<String, Map<String, Value>>,
-    /// Each window's open documents and folders.
-    windows: BTreeMap<u64, (Vec<DocInfo>, Vec<PathBuf>)>,
+    windows: BTreeMap<u64, WindowDocs>,
     /// Documents already checked for `open:` activation.
     seen: HashSet<u64>,
     /// The window that answers requests not about one of another window's documents.
@@ -272,6 +292,19 @@ impl Manager {
         for f in found {
             match self.plugins.iter_mut().find(|p| p.name == f.name) {
                 Some(p) => {
+                    // A running plugin keeps what it was approved for; one
+                    // whose manifest now asks for less stops (what it was
+                    // told goes with it) rather than keep a permission the
+                    // package no longer declares. Starting again checks the
+                    // new package, asking first if it wasn't consented to.
+                    let narrower = !f.manifest.as_ref().is_ok_and(|m| p.perms.is_subset(&m.permissions));
+                    if narrower && let Some(h) = &p.host {
+                        h.kill();
+                        p.drop_host();
+                        p.queued.clear();
+                        p.state = State::Stopped;
+                        p.log("Stopped: its manifest changed on disk and no longer asks for every permission it was started with");
+                    }
                     p.dir = f.dir;
                     p.manifest = f.manifest;
                 }
@@ -493,6 +526,7 @@ impl Manager {
         p.log(format!("Starting {} {}", manifest.title, manifest.version));
         p.sent_settings = Some(settings);
         p.host = Some(host);
+        p.perms = manifest.permissions.clone();
         p.manifest = Ok(manifest);
         p.state = State::Starting { init };
     }
@@ -703,7 +737,7 @@ impl Manager {
         let p = &mut self.plugins[i];
         let title = p.manifest.as_ref().ok().and_then(|m| m.commands.iter().find(|c| c.id == cmd)).map_or_else(|| cmd.to_owned(), |c| c.title.clone());
         // Which file is in front (its path) is the document's business: only for plugins allowed to read or edit it.
-        let may_see = p.manifest.as_ref().is_ok_and(|m| m.permissions.contains(&Perm::ReadDocument) || m.permissions.contains(&Perm::EditDocument));
+        let may_see = p.perms.contains(&Perm::ReadDocument) || p.perms.contains(&Perm::EditDocument);
         let Some(h) = &p.host else { return };
         let pending = h.request("command/execute", json!({"command": cmd, "document": doc.filter(|_| may_see).map(DocInfo::to_json)}), timeout);
         p.commands.push((pending, title));
@@ -719,14 +753,15 @@ impl Manager {
 
     // ---- documents and windows ----------------------------------------------------------
 
-    /// A window's documents and side bar folders, each frame. The focused
-    /// window answers requests that aren't about another window's document.
-    pub fn sync_window(&mut self, window: u64, docs: Vec<DocInfo>, folders: Vec<PathBuf>, focused: bool) {
+    /// A window's documents (`front`: the one in front, if it's text) and
+    /// side bar folders, each frame. The focused window answers requests
+    /// that aren't about another window's document.
+    pub fn sync_window(&mut self, window: u64, docs: Vec<DocInfo>, folders: Vec<PathBuf>, focused: bool, front: Option<u64>) {
         if focused || self.primary.is_none_or(|p| !self.windows.contains_key(&p)) {
             self.primary = Some(window);
         }
-        let changed = self.windows.get(&window).is_none_or(|(_, f)| *f != folders);
-        self.windows.insert(window, (docs, folders));
+        let changed = self.windows.get(&window).is_none_or(|w| w.folders != folders);
+        self.windows.insert(window, WindowDocs { docs, front, folders });
         if changed {
             self.update_folders();
         }
@@ -747,8 +782,8 @@ impl Manager {
 
     fn update_folders(&mut self) {
         let mut all: Vec<PathBuf> = Vec::new();
-        for (_, folders) in self.windows.values() {
-            for f in folders {
+        for w in self.windows.values() {
+            for f in &w.folders {
                 if !all.contains(f) {
                     all.push(f.clone());
                 }
@@ -760,7 +795,7 @@ impl Manager {
     /// Every open document in every window.
     fn all_docs(&self) -> Vec<&DocInfo> {
         let mut seen = HashSet::new();
-        self.windows.values().flat_map(|(d, _)| d.iter()).filter(|d| seen.insert(d.id)).collect()
+        self.windows.values().flat_map(|w| w.docs.iter()).filter(|d| seen.insert(d.id)).collect()
     }
 
     fn document_events(&mut self, now: Instant, wake: &mut Option<Duration>) {
@@ -794,7 +829,9 @@ impl Manager {
         let ids: HashSet<u64> = docs.iter().map(|d| d.id).collect();
         self.seen.retain(|id| ids.contains(id));
         for p in &mut self.plugins {
-            if !matches!(p.state, State::Running) || !p.manifest.as_ref().is_ok_and(|m| m.permissions.contains(&Perm::ReadDocument)) {
+            // A closed document's status items go with it.
+            p.status.retain(|s| s.document.is_none_or(|d| ids.contains(&d)));
+            if !matches!(p.state, State::Running) || !p.perms.contains(&Perm::ReadDocument) {
                 continue;
             }
             let Some(h) = &p.host else { continue };
@@ -824,6 +861,22 @@ impl Manager {
                 h.notify("document/closed", json!({"document": {"id": id}}));
                 p.told.remove(&id);
             }
+            // The tab in front of each window, when it changes (a window
+            // opened, or another tab came to the front), after its `document/opened`.
+            p.fronts.retain(|w, _| self.windows.contains_key(w));
+            for (w, win) in &self.windows {
+                match win.front.and_then(|id| docs.iter().find(|d| d.id == id)) {
+                    Some(d) if p.told.contains_key(&d.id) && p.fronts.get(w) != Some(&d.id) => {
+                        if h.notify("document/activated", json!({"document": d.to_json()})) {
+                            p.fronts.insert(*w, d.id);
+                        }
+                    }
+                    Some(_) => {}
+                    None => {
+                        p.fronts.remove(w);
+                    }
+                }
+            }
         }
     }
 
@@ -836,7 +889,7 @@ impl Manager {
                 self.activate(i, false);
             }
             let p = &mut self.plugins[i];
-            if !matches!(p.state, State::Running) || !p.manifest.as_ref().is_ok_and(|m| m.permissions.contains(&Perm::ReadDocument)) {
+            if !matches!(p.state, State::Running) || !p.perms.contains(&Perm::ReadDocument) {
                 continue;
             }
             let Some(h) = &p.host else { continue };
@@ -853,7 +906,7 @@ impl Manager {
     /// the primary window) anything else. Each comes with its plugin's name
     /// and run (for `reply`). At most `max`.
     pub fn take_requests(&mut self, window: u64, max: usize) -> Vec<(String, u64, Incoming)> {
-        let mine: HashSet<u64> = self.windows.get(&window).map(|(d, _)| d.iter().map(|d| d.id).collect()).unwrap_or_default();
+        let mine: HashSet<u64> = self.windows.get(&window).map(|w| w.docs.iter().map(|d| d.id).collect()).unwrap_or_default();
         let anywhere: HashSet<u64> = self.all_docs().iter().map(|d| d.id).collect();
         let primary = self.primary == Some(window);
         let mut out = Vec::new();
@@ -926,27 +979,59 @@ impl Manager {
         let tooltip = clean(params.get("tooltip").and_then(Value::as_str).unwrap_or_default(), 300);
         let command = params.get("command").and_then(Value::as_str).map(str::to_owned);
         let i = self.index(name).ok_or_else(|| RpcError::new(api::INTERNAL_ERROR, "no such plugin"))?;
+        let document = match params.get("document") {
+            None | Some(Value::Null) => None,
+            Some(v) => {
+                let d = v.as_u64().ok_or_else(|| RpcError::params("\"document\" must be a document id"))?;
+                // Only a document the plugin, running with read_document,
+                // was told of and that's still open; one it may not know
+                // of gets the same answer as one that doesn't exist, so ids
+                // can't be probed.
+                if !self.plugins[i].perms.contains(&Perm::ReadDocument) || !self.plugins[i].told.contains_key(&d) || !self.all_docs().iter().any(|o| o.id == d) {
+                    return Err(RpcError::new(api::NO_DOCUMENT, format!("no open document has the id {d}")));
+                }
+                Some(d)
+            }
+        };
         let p = &mut self.plugins[i];
         if let Some(c) = &command
             && !p.manifest.as_ref().is_ok_and(|m| m.commands.iter().any(|k| &k.id == c))
         {
             return Err(RpcError::params(format!("\"command\" {c} isn't one of the plugin's commands")));
         }
-        let at = p.status.iter().position(|s| s.id == id);
+        let at = p.status.iter().position(|s| s.id == id && s.document == document);
+        // At most STATUS_ITEMS ids: a window shows each id once.
+        let new_id = !p.status.iter().any(|s| s.id == id);
+        let ids = p.status.iter().map(|s| s.id.as_str()).collect::<HashSet<_>>().len();
         match (at, text.is_empty()) {
             (Some(k), true) => {
                 p.status.remove(k);
             }
-            (Some(k), false) => p.status[k] = StatusItem { plugin: name.to_owned(), id, text, tooltip, command },
+            (Some(k), false) => p.status[k] = StatusItem { plugin: name.to_owned(), id, document, text, tooltip, command },
             (None, true) => {}
-            (None, false) if p.status.len() >= STATUS_ITEMS => return Err(RpcError::new(BUSY, format!("a plugin can show at most {STATUS_ITEMS} status bar items"))),
-            (None, false) => p.status.push(StatusItem { plugin: name.to_owned(), id, text, tooltip, command }),
+            (None, false) if new_id && ids >= STATUS_ITEMS => return Err(RpcError::new(BUSY, format!("a plugin can show at most {STATUS_ITEMS} status bar items"))),
+            (None, false) => p.status.push(StatusItem { plugin: name.to_owned(), id, document, text, tooltip, command }),
         }
         Ok(Value::Null)
     }
 
-    pub fn status_items(&self) -> Vec<&StatusItem> {
-        self.plugins.iter().filter(|p| matches!(p.state, State::Running)).flat_map(|p| p.status.iter()).collect()
+    /// The status bar items `window` shows: each plugin's items for every
+    /// document, with those for the document in front in their place.
+    pub fn status_items(&self, window: u64) -> Vec<&StatusItem> {
+        let front = self.windows.get(&window).and_then(|w| w.front);
+        let mut out = Vec::new();
+        for p in self.plugins.iter().filter(|p| matches!(p.state, State::Running)) {
+            let mine = |s: &&StatusItem| s.document.is_some() && s.document == front;
+            for s in &p.status {
+                match s.document {
+                    // Replaced by the front document's own, if it has one.
+                    None => out.push(p.status.iter().find(|o| o.id == s.id && mine(o)).unwrap_or(s)),
+                    Some(_) if mine(&s) && !p.status.iter().any(|o| o.id == s.id && o.document.is_none()) => out.push(s),
+                    Some(_) => {}
+                }
+            }
+        }
+        out
     }
 
     // ---- settings and keys --------------------------------------------------------------

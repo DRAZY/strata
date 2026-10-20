@@ -26,7 +26,7 @@
 //! - Git's error text can hold a remote's address with a password in it:
 //!   it's shown and logged only through `redact`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -1618,6 +1618,48 @@ impl Job {
     pub fn holds(&self, path: &Path) -> bool {
         holds_in(&self.integrating, &self.top, path)
     }
+}
+
+/// When each vault (by real path) last synced without trouble, as local
+/// "YYYY-MM-DD HH:mm", for every window and, through the session, the next
+/// run; and a counter bumped by every change (the session is saved when it
+/// changes).
+static SYNCED: Mutex<(BTreeMap<PathBuf, String>, u64)> = Mutex::new((BTreeMap::new(), 0));
+
+fn synced() -> std::sync::MutexGuard<'static, (BTreeMap<PathBuf, String>, u64)> {
+    SYNCED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// `vault` synced without trouble at `at`.
+pub fn note_synced(vault: &Path, at: String) {
+    let mut s = synced();
+    s.0.insert(vault.to_owned(), at);
+    s.1 += 1;
+}
+
+pub fn synced_at(vault: &Path) -> Option<String> {
+    synced().0.get(vault).cloned()
+}
+
+/// The times, to save with the session.
+pub fn synced_snapshot() -> BTreeMap<PathBuf, String> {
+    synced().0.clone()
+}
+
+pub fn synced_generation() -> u64 {
+    synced().1
+}
+
+/// Start from the times a session saved (a sync made since stays).
+pub fn restore_synced(saved: &BTreeMap<PathBuf, String>) {
+    let mut s = synced();
+    for (vault, at) in saved {
+        // Only what this module writes: a short, plain date and time.
+        if at.len() <= 16 && at.chars().all(|c| c.is_ascii_digit() || matches!(c, '-' | ' ' | ':')) {
+            s.0.entry(vault.clone()).or_insert_with(|| at.clone());
+        }
+    }
+    s.1 += 1;
 }
 
 #[cfg(test)]

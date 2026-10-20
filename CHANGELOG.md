@@ -29,9 +29,10 @@ on; see Security below.
   and writes the link the way the vault's Obsidian settings ask.
 - Notes: a backlinks panel under each note lists the notes linking to it,
   with the line that holds each link, and the note's tags. It's kept up to
-  date as Obsidian, a sync tool or Git changes files; `notes_backlinks`
-  chooses when it shows. `#tags` and frontmatter tags are tinted, and
-  **Notes: Find Tag…** lists every tag with its notes.
+  date as Obsidian, a sync tool or Git changes files, and counts notes open
+  in tabs as they are, saved or not; `notes_backlinks` chooses when it
+  shows. `#tags` and frontmatter tags are tinted, and **Notes: Find Tag…**
+  lists every tag with its notes.
 - Notes: **Notes: Open Daily Note**, **Notes: New Note…** and **Notes: New
   Note from Template…** follow Obsidian's Daily notes and Templates settings,
   filling in `{{date}}`, `{{time}}` and `{{title}}`.
@@ -105,9 +106,10 @@ on; see Security below.
   Strata starts and talks to with JSON-RPC over their standard input and
   output (the framing language servers use). A plugin can add commands to
   the command palette and Tools ▸ Plugins, keys (never one Strata already
-  uses), status bar items, a Markdown panel and pick lists; read and edit
-  open files (one Undo takes back each edit); and read and write files in the
-  side bar folders. A plugin that crashes is restarted, and left stopped
+  uses), status bar items (for every window, or for the file in front of
+  each), a Markdown panel and pick lists; read and edit open files (one
+  Undo takes back each edit); and read and write files in the side bar
+  folders. A plugin that crashes is restarted, and left stopped
   after three crashes in five minutes; one that floods Strata with messages
   or stops answering can't hold up the editor. Plugin settings go in
   `plugins` in settings.json. See the new Plugins page in the manual, with

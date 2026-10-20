@@ -236,7 +236,7 @@ Hold ⌘ (Ctrl on Windows and Linux) while pointing. Only files that exist are l
 
 Links, backlinks and tags come from an index of the notes on disk, which Strata keeps up to date in the background. If something seems out of date:
 
-- **Save the note.** Backlinks and tags come from the notes as they are saved, so a link you've typed but not saved yet shows up once you save.
+- **Save the note.** Tags come from the notes as they are saved, so a tag you've typed but not saved yet shows up once you save. Backlinks count the notes open in tabs as they are, saved or not.
 - **Give it a moment.** Strata looks for notes changed by Obsidian, a sync tool or Git every few seconds, and whenever you come back to the window. A big vault takes a second or two to index the first time.
 - **Check the note is indexed.** Folders whose names start with a dot (`.obsidian`, `.trash`, `.git`) aren't indexed, as in Obsidian. In a folder that isn't an Obsidian vault, files your `.gitignore` ignores are left out too. Strata indexes up to 200,000 files in a folder.
 - **A vault inside a bigger folder** is only found by its `.obsidian` folder. If your notes don't have one, open the notes folder itself with **File ▸ Open Folder…**.
