@@ -212,30 +212,43 @@ pub fn head_text(path: &Path) -> Option<String> {
 // Line diff
 // ---------------------------------------------------------------------------
 
-/// Lines as the editor numbers them: split on '\n', a trailing '\r' ignored.
+/// Lines as Git counts them, numbered as the editor does: split on '\n', a
+/// trailing '\r' ignored, and a final newline ends the last line rather
+/// than starting an empty one (an empty text has no lines).
 fn split_lines(s: &str) -> Vec<&str> {
-    s.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect()
+    let mut v: Vec<&str> = s.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+    if s.is_empty() || s.ends_with('\n') {
+        v.pop();
+    }
+    v
 }
 
-/// Changed line ranges in `current` relative to `base`, gutter style.
+/// Changed line ranges in `current` relative to `base`, gutter style, as
+/// `git diff` has them: text typed after the final newline is added lines,
+/// and a last line that gains or loses its newline is changed. (When
+/// neither text ends with a newline, adding or removing a line at the end
+/// marks just that line; Git also counts the old last line as changed.)
 /// Empty when identical, or when either side exceeds the size limit.
 pub fn diff_lines(base: &str, current: &str) -> Changes {
     let (a, b) = (split_lines(base), split_lines(current));
     if a.len() > MAX_DIFF_LINES || b.len() > MAX_DIFF_LINES {
         return Vec::new();
     }
-    // Intern lines so the inner loop compares integers.
-    let mut ids: HashMap<&str, u32> = HashMap::with_capacity(a.len() + b.len());
-    fn intern<'a>(ids: &mut HashMap<&'a str, u32>, lines: &[&'a str]) -> Vec<u32> {
+    // Intern lines so the inner loop compares integers. When only one side
+    // ends with a newline, its last line without one isn't the same line.
+    let toggled = base.ends_with('\n') != current.ends_with('\n');
+    let mut ids: HashMap<(&str, bool), u32> = HashMap::with_capacity(a.len() + b.len());
+    fn intern<'a>(ids: &mut HashMap<(&'a str, bool), u32>, lines: &[&'a str], open: bool) -> Vec<u32> {
         lines
             .iter()
-            .map(|&l| {
+            .enumerate()
+            .map(|(i, &l)| {
                 let n = ids.len() as u32;
-                *ids.entry(l).or_insert(n)
+                *ids.entry((l, open && i + 1 == lines.len())).or_insert(n)
             })
             .collect()
     }
-    let (a, b) = (intern(&mut ids, &a), intern(&mut ids, &b));
+    let (a, b) = (intern(&mut ids, &a, toggled && !base.ends_with('\n')), intern(&mut ids, &b, toggled && !current.ends_with('\n')));
 
     let pre = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
     let suf = a[pre..].iter().rev().zip(b[pre..].iter().rev()).take_while(|(x, y)| x == y).count();
@@ -334,18 +347,7 @@ pub fn unified_diff(old: &str, new: &str, old_name: &str, new_name: &str) -> Opt
     if old == new {
         return None;
     }
-    fn lines(s: &str) -> Vec<&str> {
-        let mut v = split_lines(s);
-        // A final newline ends the last line rather than starting an empty one.
-        if s.ends_with('\n') {
-            v.pop();
-        }
-        if s.is_empty() {
-            v.clear();
-        }
-        v
-    }
-    let (a, b) = (lines(old), lines(new));
+    let (a, b) = (split_lines(old), split_lines(new));
     if a.len() > MAX_DIFF_LINES || b.len() > MAX_DIFF_LINES {
         return None;
     }
@@ -737,6 +739,51 @@ mod tests {
         assert!(run(&["add", "."]));
         assert!(run(&["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"]));
         Some(dir)
+    }
+
+    /// The gutter marks what `git diff` says changed, for text typed on the
+    /// empty line after a final newline too (those lines are added, not
+    /// changed: there is no line there in Git's eyes).
+    #[test]
+    fn gutter_agrees_with_git_diff() {
+        let Some(dir) = temp_repo("gutter") else { return };
+        let file = dir.join("sub/f.txt");
+        let base = "one\ntwo\nthree\n";
+        // git diff -U0: each hunk's new lines (and whether old ones went), as the gutter shows them.
+        let git_says = |cur: &str| -> Changes {
+            std::fs::write(&file, cur).unwrap();
+            let out = String::from_utf8(git(&dir, &["diff", "-U0", "--no-color", "--no-ext-diff", "--", "sub/f.txt"]).unwrap()).unwrap();
+            out.lines()
+                .filter_map(|l| l.strip_prefix("@@ -"))
+                .map(|h| {
+                    let mut parts = h.split(' ');
+                    let count = |s: &str| -> (usize, usize) {
+                        let (at, n) = s.split_once(',').unwrap_or((s, "1"));
+                        (at.parse().unwrap(), n.parse().unwrap())
+                    };
+                    let (_, old) = count(parts.next().unwrap());
+                    let (at, new) = count(parts.next().unwrap().trim_start_matches('+'));
+                    match (old, new) {
+                        (_, 0) => (at..at, Deleted),
+                        (0, _) => (at - 1..at - 1 + new, Added),
+                        _ => (at - 1..at - 1 + new, Modified),
+                    }
+                })
+                .collect()
+        };
+        for cur in [
+            "one\ntwo\nthree\nx\ny\nz",
+            "one\ntwo\nthree\nx\n",
+            "one\ntwo\nthree\n\n",
+            "one\ntwo\nthree",
+            "one\nTWO\nthree\nfour\n",
+            "one\nthree\n",
+            "zero\none\ntwo\nthree\n",
+            "",
+        ] {
+            assert_eq!(d(base, cur), git_says(cur), "{cur:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
