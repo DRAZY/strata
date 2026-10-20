@@ -475,7 +475,7 @@ mod ui_shots {
     }
 }
 
-/// The README screenshots (see the module; the scenes need sh and git).
+/// The README screenshots (see the module; the scenes need sh, git and python3).
 #[cfg(unix)]
 mod readme_shots;
 

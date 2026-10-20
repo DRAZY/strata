@@ -55,7 +55,18 @@ They aren't in 1.0.x.
   settings, renaming a note with its links updated (and an all-or-nothing
   Undo Rename), and notices for sync conflict copies. The Markdown preview
   shows wikilinks, tags, properties and embeds. Strata reads `.obsidian` but
-  never writes it, and notes never use the network.
+  never writes it.
+- **Runnable code blocks** ([#11](https://github.com/DRAZY/strata/issues/11)):
+  shell, Python, Node and Ruby blocks in a Markdown file run from the
+  preview's ▶ Run button or Notes: Run Code Block, in the terminal or a REPL
+  tab, or in a separate process with the output captured under the block.
+  Nothing runs until you ask, and Strata shows exactly what will run and asks
+  before a file's first block.
+- **Git sync for notes** ([#12](https://github.com/DRAZY/strata/issues/12)):
+  off until you turn it on for a vault. Commits what changed, rebases onto
+  the remote and pushes (never forced), on demand or on a timer, with your own
+  credentials. A note changed on both sides stops the sync with nothing
+  changed, and is settled with Compare and Keep My Versions and Sync.
 - **Optional AI helpers** ([#10](https://github.com/DRAZY/strata/issues/10)):
   summarize a review, explain a change or a selection, flag risky edits and
   draft a commit message, with a model you choose: Ollama or LM Studio on your
@@ -70,16 +81,10 @@ They aren't in 1.0.x.
   the open folders, but only with the permissions you give them when they
   first run (asked again whenever the package changes). Install them from a
   folder or a zip; a crashing plugin can't take Strata with it.
-
-## In progress
-
-Being worked on, but not finished or merged yet. What they include may change
-before they ship.
-
-- **Runnable code blocks** ([#11](https://github.com/DRAZY/strata/issues/11)):
-  run a fenced code block in a note and see its output.
-- **Git sync for notes** ([#12](https://github.com/DRAZY/strata/issues/12)):
-  keep a notes vault in step with a Git remote.
+- **Hidden and direction-changing characters**: invisible characters and the
+  ones that change text direction (the "Trojan Source" problem) show as
+  labeled boxes in the editor, Compare and Review Changes, and as named
+  markers everywhere else Strata shows text.
 
 ## After that
 

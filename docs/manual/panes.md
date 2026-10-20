@@ -119,7 +119,7 @@ Split the editor area into panes with View ▸ Layout. Each pane, also called a 
 
 Panes are numbered left to right, then top to bottom. When you switch to a layout with fewer panes, the tabs from the panes that go away move into the last remaining pane.
 
-**Split Right** ({{key:split_right}}, "Layout: Split Right" in the command palette) moves the current file into the pane to its right, adding a column if there isn't one.
+**Split Right** ({{key:split_right}}, "Layout: Split Right (move file to a new pane)" in the command palette) moves the current file into the pane to its right, adding a column if there isn't one.
 
 Drag the line between two panes to resize them. Each pane keeps at least a small minimum size. The focused pane is marked with a thin accent line along its top, and an empty pane shows a hint until you drag a tab into it. Click a pane to focus it.
 

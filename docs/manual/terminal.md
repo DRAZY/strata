@@ -144,6 +144,8 @@ Send to Terminal ({{key:send_to_terminal}}, Tools ▸ Send to Terminal, or "Term
 
 The editor keeps the keyboard, so you can go on editing and sending. Selected text that spans several lines is sent as one paste: shells and REPLs that support bracketed paste (zsh, recent bash, fish, Python 3.13 and others) receive the whole block before running it, while others run it one line at a time. With several selections, their text is sent one after another, each on its own line. When the last line sent is indented, such as the body of a Python `for` loop, and Python is then waiting at its `...` prompt, Strata presses Enter a second time so the block runs. It does this only for Python (on macOS and Linux), so an extra Enter never answers a password or confirmation prompt from another program.
 
+To send a whole fenced code block from a Markdown file, use its **▶ Run** button in the preview or **Notes: Run Code Block**; see [Running code blocks](notes.md#running-code-blocks).
+
 ## Right-click menu
 
 Right-click inside the terminal for the menu below (Shift+right-click while a program is using the mouse):

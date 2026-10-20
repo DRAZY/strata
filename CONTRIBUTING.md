@@ -48,7 +48,7 @@ surrounding code instead of reformatting files.
   appear on the shortcuts page.
 - **Color schemes:** every scheme must meet the contrast requirements.
 
-### Language servers, Review Changes, the terminal, notes and AI helpers
+### Language servers, Review Changes, the terminal, notes, AI helpers and plugins
 
 - **Language servers:** the tests use a small fake server in
   `src/lsp/fake.rs` (the test binary starts itself as the server; see
@@ -73,6 +73,16 @@ surrounding code instead of reformatting files.
   Obsidian's settings. Never point a test at a real vault. To check speed on
   10,000 generated notes (indexing, typing while it indexes, the `[[` list),
   run `cargo test --release notes_bench -- --ignored --nocapture`.
+- **Runnable code blocks:** the tests run real `sh` blocks (and `python3`,
+  when it's installed) in temporary folders, never in your terminal's shell.
+  `STRATA_RUN_SHOTS=/tmp/run cargo test --release run_block_shots` saves
+  screenshots of a REPL tab and of a block that's refused for its hidden
+  characters.
+- **Git sync for notes:** the tests make a bare "remote" and two clones of
+  it in a temporary folder (`notes::sync::repo_tests::fixture`), run Git
+  with a configuration of their own (`git_env`) so your global Git settings
+  never apply, and skip themselves when `git` isn't installed. Never point a
+  test at a real vault or remote.
 - **AI helpers:** `cargo test` never touches the network or the keychain. The
   tests talk to a fake OpenAI-compatible or Anthropic server on 127.0.0.1
   (`ai::http::tests::FakeServer`) and a fake `claude` script, and keys go to
@@ -82,6 +92,18 @@ surrounding code instead of reformatting files.
   saves screenshots of the consent question, a streamed answer and Settings ▸
   AI Helpers; add `STRATA_AI_LIVE_MODEL=llama3.2` to also ask a real Ollama on
   `localhost:11434` for a summary.
+- **Plugins:** the tests use a fake plugin in `src/plugins/fake.rs` (the
+  test binary starts itself as the plugin), so `cargo test` needs no Python
+  or Node; teach it new commands rather than relying on a real interpreter.
+  The two examples in `examples/plugins` are also run through the window
+  when `python3` and `node` are installed. Plugins get a settings folder of
+  their own in each test, never yours.
+- **Hidden characters:** tests draw the window with U+202E in file names,
+  text, status messages, the palette and plugin output, and fail if the raw
+  character reaches the screen (`hidden_ui::no_surface_draws_a_raw_hidden_character`
+  and the plugin tests). New places that show text from files, servers,
+  plugins or models should draw it with `hidden::label`, `hidden::widget` or
+  `hidden::job`, and get a check like those.
 
 ## Coding conventions
 
@@ -126,7 +148,10 @@ ImageMagick's `magick`. The README scenes live in
 temporary folder, so no personal paths appear; the language server scene uses
 the fake server, the notes scene a made-up vault, and the AI scene the fake AI
 server (shown as a local Ollama), so they look the same on every machine and
-nothing goes over the network. Keep README images
+nothing goes over the network. The Git sync scene pushes only to a bare
+repository in the temporary folder, with a Git configuration of its own, and
+the plugins scene installs the two examples into a throwaway settings folder
+(`/tmp/strata-readme-shots`) and needs `python3` to run Word Count. Keep README images
 under 400 KB each. Look at every image after regenerating them, and if an
 unchanged scene differs only by noise, keep the old file.
 
