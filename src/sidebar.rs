@@ -42,6 +42,8 @@ pub enum Action {
     ReplaceInFiles,
     /// Compare this file with an open tab (or another file).
     Compare(PathBuf),
+    /// Open this folder in the side bar (None: ask which).
+    OpenFolder(Option<PathBuf>),
 }
 
 /// A tab as the Open Files list shows it.
@@ -106,6 +108,9 @@ pub struct Sidebar {
     /// The window's folders, in the order added; empty when none is open.
     pub roots: Vec<PathBuf>,
     pub visible: bool,
+    /// Shown with no folder open (Toggle Side Bar): the Open Files list and
+    /// a way to open one. Not kept between launches.
+    pub without_folder: bool,
     pub tab: Tab,
     /// Directory listings, read once per folder until it changes or is refreshed.
     listings: HashMap<PathBuf, Listing>,
@@ -148,6 +153,7 @@ impl Sidebar {
         Self {
             roots: Vec::new(),
             visible: true,
+            without_folder: false,
             tab: Tab::Files,
             listings: HashMap::new(),
             drawn: Default::default(),
@@ -183,10 +189,19 @@ impl Sidebar {
         self.roots.iter().filter(|r| path.starts_with(r)).max_by_key(|r| r.components().count()).map(PathBuf::as_path)
     }
 
-    /// The sidebar panel is drawn: there are folders, or the Search or
-    /// Changes tab is up (both work without a folder).
+    /// The sidebar panel is drawn: there are folders, the Search or
+    /// Changes tab is up (both work without a folder), or it was asked for.
     pub fn shown(&self) -> bool {
-        self.visible && (!self.roots.is_empty() || self.tab != Tab::Files)
+        self.visible && (!self.roots.is_empty() || self.tab != Tab::Files || self.without_folder)
+    }
+
+    /// Show or hide the panel (View ▸ Side Bar ▸ Toggle Side Bar).
+    pub fn set_shown(&mut self, on: bool) {
+        self.visible = on;
+        self.without_folder = on && self.roots.is_empty();
+        if !on && self.roots.is_empty() {
+            self.tab = Tab::Files;
+        }
     }
 
     /// `path` for display: relative to its folder, after the folder's name
@@ -246,9 +261,9 @@ impl Sidebar {
 
     /// Remove all Folders from Project: an empty sidebar.
     pub fn close_folders(&mut self) {
-        let (visible, show_open_files) = (self.visible, self.show_open_files);
+        let (visible, show_open_files, without_folder) = (self.visible, self.show_open_files, self.shown());
         *self = Sidebar::new();
-        (self.visible, self.show_open_files) = (visible, show_open_files);
+        (self.visible, self.show_open_files, self.without_folder) = (visible, show_open_files, without_folder);
     }
 
     /// Find in Folder…: the Search tab, looking in `dir`.
@@ -440,47 +455,27 @@ impl Sidebar {
         let prompted = self.prompt(ui.ctx()).or(confirmed).or(deleted).or(finished);
         let roots = self.roots.clone();
         ui.horizontal(|ui| {
-            // No folder: find in files (in open files) and the changes list are on offer.
-            if !roots.is_empty() {
-                ui.selectable_value(&mut self.tab, Tab::Files, "Files");
-            }
+            ui.selectable_value(&mut self.tab, Tab::Files, "Files");
             ui.selectable_value(&mut self.tab, Tab::Search, "Search");
             ui.selectable_value(&mut self.tab, Tab::Changes, "Changes");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.tab == Tab::Files && ui.small_button("⟳").on_hover_text("Refresh").clicked() {
+                if self.tab == Tab::Files && !roots.is_empty() && ui.small_button("⟳").on_hover_text("Refresh").clicked() {
                     self.refresh();
                 }
                 if roots.is_empty() && ui.small_button("×").on_hover_text("Close").clicked() {
-                    self.tab = Tab::Files;
+                    self.set_shown(false);
                 }
             });
         });
-        if roots.is_empty() && self.tab == Tab::Files {
-            return prompted;
-        }
         ui.separator();
+        if roots.is_empty() && self.tab == Tab::Files {
+            return self.no_folder(ui, current, open).or(prompted);
+        }
         let action = match self.tab {
             Tab::Files => {
                 let mut action = None;
                 egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-                    if self.show_open_files && open.len() > 1 {
-                        egui::CollapsingHeader::new(RichText::new("OPEN FILES").small().weak()).id_salt("open-files").default_open(true).show(ui, |ui| {
-                            for (i, f) in open.iter().enumerate() {
-                                crate::fonts::ensure_cjk(ui.ctx(), &f.name);
-                                ui.horizontal(|ui| {
-                                    let label = if f.dirty { format!("● {}", f.name) } else { f.name.clone() };
-                                    if ui.selectable_label(f.active, crate::hidden::label(ui, &label)).clicked() {
-                                        action = Some(Action::Activate(i));
-                                    }
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if ui.small_button("×").on_hover_text("Close").clicked() {
-                                            action = Some(Action::Close(i));
-                                        }
-                                    });
-                                });
-                            }
-                        });
-                    }
+                    self.open_files_list(ui, open, &mut action);
                     // Each folder is a top-level tree, like Sublime's project folders.
                     for root in &roots {
                         let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
@@ -506,6 +501,53 @@ impl Sidebar {
             Tab::Changes => None,
         };
         prompted.or(action)
+    }
+
+    /// The Open Files list (when it's on and a tab is open).
+    fn open_files_list(&self, ui: &mut Ui, open: &[OpenFile], action: &mut Option<Action>) {
+        if !self.show_open_files || open.is_empty() {
+            return;
+        }
+        egui::CollapsingHeader::new(RichText::new("OPEN FILES").small().weak()).id_salt("open-files").default_open(true).show(ui, |ui| {
+            for (i, f) in open.iter().enumerate() {
+                crate::fonts::ensure_cjk(ui.ctx(), &f.name);
+                ui.horizontal(|ui| {
+                    let label = if f.dirty { format!("● {}", f.name) } else { f.name.clone() };
+                    if ui.selectable_label(f.active, crate::hidden::label(ui, &label)).clicked() {
+                        *action = Some(Action::Activate(i));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("×").on_hover_text("Close").clicked() {
+                            *action = Some(Action::Close(i));
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    /// The Files tab with no folder open: the open files, and a way to open
+    /// the current file's folder or another one.
+    fn no_folder(&mut self, ui: &mut Ui, current: Option<&Path>, open: &[OpenFile]) -> Option<Action> {
+        let mut action = None;
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            self.open_files_list(ui, open, &mut action);
+            ui.add_space(8.0);
+            ui.label(RichText::new("No folder is open.").weak());
+            ui.add_space(4.0);
+            if let Some(dir) = current.and_then(Path::parent).filter(|d| !d.as_os_str().is_empty()) {
+                let name = dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned());
+                crate::fonts::ensure_cjk(ui.ctx(), &name);
+                let r = ui.button(format!("Open “{}”", crate::hidden::plain(&name))).on_hover_text(format!("Show the folder this file is in: {}", crate::hidden::plain(&dir.display().to_string())));
+                if r.clicked() {
+                    action = Some(Action::OpenFolder(Some(dir.to_owned())));
+                }
+            }
+            if ui.button("Open Folder…").clicked() {
+                action = Some(Action::OpenFolder(None));
+            }
+        });
+        action
     }
 
     /// Right-click menu for a tree row.

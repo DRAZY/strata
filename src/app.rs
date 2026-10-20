@@ -1122,7 +1122,13 @@ impl StrataApp {
                 let prefill = self.selection_for_find_in_files();
                 self.sidebar.start_replace_in_files(prefill);
             }
-            Cmd::ToggleOpenFiles => self.sidebar.show_open_files = !self.sidebar.show_open_files,
+            Cmd::ToggleOpenFiles => {
+                self.sidebar.show_open_files = !self.sidebar.show_open_files;
+                // Turned on: show the list, side bar and all.
+                if self.sidebar.show_open_files && !self.sidebar.shown() {
+                    self.sidebar.set_shown(true);
+                }
+            }
             Cmd::LayoutRows3 => self.set_layout(Layout::grid(1, 3)),
             Cmd::NewGroup => self.new_group(),
             Cmd::CloseGroup => self.close_group(),
@@ -1297,10 +1303,8 @@ impl StrataApp {
             Cmd::MoveToGroup(g) => self.move_to_pane(g as usize),
             Cmd::ToggleSidebar => {
                 // Same test as the menu's check mark: is it on screen?
-                self.sidebar.visible = !self.sidebar.shown();
-                if self.sidebar.visible && !self.sidebar.shown() {
-                    self.status = "The side bar shows once a folder is open (File ▸ Open Folder…)".into();
-                }
+                let on = !self.sidebar.shown();
+                self.sidebar.set_shown(on);
             }
             Cmd::Find => self.open_find(false),
             Cmd::Replace => self.open_find(true),
@@ -2928,6 +2932,8 @@ impl eframe::App for StrataApp {
                 Some(sidebar::Action::Status(s)) => self.status = s,
                 Some(sidebar::Action::ReplaceInFiles) => self.replace_in_files(Some(ui.ctx().clone())),
                 Some(sidebar::Action::Compare(p)) => self.compare_file_with_tab(ctx, p),
+                Some(sidebar::Action::OpenFolder(Some(dir))) => self.open_folder(dir),
+                Some(sidebar::Action::OpenFolder(None)) => self.run(ctx, Cmd::OpenFolder),
                 None => {}
             }
         }

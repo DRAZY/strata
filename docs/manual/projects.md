@@ -18,7 +18,7 @@ Every folder in the side bar counts everywhere a folder does: Find in Files and 
 
 ## The side bar
 
-The side bar sits on the left of the window. It appears while a folder is open, and also for Find in Files when no folder is open. Show or hide it with {{key:toggle_side_bar}} (View ▸ Side Bar ▸ Toggle Side Bar). Drag its right edge to make it wider or narrower.
+The side bar sits on the left of the window. It appears while a folder is open, and also for Find in Files when no folder is open. Show or hide it with {{key:toggle_side_bar}} (View ▸ Side Bar ▸ Toggle Side Bar). With no folder open it lists your open files, with a button that opens the current file's folder and an **Open Folder…** button. Drag its right edge to make it wider or narrower.
 
 At the top are two tabs:
 
@@ -71,9 +71,9 @@ In the name dialog, press Enter to confirm or Esc to cancel. While a dialog is o
 
 ### Open Files
 
-When more than one tab is open, an **OPEN FILES** section above the tree lists them. Click a name to switch to that tab, or the × to close it. A ● before the name marks unsaved changes. Click the section's heading to collapse it.
+An **OPEN FILES** section above the tree lists your open tabs. Click a name to switch to that tab, or the × to close it. A ● before the name marks unsaved changes. Click the section's heading to collapse it.
 
-Turn the section on or off with View ▸ Side Bar ▸ Toggle Show Open Files ({{key:toggle_open_files}}).
+Turn the section on or off with View ▸ Side Bar ▸ Toggle Show Open Files ({{key:toggle_open_files}}). Turning it on also shows the side bar if it's hidden.
 
 ### Revealing the current file
 

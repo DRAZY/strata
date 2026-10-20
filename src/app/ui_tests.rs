@@ -20,6 +20,22 @@ pub(super) fn frame(app: &mut StrataApp, ctx: &Context, events: Vec<Event>) -> e
     frame_sized(app, ctx, vec2(1000.0, 600.0), events)
 }
 
+/// One frame's labelled accessibility nodes: (label, rect).
+pub(super) fn labelled(app: &mut StrataApp, ctx: &Context) -> Vec<(String, Rect)> {
+    ctx.enable_accesskit();
+    frame(app, ctx, vec![]);
+    let out = frame(app, ctx, vec![]);
+    let Some(update) = out.platform_output.accesskit_update else { return Vec::new() };
+    update
+        .nodes
+        .iter()
+        .filter_map(|(_, n)| {
+            let b = n.bounds()?;
+            Some((n.label()?.to_owned(), Rect::from_min_max(egui::pos2(b.x0 as f32, b.y0 as f32), egui::pos2(b.x1 as f32, b.y1 as f32))))
+        })
+        .collect()
+}
+
 fn primary() -> Modifiers {
     if cfg!(target_os = "macos") { Modifiers::MAC_CMD | Modifiers::COMMAND } else { Modifiers::CTRL | Modifiers::COMMAND }
 }
@@ -172,15 +188,55 @@ fn toggle_side_bar_check_matches_what_is_shown() {
     let mut app = StrataApp::new(None, None);
     assert!(!app.sidebar.shown());
     assert_eq!(checked(&app), Some(false), "no folder: nothing shown, no check");
-    app.run(&ctx, Cmd::ToggleSidebar);
-    assert!(!app.sidebar.shown() && app.status.contains("folder"), "{}", app.status);
+    // With no folder open it still comes out, with the open files and the file's folder.
     let dir = temp_dir("toggle");
+    std::fs::write(dir.join("a.txt"), "a").unwrap();
+    app.open_path(dir.join("a.txt"), false);
+    app.run(&ctx, Cmd::ToggleSidebar);
+    assert_eq!((app.sidebar.shown(), checked(&app)), (true, Some(true)));
+    let folder = format!("Open “{}”", dir.file_name().unwrap().to_string_lossy());
+    let nodes = labelled(&mut app, &ctx);
+    let has = |l: &str| nodes.iter().any(|(n, _)| n == l);
+    assert!(has("OPEN FILES") && has("a.txt") && has("Open Folder…") && has(&folder), "{nodes:?}");
+    app.run(&ctx, Cmd::ToggleSidebar);
+    assert_eq!((app.sidebar.shown(), checked(&app)), (false, Some(false)));
+    assert!(!labelled(&mut app, &ctx).iter().any(|(n, _)| n == "Open Folder…"));
+    // Back again, and its button opens the file's folder.
+    app.run(&ctx, Cmd::ToggleSidebar);
+    let at = labelled(&mut app, &ctx).into_iter().find(|(n, _)| *n == folder).unwrap().1.center();
+    let b = |pressed| Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+    frame(&mut app, &ctx, vec![Event::PointerMoved(at), b(true)]);
+    frame(&mut app, &ctx, vec![b(false)]);
+    assert_eq!(app.sidebar.roots, std::slice::from_ref(&dir));
+    assert!(labelled(&mut app, &ctx).iter().any(|(n, _)| n == "a.txt"), "the tree");
+    app.sidebar.close_folders();
     app.open_folder(dir.clone());
     assert_eq!(checked(&app), Some(true));
     app.run(&ctx, Cmd::ToggleSidebar);
     assert_eq!((app.sidebar.shown(), checked(&app)), (false, Some(false)));
     app.run(&ctx, Cmd::ToggleSidebar);
     assert_eq!((app.sidebar.shown(), checked(&app)), (true, Some(true)));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Show Open Files lists even a single tab, and turning it on brings the
+/// side bar out to show it.
+#[test]
+fn show_open_files_lists_one_tab_and_shows_the_side_bar() {
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    let dir = temp_dir("open-files");
+    std::fs::write(dir.join("only.txt"), "x").unwrap();
+    app.open_path(dir.join("only.txt"), false);
+    app.open_folder(dir.clone());
+    let listed = |app: &mut StrataApp| labelled(app, &ctx).iter().any(|(n, _)| n == "OPEN FILES");
+    assert!(app.sidebar.show_open_files && listed(&mut app), "one tab is listed too");
+    app.run(&ctx, Cmd::ToggleOpenFiles);
+    assert!(!listed(&mut app));
+    app.run(&ctx, Cmd::ToggleSidebar);
+    assert!(!app.sidebar.shown());
+    app.run(&ctx, Cmd::ToggleOpenFiles);
+    assert!(app.sidebar.shown() && listed(&mut app), "turned on, it's shown");
     std::fs::remove_dir_all(dir).ok();
 }
 
