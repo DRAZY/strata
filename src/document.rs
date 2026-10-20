@@ -64,6 +64,18 @@ pub struct Document {
     pub binary: Option<Box<crate::binary::BinaryView>>,
 }
 
+/// A text file read and decoded, not yet a tab (see `Document::load_text`).
+pub struct Loaded {
+    pub path: PathBuf,
+    pub buffer: Buffer,
+    encoding: Encoding,
+    guessed: bool,
+    /// Large-file mode: (because of a long line, the longest line's bytes).
+    large: Option<(bool, usize)>,
+    /// Modification time and size before reading.
+    pub disk: (Option<SystemTime>, Option<u64>),
+}
+
 /// Images are shrunk to fit this many pixels a side (what GPUs take).
 pub const MAX_IMAGE_SIDE: u32 = 8192;
 
@@ -101,7 +113,7 @@ pub fn mtime(path: &Path) -> Option<SystemTime> {
 }
 
 /// Modification time and size of the file at `path`.
-fn stamp(path: &Path) -> (Option<SystemTime>, Option<u64>) {
+pub fn stamp(path: &Path) -> (Option<SystemTime>, Option<u64>) {
     match std::fs::metadata(path) {
         Ok(m) => (m.modified().ok(), Some(m.len())),
         Err(_) => (None, None),
@@ -166,24 +178,44 @@ impl Document {
             doc.show_binary(view);
             return Ok(doc);
         }
+        Ok(Self::from_loaded(Self::read_text(path, large_bytes)?))
+    }
+
+    /// Read and decode a file as text (no check that it is text: see
+    /// `load_text`). Nothing here touches the UI, so it can run on a worker.
+    fn read_text(path: PathBuf, large_bytes: u64) -> std::io::Result<Loaded> {
+        let disk = stamp(&path);
         let bytes = if path.exists() { std::fs::read(&path)? } else { Vec::new() };
         let longest = longest_line(&bytes);
         let long_lines = longest > LONG_LINE_BYTES;
-        let large = long_lines || bytes.len() as u64 > large_bytes;
+        let large = (long_lines || bytes.len() as u64 > large_bytes).then_some((long_lines, longest));
         let detected = crate::encoding::detect(&bytes);
         let mut buffer = Buffer::from_str(&detected.text);
         buffer.lossy = detected.lossy;
-        let (encoding, guessed) = (detected.encoding, detected.worth_mentioning());
-        drop(detected);
-        drop(bytes);
-        let mut doc = Self::from_buffer(Some(path), buffer);
-        doc.encoding = encoding;
-        doc.encoding_guessed = guessed;
-        if large {
+        Ok(Loaded { path, buffer, encoding: detected.encoding, guessed: detected.worth_mentioning(), large, disk })
+    }
+
+    /// Read and decode a text file off the UI thread, for `from_loaded`;
+    /// None if it isn't text (it would open in the image or hex view).
+    pub fn load_text(path: PathBuf, large_bytes: u64) -> std::io::Result<Option<Loaded>> {
+        if path.is_file() && crate::binary::BinaryView::open(&path, MAX_IMAGE_SIDE)?.is_some() {
+            return Ok(None);
+        }
+        Self::read_text(path, large_bytes).map(Some)
+    }
+
+    /// The tab for a file read by `load_text` (or `open_with`).
+    pub fn from_loaded(l: Loaded) -> Self {
+        let mut doc = Self::from_buffer(Some(l.path), l.buffer);
+        doc.encoding = l.encoding;
+        doc.encoding_guessed = l.guessed;
+        // As of the read: a change since is noticed like any outside change.
+        (doc.disk_mtime, doc.disk_len) = l.disk;
+        if let Some((long_lines, longest)) = l.large {
             doc.large = Some(LargeFile { syntax: doc.highlighter.syntax_name().to_owned(), long_lines, longest_line: longest });
             doc.highlighter.set_syntax("Plain Text");
         }
-        Ok(doc)
+        doc
     }
 
     /// Re-read the file decoding it as `enc` ("Reopen with Encoding").

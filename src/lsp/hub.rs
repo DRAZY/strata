@@ -207,6 +207,11 @@ impl Hub {
         self.trust_all = false;
     }
 
+    /// The UI context (for worker threads to ask for a repaint).
+    pub fn context(&self) -> Option<egui::Context> {
+        self.ctx.clone()
+    }
+
     pub fn set_context(&mut self, ctx: &egui::Context) {
         if self.ctx.is_none() {
             self.ctx = Some(ctx.clone());
