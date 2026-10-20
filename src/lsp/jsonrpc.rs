@@ -48,9 +48,15 @@ pub struct Decoder {
     body: Option<usize>,
     /// Skipping the body of a message that was too large.
     skip: usize,
+    /// A smaller cap than `MAX_MESSAGE` (plugins get one).
+    limit: Option<usize>,
 }
 
 impl Decoder {
+    pub fn with_limit(limit: usize) -> Self {
+        Self { limit: Some(limit.min(MAX_MESSAGE)), ..Self::default() }
+    }
+
     pub fn push(&mut self, bytes: &[u8]) {
         let mut bytes = bytes;
         if self.skip > 0 {
@@ -79,7 +85,7 @@ impl Decoder {
                 },
             };
             let avail = self.buf.len() - self.start;
-            if len > MAX_MESSAGE {
+            if len > self.limit.unwrap_or(MAX_MESSAGE) {
                 self.body = None;
                 self.skip = len.saturating_sub(avail);
                 self.start += len.min(avail);

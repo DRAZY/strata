@@ -162,6 +162,8 @@ pub struct StrataApp {
     notes: notes_ui::NotesState,
     /// Running Markdown code blocks (see `runblock_ui`).
     code_run: runblock_ui::CodeRunState,
+    /// Plugins, shared with the other windows (see `plugins_ui`).
+    plugins: plugins_ui::PluginsState,
 }
 
 mod ai_ui;
@@ -200,6 +202,7 @@ mod notes_ui;
 mod terminal_ui;
 mod preview;
 mod printing;
+mod plugins_ui;
 mod replace_files;
 mod runblock_ui;
 mod review_ui;
@@ -264,6 +267,7 @@ impl StrataApp {
         let settings_mtime = config.as_deref().and_then(|d| std::fs::metadata(Settings::path(d)).and_then(|m| m.modified()).ok());
         // No settings folder means a test: no language server starts unless the test asks.
         let lsp = lsp_ui::LspState::new(config.as_deref());
+        let plugins = plugins_ui::PluginsState::new(config.as_deref());
         let mut app = Self {
             docs: Vec::new(),
             active: 0,
@@ -344,6 +348,7 @@ impl StrataApp {
             ai: Default::default(),
             notes: Default::default(),
             code_run: Default::default(),
+            plugins,
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -655,6 +660,7 @@ impl StrataApp {
                 self.review_saved(&path);
                 self.notes_saved(&path);
                 self.code_run_saved(&path);
+                self.plugins_saved(i);
                 true
             }
             Err(e) => {
@@ -1334,6 +1340,7 @@ impl StrataApp {
             | Cmd::NotesUndoRename
             | Cmd::NotesCompareConflict => self.notes_command(ctx, cmd),
             Cmd::NotesRunCodeBlock | Cmd::NotesRunCodeBlockCapture | Cmd::NotesForgetCodeBlockFiles => self.code_run_command(ctx, cmd),
+            Cmd::PluginsManage | Cmd::PluginsInstallFolder | Cmd::PluginsInstallZip => self.plugins_command(ctx, cmd),
         }
     }
 
@@ -1341,7 +1348,7 @@ impl StrataApp {
     /// Files' question, Print), or a menu: window and editor commands wait,
     /// and the dialog alone sees Esc and Enter.
     fn modal_open(&self, ctx: &egui::Context) -> bool {
-        self.sidebar.modal_open() || self.print.is_open() || self.review.confirming() || self.lsp.renaming() || self.notes.dialog.is_some() || self.code_run.asking() || egui::Popup::is_any_open(ctx)
+        self.sidebar.modal_open() || self.print.is_open() || self.review.confirming() || self.lsp.renaming() || self.notes.dialog.is_some() || self.code_run.asking() || self.plugins.asking() || egui::Popup::is_any_open(ctx)
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -1393,6 +1400,9 @@ impl StrataApp {
         let sels = d.editor.selections().iter().map(|s| s.range()).collect();
         let primary = d.editor.selections().iter().position(|s| *s == d.editor.primary()).unwrap_or(0);
         self.palette_restore = Some((self.active, sels, primary));
+        if mode == palette::Mode::Commands {
+            self.palette.set_extra_commands(self.plugin_palette_items());
+        }
         let pctx = self.palette_context();
         self.palette.show_mode(mode, prefix, pctx, ctx);
     }
@@ -1424,6 +1434,7 @@ impl StrataApp {
             match event {
                 Event::Run(c) => self.run(ctx, c),
                 Event::Editor(id) => self.run_editor(id),
+                Event::Named(act) => self.run_act(ctx, crate::menus::Act::Named(act)),
                 Event::Open(p) => {
                     self.push_jump();
                     self.open_path(p, false);
@@ -2033,13 +2044,15 @@ enum StatusLeft {
     Branch,
     Review,
     Words,
+    /// Plugins' items.
+    Plugins,
 }
 
 /// Which status bar items fit (see `status_fit`).
 struct StatusFit {
     /// "12:5" instead of "Line 12, Column 5".
     short_pos: bool,
-    left: [bool; 8],
+    left: [bool; 9],
     /// Syntax, encoding, line endings, indentation, theme.
     right: [bool; 5],
     /// Each right item's width (with its separator) when last drawn.
@@ -2052,7 +2065,7 @@ struct StatusFit {
 /// the branch, the count of files to review and the word count; the
 /// message gets what's left (at least a little).
 #[allow(clippy::too_many_arguments)]
-fn status_fit(ui: &egui::Ui, pos: &str, conflict: bool, deleted: bool, lossy: bool, hidden: Option<&str>, lsp: Option<&str>, (branch, review): (Option<&str>, Option<&str>), words: Option<&str>) -> StatusFit {
+fn status_fit(ui: &egui::Ui, pos: &str, conflict: bool, deleted: bool, lossy: bool, hidden: Option<&str>, lsp: Option<&str>, (branch, review): (Option<&str>, Option<&str>), (words, plugins): (Option<&str>, Option<&str>)) -> StatusFit {
     let right_widths: [f32; 5] = ui.ctx().data(|d| d.get_temp(egui::Id::new("status-bar-widths"))).unwrap_or([100.0, 70.0, 40.0, 90.0, 70.0]);
     let font = egui::TextStyle::Body.resolve(ui.style());
     let gap = ui.spacing().item_spacing.x;
@@ -2077,7 +2090,7 @@ fn status_fit(ui: &egui::Ui, pos: &str, conflict: bool, deleted: bool, lossy: bo
         room -= full - short;
     }
     let button = 2.0 * ui.spacing().button_padding.x;
-    let wanted: [(bool, f32); 8] = [
+    let wanted: [(bool, f32); 9] = [
         (conflict, sep + text_w("Changed on disk") + text_w("Reload") + button),
         (deleted, sep + text_w("Deleted on disk (save to recreate)")),
         (lossy, sep + text_w("Decoding errors")),
@@ -2086,8 +2099,9 @@ fn status_fit(ui: &egui::Ui, pos: &str, conflict: bool, deleted: bool, lossy: bo
         (branch.is_some(), sep + branch.map_or(0.0, |b| text_w(&format!("⎇ {b}")))),
         (review.is_some(), sep + review.map_or(0.0, text_w) + button),
         (words.is_some(), sep + words.map_or(0.0, text_w)),
+        (plugins.is_some(), sep + plugins.map_or(0.0, text_w)),
     ];
-    let mut left = [false; 8];
+    let mut left = [false; 9];
     for (k, (on, w)) in wanted.into_iter().enumerate() {
         if on && w <= room {
             left[k] = true;
@@ -2448,7 +2462,8 @@ impl StrataApp {
         // Narrow windows: items drop out by priority rather than overlap.
         let review = self.review_remaining().map(|n| if n == 0 { "All reviewed".to_owned() } else { format!("{n} to review") });
         let mut find_hidden = false;
-        let fit = status_fit(ui, &pos, d.conflict, d.deleted, d.editor.buffer.lossy, hidden.as_ref().map(|h| h.0.as_str()), lsp.as_ref().map(|l| l.0.as_str()), (branch.as_deref(), review.as_deref()), words.as_deref());
+        let plugins = self.plugin_status_text();
+        let fit = status_fit(ui, &pos, d.conflict, d.deleted, d.editor.buffer.lossy, hidden.as_ref().map(|h| h.0.as_str()), lsp.as_ref().map(|l| l.0.as_str()), (branch.as_deref(), review.as_deref()), (words.as_deref(), plugins.as_deref()));
         ui.horizontal(|ui| {
             let d = &mut self.docs[self.active];
             ui.label(if fit.short_pos && binary.is_none() { format!("{line}:{col}") } else { pos });
@@ -2496,6 +2511,10 @@ impl StrataApp {
             if let Some(words) = words.filter(|_| fit.left[StatusLeft::Words as usize]) {
                 ui.separator();
                 ui.label(words);
+            }
+            if plugins.is_some() && fit.left[StatusLeft::Plugins as usize] {
+                ui.separator();
+                self.plugin_status_ui(ui);
             }
             ui.separator();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2710,6 +2729,7 @@ impl eframe::App for StrataApp {
         self.review_frame(ctx, now);
         self.ai_frame(ctx);
         self.code_run_frame(ctx);
+        self.plugins_frame(ctx);
         self.notes_frame(ctx);
         // Save on focus lost (a setting, off by default like Sublime's).
         let focused = ctx.input(|i| i.focused);
@@ -2824,6 +2844,7 @@ impl eframe::App for StrataApp {
             }
         }
         self.ai_panel(ui);
+        self.plugins_panel(ui);
         match self.pending_encoding.take() {
             Some((true, e)) => self.reopen_with_encoding(e),
             Some((false, e)) => self.save_with_encoding(e),

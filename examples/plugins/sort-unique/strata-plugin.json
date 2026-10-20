@@ -1,0 +1,22 @@
+{
+  "name": "sort-unique",
+  "title": "Sort Unique",
+  "version": "1.0.0",
+  "description": "Sorts the selected lines (or the whole file) and removes duplicate lines, as one change Undo takes back.",
+  "author": "The Strata authors",
+  "license": "MIT",
+  "api": "strata.plugin/1",
+  "run": {"command": "node", "args": ["sort_unique.js"]},
+  "permissions": ["read_document", "edit_document", "notify"],
+  "contributes": {
+    "commands": [
+      {"id": "sort-unique", "title": "Sort Lines Uniquely"}
+    ],
+    "keybindings": [
+      {"command": "sort-unique", "key": "primary+alt+shift+u"}
+    ],
+    "settings": {
+      "ignore_case": {"default": false, "description": "Treat lines that differ only in case as duplicates (the first one is kept)."}
+    }
+  }
+}

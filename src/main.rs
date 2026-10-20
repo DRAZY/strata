@@ -53,6 +53,7 @@ mod palette;
 mod panes;
 mod pdf;
 mod permalink;
+mod plugins;
 mod print;
 mod private;
 mod replace;

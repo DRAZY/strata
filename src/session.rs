@@ -144,6 +144,8 @@ pub struct Settings {
     /// Language servers by name: changes to the built-in ones and servers of
     /// the user's own (see `lsp::config::ServerSetting`).
     pub lsp_servers: std::collections::BTreeMap<String, crate::lsp::config::ServerSetting>,
+    /// Each plugin's settings, by plugin name (see `plugins::manager::effective_settings`).
+    pub plugins: std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
     /// Checking GitHub for new versions: "ask" (once), "auto" (at launch and
     /// every `update_check_interval_hours`) or "off" (only Help ▸ Check for Updates…).
     pub update_check: String,
@@ -241,6 +243,7 @@ impl Default for Settings {
             lsp_enabled: true,
             lsp_trust_all: false,
             lsp_servers: Default::default(),
+            plugins: Default::default(),
             update_check: "ask".into(),
             update_check_interval_hours: 4,
             update_channel: "stable".into(),

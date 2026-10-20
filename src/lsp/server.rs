@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -241,22 +241,57 @@ pub struct Server {
 
 /// The server's process, and on Windows the job object that holds it and
 /// everything it starts (killing `cmd.exe` alone would leave a `.cmd`
-/// server's node running).
-struct Proc {
+/// server's node running). Plugins (`crate::plugins`) run the same way.
+pub(crate) struct Proc {
     child: Mutex<Option<Child>>,
     #[cfg(windows)]
     job: Option<job::Job>,
 }
 
 impl Proc {
-    fn lock(&self) -> MutexGuard<'_, Option<Child>> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Option<Child>> {
         self.child.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Still running (not exited, not reaped).
-    fn running(&self) -> bool {
+    pub(crate) fn running(&self) -> bool {
         self.lock().as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)))
     }
+
+    pub(crate) fn pid(&self) -> Option<u32> {
+        self.lock().as_ref().map(Child::id)
+    }
+}
+
+/// A process started by `spawn_group`, and its standard streams.
+pub(crate) type Spawned = (Arc<Proc>, Option<ChildStdin>, Option<ChildStdout>, Option<ChildStderr>);
+
+/// Start `cmd` with piped standard streams in a process group of its own
+/// (a job object on Windows, and no console window), so that `kill` also
+/// ends whatever it started (cargo check, a plugin's helpers…).
+pub(crate) fn spawn_group(cmd: &mut Command) -> std::io::Result<Spawned> {
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = cmd.spawn()?;
+    let (stdin, stdout, stderr) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
+    #[cfg(windows)]
+    let job = job::Job::holding(&child);
+    let proc = Arc::new(Proc {
+        child: Mutex::new(Some(child)),
+        #[cfg(windows)]
+        job,
+    });
+    Ok((proc, stdin, stdout, stderr))
 }
 
 impl Server {
@@ -265,26 +300,13 @@ impl Server {
     /// answered later (see `status`).
     pub fn start(config: &ServerConfig, program: &Path, root: &Path, path_env: Option<&std::ffi::OsStr>, ctx: Option<egui::Context>) -> Result<Server, String> {
         let mut cmd = Command::new(program);
-        cmd.args(&config.args).current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.args(&config.args).current_dir(root);
         if let Some(p) = path_env {
             cmd.env("PATH", p);
         }
         cmd.envs(&config.env);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            // Its own process group, so stopping it also stops what it started (cargo check…).
-            cmd.process_group(0);
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        let mut child = cmd.spawn().map_err(|e| format!("couldn't start {}: {e}", config.command))?;
-        log::info!("started language server {} (pid {}) for {}", config.command, child.id(), root.display());
-        let (stdin, stdout, stderr) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
+        let (child, stdin, stdout, stderr) = spawn_group(&mut cmd).map_err(|e| format!("couldn't start {}: {e}", config.command))?;
+        log::info!("started language server {} (pid {}) for {}", config.command, child.pid().unwrap_or(0), root.display());
         let shared = Arc::new(Mutex::new(Shared {
             status: Status::Starting,
             caps: Caps::default(),
@@ -297,13 +319,6 @@ impl Server {
             was_ready: false,
         }));
         let io = Io { shared, stdin: Arc::new(Mutex::new(stdin)), next_id: Arc::new(AtomicI64::new(1)), ctx };
-        #[cfg(windows)]
-        let job = job::Job::holding(&child);
-        let child = Arc::new(Proc {
-            child: Mutex::new(Some(child)),
-            #[cfg(windows)]
-            job,
-        });
         let (tx, rx) = channel();
         let name = config.display_name();
 
@@ -454,7 +469,7 @@ impl Drop for Server {
     }
 }
 
-fn kill(proc: &Proc) {
+pub(crate) fn kill(proc: &Proc) {
     #[cfg(windows)]
     if let Some(job) = &proc.job {
         job.terminate();
@@ -462,13 +477,48 @@ fn kill(proc: &Proc) {
     let mut c = proc.lock();
     if let Some(ch) = c.as_mut() {
         #[cfg(unix)]
-        unsafe {
-            // The whole group (see `process_group` above); the server's pid is the group's id.
-            libc::killpg(ch.id() as libc::pid_t, libc::SIGKILL);
+        if !reaped(ch.id()) {
+            // SAFETY: the whole group (see `spawn_group`); the server's pid is the
+            // group's id, and still its own while the process isn't reaped.
+            unsafe {
+                libc::killpg(ch.id() as libc::pid_t, libc::SIGKILL);
+            }
         }
         let _ = ch.kill();
         let _ = ch.wait();
     }
+}
+
+/// The process was waited for already: its pid may belong to someone else
+/// by now, so its group mustn't be signalled. (Running or exited but not
+/// yet reaped: still ours.)
+#[cfg(unix)]
+pub(crate) fn reaped(pid: u32) -> bool {
+    peek(pid).is_none()
+}
+
+/// Whether the process has exited, without reaping it; None once it's been
+/// reaped (no such child any more).
+#[cfg(unix)]
+fn peek(pid: u32) -> Option<bool> {
+    // SAFETY: zeroed plain data, filled in by the call.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: a valid out pointer; WNOWAIT leaves the process to be reaped by `Child`.
+    let r = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT | libc::WNOHANG) };
+    if r != 0 {
+        // Only "no such child" means it's gone; any other error says nothing.
+        return if std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD) { None } else { Some(false) };
+    }
+    // With WNOHANG and nothing to report, si_pid stays 0.
+    // SAFETY: filled in by a successful call.
+    Some(unsafe { info.si_pid() } != 0)
+}
+
+/// The process has exited (reaped or not), found without reaping it, so
+/// its group can still be ended safely afterwards.
+#[cfg(unix)]
+pub(crate) fn exited(pid: u32) -> bool {
+    peek(pid).is_none_or(|exited| exited)
 }
 
 fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> Result<(), String> {

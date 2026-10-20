@@ -31,6 +31,8 @@ pub(super) enum Choosing {
     Locations(Vec<(PathBuf, (crate::lsp::position::Pos, crate::lsp::position::Pos), crate::lsp::position::Encoding)>),
     /// A Notes list (see `notes_ui`).
     Notes(super::notes_ui::NotesPick),
+    /// A plugin's `ui/pick` (see `plugins_ui`).
+    Plugin,
 }
 
 impl StrataApp {
@@ -141,6 +143,7 @@ impl StrataApp {
                 }
             }
             Choosing::Notes(pick) => self.notes_chose(pick, i),
+            Choosing::Plugin => self.plugin_chose(Some(i)),
         }
     }
 

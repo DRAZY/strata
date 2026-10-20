@@ -207,6 +207,10 @@ pub enum Cmd {
     NotesRunCodeBlock,
     NotesRunCodeBlockCapture,
     NotesForgetCodeBlockFiles,
+    // Plugins (see `app/plugins_ui.rs`); their own commands are added at run time.
+    PluginsManage,
+    PluginsInstallFolder,
+    PluginsInstallZip,
 }
 
 impl Cmd {
@@ -404,6 +408,9 @@ impl Cmd {
         Cmd::NotesRunCodeBlock,
         Cmd::NotesRunCodeBlockCapture,
         Cmd::NotesForgetCodeBlockFiles,
+        Cmd::PluginsManage,
+        Cmd::PluginsInstallFolder,
+        Cmd::PluginsInstallZip,
     ];
 
     pub fn name(self) -> &'static str {
@@ -601,6 +608,9 @@ impl Cmd {
             Cmd::NotesRunCodeBlock => "Notes: Run Code Block",
             Cmd::NotesRunCodeBlockCapture => "Notes: Run Code Block and Capture Output",
             Cmd::NotesForgetCodeBlockFiles => "Notes: Forget Files Allowed to Run Code Blocks",
+            Cmd::PluginsManage => "Plugins: Manage Plugins…",
+            Cmd::PluginsInstallFolder => "Plugins: Install from Folder…",
+            Cmd::PluginsInstallZip => "Plugins: Install from Zip…",
         }
     }
 
@@ -789,6 +799,7 @@ impl Cmd {
             Cmd::NotesToggleBacklinks | Cmd::NotesFollowLink | Cmd::NotesUndoRename | Cmd::NotesCompareConflict => &[],
             // Running code takes a deliberate choice; bind them in keybindings.json if you like.
             Cmd::NotesRunCodeBlock | Cmd::NotesRunCodeBlockCapture | Cmd::NotesForgetCodeBlockFiles => &[],
+            Cmd::PluginsManage | Cmd::PluginsInstallFolder | Cmd::PluginsInstallZip => &[],
         }
     }
 
@@ -994,6 +1005,9 @@ impl Cmd {
             Cmd::NotesRunCodeBlock => "run_code_block",
             Cmd::NotesRunCodeBlockCapture => "run_code_block_and_capture",
             Cmd::NotesForgetCodeBlockFiles => "forget_code_block_files",
+            Cmd::PluginsManage => "manage_plugins",
+            Cmd::PluginsInstallFolder => "install_plugin_from_folder",
+            Cmd::PluginsInstallZip => "install_plugin_from_zip",
         }
     }
 }

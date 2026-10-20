@@ -272,6 +272,12 @@ These settings choose the model the [AI helpers](ai.md) use. Nothing is sent any
 | `lsp_trust_all` | true/false | `false` | Start language servers in any project folder without asking. Servers can run a project's own code (build scripts, procedural macros, configured tools), so by default Strata asks once per folder. See [Trusting a project](languages.md#trusting-a-project). |
 | `lsp_servers` | object | `{}` | Changes to the built-in language servers, and servers of your own, by name: for example `{"rust": {"args": ["--log-file", "/tmp/ra.log"]}, "go": {"enabled": false}}`. See [Setting up servers](languages.md#setting-up-servers). |
 
+### Plugins
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `plugins` | object | `{}` | Settings for installed plugins, by plugin name: for example `{"word-count": {"count_numbers": false}}`. Each plugin lists its own settings and their defaults (the Plugins manager shows them); a value of the wrong type keeps the default. See [Commands, keys and settings](plugins.md#commands-keys-and-settings). |
+
 ### Find and spelling
 
 | Setting | Type | Default | Description |

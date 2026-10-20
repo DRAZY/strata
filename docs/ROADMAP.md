@@ -63,6 +63,13 @@ They aren't in 1.0.x.
   and `codex` command-line tools. Off until you turn them on; nothing goes to
   a provider outside your computer or network until you've seen exactly what
   will be sent and said yes. Keys are kept in the system keychain.
+- **Plugins** ([#13](https://github.com/DRAZY/strata/issues/13)): extensions
+  that are separate programs, in any language, talking to Strata over
+  JSON-RPC like language servers. They add commands, keys, status bar items,
+  panels and pick lists, and can read and edit open files and the files in
+  the open folders, but only with the permissions you give them when they
+  first run (asked again whenever the package changes). Install them from a
+  folder or a zip; a crashing plugin can't take Strata with it.
 
 ## In progress
 
@@ -73,7 +80,6 @@ before they ship.
   run a fenced code block in a note and see its output.
 - **Git sync for notes** ([#12](https://github.com/DRAZY/strata/issues/12)):
   keep a notes vault in step with a Git remote.
-- **Plugins**: an extension API and a way to install packages.
 
 ## After that
 
