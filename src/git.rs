@@ -72,9 +72,14 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
 /// Git (status, diff, add) can run filter programs named in its config.
 pub(crate) fn git_io(dir: &Path, args: &[&str], input: Option<Vec<u8>>, limit: usize, timeout: Duration) -> Option<Vec<u8>> {
     let mut cmd = Command::new("git");
-    cmd.args(["-c", "core.fsmonitor=false", "-c", NO_HOOKS, "-c", "core.quotepath=false", "--no-pager"])
+    // No transport may run either: a partial clone would fetch a missing
+    // object (through the repository's own ssh command or ext:: helper)
+    // instead of failing.
+    cmd.args(["-c", "core.fsmonitor=false", "-c", NO_HOOKS, "-c", "core.quotepath=false", "-c", "protocol.allow=never", "--no-pager"])
         .args(args)
         .current_dir(dir)
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_PROTOCOL_FROM_USER", "0")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -721,6 +726,28 @@ mod tests {
         assert_eq!(head_text(&file).as_deref(), Some("one\ntwo\nthree\n"), "the committed bytes, not a textconv");
         let _ = repo_info(&file);
         assert!(!marker.exists(), "a program from the repository's config ran");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A partial clone fetches missing objects on demand, through the
+    /// repository's own ssh command: reading a missing blob must fail
+    /// instead of running it.
+    #[cfg(unix)]
+    #[test]
+    fn missing_objects_are_never_fetched() {
+        let Some(dir) = temp_repo("lazy") else { return };
+        let marker = dir.join("fetched");
+        let set = |k: &str, v: &str| assert!(git(&dir, &["config", k, v]).is_some(), "{k}");
+        set("core.repositoryformatversion", "1");
+        set("extensions.partialclone", "origin");
+        set("remote.origin.url", "ssh://example.invalid/repo");
+        set("remote.origin.promisor", "true");
+        set("core.sshCommand", &format!("touch {} #", marker.display()));
+        let missing = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(git(&dir, &["cat-file", "blob", missing]), None);
+        let batch = git_io(&dir, &["cat-file", "--batch"], Some(format!("{missing}\n").into_bytes()), 1 << 20, GIT_TIMEOUT);
+        assert!(batch.is_none_or(|b| String::from_utf8_lossy(&b).contains("missing")));
+        assert!(!marker.exists(), "the repository's ssh command ran");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

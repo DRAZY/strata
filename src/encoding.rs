@@ -68,6 +68,15 @@ impl Encoding {
     }
 
 
+    /// UTF-8 or UTF-16 (with a BOM or without).
+    pub fn is_unicode(&self) -> bool {
+        matches!(self.codec, Codec::Utf8 | Codec::Utf16Le | Codec::Utf16Be)
+    }
+
+    pub fn is_utf16(&self) -> bool {
+        matches!(self.codec, Codec::Utf16Le | Codec::Utf16Be)
+    }
+
     fn bom_bytes(&self) -> &'static [u8] {
         match self.codec {
             Codec::Utf8 => b"\xEF\xBB\xBF",

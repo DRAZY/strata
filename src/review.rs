@@ -18,6 +18,7 @@
 //! and commits the agent makes during the review don't move the base.
 
 use crate::diff::{self, Hunk};
+use crate::encoding::Encoding;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
@@ -40,6 +41,8 @@ const BATCH: usize = 500;
 const BATCH_TIMEOUT: Duration = Duration::from_secs(60);
 /// Output allowed from one batched `git cat-file`.
 const BATCH_BYTES: usize = 256 << 20;
+/// Bytes of base blobs one scan reads at most (see `Cache::blob_budget`).
+const BLOB_BUDGET: usize = 512 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -82,7 +85,18 @@ pub struct FileChange {
     /// Lines (added, removed); None for binary or very large files.
     pub lines: Option<(usize, usize)>,
     pub binary: bool,
-    /// Fingerprint of the file's bytes (of the base's, for a deleted file).
+    /// Why Strata can't show or put back this file, when it can't (a Git
+    /// filter, a link): it's listed, without Keep or Revert.
+    pub blocked: Option<String>,
+    /// On disk, but Git filters it, so it can't be compared (see `Scan::filtered`).
+    pub filtered: bool,
+    /// Git checks this file out with `\r\n` where the base has `\n`
+    /// (`core.autocrlf`, `eol=crlf`): the base reads that way too.
+    pub crlf: bool,
+    /// A rename that only changed letter case: one file on a case-insensitive disk.
+    pub case_only: bool,
+    /// Fingerprint of the file's bytes (of the base's, for a deleted file;
+    /// of its size and times, for one too big to read).
     pub hash: u64,
     /// Every change in it was kept: it matches the text kept for it.
     pub kept: bool,
@@ -116,6 +130,8 @@ pub struct Scan {
     /// The commit compared against.
     pub commit: Option<String>,
     pub files: Vec<FileChange>,
+    /// Files on disk that Git filters (LFS and the like), not compared.
+    pub filtered: usize,
     pub took: Duration,
 }
 
@@ -123,6 +139,8 @@ pub enum Outcome {
     /// A scan for request `generation`.
     Scanned(u64, Result<Scan, String>),
     Snapshot(Result<Snapshot, String>),
+    /// A review tab's base: its file, and the bytes (None: not in the base).
+    Base(PathBuf, Option<Vec<u8>>),
 }
 
 // ---------------------------------------------------------------------------
@@ -177,36 +195,97 @@ fn span(s: &str, starts: &[(usize, usize)], lines: &Range<usize>, to_end: bool) 
     (b0..b1, c0..c1)
 }
 
+/// Line `i`'s text without its break.
+fn line_text<'a>(s: &'a str, starts: &[(usize, usize)], i: usize) -> &'a str {
+    let (start, end) = (starts[i].0, starts[i + 1].0);
+    let line = &s[start..end];
+    line.strip_suffix("\r\n").or_else(|| line.strip_suffix('\n')).or_else(|| line.strip_suffix('\r')).unwrap_or(line)
+}
+
+/// The edit that makes lines `dl` of `dst` read as lines `sl` of `src`:
+/// the (byte, char) ranges of `dst` to replace and the text from `src`.
+fn splice(dst: &str, src: &str, mut dl: Range<usize>, mut sl: Range<usize>) -> (Range<usize>, Range<usize>, String) {
+    let (sd, ss) = (line_starts(dst), line_starts(src));
+    let (nd, ns) = (sd.len() - 1, ss.len() - 1);
+    loop {
+        // A block running to the end of both texts swaps the line break before
+        // it too (when both sides have one), so the final newline goes with it.
+        let to_end = dl.end >= nd && sl.end >= ns && dl.start > 0 && sl.start > 0;
+        let (db, dc) = span(dst, &sd, &dl, to_end);
+        let (sb, _) = span(src, &ss, &sl, to_end);
+        let with = &src[sb];
+        // A lone \r set down before a \n (or a \n after a \r) would join the
+        // two into one line break and lose a line: take in the neighboring
+        // line too, when it reads the same on both sides.
+        let (d, w) = (dst.as_bytes(), with.as_bytes());
+        let left_of_end = w.last().or_else(|| db.start.checked_sub(1).map(|k| &d[k]));
+        let after = left_of_end == Some(&b'\r') && d.get(db.end) == Some(&b'\n');
+        let right_of_start = w.first().or_else(|| d.get(db.end));
+        let before = db.start > 0 && d[db.start - 1] == b'\r' && right_of_start == Some(&b'\n');
+        if after && dl.end < nd && sl.end < ns && (dl.end + 1 == nd) == (sl.end + 1 == ns) && line_text(dst, &sd, dl.end) == line_text(src, &ss, sl.end) {
+            (dl.end, sl.end) = (dl.end + 1, sl.end + 1);
+        } else if before && dl.start > 0 && sl.start > 0 && line_text(dst, &sd, dl.start - 1) == line_text(src, &ss, sl.start - 1) {
+            (dl.start, sl.start) = (dl.start - 1, sl.start - 1);
+        } else {
+            // No neighbor to take in (the start or end of a text): write that
+            // one break as \r\n instead, which keeps the lines apart.
+            let mut with = with.to_owned();
+            if before && with.starts_with('\n') {
+                with.insert(0, '\r');
+            }
+            if after && with.ends_with('\r') {
+                with.push('\n');
+            }
+            return (db, dc, with);
+        }
+    }
+}
+
 /// The edit that turns lines `h.b` of `cur` back into lines `h.a` of `base`:
 /// a char range of `cur` and its replacement, exactly the base's text with
 /// its own line breaks. `h` must come from diffing these two texts.
 pub fn revert_edit(base: &str, cur: &str, h: &Hunk) -> (Range<usize>, String) {
-    let (sa, sb) = (line_starts(base), line_starts(cur));
-    let to_end = h.a.end >= sa.len() - 1 && h.b.end >= sb.len() - 1;
-    let (a, _) = span(base, &sa, &h.a, to_end);
-    let (_, b) = span(cur, &sb, &h.b, to_end);
-    (b, base[a].to_owned())
+    let (_, chars, with) = splice(cur, base, h.b.clone(), h.a.clone());
+    (chars, with)
 }
 
 /// The base with hunk `h` kept: lines `h.a` of `base` replaced by lines
 /// `h.b` of `cur`, so that change no longer shows.
 pub fn keep_edit(base: &str, cur: &str, h: &Hunk) -> String {
-    let (sa, sb) = (line_starts(base), line_starts(cur));
-    let to_end = h.a.end >= sa.len() - 1 && h.b.end >= sb.len() - 1;
-    let (a, _) = span(base, &sa, &h.a, to_end);
-    let (b, _) = span(cur, &sb, &h.b, to_end);
-    let mut out = String::with_capacity(base.len() + b.len());
-    out.push_str(&base[..a.start]);
-    out.push_str(&cur[b]);
-    out.push_str(&base[a.end..]);
+    let (bytes, _, with) = splice(base, cur, h.a.clone(), h.b.clone());
+    let mut out = String::with_capacity(base.len() + with.len());
+    out.push_str(&base[..bytes.start]);
+    out.push_str(&with);
+    out.push_str(&base[bytes.end..]);
     out
 }
 
-/// The base as the file would be checked out: a blob stored with `\n` in a
-/// repository that writes `\r\n` files (`core.autocrlf`, `.gitattributes`
-/// `eol=crlf`) reads with `\r\n` when the file itself uses them.
-pub fn as_checked_out(base: String, file_uses_crlf: bool) -> String {
-    if file_uses_crlf && !base.contains('\r') && base.contains('\n') { base.replace('\n', "\r\n") } else { base }
+/// The base as Git would check it out: `\n` written as `\r\n` when the
+/// repository says so for this file (see `FileChange::crlf`).
+pub fn as_checked_out(base: String, crlf: bool) -> String {
+    if crlf && !base.contains('\r') && base.contains('\n') { base.replace('\n', "\r\n") } else { base }
+}
+
+/// The base's bytes as text for a tab that reads its file as `doc`: in the
+/// tab's own encoding when both are legacy text and the base reads cleanly
+/// in it, else in the encoding the base's bytes show (a BOM, UTF-16, UTF-8,
+/// or a guess among the legacy ones). Err when they don't decode cleanly:
+/// putting replacement characters back would corrupt the file.
+pub fn decode_base(bytes: &[u8], doc: Encoding) -> Result<(String, Encoding), String> {
+    if bytes.is_empty() {
+        return Ok((String::new(), doc));
+    }
+    let d = crate::encoding::detect(bytes);
+    if d.guess.is_some() && !doc.is_unicode() {
+        let (text, lossy) = crate::encoding::decode(bytes, doc);
+        if !lossy {
+            return Ok((text.into_owned(), doc));
+        }
+    }
+    if d.lossy {
+        return Err("The earlier version isn't clean text in any encoding Strata knows, so it can't be shown or put back".into());
+    }
+    Ok((d.text.into_owned(), d.encoding))
 }
 
 // ---------------------------------------------------------------------------
@@ -219,17 +298,20 @@ fn fingerprint(bytes: &[u8]) -> u64 {
     h.finish()
 }
 
-/// Git's test for binary: a NUL byte near the start.
+/// Git's test for binary, a NUL byte near the start, except that UTF-16
+/// text (which is full of NULs) counts as text.
 fn is_binary(bytes: &[u8]) -> bool {
-    bytes[..bytes.len().min(8000)].contains(&0)
+    let head = &bytes[..bytes.len().min(8000)];
+    head.contains(&0) && !crate::encoding::detect(&bytes[..bytes.len().min(1 << 16) & !1]).encoding.is_utf16()
 }
 
-/// Same bytes, or the same text with `\n` checked out as `\r\n`.
-fn same_content(base: &[u8], work: &[u8]) -> bool {
+/// Same bytes, or (when Git checks this file out with `\r\n`) the same text
+/// with each `\n` written as `\r\n`.
+fn same_content(base: &[u8], work: &[u8], crlf: bool) -> bool {
     if base == work {
         return true;
     }
-    if base.contains(&b'\r') || work.len() <= base.len() {
+    if !crlf || base.contains(&b'\r') || work.len() <= base.len() {
         return false;
     }
     let mut w = work.iter();
@@ -259,11 +341,55 @@ fn count_lines(base: &[u8], work: &[u8]) -> Option<(usize, usize)> {
 
 /// Read a file of at most `MAX_READ_BYTES`.
 fn read_small(path: &Path) -> Option<Vec<u8>> {
-    let meta = std::fs::metadata(path).ok()?;
+    let meta = std::fs::symlink_metadata(path).ok().filter(|m| m.is_file())?;
     if meta.len() > MAX_READ_BYTES {
         return None;
     }
     std::fs::read(path).ok()
+}
+
+/// What a file looked like on disk. `change` folds in the inode and the
+/// status-change time where there are such things, so a rewrite of the same
+/// size within one modification-time tick still shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct Stat {
+    len: u64,
+    mtime: Option<SystemTime>,
+    change: u64,
+}
+
+fn stat_of(m: &std::fs::Metadata) -> Stat {
+    #[cfg(unix)]
+    let change = {
+        use std::os::unix::fs::MetadataExt;
+        m.ino() ^ (m.ctime() as u64).rotate_left(32) ^ m.ctime_nsec() as u64
+    };
+    #[cfg(not(unix))]
+    let change = 0;
+    Stat { len: m.len(), mtime: m.modified().ok(), change }
+}
+
+/// A regular file's stat (not a link, not a folder).
+fn stat(path: &Path) -> Option<Stat> {
+    std::fs::symlink_metadata(path).ok().filter(|m| m.is_file()).map(|m| stat_of(&m))
+}
+
+/// Fingerprint of a file: of its bytes, or of its stat for one too big to read.
+fn hash_of(bytes: Option<&[u8]>, st: Option<Stat>) -> u64 {
+    match (bytes, st) {
+        (Some(b), _) => fingerprint(b),
+        (None, Some(s)) => {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            s.hash(&mut h);
+            h.finish()
+        }
+        (None, None) => 1,
+    }
+}
+
+/// The fingerprint a scan gives the file at `path` as it is now (see `FileChange::hash`).
+pub fn file_hash(path: &Path) -> u64 {
+    hash_of(read_small(path).as_deref(), stat(path))
 }
 
 /// Where a file's base comes from.
@@ -282,17 +408,24 @@ impl Src {
     }
 }
 
-/// What a file looked like on disk.
-type Stat = (u64, Option<SystemTime>);
-
-/// Remembered between scans.
-#[derive(Default)]
+/// Remembered between scans of one repository.
 struct Cache {
+    /// The repository this is about: anything else starts afresh.
+    top: Option<PathBuf>,
     /// The base commit's files: relative path → blob id.
     tree: Option<(String, Arc<HashMap<String, String>>)>,
     /// Per file: its stat and base when last looked at, and what was found
     /// (None: same as the base).
     seen: HashMap<String, (Option<Stat>, u64, Option<FileChange>)>,
+    /// Bytes of base blobs one scan may read; past it, files are listed
+    /// without line counts (and read when opened).
+    blob_budget: usize,
+}
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self { top: None, tree: None, seen: HashMap::new(), blob_budget: BLOB_BUDGET }
+    }
 }
 
 /// The top folder of the repository holding `folder`, spelled like
@@ -334,23 +467,44 @@ fn read_tree(top: &Path, commit: &str) -> Result<HashMap<String, String>, String
     Ok(files)
 }
 
-/// Blob contents by id (`git cat-file --batch`), in batches; blobs that
-/// can't be read (too big) are left out.
+/// Blob contents by id (`git cat-file --batch`); blobs that can't be read
+/// (too big) are left out.
 fn read_blobs(top: &Path, ids: &[String]) -> HashMap<String, Arc<Vec<u8>>> {
     let mut out = HashMap::new();
-    for chunk in ids.chunks(BATCH) {
-        let input = chunk.iter().flat_map(|id| [id.as_bytes(), b"\n"]).flatten().copied().collect();
-        let got = crate::git::git_io(top, &["cat-file", "--batch"], Some(input), BATCH_BYTES, BATCH_TIMEOUT).filter(|o| o.len() <= BATCH_BYTES);
-        match got {
-            Some(bytes) => parse_batch(&bytes, &mut out),
-            // Too much at once: one at a time, skipping the huge ones.
-            None => {
-                for id in chunk {
-                    if let Some(b) = crate::git::git_io(top, &["cat-file", "blob", id], None, MAX_READ_BYTES as usize, BATCH_TIMEOUT).filter(|b| b.len() as u64 <= MAX_READ_BYTES) {
-                        out.insert(id.clone(), Arc::new(b));
-                    }
+    if ids.is_empty() {
+        return out;
+    }
+    let input = ids.iter().flat_map(|id| [id.as_bytes(), b"\n"]).flatten().copied().collect();
+    let got = crate::git::git_io(top, &["cat-file", "--batch"], Some(input), BATCH_BYTES, BATCH_TIMEOUT).filter(|o| o.len() <= BATCH_BYTES);
+    match got {
+        Some(bytes) => parse_batch(&bytes, &mut out),
+        // Too much at once: one at a time, skipping the huge ones.
+        None => {
+            for id in ids {
+                if let Some(b) = crate::git::git_io(top, &["cat-file", "blob", id], None, MAX_READ_BYTES as usize, BATCH_TIMEOUT).filter(|b| b.len() as u64 <= MAX_READ_BYTES) {
+                    out.insert(id.clone(), Arc::new(b));
                 }
             }
+        }
+    }
+    out
+}
+
+/// Blob sizes by id (`git cat-file --batch-check`: no contents read).
+fn blob_sizes(top: &Path, ids: &[String]) -> HashMap<String, usize> {
+    let mut out = HashMap::new();
+    if ids.is_empty() {
+        return out;
+    }
+    let input = ids.iter().flat_map(|id| [id.as_bytes(), b"\n"]).flatten().copied().collect();
+    let Some(raw) = crate::git::git_io(top, &["cat-file", "--batch-check"], Some(input), BATCH_BYTES, BATCH_TIMEOUT) else { return out };
+    for line in String::from_utf8_lossy(&raw).lines() {
+        // "<id> <type> <size>", or "<id> missing"
+        let parts: Vec<&str> = line.split(' ').collect();
+        if let [id, "blob", size] = parts[..]
+            && let Ok(n) = size.parse()
+        {
+            out.insert(id.to_owned(), n);
         }
     }
     out
@@ -388,8 +542,49 @@ fn hash_files(top: &Path, rels: &[&str]) -> HashMap<String, String> {
     out
 }
 
+/// What `.gitattributes` and `core.autocrlf` say about a file.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Attrs {
+    /// Checked out with `\r\n` for `\n`.
+    crlf: bool,
+    /// A filter or working-tree encoding: the file on disk isn't the blob's
+    /// bytes, and Strata doesn't run filters to find out what it should be.
+    filter: Option<String>,
+}
+
+/// Attributes for `rels` (`git check-attr`, which only reads the attribute
+/// files and config; it runs nothing).
+fn attributes(top: &Path, rels: &[&str]) -> HashMap<String, Attrs> {
+    let mut out: HashMap<String, Attrs> = HashMap::new();
+    if rels.is_empty() {
+        return out;
+    }
+    let autocrlf = crate::git::git_line(top, &["config", "--get", "core.autocrlf"]).is_some_and(|v| v.eq_ignore_ascii_case("true"));
+    for chunk in rels.chunks(BATCH) {
+        let input: Vec<u8> = chunk.iter().flat_map(|r| [r.as_bytes(), b"\0"]).flatten().copied().collect();
+        let args = ["check-attr", "-z", "--stdin", "eol", "text", "filter", "working-tree-encoding"];
+        let Some(raw) = crate::git::git_io(top, &args, Some(input), BATCH_BYTES, BATCH_TIMEOUT) else { continue };
+        let fields: Vec<String> = raw.split(|&b| b == 0).map(|f| String::from_utf8_lossy(f).into_owned()).collect();
+        let mut values: HashMap<&str, HashMap<&str, &str>> = HashMap::new();
+        for [path, attr, value] in fields.as_chunks::<3>().0 {
+            values.entry(path.as_str()).or_default().insert(attr.as_str(), value.as_str());
+        }
+        for (path, v) in values {
+            let get = |k: &str| v.get(k).copied().unwrap_or("unspecified");
+            let crlf = match get("eol") {
+                "crlf" => true,
+                "lf" => false,
+                _ => autocrlf && get("text") != "unset",
+            };
+            let named = |k: &str| (!matches!(get(k), "unspecified" | "unset")).then(|| format!("{k}={}", get(k)));
+            out.insert(path.to_owned(), Attrs { crlf, filter: named("filter").or_else(|| named("working-tree-encoding")) });
+        }
+    }
+    out
+}
+
 /// The working tree's files: relative path → stat. Respects .gitignore
-/// like Git does, and leaves out `.git` and nested repositories.
+/// like Git does, and leaves out `.git`, nested repositories and links.
 fn walk(top: &Path) -> Result<HashMap<String, Stat>, String> {
     let mut files = HashMap::new();
     let walker = ignore::WalkBuilder::new(top)
@@ -405,8 +600,8 @@ fn walk(top: &Path) -> Result<HashMap<String, Stat>, String> {
             continue;
         }
         let Some(rel) = rel_of(top, e.path()) else { continue };
-        let meta = e.metadata().ok();
-        files.insert(rel, (meta.as_ref().map_or(0, |m| m.len()), meta.and_then(|m| m.modified().ok())));
+        let Ok(meta) = e.metadata() else { continue };
+        files.insert(rel, stat_of(&meta));
         if files.len() > MAX_FILES {
             return Err(format!("Over {MAX_FILES} files: too many to review"));
         }
@@ -421,9 +616,42 @@ fn rel_of(top: &Path, path: &Path) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("/"))
 }
 
-fn stat(path: &Path) -> Option<Stat> {
-    let m = std::fs::symlink_metadata(path).ok().filter(|m| m.is_file())?;
-    Some((m.len(), m.modified().ok()))
+/// Some part of `rel`, from `top` down, is a symbolic link (or, on Windows,
+/// a junction): opening the path would reach somewhere else.
+fn link_in(top: &Path, rel: &str) -> bool {
+    let mut p = top.to_path_buf();
+    for part in rel.split('/') {
+        p.push(part);
+        match std::fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_symlink() => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+    // Junctions aren't links to `is_symlink`: what exists must resolve inside too.
+    let mut existing = top.join(rel);
+    while !existing.exists() {
+        if !existing.pop() {
+            return false;
+        }
+    }
+    match (existing.canonicalize(), top.canonicalize()) {
+        (Ok(real), Ok(top)) => !real.starts_with(top),
+        _ => true,
+    }
+}
+
+/// `path` is really inside `top`: below it by name, with no `..` and no link
+/// on the way. Review only opens, reverts or trashes such paths.
+pub fn inside(top: &Path, path: &Path) -> bool {
+    match rel_of(top, path) {
+        Some(rel) => !rel.split('/').any(|p| p == ".." || p == ".") && !link_in(top, &rel),
+        None => false,
+    }
+}
+
+fn change(path: PathBuf, rel: &str, status: Status) -> FileChange {
+    FileChange { path, rel: rel.to_owned(), old: None, status, lines: None, binary: false, blocked: None, filtered: false, crlf: false, case_only: false, hash: 1, kept: false }
 }
 
 /// Find the files under `folder`'s repository that differ from `base`.
@@ -438,6 +666,10 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
         Some(s) => s.top.clone(),
         None => top_of(folder).ok_or("Not in a Git repository: Review Changes compares files with Git")?,
     };
+    // Another repository: nothing remembered applies.
+    if cache.top.as_ref() != Some(&top) {
+        *cache = Cache { top: Some(top.clone()), blob_budget: cache.blob_budget, ..Cache::default() };
+    }
     let commit = match &snapshot {
         Some(s) => s.commit.clone(),
         None => head_commit(&top),
@@ -454,11 +686,25 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
         None => Arc::default(),
     };
     let mut work = walk(&top)?;
-    // Tracked files the walk skipped (ignored, yet committed) still count.
-    for rel in tree.keys() {
-        if !work.contains_key(rel)
-            && let Some(s) = stat(&top.join(rel))
-        {
+    let lower: HashMap<String, String> = work.keys().map(|r| (r.to_lowercase(), r.clone())).collect();
+    let mut in_base: Vec<&String> = tree.keys().collect();
+    if let Some(s) = &snapshot {
+        in_base.extend(s.files.iter().filter(|(_, b)| b.is_some()).map(|(r, _)| r));
+    }
+    // Files in the base the walk didn't list: a link now (never followed),
+    // the same file under other letter case (on a case-insensitive disk),
+    // or ignored yet committed (still counts).
+    let mut links = HashSet::new();
+    let mut case_pairs = Vec::new();
+    for rel in in_base {
+        if work.contains_key(rel) {
+            continue;
+        }
+        if link_in(&top, rel) {
+            links.insert(rel.clone());
+        } else if let Some(other) = lower.get(&rel.to_lowercase()).filter(|o| *o != rel) {
+            case_pairs.push((rel.clone(), other.clone()));
+        } else if let Some(s) = stat(&top.join(rel)) {
             work.insert(rel.clone(), s);
         }
     }
@@ -481,6 +727,12 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
     let mut todo: Vec<(String, Option<Stat>, Option<Src>)> = Vec::new();
     let mut seen = HashMap::with_capacity(paths.len());
     for rel in paths {
+        if links.contains(rel) {
+            let mut f = change(top.join(rel), rel, Status::Modified);
+            f.blocked = Some("Replaced by a link to somewhere else: Strata won't follow it. Use Git to look at it or put it back.".into());
+            found.push(f);
+            continue;
+        }
         let st = work.get(rel).copied();
         let src = src_of(rel);
         if st.is_none() && src.is_none() {
@@ -488,7 +740,7 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
         }
         let key = src.as_ref().map_or(0, Src::key);
         match cache.seen.remove(rel) {
-            Some((s, k, result)) if s == st && k == key && st.is_none_or(|(_, m)| m.is_some()) => {
+            Some((s, k, result)) if s == st && k == key && st.is_none_or(|s| s.mtime.is_some()) => {
                 found.extend(result.clone());
                 seen.insert(rel.clone(), (st, key, result));
             }
@@ -497,7 +749,6 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
     }
     let to_hash: Vec<&str> = todo.iter().filter(|(r, st, src)| st.is_some() && matches!(src, Some(Src::Blob(_))) && !r.contains('\n')).map(|(r, _, _)| r.as_str()).collect();
     let ids = hash_files(&top, &to_hash);
-    let mut need_blobs = Vec::new();
     let mut slow = Vec::new();
     for (rel, st, src) in todo {
         let key = src.as_ref().map_or(0, Src::key);
@@ -507,67 +758,110 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
             seen.insert(rel, (st, key, None));
             continue;
         }
-        if let Some(Src::Blob(id)) = &src {
-            need_blobs.push(id.clone());
-        }
         slow.push((rel, st, src, key));
     }
-    let blobs = read_blobs(&top, &need_blobs);
-    for (rel, st, src, key) in slow {
-        let path = top.join(&rel);
-        let base_bytes = match &src {
-            Some(Src::Blob(id)) => blobs.get(id).cloned(),
-            Some(Src::Bytes(b)) => Some(b.clone()),
-            None => None,
-        };
-        let work_bytes = st.and_then(|_| read_small(&path));
-        let change = match (&src, st) {
-            (None, Some(_)) => {
-                let w = work_bytes.as_deref();
-                Some(FileChange {
-                    path,
-                    rel: rel.clone(),
-                    old: None,
-                    status: Status::Added,
-                    lines: w.and_then(|w| count_lines(b"", w)),
-                    binary: w.is_some_and(is_binary),
-                    hash: w.map_or(1, fingerprint),
-                    kept: false,
-                })
+    let blob_rels: Vec<&str> = slow.iter().filter(|s| matches!(s.2, Some(Src::Blob(_)))).map(|s| s.0.as_str()).collect();
+    let attrs = attributes(&top, &blob_rels);
+    // Base blobs a chunk at a time, within the scan's budget.
+    let mut budget = cache.blob_budget;
+    for chunk in slow.chunks(BATCH) {
+        let attr = |rel: &str| attrs.get(rel).cloned().unwrap_or_default();
+        let want: Vec<String> = chunk
+            .iter()
+            .filter_map(|(rel, _, src, _)| match src {
+                Some(Src::Blob(id)) if attr(rel).filter.is_none() => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        // Sizes first (cheap), then only the blobs that fit what's left.
+        let sizes = blob_sizes(&top, &want);
+        let want: Vec<String> = want
+            .into_iter()
+            .filter(|id| match sizes.get(id) {
+                Some(&n) if n <= budget && n as u64 <= MAX_READ_BYTES => {
+                    budget -= n;
+                    true
+                }
+                _ => false,
+            })
+            .collect();
+        let blobs = read_blobs(&top, &want);
+        for (rel, st, src, key) in chunk {
+            let path = top.join(rel);
+            let a = attr(rel);
+            let base_bytes = match src {
+                Some(Src::Blob(id)) => blobs.get(id).cloned(),
+                Some(Src::Bytes(b)) => Some(b.clone()),
+                None => None,
+            };
+            // A blob that wasn't read (budget, size): list the file, don't remember it.
+            let complete = !matches!(src, Some(Src::Blob(_))) || base_bytes.is_some() || a.filter.is_some();
+            let blob_filter = a.filter.clone().filter(|_| matches!(src, Some(Src::Blob(_))));
+            let work_bytes = match (st, &blob_filter) {
+                (Some(_), None) => read_small(&path),
+                _ => None,
+            };
+            let w = work_bytes.as_deref();
+            let b = base_bytes.as_deref().map(Vec::as_slice);
+            let mut f = match (src, st) {
+                (None, Some(_)) => {
+                    let mut f = change(path, rel, Status::Added);
+                    f.lines = w.and_then(|w| count_lines(b"", w));
+                    f.binary = w.is_some_and(is_binary);
+                    f.hash = hash_of(w, *st);
+                    Some(f)
+                }
+                (Some(_), None) => {
+                    let mut f = change(path, rel, Status::Deleted);
+                    f.lines = b.and_then(|b| count_lines(b, b""));
+                    f.binary = b.is_some_and(is_binary);
+                    f.hash = b.map_or(1, fingerprint);
+                    Some(f)
+                }
+                (Some(_), Some(_)) if blob_filter.is_some() => {
+                    let mut f = change(path, rel, Status::Modified);
+                    f.filtered = true;
+                    f.hash = hash_of(None, *st);
+                    Some(f)
+                }
+                (Some(_), Some(_)) => match (b, w) {
+                    (Some(b), Some(w)) if same_content(b, w, a.crlf) => None,
+                    (b, w) => {
+                        let mut f = change(path, rel, Status::Modified);
+                        f.lines = b.zip(w).and_then(|(b, w)| count_lines(b, w));
+                        f.binary = b.is_some_and(is_binary) || w.is_some_and(is_binary);
+                        f.hash = hash_of(w, *st);
+                        Some(f)
+                    }
+                },
+                (None, None) => None,
+            };
+            if let Some(f) = &mut f {
+                f.crlf = a.crlf;
+                if let Some(name) = &blob_filter {
+                    f.blocked = Some(format!("Git converts this file ({name}), and Strata doesn't run Git's filters: use Git to look at it or put it back."));
+                }
             }
-            (Some(_), None) => {
-                let b = base_bytes.as_deref().map(Vec::as_slice);
-                Some(FileChange {
-                    path,
-                    rel: rel.clone(),
-                    old: None,
-                    status: Status::Deleted,
-                    lines: b.and_then(|b| count_lines(b, b"")),
-                    binary: b.is_some_and(is_binary),
-                    hash: b.map_or(1, fingerprint),
-                    kept: false,
-                })
+            found.extend(f.clone());
+            if complete {
+                seen.insert(rel.clone(), (*st, *key, f));
             }
-            (Some(_), Some(_)) => match (base_bytes.as_deref().map(Vec::as_slice), work_bytes.as_deref()) {
-                (Some(b), Some(w)) if same_content(b, w) => None,
-                (b, w) => Some(FileChange {
-                    path,
-                    rel: rel.clone(),
-                    old: None,
-                    status: Status::Modified,
-                    lines: b.zip(w).and_then(|(b, w)| count_lines(b, w)),
-                    binary: b.is_some_and(is_binary) || w.is_some_and(is_binary),
-                    hash: w.map_or(1, fingerprint),
-                    kept: false,
-                }),
-            },
-            (None, None) => None,
-        };
-        found.extend(change.clone());
-        seen.insert(rel, (st, key, change));
+        }
     }
     cache.seen = seen;
 
+    // A rename that only changed letter case is one file on a
+    // case-insensitive disk: never two to delete or restore separately.
+    for (old, new) in case_pairs {
+        let (Some(i), Some(j)) = (found.iter().position(|f| f.rel == old && f.status == Status::Deleted), found.iter().position(|f| f.rel == new && f.status == Status::Added)) else { continue };
+        let (old_path, same) = (found[i].path.clone(), found[i].hash == found[j].hash);
+        let f = &mut found[j];
+        f.status = Status::Renamed;
+        f.old = Some((old_path, old));
+        f.case_only = true;
+        f.lines = (same && !f.binary).then_some((0, 0));
+        found.remove(i);
+    }
     pair_renames(&mut found);
     // Changes the user kept: a file that now reads exactly as kept is done.
     for f in &mut found {
@@ -578,15 +872,19 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
             };
         }
     }
+    // Files on disk that Git filters can't be compared: counted, not listed.
+    let before = found.len();
+    found.retain(|f| !(f.filtered && f.status == Status::Modified));
+    let filtered = before - found.len();
     found.sort_by(|a, b| a.rel.cmp(&b.rel));
-    Ok(Scan { top, commit, files: found, took: started.elapsed() })
+    Ok(Scan { top, commit, files: found, filtered, took: started.elapsed() })
 }
 
 /// A deleted file and a new one with the same bytes are one renamed file.
 fn pair_renames(found: &mut Vec<FileChange>) {
     let mut gone: HashMap<u64, Vec<usize>> = HashMap::new();
     for (i, f) in found.iter().enumerate() {
-        if f.status == Status::Deleted && f.hash != 1 {
+        if f.status == Status::Deleted && f.hash != 1 && f.blocked.is_none() {
             gone.entry(f.hash).or_default().push(i);
         }
     }
@@ -611,11 +909,12 @@ fn pair_renames(found: &mut Vec<FileChange>) {
 }
 
 /// Start Review: HEAD now, plus a copy of every file that differs from it.
+/// Files Strata can't review (filtered, links) aren't copied.
 fn take_snapshot(folder: &Path, cache: &mut Cache) -> Result<Snapshot, String> {
     let scan = scan(folder, &Base::Head, &HashMap::new(), cache)?;
     let mut files = HashMap::new();
     let mut total = 0;
-    for f in &scan.files {
+    for f in scan.files.iter().filter(|f| f.blocked.is_none()) {
         if let Some((_, old)) = &f.old {
             files.insert(old.clone(), None);
         }
@@ -633,13 +932,21 @@ fn take_snapshot(folder: &Path, cache: &mut Cache) -> Result<Snapshot, String> {
     Ok(Snapshot { top: scan.top, commit: scan.commit, files })
 }
 
+/// The base's bytes for `rel` when they're at hand without running git (a
+/// snapshot's copy): Some(None) means "not in the base". None: ask the
+/// scanner (`Scanner::base`).
+pub fn base_now(base: &Base, rel: &str) -> Option<Option<Vec<u8>>> {
+    match base {
+        Base::Snapshot(s) => s.files.get(rel).map(|entry| entry.as_ref().map(|b| b.to_vec())),
+        Base::Head => None,
+    }
+}
+
 /// The base's bytes for `rel` (None: the file isn't in the base). `commit`
-/// is the one the list was made against.
-pub fn base_bytes(top: &Path, base: &Base, commit: Option<&str>, rel: &str) -> Option<Vec<u8>> {
-    if let Base::Snapshot(s) = base
-        && let Some(entry) = s.files.get(rel)
-    {
-        return entry.as_ref().map(|b| b.to_vec());
+/// is the one the list was made against. Runs git: off the UI thread.
+fn base_bytes(top: &Path, base: &Base, commit: Option<&str>, rel: &str) -> Option<Vec<u8>> {
+    if let Some(found) = base_now(base, rel) {
+        return found;
     }
     let commit = commit?;
     let out = crate::git::git_io(top, &["cat-file", "blob", &format!("{commit}:{rel}")], None, MAX_READ_BYTES as usize, BATCH_TIMEOUT)?;
@@ -657,11 +964,21 @@ struct Job {
     generation: u64,
 }
 
+/// Fetch one file's base for a review tab.
+struct BaseJob {
+    path: PathBuf,
+    top: PathBuf,
+    base: Base,
+    commit: Option<String>,
+    rel: String,
+}
+
 #[derive(Default)]
 struct State {
     /// Only the newest scan request matters.
     scan: Option<Job>,
     snapshot: Option<PathBuf>,
+    bases: Vec<BaseJob>,
     quit: bool,
 }
 
@@ -701,6 +1018,14 @@ impl Scanner {
         self.shared.wake.notify_one();
     }
 
+    /// Queue reading `rel`'s base (for the review tab of `path`); the answer
+    /// is an `Outcome::Base`.
+    pub fn base(&self, path: &Path, top: &Path, base: Base, commit: Option<String>, rel: String) {
+        let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.bases.push(BaseJob { path: path.to_owned(), top: top.to_owned(), base, commit, rel });
+        self.shared.wake.notify_one();
+    }
+
     pub fn poll(&self) -> Option<Outcome> {
         self.rx.try_recv().ok()
     }
@@ -715,36 +1040,31 @@ impl Drop for Scanner {
 
 fn work(shared: &Shared, tx: &Sender<Outcome>, ctx: Option<&egui::Context>) {
     let mut cache = Cache::default();
-    let mut top: Option<PathBuf> = None;
     loop {
-        let (snap, job) = {
+        let (base, snap, job) = {
             let mut st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-            while st.scan.is_none() && st.snapshot.is_none() && !st.quit {
+            while st.scan.is_none() && st.snapshot.is_none() && st.bases.is_empty() && !st.quit {
                 st = shared.wake.wait(st).unwrap_or_else(|e| e.into_inner());
             }
             if st.quit {
                 return;
             }
-            // A snapshot first: a scan queued with it may depend on it.
-            match st.snapshot.take() {
-                Some(s) => (Some(s), None),
-                None => (None, st.scan.take()),
+            // Someone waits on a base; a scan queued with a snapshot may depend on it.
+            if !st.bases.is_empty() {
+                (Some(st.bases.remove(0)), None, None)
+            } else if let Some(s) = st.snapshot.take() {
+                (None, Some(s), None)
+            } else {
+                (None, None, st.scan.take())
             }
         };
-        let outcome = if let Some(folder) = snap {
+        let outcome = if let Some(b) = base {
+            let bytes = base_bytes(&b.top, &b.base, b.commit.as_deref(), &b.rel);
+            Outcome::Base(b.path, bytes)
+        } else if let Some(folder) = snap {
             Outcome::Snapshot(take_snapshot(&folder, &mut cache))
         } else if let Some(job) = job {
-            let result = scan(&job.folder, &job.base, &job.kept, &mut cache);
-            // Another repository: what was remembered is no use.
-            if let Ok(s) = &result
-                && top.as_ref() != Some(&s.top)
-            {
-                if top.is_some() {
-                    cache = Cache::default();
-                }
-                top = Some(s.top.clone());
-            }
-            Outcome::Scanned(job.generation, result)
+            Outcome::Scanned(job.generation, scan(&job.folder, &job.base, &job.kept, &mut cache))
         } else {
             continue;
         };
@@ -761,12 +1081,16 @@ fn work(shared: &Shared, tx: &Sender<Outcome>, ctx: Option<&egui::Context>) {
 pub(crate) mod tests {
     use super::*;
 
-    /// Apply `revert_edit` for every hunk, last first (as the UI would one at a time).
+    fn hunks(a: &str, b: &str) -> Vec<Hunk> {
+        diff::diff_lines(&crate::compare::buffer_lines(a), &crate::compare::buffer_lines(b), false)
+    }
+
+    /// Revert one change at a time, diffing again after each, as the UI does.
     fn revert_all(base: &str, cur: &str) -> String {
-        let hunks = diff::diff_lines(&crate::compare::buffer_lines(base), &crate::compare::buffer_lines(cur), false);
         let mut text = cur.to_owned();
-        for h in hunks.iter().rev() {
-            let (r, with) = revert_edit(base, cur, h);
+        for _ in 0..64 {
+            let Some(h) = hunks(base, &text).pop() else { break };
+            let (r, with) = revert_edit(base, &text, &h);
             let start: usize = text.char_indices().nth(r.start).map_or(text.len(), |(b, _)| b);
             let end: usize = text.char_indices().nth(r.end).map_or(text.len(), |(b, _)| b);
             text.replace_range(start..end, &with);
@@ -774,12 +1098,12 @@ pub(crate) mod tests {
         text
     }
 
+    /// Keep one change at a time, diffing again after each.
     fn keep_all(base: &str, cur: &str) -> String {
-        let hunks = diff::diff_lines(&crate::compare::buffer_lines(base), &crate::compare::buffer_lines(cur), false);
         let mut b = base.to_owned();
-        // Keep from the last hunk so earlier line numbers in `b` stay valid.
-        for h in hunks.iter().rev() {
-            b = keep_edit(&b, cur, h);
+        for _ in 0..64 {
+            let Some(h) = hunks(&b, cur).pop() else { break };
+            b = keep_edit(&b, cur, &h);
         }
         b
     }
@@ -839,11 +1163,13 @@ pub(crate) mod tests {
         assert_eq!(as_checked_out("a\nb\n".into(), true), "a\r\nb\r\n");
         assert_eq!(as_checked_out("a\nb\n".into(), false), "a\nb\n");
         assert_eq!(as_checked_out("a\r\nb\n".into(), true), "a\r\nb\n");
-        assert!(same_content(b"a\nb\n", b"a\r\nb\r\n"));
-        assert!(same_content(b"a\nb", b"a\r\nb"));
-        assert!(!same_content(b"a\nb\n", b"a\r\nb\n"));
-        assert!(!same_content(b"a\r\nb\r\n", b"a\nb\n"));
-        assert!(!same_content(b"a\nb\n", b"a\r\nc\r\n"));
+        assert!(same_content(b"a\nb\n", b"a\r\nb\r\n", true));
+        assert!(same_content(b"a\nb", b"a\r\nb", true));
+        assert!(!same_content(b"a\nb\n", b"a\r\nb\n", true));
+        assert!(!same_content(b"a\r\nb\r\n", b"a\nb\n", true));
+        assert!(!same_content(b"a\nb\n", b"a\r\nc\r\n", true));
+        // Without autocrlf or eol=crlf, a change of line endings is a change.
+        assert!(!same_content(b"a\nb\n", b"a\r\nb\r\n", false));
     }
 
     #[test]
@@ -928,10 +1254,23 @@ pub(crate) mod tests {
     #[test]
     fn checked_out_crlf_is_not_a_change() {
         let Some(dir) = temp_repo("autocrlf") else { return };
-        // As core.autocrlf would write it: the blob has \n, the file \r\n.
+        // Without autocrlf, \r\n where the blob has \n is a change...
         std::fs::write(dir.join("README.md"), "# Title\r\n\r\nText.\r\n").unwrap();
         let mut cache = Cache::default();
+        assert_eq!(scan_of(&dir, &Base::Head, &mut cache), vec![("README.md".into(), Status::Modified, Some((0, 0)))]);
+        // ...with it, that's how Git checks the file out: no change.
+        run(&dir, &["config", "core.autocrlf", "true"]);
+        let mut cache = Cache::default();
         assert_eq!(scan_of(&dir, &Base::Head, &mut cache), vec![]);
+        // And eol=crlf in .gitattributes says the same for its files only.
+        run(&dir, &["config", "core.autocrlf", "false"]);
+        std::fs::write(dir.join(".gitattributes"), "*.md text eol=crlf\n").unwrap();
+        std::fs::write(dir.join("src/main.rs"), "fn main() {\r\n    one();\r\n    two();\r\n}\r\n").unwrap();
+        let mut cache = Cache::default();
+        let got = scan_of(&dir, &Base::Head, &mut cache);
+        assert_eq!(got, vec![(".gitattributes".into(), Status::Added, Some((1, 0))), ("src/main.rs".into(), Status::Modified, Some((0, 0)))]);
+        let s = scan(&dir, &Base::Head, &HashMap::new(), &mut cache).unwrap();
+        assert!(!s.files[1].crlf);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1008,6 +1347,170 @@ pub(crate) mod tests {
         assert_eq!(again.files.len(), 2000);
         assert!(t.elapsed() < Duration::from_secs(5), "rescan took {:?}", t.elapsed());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_lone_cr_next_to_a_lf_never_joins_two_lines() {
+        let (base, cur) = ("bc\r\r", "\n\n");
+        let sa = hunks(base, cur);
+        assert_eq!(sa.len(), 1);
+        let (r, with) = revert_edit(base, cur, &sa[0]);
+        let mut text = cur.to_owned();
+        text.replace_range(r, &with);
+        assert_eq!(text, base, "three lines stay three");
+        assert_eq!(crate::compare::buffer_lines(&keep_edit(base, cur, &sa[0])).len(), 3);
+    }
+
+    /// Random texts made of a few letters and every kind of line break:
+    /// reverting every change gives the base's lines, keeping every change
+    /// gives the current text's lines (line breaks of unchanged lines may
+    /// stay as they were, but no line is ever lost or joined).
+    #[test]
+    fn keep_and_revert_keep_the_lines_of_random_texts() {
+        let mut seed = 0x9e37_79b9_u64;
+        let mut rnd = |n: u64| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % n
+        };
+        let pieces = ["a", "b", "\n", "\r", "\r\n", "é"];
+        for _ in 0..20_000 {
+            let text = |rnd: &mut dyn FnMut(u64) -> u64| (0..rnd(12)).map(|_| pieces[rnd(pieces.len() as u64) as usize]).collect::<String>();
+            let (base, cur) = (text(&mut rnd), text(&mut rnd));
+            let lines = |s: &str| crate::compare::buffer_lines(s).into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(lines(&revert_all(&base, &cur)), lines(&base), "revert {base:?} ← {cur:?}");
+            assert_eq!(lines(&keep_all(&base, &cur)), lines(&cur), "keep {base:?} → {cur:?}");
+            // Each single change: its lines swapped in, every other line where it was.
+            let (lb, lc) = (lines(&base), lines(&cur));
+            for h in hunks(&base, &cur) {
+                let (r, with) = revert_edit(&base, &cur, &h);
+                let mut text: Vec<char> = cur.chars().collect();
+                text.splice(r, with.chars());
+                let mut want = lc.clone();
+                want.splice(h.b.clone(), lb[h.a.clone()].iter().cloned());
+                assert_eq!(lines(&text.into_iter().collect::<String>()), want, "revert {h:?} of {base:?} ← {cur:?}");
+                let mut want = lb.clone();
+                want.splice(h.a.clone(), lc[h.b.clone()].iter().cloned());
+                assert_eq!(lines(&keep_edit(&base, &cur, &h)), want, "keep {h:?} of {base:?} → {cur:?}");
+            }
+        }
+    }
+
+    /// A file Git filters (LFS and the like) is stored as something else
+    /// than what's on disk: never "changed" for that alone, never copied
+    /// into a snapshot, and a deleted one can't be put back from the blob.
+    #[test]
+    fn filtered_files_are_not_compared() {
+        let Some(dir) = temp_repo("filter") else { return };
+        std::fs::write(dir.join(".gitattributes"), "*.bin filter=lfs\n*.txt16 working-tree-encoding=UTF-16\n").unwrap();
+        std::fs::write(dir.join("data.bin"), "version https://git-lfs.github.com/spec/v1\noid sha256:00\nsize 3\n").unwrap();
+        run(&dir, &["add", "."]);
+        run(&dir, &["commit", "-q", "-m", "lfs"]);
+        // What LFS would have checked out: the real content, not the pointer.
+        std::fs::write(dir.join("data.bin"), "the real bytes\n").unwrap();
+        let mut cache = Cache::default();
+        let s = scan(&dir, &Base::Head, &HashMap::new(), &mut cache).unwrap();
+        assert!(s.files.is_empty(), "{:?}", s.files);
+        assert_eq!(s.filtered, 1);
+        let snap = take_snapshot(&dir, &mut cache).unwrap();
+        assert!(snap.files.is_empty());
+        std::fs::remove_file(dir.join("data.bin")).unwrap();
+        let s = scan(&dir, &Base::Head, &HashMap::new(), &mut cache).unwrap();
+        assert_eq!(s.files.len(), 1);
+        assert_eq!(s.files[0].status, Status::Deleted);
+        assert!(s.files[0].blocked.as_deref().is_some_and(|w| w.contains("filter=lfs")), "{:?}", s.files[0].blocked);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blob_budget_bounds_what_one_scan_reads() {
+        let Some(dir) = temp_repo("budget") else { return };
+        for n in 0..3 {
+            std::fs::write(dir.join(format!("f{n}.txt")), format!("twenty bytes, line {n}\n").repeat(2)).unwrap();
+        }
+        run(&dir, &["add", "."]);
+        run(&dir, &["commit", "-q", "-m", "three"]);
+        for n in 0..3 {
+            std::fs::write(dir.join(format!("f{n}.txt")), "changed\n").unwrap();
+        }
+        let mut cache = Cache { blob_budget: 50, ..Cache::default() };
+        let s = scan(&dir, &Base::Head, &HashMap::new(), &mut cache).unwrap();
+        assert_eq!(s.files.len(), 3, "every changed file is still listed");
+        let counted = s.files.iter().filter(|f| f.lines.is_some()).count();
+        assert_eq!(counted, 1, "only what fits in 50 bytes was read: {:?}", s.files);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One worker scans whichever repository it's asked about: what it
+    /// remembers about one never shows up in another.
+    #[test]
+    fn the_cache_never_crosses_repositories() {
+        let (Some(a), Some(b)) = (temp_repo("cache-a"), temp_repo("cache-b")) else { return };
+        // The same committed file in both; changed in A only, then made to
+        // look alike on disk (same size and modification time).
+        std::fs::write(a.join("README.md"), "# Title\n\nText!\n").unwrap();
+        let when = std::fs::metadata(a.join("README.md")).unwrap().modified().unwrap();
+        for p in [a.join("README.md"), b.join("README.md")] {
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(when).unwrap();
+        }
+        let mut cache = Cache::default();
+        let in_a = scan(&a, &Base::Head, &HashMap::new(), &mut cache).unwrap();
+        assert_eq!(in_a.files.len(), 1);
+        // Where inode and change time can't tell the files apart (Windows),
+        // A's entry would look exactly like B's file: make it so here.
+        let (_, key, found) = cache.seen.get("README.md").cloned().unwrap();
+        cache.seen.insert("README.md".into(), (stat(&b.join("README.md")), key, found));
+        let in_b = scan(&b, &Base::Head, &HashMap::new(), &mut cache).unwrap();
+        assert!(in_b.files.iter().all(|f| f.path.starts_with(&b)), "{:?}", in_b.files);
+        assert!(in_b.files.is_empty(), "{:?}", in_b.files);
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
+    }
+
+    /// A rewrite of the same size within the same modification-time tick is
+    /// still noticed (the inode or status-change time differs).
+    #[cfg(unix)]
+    #[test]
+    fn a_same_size_rewrite_is_noticed() {
+        let Some(dir) = temp_repo("samesize") else { return };
+        let file = dir.join("README.md");
+        std::fs::write(&file, "# Title\n\nText1\n").unwrap();
+        let when = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let mut cache = Cache::default();
+        let first = scan(&dir, &Base::Head, &HashMap::new(), &mut cache).unwrap();
+        std::fs::write(&file, "# Title\n\nText2\n").unwrap();
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(when).unwrap();
+        let second = scan(&dir, &Base::Head, &HashMap::new(), &mut cache).unwrap();
+        assert_ne!(first.files[0].hash, second.files[0].hash);
+        assert_eq!(file_hash(&file), second.files[0].hash);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn utf16_text_is_text() {
+        let Some(dir) = temp_repo("utf16") else { return };
+        let utf16 = |s: &str| [0xFF, 0xFE].into_iter().chain(s.encode_utf16().flat_map(u16::to_le_bytes)).collect::<Vec<u8>>();
+        std::fs::write(dir.join("wide.txt"), utf16("one\r\ntwo\r\n")).unwrap();
+        run(&dir, &["add", "."]);
+        run(&dir, &["commit", "-q", "-m", "wide"]);
+        std::fs::write(dir.join("wide.txt"), utf16("one\r\nTWO\r\nthree\r\n")).unwrap();
+        let mut cache = Cache::default();
+        let s = scan(&dir, &Base::Head, &HashMap::new(), &mut cache).unwrap();
+        assert_eq!((s.files[0].binary, s.files[0].lines), (false, Some((2, 1))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn decoding_the_base() {
+        let sjis = encoding_rs::SHIFT_JIS.encode("日本語のテキストファイルです。これは文字コードの判定のためのテストです。\n").0.into_owned();
+        let doc = crate::encoding::Encoding::from_id("shift_jis").unwrap();
+        // The tab's own legacy encoding when the base reads cleanly in it.
+        assert_eq!(decode_base(&sjis, doc).unwrap().1, doc);
+        // A UTF-8 tab: the base's own (guessed) encoding, not mojibake.
+        let (text, enc) = decode_base(&sjis, crate::encoding::Encoding::UTF8).unwrap();
+        assert_eq!(enc, doc);
+        assert!(text.starts_with("日本語"));
+        // Bytes that aren't clean text in any encoding: refused.
+        assert!(decode_base(b"\xEF\xBB\xBFok \xFF\xFE\xFD", crate::encoding::Encoding::UTF8).is_err());
     }
 
     #[test]

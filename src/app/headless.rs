@@ -279,6 +279,14 @@ mod tests {
                 }
                 app.review_set_reviewed(&repo.join("README.md"), true);
                 app.open_review(&repo.join("src/main.rs"));
+                // The earlier version is read in the background.
+                for _ in 0..80 {
+                    if app.review.pending_open.is_none() {
+                        break;
+                    }
+                    shooter.run(&ctx, &mut app, 1, vec![]);
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
                 app.review_step_change(true);
                 shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join(format!("review_{tag}.ppm")));
                 // A narrow window: the file's buttons give way to the summary.
@@ -298,6 +306,13 @@ mod tests {
                         std::thread::sleep(std::time::Duration::from_millis(25));
                     }
                     app.open_review(&repo.join("src/main.rs"));
+                    for _ in 0..80 {
+                        if app.review.pending_open.is_none() {
+                            break;
+                        }
+                        narrow.run(&ctx, &mut app, 1, vec![]);
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
                     narrow.shoot(&ctx, &mut app, 4, vec![], &dir.join("review_narrow.ppm"));
                     // Larger interface text: the heading and Start Review no longer
                     // share a row, so the button moves to a row of its own.

@@ -72,7 +72,11 @@ Tick the box next to a file, or use Mark Reviewed in the review tab, to set it a
 
 ## Good to know
 
-- Line endings: a repository that stores files with LF and writes them out with CRLF (`core.autocrlf`, or `eol=crlf` in `.gitattributes`) doesn't show every line as changed.
-- Binary files are listed but can't be shown or reverted in Strata; use Git for those. Files over 8 MB are listed without line counts, and files over 64 MB can't be opened for review.
-- Renames are recognized when the content didn't change. A file that was moved and edited shows as deleted and new.
-- Strata runs the `git` command-line program in the background to read the repository. It never changes it (no staging, no commits, no stash) and never runs programs named in the repository's configuration, such as filters or hooks. Review Changes makes no network connections.
+- Line endings: when the repository says a file is written out with CRLF (`core.autocrlf`, or `eol=crlf` in `.gitattributes`) while Git stores it with LF, that difference doesn't count as a change. Anywhere else, a change of line endings is a change ("line endings" in the list), and Revert puts the old ones back.
+- Encodings: Revert puts back the earlier version's exact bytes, in its own encoding (Shift_JIS, Windows 1252, UTF-16 and so on), with its byte order mark if it had one. If the earlier version isn't clean text in any encoding Strata knows, Strata won't open it for review rather than risk writing it back wrong.
+- Binary files are listed but can't be shown or reverted in Strata; use Git for those. UTF-16 text counts as text. Files over 8 MB are listed without line counts, and files over 64 MB can't be opened for review.
+- Files that Git converts with a filter (such as Git LFS, or a `working-tree-encoding`) aren't compared, because Strata doesn't run Git's filters: the list counts them as "not compared". A deleted one is listed, but can't be put back from Strata.
+- A committed file or folder that has been replaced by a symbolic link is listed with "can't review": Strata never follows the link, so a review can't change files outside the repository.
+- Renames are recognized when the content didn't change, and when only the letter case changed (`README.md` to `Readme.md`). Revert File doesn't undo a letter-case rename, because on macOS and Windows both names are the same file; rename it back in the side bar. A file that was moved and edited shows as deleted and new.
+- Opening a file reads its earlier version in the background; in a big repository the review tab can take a moment to appear.
+- Strata runs the `git` command-line program in the background to read the repository. It never changes it (no staging, no commits, no stash), never runs programs named in the repository's configuration (such as filters or hooks), and never fetches missing objects. Review Changes makes no network connections.
