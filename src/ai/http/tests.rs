@@ -51,7 +51,9 @@ impl FakeServer {
             kind,
             endpoint: Endpoint::parse(&self.url()).unwrap(),
             model: "test-model".into(),
-            stall: Duration::from_secs(2),
+            // Generous: on a loaded machine curl alone can take seconds to
+            // start; tests that want a stall set their own short limit.
+            stall: Duration::from_secs(10),
             remote_for_tests: false,
             program_for_tests: None,
             shown_host_for_tests: None,
