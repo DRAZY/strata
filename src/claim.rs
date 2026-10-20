@@ -475,6 +475,17 @@ pub(crate) mod imp {
         file.metadata().ok().map(|m| (m.dev(), m.ino()))
     }
 
+    /// Which folder a handle is (device and inode).
+    pub fn dir_id(dir: &Dir) -> Option<(u64, u64)> {
+        id_of(&std::fs::File::from(dir.try_clone().ok()?))
+    }
+
+    /// A folder handle's permission bits.
+    pub fn dir_mode(dir: &Dir) -> Option<u32> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::File::from(dir.try_clone().ok()?).metadata().ok().map(|m| m.permissions().mode() & 0o7777)
+    }
+
     /// Where a folder handle really is.
     pub fn real_path(dir: &Dir) -> io::Result<PathBuf> {
         #[cfg(target_os = "macos")]
@@ -644,6 +655,11 @@ pub(crate) mod imp {
     }
 
     /// Volume serial number and file index.
+    /// Which folder a handle is (volume and file index).
+    pub fn dir_id(dir: &Dir) -> Option<(u64, u64)> {
+        id_of(dir._held.last()?)
+    }
+
     pub fn id_of(file: &std::fs::File) -> Option<(u64, u64)> {
         // SAFETY: plain data, filled in by the call.
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
@@ -723,6 +739,9 @@ pub(crate) mod imp {
         no()
     }
     pub fn id_of(_: &std::fs::File) -> Option<(u64, u64)> {
+        None
+    }
+    pub fn dir_id(_: &Dir) -> Option<(u64, u64)> {
         None
     }
     pub fn real_path(_: &Dir) -> io::Result<PathBuf> {
