@@ -1159,6 +1159,11 @@ impl Panel {
         self.focus_next && self.visible
     }
 
+    /// Forget a `focus` the panel won't be drawn to take.
+    pub fn cancel_focus(&mut self) {
+        self.focus_next = false;
+    }
+
     pub fn open(&mut self, ctx: &egui::Context, cwd: &Path) -> Result<(), String> {
         let (cols, rows) = self.tabs.get(self.active).map(|t| (t.size.cols, t.size.rows)).unwrap_or((80, 12));
         let t = Terminal::spawn(Some(ctx.clone()), cwd, None, cols, rows).map_err(|e| format!("Terminal: {e}"))?;

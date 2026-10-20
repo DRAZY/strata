@@ -1489,7 +1489,7 @@ impl StrataApp {
                 self.palette_restore = None;
                 // Back to the editor, unless the command gave the keyboard
                 // to a terminal (Terminal: New Terminal, View: Toggle Terminal).
-                if !self.terminal.focus_pending() {
+                if !self.terminal_takes_focus() {
                     self.doc().view.focus();
                 }
             }

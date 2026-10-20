@@ -82,6 +82,12 @@ impl StrataApp {
         }
     }
 
+    /// Will the terminal take the keyboard next frame? Not while it's hidden
+    /// by distraction-free mode, where its panel isn't drawn.
+    pub(super) fn terminal_takes_focus(&self) -> bool {
+        self.terminal.focus_pending() && self.distraction.is_none()
+    }
+
     /// Window shortcuts while the terminal has the keyboard (it owns Ctrl/Alt keys).
     pub(super) fn terminal_has_keys(&self, ctx: &egui::Context) -> bool {
         self.terminal.has_focus(ctx)
@@ -120,6 +126,8 @@ impl StrataApp {
             self.doc().view.focus();
         }
         if !self.terminal.visible || self.distraction.is_some() {
+            // Hidden: it can't take the keyboard now, nor later out of the blue.
+            self.terminal.cancel_focus();
             return;
         }
         let theme = terminal::Theme::from_highlighter(&self.docs[self.active].highlighter);
@@ -702,6 +710,38 @@ mod tests {
             frame(&mut app, &ctx, vec![Event::Text("x".into())]);
             assert_eq!(app.docs[app.active].editor.buffer.line_text(0), "file", "{way}: nothing typed into the file");
         }
+    }
+
+    /// In distraction-free mode the terminal isn't shown, so a terminal
+    /// opened from the palette leaves the keyboard with the editor, and no
+    /// focus is left waiting for it.
+    #[test]
+    fn a_terminal_opened_while_distraction_free_leaves_the_editor_focused() {
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(None, None);
+        app.docs[0].editor.insert_text("file");
+        frame(&mut app, &ctx, vec![]);
+        app.run(&ctx, Cmd::DistractionFree);
+        frame(&mut app, &ctx, vec![]);
+        let palette = |app: &mut StrataApp, query: &str| {
+            app.open_palette(&ctx, crate::palette::Mode::Commands, query);
+            frame(app, &ctx, vec![]);
+            assert_eq!(app.palette.selected_label(), Some("Terminal: New Terminal"));
+            frame(app, &ctx, vec![key(Key::Enter, Modifiers::NONE)]);
+            frame(app, &ctx, vec![]);
+            frame(app, &ctx, vec![]);
+        };
+        palette(&mut app, "new terminal");
+        assert_eq!(app.terminal.tabs.len(), 1);
+        assert!(!app.terminal.focus_pending(), "nothing waits to take the keyboard");
+        assert!(app.docs[app.active].view.has_focus(&ctx), "the editor has the keyboard");
+        frame(&mut app, &ctx, vec![Event::Text("!".into())]);
+        assert_eq!(app.docs[app.active].editor.buffer.line_text(0), "file!");
+        // Back out of distraction-free mode: the editor keeps the keyboard.
+        app.run(&ctx, Cmd::DistractionFree);
+        frame(&mut app, &ctx, vec![]);
+        frame(&mut app, &ctx, vec![]);
+        assert!(!app.terminal.has_focus(&ctx), "the shown terminal didn't take the keyboard late");
     }
 
     #[test]
