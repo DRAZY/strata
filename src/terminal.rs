@@ -295,12 +295,16 @@ pub fn strip_menu_keys(items: &mut [crate::menus::Item]) {
 struct Listener {
     ctx: Option<egui::Context>,
     queue: Arc<Mutex<Vec<TermEvent>>>,
+    /// When the program last printed something (the emulator wakes the UI
+    /// after each batch of output).
+    output: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
 impl EventListener for Listener {
     fn send_event(&self, event: TermEvent) {
         match event {
-            TermEvent::Wakeup | TermEvent::MouseCursorDirty | TermEvent::CursorBlinkingChange => {}
+            TermEvent::Wakeup => *self.output.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now()),
+            TermEvent::MouseCursorDirty | TermEvent::CursorBlinkingChange => {}
             e => self.queue.lock().unwrap_or_else(|e| e.into_inner()).push(e),
         }
         if let Some(ctx) = &self.ctx {
@@ -351,33 +355,103 @@ pub struct Terminal {
     /// (left, middle, right), and the cell last reported, for drag/motion.
     mouse_down: [bool; 3],
     mouse_cell: Option<(usize, usize)>,
+    /// The PTY (a second handle), to ask which program is in the foreground.
+    #[cfg(unix)]
+    tty: Option<std::fs::File>,
     /// The folder the shell started in.
     cwd: PathBuf,
     started: std::time::Instant,
+    /// When the program last printed something.
+    last_output: Arc<Mutex<Option<std::time::Instant>>>,
     /// Send to Terminal text waiting for a shell that's still starting (or
     /// for the Enter that closes the previous text's block).
     pending_send: Vec<String>,
-    /// When to press the Enter that closes a sent Python block.
+    /// When to press the Enter that closes a sent Python block, if Python
+    /// is still waiting for it then.
     enter_after: Option<std::time::Instant>,
     /// The file location under the pointer while ⌘ (Ctrl) is held.
     link: Option<Link>,
     /// What link lookups remember while the modifier is held.
     lookup: LinkLookup,
+    /// Checks link candidates on disk (started on first use).
+    resolver: Option<Resolver>,
+    /// Which press of the modifier lookups belong to (answers to an earlier
+    /// one are dropped).
+    generation: u64,
+    /// The shell's folder as the kernel last gave it, and when.
+    shell_dir: Option<(std::time::Instant, Option<PathBuf>)>,
+    /// The side bar folders lookups last used, and a number that changes with them.
+    roots_seen: Vec<PathBuf>,
+    roots_generation: u64,
 }
 
-/// What finding links remembers, so holding ⌘ (Ctrl) over output that keeps
-/// changing (`cargo watch`, `tail -f`) doesn't ask the kernel or stat files
-/// every frame, which stutters on network folders. Emptied when the modifier
-/// is released, so the next lookup sees the disk as it is.
+/// What finding links remembers on the UI thread while the modifier is held;
+/// emptied when it's released.
 #[derive(Default)]
 struct LinkLookup {
     /// The last logical line searched, and the locations in it.
     line: Option<(String, Vec<crate::build::TextLocation>)>,
-    /// The shell's folder, and when the kernel was asked.
-    dir: Option<(std::time::Instant, PathBuf)>,
+    /// What the resolver said files are, and when it said so (answers older
+    /// than `FILE_CHECK_TTL` are asked again, as files come and go).
+    answers: HashMap<AnswerKey, (std::time::Instant, Option<PathBuf>)>,
+    /// What the resolver has been asked, and when.
+    asked: HashMap<AnswerKey, std::time::Instant>,
+}
+
+/// What an answer depends on: the shell's folder as the kernel gave it
+/// (after a `cd` the same printed path names another file), the side bar
+/// folders (by `Terminal::roots_generation`), and the path as printed.
+type AnswerKey = (Option<PathBuf>, u64, String);
+
+/// A link candidate for the resolver.
+struct Resolve {
+    generation: u64,
+    key: AnswerKey,
+    /// Where the shell started, and the side bar folders.
+    cwd: PathBuf,
+    roots: Vec<PathBuf>,
+}
+
+/// Checks link candidates on disk on its own thread, so a slow network
+/// folder or a drive that's gone can't freeze the editor; the underline
+/// appears when the answer does.
+struct Resolver {
+    ask: std::sync::mpsc::Sender<Resolve>,
+    answers: std::sync::mpsc::Receiver<(u64, AnswerKey, Option<PathBuf>)>,
+}
+
+impl Resolver {
+    fn start(ctx: egui::Context) -> Option<Self> {
+        let (ask, questions) = std::sync::mpsc::channel::<Resolve>();
+        let (tell, answers) = std::sync::mpsc::channel();
+        let run = move || {
+            let mut disk = DiskLookup::default();
+            // Ends when the terminal (and so `ask`) goes away. A check stuck
+            // on a dead network mount keeps the thread (only) until the
+            // system gives up on it; the terminal doesn't wait for it.
+            while let Ok(r) = questions.recv() {
+                let (shell_dir, _, file) = &r.key;
+                let mut bases = vec![disk.spell_dir(shell_dir.as_deref(), &r.cwd, &r.roots), r.cwd.clone()];
+                bases.dedup();
+                bases.extend(r.roots);
+                let path = resolve_file(file, &bases, |p| disk.is_file(p));
+                if tell.send((r.generation, r.key, path)).is_err() {
+                    break;
+                }
+                ctx.request_repaint();
+            }
+        };
+        std::thread::Builder::new().name("terminal-links".into()).spawn(run).ok()?;
+        Some(Self { ask, answers })
+    }
+}
+
+/// What the resolver remembers, so holding ⌘ (Ctrl) over output that keeps
+/// changing (`cargo watch`, `tail -f`) doesn't stat files for every new line.
+#[derive(Default)]
+struct DiskLookup {
     /// Where the shell started and the side bar folders, each with its
     /// canonical path (for spelling the shell's folder their way).
-    #[cfg_attr(not(unix), allow(dead_code))] // only Unix asks for the shell's folder
     canon: Vec<(PathBuf, Option<PathBuf>)>,
     /// Whether paths are files, and when that was checked.
     files: HashMap<PathBuf, (std::time::Instant, bool)>,
@@ -391,7 +465,7 @@ const MAX_LOCATIONS_PER_LINE: usize = 64;
 /// File checks remembered before starting over.
 const MAX_FILE_CHECKS: usize = 512;
 
-impl LinkLookup {
+impl DiskLookup {
     /// `p.is_file()`, remembered for `FILE_CHECK_TTL`.
     fn is_file(&mut self, p: &Path) -> bool {
         if let Some(&(at, yes)) = self.files.get(p)
@@ -402,10 +476,50 @@ impl LinkLookup {
         if self.files.len() >= MAX_FILE_CHECKS {
             self.files.clear();
         }
+        #[cfg(test)]
+        record_disk_check(p);
         let yes = p.is_file();
         self.files.insert(p.to_owned(), (std::time::Instant::now(), yes));
         yes
     }
+
+    /// The shell's folder `dir` as the kernel gave it (else where it
+    /// started, `cwd`). The kernel resolves symbolic links (`/private/var`
+    /// for `/var` on macOS); inside where the shell started or one of
+    /// `roots` it's spelled their way, so opened files match the tabs and
+    /// side bar. Their canonical paths are kept until they change.
+    fn spell_dir(&mut self, dir: Option<&Path>, cwd: &Path, roots: &[PathBuf]) -> PathBuf {
+        if let Some(dir) = dir {
+            let bases: Vec<&Path> = std::iter::once(cwd).chain(roots.iter().map(PathBuf::as_path)).collect();
+            if self.canon.iter().map(|(b, _)| b.as_path()).ne(bases.iter().copied()) {
+                self.canon = bases
+                    .into_iter()
+                    .map(|b| {
+                        #[cfg(test)]
+                        record_disk_check(b);
+                        (b.to_owned(), b.canonicalize().ok())
+                    })
+                    .collect();
+            }
+            for (base, canon) in &self.canon {
+                if let Some(rest) = canon.as_ref().and_then(|c| dir.strip_prefix(c).ok()) {
+                    return if rest.as_os_str().is_empty() { base.clone() } else { base.join(rest) };
+                }
+            }
+            return dir.to_owned();
+        }
+        cwd.to_owned()
+    }
+}
+
+/// Paths link lookups checked on disk, and on which thread (tests make sure
+/// it's never the UI thread).
+#[cfg(test)]
+static DISK_CHECKS: Mutex<Vec<(PathBuf, std::thread::ThreadId)>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn record_disk_check(p: &Path) {
+    DISK_CHECKS.lock().unwrap_or_else(|e| e.into_inner()).push((p.to_owned(), std::thread::current().id()));
 }
 
 /// Part of a link on one row: (grid line, first column, column after the last).
@@ -468,8 +582,11 @@ impl Terminal {
         };
         #[cfg(unix)]
         let pid = pty.child().id();
+        #[cfg(unix)]
+        let tty = pty.file().try_clone().ok();
         let queue = Arc::new(Mutex::new(Vec::new()));
-        let listener = Listener { ctx, queue: queue.clone() };
+        let last_output = Arc::new(Mutex::new(None));
+        let listener = Listener { ctx, queue: queue.clone(), output: last_output.clone() };
         // Clipboard reads reach `poll`, which refuses them unless the setting
         // allows (and says so); the emulator's own default drops them silently.
         let config = Config { osc52: Osc52::CopyPaste, ..Config::default() };
@@ -483,7 +600,10 @@ impl Terminal {
             pid,
             title: None, shell_name, exited: false, size, cell: (8.0, 16.0), scroll_acc: 0.0, bell: f64::NEG_INFINITY, focused: false,
             preedit: String::new(), mouse_down: [false; 3], mouse_cell: None,
-            cwd: cwd.to_owned(), started: std::time::Instant::now(), pending_send: Vec::new(), enter_after: None, link: None, lookup: LinkLookup::default() })
+            #[cfg(unix)]
+            tty,
+            cwd: cwd.to_owned(), started: std::time::Instant::now(), last_output, pending_send: Vec::new(), enter_after: None, link: None,
+            lookup: LinkLookup::default(), resolver: None, generation: 0, shell_dir: None, roots_seen: Vec::new(), roots_generation: 0 })
     }
 
     pub fn title(&self) -> &str {
@@ -562,11 +682,17 @@ impl Terminal {
         }
         if let Some(at) = self.enter_after {
             let now = std::time::Instant::now();
-            if now >= at {
+            if now < at {
+                ctx.request_repaint_after(at - now);
+            } else if self.python_waiting_for_block_end() {
                 self.enter_after = None;
                 self.type_bytes(b"\r".to_vec());
+            } else if now - at > BLOCK_ENTER_PATIENCE {
+                // Not Python, or it didn't ask for more: no Enter, which
+                // could answer a password or confirmation prompt.
+                self.enter_after = None;
             } else {
-                ctx.request_repaint_after(at - now);
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
             }
         }
         while self.enter_after.is_none() && !self.pending_send.is_empty() && self.ready_for_input() {
@@ -578,11 +704,65 @@ impl Terminal {
         }
     }
 
-    /// Shells that use bracketed paste turn it on when their prompt is ready;
-    /// text sent sooner is echoed by the PTY before the shell's line editor
-    /// starts, and its lines run one by one.
+    /// The shell's current folder as the kernel gives it (after any `cd`),
+    /// asked at most every `SHELL_DIR_TTL`. This asks the kernel about the
+    /// process, not the disk. `None` on Windows.
+    fn raw_shell_dir(&mut self) -> Option<PathBuf> {
+        if let Some((at, dir)) = &self.shell_dir
+            && at.elapsed() < SHELL_DIR_TTL
+        {
+            return dir.clone();
+        }
+        #[cfg(unix)]
+        let dir = process_dir(self.pid);
+        #[cfg(not(unix))]
+        let dir = None;
+        self.shell_dir = Some((std::time::Instant::now(), dir.clone()));
+        dir
+    }
+
+    /// A new shell is ready for sent text when its line editor turns on
+    /// bracketed paste, or once it has printed something (its prompt) and
+    /// gone quiet. Sooner, startup files (conda, nvm) can swallow the text,
+    /// or the PTY echoes it before the line editor starts.
     fn ready_for_input(&self) -> bool {
-        self.started.elapsed() > SHELL_START_WAIT || self.term.lock().mode().contains(TermMode::BRACKETED_PASTE)
+        if self.started.elapsed() >= SHELL_START_CAP || self.term.lock().mode().contains(TermMode::BRACKETED_PASTE) {
+            return true;
+        }
+        self.last_output.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t.elapsed() >= SHELL_QUIET)
+    }
+
+    /// Python's REPL is in the foreground at its "..." prompt, waiting for an
+    /// empty line to end a block. Both must hold: anything else (a shell,
+    /// `sudo`, `ssh`, a debugger) gets no extra Enter.
+    fn python_waiting_for_block_end(&self) -> bool {
+        let at_continuation = {
+            let term = self.term.lock();
+            let grid = term.grid();
+            let line = grid.cursor.point.line;
+            let row: String = (0..grid.columns()).map(|c| grid[line][Column(c)].c).collect();
+            row.trim() == "..."
+        };
+        at_continuation && self.foreground_is_python()
+    }
+
+    /// The program in the foreground of the terminal is Python, by the name
+    /// of its process group's leader.
+    #[cfg(unix)]
+    fn foreground_is_python(&self) -> bool {
+        use std::os::fd::AsRawFd;
+        unsafe extern "C" {
+            fn tcgetpgrp(fd: i32) -> i32;
+        }
+        let Some(tty) = &self.tty else { return false };
+        let group = unsafe { tcgetpgrp(tty.as_raw_fd()) };
+        group > 0 && process_name(group as u32).is_some_and(|n| is_python(&n))
+    }
+
+    /// Windows can't say which program is in the foreground of a console.
+    #[cfg(not(unix))]
+    fn foreground_is_python(&self) -> bool {
+        false
     }
 
     /// Send to Terminal: `text` as a paste, then Enter, so a multi-line
@@ -602,49 +782,15 @@ impl Terminal {
         }
         self.type_bytes(b"\r".to_vec());
         // A Python block whose last line is indented (a `for` loop's body)
-        // stays open at "..." until an empty line ends it; shells just show
-        // another prompt for the extra Enter. It goes a moment later: Python's
-        // own REPL takes keys that arrive together as a paste, where Enter
-        // only starts a new line.
+        // stays open at "..." until an empty line ends it. The Enter for that
+        // goes a moment later (Python's own REPL takes keys that arrive
+        // together as a paste, where Enter only starts a new line), and only
+        // if Python is then waiting for it.
         if open_block(text) {
             self.enter_after = Some(std::time::Instant::now() + BLOCK_ENTER_DELAY);
         }
     }
 
-    /// The shell's current folder (after any `cd`), else where it started;
-    /// the kernel is asked at most every `SHELL_DIR_TTL`.
-    fn shell_dir(&mut self, roots: &[PathBuf]) -> PathBuf {
-        if let Some((at, dir)) = &self.lookup.dir
-            && at.elapsed() < SHELL_DIR_TTL
-        {
-            return dir.clone();
-        }
-        let dir = self.ask_shell_dir(roots);
-        self.lookup.dir = Some((std::time::Instant::now(), dir.clone()));
-        dir
-    }
-
-    /// The kernel gives the folder with symbolic links resolved
-    /// (`/private/var` for `/var` on macOS); inside where the shell started
-    /// or one of `roots` it's spelled their way, so opened files match the
-    /// tabs and side bar. Their canonical paths are kept until they change.
-    fn ask_shell_dir(&mut self, roots: &[PathBuf]) -> PathBuf {
-        #[cfg(unix)]
-        if let Some(dir) = process_dir(self.pid) {
-            let bases: Vec<&PathBuf> = std::iter::once(&self.cwd).chain(roots).collect();
-            if self.lookup.canon.iter().map(|(b, _)| b).ne(bases.iter().copied()) {
-                self.lookup.canon = bases.into_iter().map(|b| (b.clone(), b.canonicalize().ok())).collect();
-            }
-            for (base, canon) in &self.lookup.canon {
-                if let Some(rest) = canon.as_ref().and_then(|c| dir.strip_prefix(c).ok()) {
-                    return if rest.as_os_str().is_empty() { base.clone() } else { base.join(rest) };
-                }
-            }
-            return dir;
-        }
-        let _ = roots;
-        self.cwd.clone()
-    }
 
     /// The visible screen as text, one line per row.
     #[cfg(all(test, unix))]
@@ -713,11 +859,41 @@ fn open_block(text: &str) -> bool {
     text.lines().rev().find(|l| !l.trim().is_empty()).is_some_and(|l| l.starts_with([' ', '\t']))
 }
 
-/// How long after sending an open block its closing Enter follows.
+/// How long after sending an open block its closing Enter follows, and how
+/// much longer Python may take to show its "..." prompt.
 const BLOCK_ENTER_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+const BLOCK_ENTER_PATIENCE: std::time::Duration = std::time::Duration::from_millis(1000);
 
-/// How long Send to Terminal waits for a new shell to turn on bracketed paste.
-const SHELL_START_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+/// A new shell that printed something and then nothing for this long is at its prompt.
+const SHELL_QUIET: std::time::Duration = std::time::Duration::from_millis(300);
+/// The longest Send to Terminal waits for a new shell.
+const SHELL_START_CAP: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A Python interpreter's process name: python or pypy, with an optional
+/// version (python3, python3.14, pypy3). Helpers such as python-agent don't
+/// count. On macOS, where the framework build runs as "Python", case is
+/// ignored.
+#[cfg(unix)]
+fn is_python(name: &str) -> bool {
+    let name = if MAC { name.to_ascii_lowercase() } else { name.to_owned() };
+    let Some(version) = name.strip_prefix("python").or_else(|| name.strip_prefix("pypy")) else { return false };
+    version.is_empty() || version.split('.').all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+#[cfg(target_os = "macos")]
+fn process_name(pid: u32) -> Option<String> {
+    unsafe extern "C" {
+        fn proc_name(pid: i32, buffer: *mut std::ffi::c_void, size: u32) -> i32;
+    }
+    let mut buf = [0u8; 256];
+    let n = unsafe { proc_name(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn process_name(pid: u32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| s.trim_end().to_owned())
+}
 
 /// A process's current folder, from the kernel: shells don't report `cd`
 /// unless configured to (OSC 7), and the emulator ignores that anyway.
@@ -793,11 +969,23 @@ impl Terminal {
         self.link.as_ref().map(|l| (l.path.as_path(), l.line, l.col, l.rows.as_slice()))
     }
 
+    /// Send to Terminal text is still waiting for the shell.
+    #[cfg(test)]
+    pub fn has_pending_send(&self) -> bool {
+        !self.pending_send.is_empty()
+    }
+
+    /// The paths link lookups checked on disk from thread `thread`.
+    #[cfg(test)]
+    pub fn disk_checks_on(thread: std::thread::ThreadId) -> Vec<PathBuf> {
+        DISK_CHECKS.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(_, t)| *t == thread).map(|(p, _)| p.clone()).collect()
+    }
+
     /// Link lookups have remembered nothing (so done no disk work).
     #[cfg(test)]
     pub fn link_lookup_is_empty(&self) -> bool {
         let l = &self.lookup;
-        l.line.is_none() && l.dir.is_none() && l.canon.is_empty() && l.files.is_empty()
+        l.line.is_none() && l.answers.is_empty() && l.asked.is_empty() && self.resolver.is_none()
     }
 }
 
@@ -1296,9 +1484,9 @@ fn resolve_file(file: &str, bases: &[PathBuf], mut is_file: impl FnMut(&Path) ->
 
 /// The clickable location at grid point `p`, if any: found in its logical
 /// line and resolved against the shell's folder, where it started, then the
-/// side bar folders. Only the location under the pointer is looked up on
-/// disk, through `LinkLookup`'s caches.
-fn link_at(t: &mut Terminal, p: Point, roots: &[PathBuf]) -> Option<Link> {
+/// side bar folders. Only the location under the pointer is looked up, by
+/// the resolver; until it answers there's no link.
+fn link_at(ctx: &egui::Context, t: &mut Terminal, p: Point, roots: &[PathBuf]) -> Option<Link> {
     let (text, at, p) = {
         let term = t.term.lock();
         // The right half of a wide character belongs to the character.
@@ -1313,10 +1501,44 @@ fn link_at(t: &mut Terminal, p: Point, roots: &[PathBuf]) -> Option<Link> {
         t.lookup.line = Some((text, found));
     }
     let loc = t.lookup.line.as_ref()?.1.iter().find(|l| l.span.contains(&byte))?.clone();
-    let mut bases = vec![t.shell_dir(roots), t.cwd.clone()];
-    bases.dedup();
-    bases.extend(roots.iter().cloned());
-    let path = resolve_file(&loc.file, &bases, |p| t.lookup.is_file(p))?;
+    if t.resolver.is_none() {
+        t.resolver = Resolver::start(ctx.clone());
+    }
+    let resolver = t.resolver.as_ref()?;
+    let now = std::time::Instant::now();
+    while let Ok((generation, key, path)) = resolver.answers.try_recv() {
+        if generation == t.generation {
+            t.lookup.answers.insert(key, (now, path));
+        }
+    }
+    if t.roots_seen != roots {
+        t.roots_seen = roots.to_vec();
+        t.roots_generation += 1;
+    }
+    let generation = t.generation;
+    let key: AnswerKey = (t.raw_shell_dir(), t.roots_generation, loc.file.clone());
+    let lookup = &mut t.lookup;
+    let fresh = |at: &std::time::Instant| now.duration_since(*at) < FILE_CHECK_TTL;
+    match lookup.answers.get(&key) {
+        Some((asked_at, answer)) if fresh(asked_at) => {
+            let path = answer.clone()?;
+            return Some(Link { rows: link_rows(&at, &loc), path, line: loc.line, col: loc.col });
+        }
+        Some(_) => {
+            lookup.answers.remove(&key);
+        }
+        None => {}
+    }
+    if lookup.asked.get(&key).is_none_or(|at| !fresh(at)) {
+        lookup.asked.insert(key.clone(), now);
+        let resolver = t.resolver.as_ref()?;
+        let _ = resolver.ask.send(Resolve { generation, key, cwd: t.cwd.clone(), roots: roots.to_vec() });
+    }
+    None
+}
+
+/// The cells `loc` covers, a row at a time.
+fn link_rows(at: &[(usize, Point)], loc: &crate::build::TextLocation) -> Vec<LinkRow> {
     let mut rows: Vec<LinkRow> = Vec::new();
     for &(_, q) in at.iter().filter(|(b, _)| loc.span.contains(b)) {
         match rows.last_mut() {
@@ -1324,7 +1546,7 @@ fn link_at(t: &mut Terminal, p: Point, roots: &[PathBuf]) -> Option<Link> {
             _ => rows.push((q.line, q.column.0, q.column.0 + 1)),
         }
     }
-    Some(Link { rows, path, line: loc.line, col: loc.col })
+    rows
 }
 
 /// ⌘-hover (Ctrl elsewhere) underlines a file location; clicking it opens
@@ -1340,10 +1562,13 @@ fn links(ui: &egui::Ui, t: &mut Terminal, resp: &egui::Response, origin: egui::P
     let point = resp.hover_pos().filter(|_| link_modifier(mods) && !reporting).and_then(|p| grid_point(t, p, origin, cell, offset));
     let Some(point) = point else {
         t.link = None;
-        t.lookup = LinkLookup::default();
+        if t.lookup.line.is_some() || !t.lookup.asked.is_empty() {
+            t.lookup = LinkLookup::default();
+            t.generation += 1;
+        }
         return None;
     };
-    t.link = link_at(t, point, roots);
+    t.link = link_at(ui.ctx(), t, point, roots);
     let link = t.link.as_ref()?;
     resp.clicked().then(|| PanelAction::Open(link.path.clone(), link.line, link.col))
 }
@@ -1837,6 +2062,20 @@ mod tests {
         assert!((galley.size().x - 110.0 * w).abs() < 0.5, "{} vs {}", galley.size().x, 110.0 * w);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn python_process_names() {
+        for name in ["python", "python3", "python3.14", "python3.12.1", "pypy", "pypy3", "pypy3.10"] {
+            assert!(is_python(name), "{name}");
+        }
+        for name in ["sudo", "ssh", "zsh", "node", "python-agent", "pypy-helper", "python3-config", "pythonw.", "python3.", "py", "mypython"] {
+            assert!(!is_python(name), "{name}");
+        }
+        // The macOS framework build runs as "Python"; names there ignore case.
+        assert_eq!(is_python("Python"), MAC);
+        assert_eq!(is_python("PyPy3.10"), MAC);
+    }
+
     #[test]
     fn indented_last_lines_leave_a_block_open() {
         assert!(open_block("for i in range(2):\n    print(i)"));
@@ -2096,7 +2335,7 @@ mod tests {
         assert_eq!(resolve_file("src", &bases, Path::is_file), None, "nor are folders");
         assert_eq!(resolve_file("12", &bases, Path::is_file), None, "nor a time like 12:30:45");
         // File checks are remembered for a while, then made again.
-        let mut lookup = LinkLookup::default();
+        let mut lookup = DiskLookup::default();
         let top = dir.join("top.py");
         assert!(lookup.is_file(&top));
         std::fs::remove_file(&top).unwrap();
@@ -2125,15 +2364,90 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let canon = |p: PathBuf| p.canonicalize().unwrap();
-        assert_eq!(canon(t.shell_dir(&[])), canon(dir.join("sub")));
-        assert_eq!(t.shell_dir(&[]), dir.join("sub"), "spelled as the folder it started in");
+        let raw = t.raw_shell_dir();
+        assert_eq!(raw.clone().map(canon), Some(canon(dir.join("sub"))));
+        let mut disk = DiskLookup::default();
+        assert_eq!(disk.spell_dir(raw.as_deref(), &dir, &[]), dir.join("sub"), "spelled as the folder it started in");
+        assert_eq!(disk.spell_dir(None, &dir, &[]), dir, "unknown: where it started");
         // Asked again within SHELL_DIR_TTL, the remembered answer is used.
-        let elsewhere = PathBuf::from("/elsewhere");
-        t.lookup.dir = Some((std::time::Instant::now(), elsewhere.clone()));
-        assert_eq!(t.shell_dir(&[]), elsewhere);
-        t.lookup.dir = Some((std::time::Instant::now() - SHELL_DIR_TTL, elsewhere));
-        assert_eq!(t.shell_dir(&[]), dir.join("sub"), "and after it the kernel again");
+        let elsewhere = Some(PathBuf::from("/elsewhere"));
+        t.shell_dir = Some((std::time::Instant::now(), elsewhere.clone()));
+        assert_eq!(t.raw_shell_dir(), elsewhere);
+        t.shell_dir = Some((std::time::Instant::now() - SHELL_DIR_TTL, elsewhere));
+        assert_eq!(t.raw_shell_dir(), raw, "and after it the kernel again");
         drop(t);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A panel running `program` with `args` in the temp folder.
+    #[cfg(unix)]
+    fn panel_running(ctx: &egui::Context, program: &str, args: &[&str]) -> Panel {
+        let mut panel = Panel::new();
+        let shell = (program.to_owned(), args.iter().map(|a| a.to_string()).collect());
+        panel.tabs.push(Terminal::spawn(Some(ctx.clone()), &std::env::temp_dir(), Some(shell), 80, 10).unwrap());
+        panel.visible = true;
+        panel
+    }
+
+    /// Poll for `secs`, or until the screen contains `until`. Returns the screen.
+    #[cfg(unix)]
+    fn poll_for(panel: &mut Panel, ctx: &egui::Context, secs: f32, until: Option<&str>) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f32(secs);
+        loop {
+            panel.poll(ctx);
+            let screen = panel.tabs[0].screen_text();
+            if until.is_some_and(|u| screen.contains(u)) || std::time::Instant::now() > deadline {
+                return screen;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_extra_enter_for_programs_that_are_not_python() {
+        // A password-style prompt after an indented line: an extra Enter would
+        // answer it with an empty line. Even a "... " prompt doesn't count
+        // unless Python is the program running.
+        let ctx = egui::Context::default();
+        let script = "stty -echo; echo READY; IFS= read -r a; echo \"got[$a]\"; printf '... '; read -r b; echo \"second[$b]\"; sleep 30";
+        let mut panel = panel_running(&ctx, "/bin/sh", &["-c", script]);
+        poll_for(&mut panel, &ctx, 10.0, Some("READY"));
+        panel.tabs[0].send("  sudo -k; read -s x");
+        poll_for(&mut panel, &ctx, 10.0, Some("got["));
+        let screen = poll_for(&mut panel, &ctx, 1.0, Some("second["));
+        assert!(screen.contains("got[  sudo -k; read -s x]"), "{screen}");
+        assert!(!screen.contains("second["), "no Enter was pressed for the next prompt: {screen}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sends_wait_for_a_slow_shell() {
+        // Startup files that take a while (conda, nvm) before the prompt.
+        let ctx = egui::Context::default();
+        let mut panel = panel_running(&ctx, "/bin/sh", &["-c", "sleep 3; printf 'ready$ '; exec cat -v"]);
+        panel.tabs[0].send("echo hi");
+        poll_for(&mut panel, &ctx, 2.5, None);
+        assert!(panel.tabs[0].has_pending_send(), "still waiting while the shell starts");
+        let screen = poll_for(&mut panel, &ctx, 10.0, Some("ready$ echo hi"));
+        assert!(screen.contains("ready$ echo hi"), "sent once the prompt is up: {screen}");
+        assert!(!panel.tabs[0].has_pending_send());
+
+        // zsh, whose startup file sleeps before the prompt: sent when its line
+        // editor turns on bracketed paste, and run.
+        if !Path::new("/bin/zsh").exists() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("strata-slow-zsh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".zshrc"), "sleep 3\nPS1='zready%# '\n").unwrap();
+        let script = format!("ZDOTDIR={} exec /bin/zsh -i", dir.display());
+        let mut panel = panel_running(&ctx, "/bin/sh", &["-c", &script]);
+        panel.tabs[0].send("echo $((5*5))");
+        poll_for(&mut panel, &ctx, 2.5, None);
+        assert!(panel.tabs[0].has_pending_send(), "still waiting while zsh starts");
+        let screen = poll_for(&mut panel, &ctx, 10.0, Some("\n25\n"));
+        assert!(screen.lines().any(|l| l.trim() == "25") && screen.contains("zready"), "{screen}");
         std::fs::remove_dir_all(dir).ok();
     }
 }
