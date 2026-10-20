@@ -64,6 +64,10 @@ pub(super) struct SyncState {
     due: HashMap<PathBuf, f64>,
     /// Vaults whose last sync left a rebase stopped (see `sync::Kind::Stuck`): off the timer.
     stuck: std::collections::HashSet<PathBuf>,
+    /// "Strata's sync was interrupted in … — undo it?": (vault, question, files).
+    interrupted: Option<(PathBuf, String, String)>,
+    /// The next sync undoes the interrupted one (the user said yes).
+    undo_next: bool,
     last_check: f64,
     enable: Option<Enable>,
     /// This window's number in `BUSY` (0: not given yet).
@@ -80,6 +84,8 @@ pub(super) struct SyncState {
     pub before_abort: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
     pub preserve_fault: Option<&'static str>,
+    #[cfg(test)]
+    pub backup_root: Option<PathBuf>,
 }
 
 impl SyncState {
@@ -242,6 +248,7 @@ impl StrataApp {
             Cmd::NotesSync => self.sync_now(ctx, None),
             Cmd::NotesSyncEnable => self.ask_enable_sync(ctx),
             Cmd::NotesSyncDisable => self.disable_sync(),
+            Cmd::NotesShowSyncBackups => self.show_sync_backups(),
             _ => {}
         }
     }
@@ -283,8 +290,10 @@ impl StrataApp {
     fn start_sync(&mut self, ctx: &egui::Context, vault: PathBuf, manual: bool, resolve: Option<Resolution>) {
         // Bound to the repository it was turned on for: checked before Git runs anything.
         let expect = Some(self.vault_setting(&vault).map(|v| v.repository.clone()).unwrap_or_default());
+        let backup_root = self.sync_backups_folder();
+        let undo_interrupted = std::mem::take(&mut self.notes.sync.undo_next);
         #[allow(unused_mut)]
-        let mut opts = sync::Options { message: self.settings.notes_sync_message.clone(), resolve, env: self.notes.sync.env.clone(), expect, ..Default::default() };
+        let mut opts = sync::Options { message: self.settings.notes_sync_message.clone(), resolve, env: self.notes.sync.env.clone(), expect, backup_root, undo_interrupted, ..Default::default() };
         #[cfg(test)]
         {
             opts.on_phase = self.notes.sync.on_phase.clone();
@@ -320,6 +329,7 @@ impl StrataApp {
         self.sync_timers(ctx);
         self.enable_window(ctx);
         self.conflict_window(ctx);
+        self.interrupted_window(ctx);
     }
 
     fn sync_poll(&mut self, ctx: &egui::Context) {
@@ -343,10 +353,18 @@ impl StrataApp {
             self.notes_saved(&p);
         }
         self.sidebar.refresh();
-        if let sync::Result::Failed(f) = &outcome.result
-            && f.kind == sync::Kind::Stuck
-        {
-            self.notes.sync.stuck.insert(vault.clone());
+        if let sync::Result::Failed(f) = &outcome.result {
+            match f.kind {
+                sync::Kind::Stuck => {
+                    self.notes.sync.stuck.insert(vault.clone());
+                }
+                // Asked, never done by itself; the timer waits meanwhile.
+                sync::Kind::Interrupted => {
+                    self.notes.sync.stuck.insert(vault.clone());
+                    self.notes.sync.interrupted = Some((vault.clone(), f.message.clone(), f.detail.clone().unwrap_or_default()));
+                }
+                _ => {}
+            }
         }
         if let sync::Result::Failed(f) = &outcome.result
             && f.kind == sync::Kind::Untrusted
@@ -412,7 +430,7 @@ impl StrataApp {
             } else if self.notes.sync.conflict.as_ref().is_some_and(|c| c.vault == vault) {
                 Some("notes are in conflict; settle them first".to_owned())
             } else if self.notes.sync.stuck.contains(&vault) {
-                Some("the last sync stopped mid-rebase; sort it out in Git, then choose Notes: Sync Notes".to_owned())
+                Some("the last sync stopped mid-rebase (or one was interrupted); sort it out, then choose Notes: Sync Notes".to_owned())
             } else if let Some(why) = self.sync_blocked() {
                 Some(format!("{why}; trying again later"))
             } else if !self.unsaved_in(&vault).is_empty() {
@@ -574,6 +592,78 @@ impl StrataApp {
         }
     }
 
+    /// The answer to "Undo the interrupted sync?".
+    pub(super) fn interrupted_answered(&mut self, ctx: &egui::Context, yes: bool) {
+        let Some((vault, _, _)) = self.notes.sync.interrupted.take() else { return };
+        if !yes {
+            self.status = format!("The interrupted sync in {} is left as it is; Git sync waits until it's sorted out", folder_name(&vault));
+            return;
+        }
+        if self.notes.sync.job.is_some() {
+            self.status = "Notes are syncing already".into();
+            return;
+        }
+        self.notes.sync.undo_next = true;
+        self.notes.sync.stuck.remove(&vault);
+        self.start_sync(ctx, vault, true, None);
+    }
+
+    /// Where sync backups are kept: `<config>/sync-backups` (outside every vault).
+    pub(super) fn sync_backups_folder(&self) -> Option<PathBuf> {
+        #[cfg(test)]
+        if let Some(root) = &self.notes.sync.backup_root {
+            return Some(root.clone());
+        }
+        self.config.as_ref().map(|c| c.join("sync-backups"))
+    }
+
+    /// Notes: Show Sync Backups.
+    fn show_sync_backups(&mut self) {
+        let Some(dir) = self.sync_backups_folder() else {
+            self.status = "Strata has no settings folder, so it keeps no sync backups".into();
+            return;
+        };
+        if let Err(e) = crate::private::create_dir_all(&dir).and_then(|_| crate::ctxmenu::reveal_in_file_manager(&dir)) {
+            self.status = format!("Couldn't show {}: {e}", dir.display());
+        }
+    }
+
+    /// "Strata's sync was interrupted in … — undo it?"
+    fn interrupted_window(&mut self, ctx: &egui::Context) {
+        let Some((vault, question, files)) = self.notes.sync.interrupted.clone() else { return };
+        let mut answer = None;
+        egui::Window::new("Sync interrupted")
+            .id(self.link.id("notes-sync-interrupted"))
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .show(ctx, |ui| {
+                let size = egui::TextStyle::Body.resolve(ui.style()).size;
+                ui.set_max_width((size * 34.0).max(440.0));
+                ui.strong(format!("Strata's sync was interrupted in “{}”. Undo it?", folder_name(&vault)));
+                ui.label(&question);
+                ui.label("Undoing puts the repository back the way it was before that sync's rebase. Every file below is backed up first (Notes: Show Sync Backups), as on disk and as staged. Anything you changed during the rebase is in that backup.");
+                egui::ScrollArea::vertical().max_height(size * 10.0).show(ui, |ui| {
+                    for f in files.lines() {
+                        ui.label(egui::RichText::new(f).monospace());
+                    }
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Undo It").clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button("Not Now").clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        if let Some(yes) = answer {
+            self.interrupted_answered(ctx, yes);
+        }
+    }
+
     /// The answer to "Enable Git sync?" (tests press the button through this).
     pub(super) fn enable_answered(&mut self, yes: bool) {
         let Some(e) = self.notes.sync.enable.take() else { return };
@@ -633,9 +723,8 @@ impl StrataApp {
                         });
                     }
                 });
-                if !c.copies.is_empty() {
-                    let names: Vec<String> = c.copies.iter().map(|p| folder_name(p)).collect();
-                    ui.label(format!("Text another program wrote while Git worked was kept as {}.", names.join(", ")));
+                if let Some(b) = &c.backup {
+                    ui.label(format!("Git began a rebase and stopped; Strata undid it after backing up every file it touched, in {} (Notes: Show Sync Backups).", b.display()));
                 }
                 ui.add_space(4.0);
                 ui.label("To finish: in each comparison, bring over what you want to keep from the remote's side, and save. Then choose Keep My Versions and Sync: Strata records a merge that keeps these notes exactly as they are on your disk (the remote's versions stay in the history) and pushes it.");
@@ -960,6 +1049,33 @@ mod tests {
         assert_eq!(app.notes.sync.timer_starts, 0);
         assert!(app.notes.sync.last[&vault].detail.as_deref().unwrap_or("").contains("stopped mid-rebase"), "{:?}", app.notes.sync.last[&vault].detail);
         assert_eq!(read(&f.vault(), "Plan.md"), "saved meanwhile\n");
+    }
+
+    #[test]
+    fn an_interrupted_sync_is_undone_only_when_the_user_says_so() {
+        let Some(f) = fixture("ui-interrupted") else { return };
+        let ctx = Context::default();
+        let mut app = open(&f, &ctx);
+        enable(&mut app, 5);
+        app.notes.sync.backup_root = Some(f.backups());
+        midway(&f);
+        g(&f, &f.here, &["fetch", "-q"]);
+        let (head, onto) = (g(&f, &f.here, &["rev-parse", "HEAD"]), g(&f, &f.here, &["rev-parse", "origin/main"]));
+        crate::notes::sync::write_marker(&f.vault(), "rebase", u32::MAX - 7, 1, &head, "main", &onto, true);
+        let rebase = std::process::Command::new("git").args(["rebase", "-q", "origin/main"]).current_dir(&f.here).env("GIT_CONFIG_GLOBAL", &f.config).env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+        assert!(!rebase.status.success());
+        app.run(&ctx, Cmd::NotesSync);
+        finish(&mut app, &ctx);
+        let out = frame(&mut app, &ctx, vec![]);
+        assert!(shows(&out, "Strata's sync was interrupted in “vault”"), "{:?}", texts(&out));
+        assert!(shows(&out, "vault/Plan.md"));
+        assert!(f.here.join(".git/rebase-merge").exists(), "nothing undone before the answer");
+        app.interrupted_answered(&ctx, true);
+        finish(&mut app, &ctx);
+        assert!(!f.here.join(".git/rebase-merge").exists(), "undone after yes: {}", app.status);
+        assert!(app.status.contains("backed up"), "{}", app.status);
+        // Notes: Show Sync Backups knows the folder.
+        assert_eq!(app.sync_backups_folder(), Some(f.backups()));
     }
 
     #[test]

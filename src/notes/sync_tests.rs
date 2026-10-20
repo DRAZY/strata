@@ -84,7 +84,34 @@ impl Fixture {
     }
 
     fn opts(&self) -> Options {
-        Options { env: git_env(&self.config), ..Options::default() }
+        Options { env: git_env(&self.config), backup_root: Some(self.backups()), ..Options::default() }
+    }
+
+    /// Where this fixture's syncs keep backups (outside the clones).
+    pub(crate) fn backups(&self) -> PathBuf {
+        self.base.join("config/sync-backups")
+    }
+
+    /// Every backup folder made so far (`<root>/<vault>/<time>`).
+    pub(crate) fn backup_dirs(&self) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for vault in std::fs::read_dir(self.backups()).into_iter().flatten().flatten().filter(|e| e.path().is_dir()) {
+            out.extend(std::fs::read_dir(vault.path()).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+        }
+        out.sort();
+        out
+    }
+
+    /// Every version of `rel` backed up under a `kind` folder ("worktree",
+    /// "staged"; later rounds are "worktree.2"…), oldest first.
+    pub(crate) fn backed_up(&self, kind: &str, rel: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for dir in self.backup_dirs() {
+            let mut subs: Vec<PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().split('.').next() == Some(kind))).collect();
+            subs.sort();
+            out.extend(subs.iter().filter_map(|d| std::fs::read_to_string(d.join(rel)).ok()));
+        }
+        out
     }
 
     fn sync(&self) -> Outcome {
@@ -210,7 +237,7 @@ fn conflicting_edits_abort_the_rebase_and_keep_my_versions_settles_them() {
     assert_eq!(c.paths, vec!["vault/Plan.md".to_owned()]);
     assert_eq!(c.upstream, "origin/main");
     assert_eq!(c.commit, remote_before);
-    assert!(c.copies.is_empty());
+    assert!(c.backup.is_none(), "found before any rebase began: nothing to back up");
     assert_eq!(snapshot(&f.here), before, "the working tree is byte for byte as it was");
     assert!(!f.base.join("here/.git/rebase-merge").exists() && !f.base.join("here/.git/rebase-apply").exists());
     assert_eq!(g(&f, &f.here, &["status", "--porcelain", "--untracked-files=no"]), "", "nothing half-done");
@@ -483,13 +510,12 @@ fn a_file_written_while_git_is_stopped_is_kept_as_a_conflict_copy() {
     let e = failed(&o);
     assert_eq!(e.kind, Kind::Git, "{o:?}");
     assert!(once.exists(), "the stand-in ran mid-rebase");
-    assert!(e.message.contains("your files are as they were. Text another program wrote meanwhile was kept as Plan (conflict).md"), "{}", e.message);
-    assert_eq!(read(&f.vault(), "Plan (conflict).md"), "written meanwhile\n", "the other program's text is kept");
+    assert!(e.message.contains("your files are as they were") && e.message.contains("backed up"), "{}", e.message);
+    assert!(f.backed_up("worktree", "vault/Plan.md").contains(&"written meanwhile\n".to_owned()), "the other program's text is kept");
     assert_eq!(read(&f.vault(), "Plan.md"), "mine\n");
     assert_eq!(read(&f.vault(), "Ideas.md"), "ideas\n", "nothing of the remote's came in");
     assert_eq!(g(&f, &f.here, &["rev-parse", "HEAD~1"]), head, "the rebase was undone: my commit sits where it was");
     assert!(!f.here.join(".git/rebase-merge").exists());
-    assert_eq!(crate::notes::conflicts::original_name("Plan (conflict).md").as_deref(), Some("Plan.md"), "Notes shows it as a conflict copy");
 }
 
 #[test]
@@ -601,7 +627,7 @@ fn a_rebase_stopped_for_taking_too_long_is_undone_with_its_hooks() {
     let (once, late) = (f.base.join("hook-done"), f.base.join("late"));
     let hook = f.here.join(".git/hooks/post-checkout");
     let script = format!(
-        "#!/bin/sh\n[ \"$2\" = '{2}' ] || exit 0\n[ -e '{0}' ] && exit 0\nps -o pid,pgid,ppid -p $PPID > '{0}'\nsleep 15\ntouch '{1}'\n",
+        "#!/bin/sh\n[ \"$2\" = '{2}' ] || exit 0\n[ -e '{0}' ] && exit 0\n{{ date +%s; ps -o pid,pgid,ppid -p $$; ps -o pid,pgid,ppid -p $PPID; }} > '{0}'\nsleep 15\ndate +%s > '{1}'\n",
         once.display(),
         late.display(),
         f.remote_head()
@@ -610,8 +636,17 @@ fn a_rebase_stopped_for_taking_too_long_is_undone_with_its_hooks() {
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     let head = f.head();
     let started = Instant::now();
+    let t0 = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let o = run(&f.vault(), &Options { integrate_timeout: Some(Duration::from_secs(6)), ..f.opts() }, &|_| {});
+    let t1 = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     assert!(once.exists(), "the hook ran");
+    // Git's process group (the hook's, as it wrote down) is empty now: the
+    // hook and its children were stopped with Git.
+    let info = std::fs::read_to_string(&once).unwrap();
+    let pgid: libc::pid_t = info.lines().nth(2).and_then(|l| l.split_whitespace().nth(1)).and_then(|p| p.parse().ok()).expect("the hook's process group");
+    // SAFETY: signal 0 only asks whether anything is left in the group.
+    let left = unsafe { libc::kill(-pgid, 0) } == 0;
+    assert!(!left, "something of Git's is still running: {info}");
     let e = failed(&o);
     assert!(matches!(e.kind, Kind::Offline | Kind::Git | Kind::Stuck), "{e:?}");
     assert!(!f.here.join(".git/rebase-merge").exists(), "the rebase was undone: {e:?}");
@@ -620,7 +655,8 @@ fn a_rebase_stopped_for_taking_too_long_is_undone_with_its_hooks() {
     assert_eq!(read(&f.vault(), "Plan.md"), "mine\n");
     assert_eq!(read(&f.vault(), "Ideas.md"), "ideas\n");
     std::thread::sleep(Duration::from_secs(16).saturating_sub(started.elapsed()) + Duration::from_millis(500));
-    assert!(!late.exists(), "the hook was stopped along with Git: {e:?} after {:?}; hook: {}", started.elapsed(), std::fs::read_to_string(&once).unwrap_or_default());
+    // (Killed at any point, the hook may have opened the file but never wrote the time in it.)
+    assert!(std::fs::read_to_string(&late).unwrap_or_default().trim().is_empty(), "the hook outlived the sync (started at {t0}, returned at {t1}): {info}");
 }
 
 #[test]
@@ -649,21 +685,17 @@ pub(crate) fn midway(f: &Fixture) {
 fn text_saved_into_a_conflicted_file_mid_rebase_is_kept() {
     let Some(f) = fixture("stray-unmerged") else { return };
     midway(&f);
-    // An older conflict copy is never replaced: the new one is numbered.
-    write(&f.vault(), "Plan (conflict).md", "an older copy\n");
     let plan = f.vault().join("Plan.md");
     let saved: Arc<dyn Fn() + Send + Sync> = Arc::new(move || std::fs::write(&plan, "saved by another program meanwhile\n").unwrap());
+    let before = snapshot(&f.vault());
     let o = run(&f.vault(), &Options { before_abort: Some(saved), ..f.opts() }, &|_| {});
     let Result::Conflict(c) = &o.result else { panic!("{o:?}") };
     assert_eq!(c.paths, vec!["vault/Plan.md".to_owned()]);
-    assert_eq!(c.copies, vec![f.vault().join("Plan (conflict 2).md")]);
-    assert_eq!(read(&f.vault(), "Plan (conflict 2).md"), "saved by another program meanwhile\n");
-    assert_eq!(read(&f.vault(), "Plan (conflict).md"), "an older copy\n");
+    assert_eq!(f.backed_up("worktree", "vault/Plan.md"), vec!["saved by another program meanwhile\n".to_owned()], "backed up before the abort");
+    let backup = c.backup.clone().expect("where the backup is");
+    assert!(backup.starts_with(f.backups()) && !backup.starts_with(&f.here), "outside the vault: {}", backup.display());
     assert_eq!(read(&f.vault(), "Plan.md"), "# Plan\n\nline one\nline two\nline three\n", "the committed text is back");
-    // Git's own conflict output (markers and all) isn't copied.
-    let o = f.sync();
-    let Result::Conflict(c) = &o.result else { panic!("{o:?}") };
-    assert!(c.copies.is_empty(), "{:?}", c.copies);
+    assert_eq!(snapshot(&f.vault()), before, "no copies are left in the vault");
 }
 
 #[test]
@@ -769,12 +801,33 @@ fn a_rebase_left_behind_by_a_quit_is_undone_on_the_next_sync() {
     write_marker(&f.vault(), "rebase", gone_pid(), 1, &head, "main", &onto, true);
     let out = g_out(&f, &f.here, &["rebase", "-q", "origin/main"]);
     assert!(!out.status.success() && f.here.join(".git/rebase-merge").exists());
+    let marker_bytes = std::fs::read(f.here.join(".git").join(STARTED)).unwrap();
+    // Never undone by itself: the sync stops and asks.
+    let before = snapshot(&f.here);
     let o = f.sync();
     let e = failed(&o);
-    assert!(e.message.contains("A sync that was stopped when Strata quit has been undone"), "{e:?}");
+    assert_eq!(e.kind, Kind::Interrupted, "{e:?}");
+    assert!(e.detail.as_deref().unwrap_or("").contains("vault/Plan.md"), "the files it touched: {e:?}");
+    assert!(f.here.join(".git/rebase-merge").exists() && snapshot(&f.here) == before, "nothing changed yet");
+    // Yes: backed up, then undone, and the record is used up.
+    let o = run(&f.vault(), &Options { undo_interrupted: true, ..f.opts() }, &|_| {});
+    let e = failed(&o);
+    assert!(e.message.contains("has been undone") && e.message.contains("backed up"), "{e:?}");
     assert!(!f.here.join(".git/rebase-merge").exists() && !f.here.join(".git").join(STARTED).exists());
     assert_eq!(read(&f.vault(), "Plan.md"), "# Plan\n\nline one\nline two\nline three\n");
     assert_eq!(g(&f, &f.here, &["symbolic-ref", "--short", "HEAD"]), "main");
+    assert!(!f.backed_up("worktree", "vault/Plan.md").is_empty());
+    // The same rebase again, with the old record copied back: not replayable.
+    let out = g_out(&f, &f.here, &["rebase", "-q", "origin/main"]);
+    assert!(!out.status.success());
+    std::fs::write(f.here.join(".git").join(STARTED), &marker_bytes).unwrap();
+    let e = failed(&f.sync()).clone();
+    assert_eq!(e.kind, Kind::Busy, "a used record is never honored again: {e:?}");
+    let e = failed(&run(&f.vault(), &Options { undo_interrupted: true, ..f.opts() }, &|_| {})).clone();
+    assert_eq!(e.kind, Kind::Busy, "{e:?}");
+    assert!(f.here.join(".git/rebase-merge").exists(), "left alone");
+    g(&f, &f.here, &["rebase", "--abort"]);
+    std::fs::remove_file(f.here.join(".git").join(STARTED)).unwrap();
     // A rebase someone started by hand, with no marker at all, is theirs.
     let out = g_out(&f, &f.here, &["rebase", "-q", "origin/main"]);
     assert!(!out.status.success());
@@ -833,7 +886,7 @@ fn a_marker_of_a_strata_still_running_is_left_alone() {
 
 #[test]
 fn keeping_files_aside_fails_closed() {
-    for fault in ["list", "read", "create", "names"] {
+    for fault in ["list", "read", "create"] {
         let Some(f) = fixture(&format!("fault-{fault}")) else { return };
         midway(&f);
         let plan = f.vault().join("Plan.md");
@@ -841,8 +894,82 @@ fn keeping_files_aside_fails_closed() {
         let o = run(&f.vault(), &Options { before_abort: Some(saved), preserve_fault: Some(fault), ..f.opts() }, &|_| {});
         let e = failed(&o);
         assert_eq!(e.kind, Kind::Stuck, "{fault}: {e:?}");
-        assert!(e.message.contains("couldn't keep a copy") && e.message.contains("nothing was undone"), "{fault}: {}", e.message);
+        assert!(e.message.contains("couldn't back up") && e.message.contains("nothing was undone"), "{fault}: {}", e.message);
         assert!(f.here.join(".git/rebase-merge").exists(), "{fault}: left stopped, not aborted");
         assert_eq!(read(&f.vault(), "Plan.md"), "saved by another program meanwhile\n", "{fault}: the text is still there");
     }
+}
+
+#[test]
+fn every_touched_file_is_backed_up_before_an_abort_staged_resolutions_too() {
+    let Some(f) = fixture("backup-staged") else { return };
+    midway(&f);
+    let (here, vault) = (f.here.clone(), f.vault());
+    let config = f.config.clone();
+    // While Git is stopped: a resolution is written and staged (so Git no
+    // longer lists the file as in conflict), and another note is changed.
+    let meanwhile: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        std::fs::write(vault.join("Plan.md"), "resolved by hand\n").unwrap();
+        let ok = Command::new("git").args(["add", "vault/Plan.md"]).current_dir(&here).env("GIT_CONFIG_GLOBAL", &config).env("GIT_CONFIG_NOSYSTEM", "1").status().unwrap().success();
+        assert!(ok);
+        std::fs::write(vault.join("Ideas.md"), "changed while stopped\n").unwrap();
+    });
+    let o = run(&f.vault(), &Options { before_abort: Some(meanwhile), ..f.opts() }, &|_| {});
+    let e = match &o.result {
+        Result::Failed(e) => e.message.clone(),
+        Result::Conflict(c) => format!("conflict {:?}", c.backup),
+        r => panic!("{r:?}"),
+    };
+    assert!(!f.here.join(".git/rebase-merge").exists(), "undone: {e}");
+    assert_eq!(f.backed_up("staged", "vault/Plan.md"), vec!["resolved by hand\n".to_owned()], "the staged resolution: {e}");
+    assert_eq!(f.backed_up("worktree", "vault/Plan.md"), vec!["resolved by hand\n".to_owned()]);
+    assert_eq!(f.backed_up("worktree", "vault/Ideas.md"), vec!["changed while stopped\n".to_owned()]);
+    let dirs = f.backup_dirs();
+    assert_eq!(dirs.len(), 1);
+    assert!(e.contains(&dirs[0].display().to_string()), "the message says where: {e}");
+}
+
+#[test]
+fn a_save_between_the_backup_and_the_abort_is_backed_up_too() {
+    let Some(f) = fixture("backup-race") else { return };
+    midway(&f);
+    let plan = f.vault().join("Plan.md");
+    let late: Arc<dyn Fn(u32) + Send + Sync> = Arc::new(move |round| {
+        if round == 1 {
+            std::fs::write(&plan, "saved at the last moment\n").unwrap();
+        }
+    });
+    let o = run(&f.vault(), &Options { after_backup: Some(late), ..f.opts() }, &|_| {});
+    assert!(matches!(o.result, Result::Conflict(_)), "{o:?}");
+    assert!(f.backed_up("worktree", "vault/Plan.md").contains(&"saved at the last moment\n".to_owned()), "{:?}", f.backed_up("worktree", "vault/Plan.md"));
+}
+
+#[test]
+fn files_that_keep_changing_stop_the_sync_with_nothing_undone() {
+    let Some(f) = fixture("backup-churn") else { return };
+    midway(&f);
+    let plan = f.vault().join("Plan.md");
+    let churn: Arc<dyn Fn(u32) + Send + Sync> = Arc::new(move |round| std::fs::write(&plan, format!("version {round}\n")).unwrap());
+    let o = run(&f.vault(), &Options { after_backup: Some(churn), ..f.opts() }, &|_| {});
+    let e = failed(&o);
+    assert_eq!(e.kind, Kind::Stuck, "{e:?}");
+    assert!(e.message.contains("nothing was undone"), "{}", e.message);
+    assert!(f.here.join(".git/rebase-merge").exists());
+}
+
+#[test]
+fn backups_older_than_30_days_are_removed() {
+    let Some(f) = fixture("backup-prune") else { return };
+    let old = f.backups().join("0123456789abcdef/2026-01-01_00-00-00-old");
+    write(&old, "worktree/vault/x.md", "old\n");
+    write(&old, "README.txt", "a backup\n");
+    let month_ago = std::time::SystemTime::now() - Duration::from_secs(31 * 24 * 3600);
+    std::fs::File::open(&old).unwrap().set_modified(month_ago).unwrap();
+    let recent = f.backups().join("0123456789abcdef/2026-10-19_00-00-00-new");
+    write(&recent, "worktree/vault/x.md", "new\n");
+    write(&recent, "README.txt", "a backup\n");
+    midway(&f);
+    let _ = f.sync();
+    assert!(!old.exists(), "the old backup went");
+    assert!(recent.exists(), "a recent one stays");
 }

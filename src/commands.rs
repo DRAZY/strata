@@ -215,6 +215,7 @@ pub enum Cmd {
     NotesSync,
     NotesSyncEnable,
     NotesSyncDisable,
+    NotesShowSyncBackups,
 }
 
 impl Cmd {
@@ -418,6 +419,7 @@ impl Cmd {
         Cmd::NotesSync,
         Cmd::NotesSyncEnable,
         Cmd::NotesSyncDisable,
+        Cmd::NotesShowSyncBackups,
     ];
 
     pub fn name(self) -> &'static str {
@@ -621,6 +623,7 @@ impl Cmd {
             Cmd::NotesSync => "Notes: Sync Notes",
             Cmd::NotesSyncEnable => "Notes: Enable Git Sync for This Vault",
             Cmd::NotesSyncDisable => "Notes: Disable Git Sync for This Vault",
+            Cmd::NotesShowSyncBackups => "Notes: Show Sync Backups",
         }
     }
 
@@ -810,7 +813,7 @@ impl Cmd {
             // Running code takes a deliberate choice; bind them in keybindings.json if you like.
             Cmd::NotesRunCodeBlock | Cmd::NotesRunCodeBlockCapture | Cmd::NotesForgetCodeBlockFiles => &[],
             Cmd::PluginsManage | Cmd::PluginsInstallFolder | Cmd::PluginsInstallZip => &[],
-            Cmd::NotesSync | Cmd::NotesSyncEnable | Cmd::NotesSyncDisable => &[],
+            Cmd::NotesSync | Cmd::NotesSyncEnable | Cmd::NotesSyncDisable | Cmd::NotesShowSyncBackups => &[],
         }
     }
 
@@ -1022,6 +1025,7 @@ impl Cmd {
             Cmd::NotesSync => "sync_notes",
             Cmd::NotesSyncEnable => "enable_notes_sync",
             Cmd::NotesSyncDisable => "disable_notes_sync",
+            Cmd::NotesShowSyncBackups => "show_sync_backups",
         }
     }
 }

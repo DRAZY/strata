@@ -1295,6 +1295,7 @@ impl StrataApp {
                 Item::cmd("Sync Notes", Cmd::NotesSync),
                 Item::cmd("Enable Git Sync for This Vault…", Cmd::NotesSyncEnable),
                 Item::cmd("Disable Git Sync for This Vault", Cmd::NotesSyncDisable),
+                Item::cmd("Show Sync Backups", Cmd::NotesShowSyncBackups),
             ],
         )
     }

@@ -1346,7 +1346,7 @@ impl StrataApp {
             | Cmd::NotesCompareConflict => self.notes_command(ctx, cmd),
             Cmd::NotesRunCodeBlock | Cmd::NotesRunCodeBlockCapture | Cmd::NotesForgetCodeBlockFiles => self.code_run_command(ctx, cmd),
             Cmd::PluginsManage | Cmd::PluginsInstallFolder | Cmd::PluginsInstallZip => self.plugins_command(ctx, cmd),
-            Cmd::NotesSync | Cmd::NotesSyncEnable | Cmd::NotesSyncDisable => self.notes_sync_command(ctx, cmd),
+            Cmd::NotesSync | Cmd::NotesSyncEnable | Cmd::NotesSyncDisable | Cmd::NotesShowSyncBackups => self.notes_sync_command(ctx, cmd),
         }
     }
 

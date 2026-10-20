@@ -26,7 +26,7 @@
 //! - Git's error text can hold a remote's address with a password in it:
 //!   it's shown and logged only through `redact`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -324,6 +324,8 @@ pub enum Kind {
     Stuck,
     /// Not the repository sync was turned on for (see `Identity`).
     Untrusted,
+    /// A sync Strata was interrupted in left a rebase or merge stopped: undo it? (see `Marker`)
+    Interrupted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -347,11 +349,10 @@ pub struct Conflict {
     pub commit: String,
     /// The conflicting files, relative to `top`, `/`-separated.
     pub paths: Vec<String>,
-    /// Files written by another program while Git worked, saved as conflict
-    /// copies before the rebase was undone.
-    pub copies: Vec<PathBuf>,
     /// The remote changed the notes again since the last look.
     pub moved: bool,
+    /// Where every file the stopped rebase touched was backed up before it was undone.
+    pub backup: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -393,8 +394,15 @@ pub struct Options {
     pub before_abort: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Set when the window lets go of this sync: it mustn't start rewriting files then.
     pub cancel: Option<Arc<AtomicBool>>,
-    /// Make this step of keeping files aside fail: "list", "read", "create" or "names" (tests).
+    /// Make this step of backing files up fail: "list", "read" or "create" (tests).
     pub preserve_fault: Option<&'static str>,
+    /// Where backups go before anything is undone (`<config>/sync-backups`);
+    /// None: nowhere, so nothing is ever undone.
+    pub backup_root: Option<PathBuf>,
+    /// Runs after each backup round, just before the files are looked at again (tests).
+    pub after_backup: Option<Arc<dyn Fn(u32) + Send + Sync>>,
+    /// The user said yes to undoing a sync Strata was interrupted in.
+    pub undo_interrupted: bool,
 }
 
 /// The vault's repository and remote, as `describe` finds them.
@@ -623,6 +631,18 @@ fn exec(mut cmd: Command, timeout: Duration) -> std::result::Result<Out, Failure
                 }
                 let _ = child.kill();
                 let _ = child.wait();
+                // A process the group was starting as the signal went out can
+                // miss it: signal the group again until nothing is left in it.
+                #[cfg(unix)]
+                if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+                    for _ in 0..50 {
+                        // SAFETY: as above; ESRCH (nobody left) ends the loop.
+                        if unsafe { libc::kill(-pid, libc::SIGKILL) } != 0 {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
                 return Err(fail(Kind::Offline, format!("Git took longer than {} s and was stopped", timeout.as_secs())));
             }
         }
@@ -855,7 +875,7 @@ impl Repo<'_> {
             && !paths.is_empty()
         {
             let commit = self.rev(tracking).unwrap_or_default();
-            return Ok(Some(Conflict { top: self.top().to_owned(), upstream: self.remote.upstream.clone(), commit, paths, copies: Vec::new(), moved: false }));
+            return Ok(Some(Conflict { top: self.top().to_owned(), upstream: self.remote.upstream.clone(), commit, paths, moved: false, backup: None }));
         }
         let onto = self.rev(tracking).unwrap_or_default();
         let merge = ahead > 0 && ask(self.top(), &["rev-list", "--merges", "--count", &format!("{tracking}..HEAD")]).is_some_and(|n| n != "0");
@@ -890,13 +910,8 @@ impl Repo<'_> {
             f();
         }
         let unmerged = self.unmerged();
-        let copies = self.save_strays(&unmerged, Some(&before)).map_err(|why| self.stopped(args[0], &why))?;
-        let kept = if copies.is_empty() {
-            String::new()
-        } else {
-            let names: Vec<String> = copies.iter().map(|c| c.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect();
-            format!(". Text another program wrote meanwhile was kept as {}", names.join(", "))
-        };
+        let backup = self.back_up(&before).map_err(|why| self.stopped(args[0], &why))?;
+        let kept = format!(". Every file it touched was backed up first, in {}", backup.display());
         let abort: &[&str] = if args[0] == "rebase" { &["rebase", "--abort"] } else { &["merge", "--abort"] };
         let aborted = self.run(self.top(), abort, LOCAL_TIMEOUT);
         let undone = aborted.as_ref().is_ok_and(|o| o.ok());
@@ -915,7 +930,7 @@ impl Repo<'_> {
             return Err(f);
         }
         let commit = self.rev(tracking).unwrap_or_default();
-        Ok(Some(Conflict { top: self.top().to_owned(), upstream: self.remote.upstream.clone(), commit, paths: unmerged.into_iter().map(|(p, _)| p).collect(), copies, moved: false }))
+        Ok(Some(Conflict { top: self.top().to_owned(), upstream: self.remote.upstream.clone(), commit, paths: unmerged, moved: false, backup: Some(backup) }))
     }
 
     /// Files this side ignores (so they aren't committed) that the remote's
@@ -951,122 +966,148 @@ impl Repo<'_> {
         }
     }
 
-    /// Files another program wrote while Git was stopped mid-rebase (they
-    /// differ from Git's index, and aren't Git's own conflicts): undoing the
-    /// rebase would put back the committed text over them, so each is
-    /// copied next to itself first, named as a conflict copy.
-    /// A conflicted file is checked too: one that isn't exactly what Git
-    /// wrote there (a side, or the merge with conflict markers) was saved by
-    /// something else.
-    /// Copies never take a name tracked in `back_to` (the commit the abort
-    /// returns to): the abort would refuse to put that file back.
-    /// Any part of that failing is an error: then nothing may be undone.
-    fn save_strays(&self, unmerged: &[(String, Stages)], back_to: Option<&str>) -> std::result::Result<Vec<PathBuf>, String> {
-        let fault = |step: &str| self.opts.preserve_fault == Some(step);
-        let taken = |copy: &Path| {
-            if fault("names") {
-                return true;
-            }
-            let Some(commit) = back_to else { return false };
-            let Ok(rel) = copy.strip_prefix(self.top()) else { return false };
-            let rel = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
-            git_io_code(self.top(), &["cat-file", "-e", &format!("{commit}:{rel}")], None, 1 << 10, READ_TIMEOUT).is_some_and(|(c, _)| c == Some(0))
-        };
-        let mut todo = Vec::new();
-        for (rel, st) in unmerged {
-            match self.git_wrote(rel, st).filter(|_| !fault("read")) {
-                Some(true) => {}
-                Some(false) => todo.push(rel.clone()),
-                None => return Err(format!("{rel} (it couldn't be read)")),
-            }
-        }
-        match self.run(self.top(), &["diff", "--name-only", "-z", "--no-renames"], LOCAL_TIMEOUT) {
-            Ok(out) if out.ok() && !fault("list") => todo.extend(names(&out.stdout).into_iter().filter(|r| !unmerged.iter().any(|(u, _)| u == r))),
-            _ => return Err("the files changed while Git worked (Git couldn't list them)".into()),
-        }
-        let mut copies = Vec::new();
-        for rel in todo {
-            let path = self.top().join(&rel);
-            if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
-                continue;
-            }
-            let made = if fault("create") { Err(std::io::Error::other("injected")) } else { copy_aside(&path, &taken) };
-            match made {
-                Ok(c) => copies.push(c),
-                Err(e) => {
-                    log::warn!("notes sync: couldn't keep a copy of {}: {e}", path.display());
-                    return Err(format!("{rel} ({e})"));
-                }
-            }
-        }
-        Ok(copies)
-    }
-
-    /// Couldn't keep files aside: the rebase or merge stays stopped, as Git left it.
+    /// Couldn't back files up: the rebase or merge stays stopped, as Git left it.
     fn stopped(&self, op: &str, what: &str) -> Failure {
-        log::warn!("notes sync: left the {op} in {} stopped (couldn't keep a copy of {what})", self.top().display());
-        fail(Kind::Stuck, format!("Sync stopped mid-{op} and couldn't keep a copy of {what}; nothing was undone, so nothing was lost. The {op} is still stopped in {}: finish or undo it in Git (see Notes ▸ Git sync in the manual)", self.top().display()))
+        log::warn!("notes sync: left the {op} in {} stopped (couldn't back up {what})", self.top().display());
+        fail(Kind::Stuck, format!("Sync stopped mid-{op} and couldn't back up {what}; nothing was undone, so nothing was lost. The {op} is still stopped in {}: finish or undo it in Git (see Notes ▸ Git sync in the manual)", self.top().display()))
     }
 
-    /// Files Git left in conflict, with the blobs of their stages.
-    fn unmerged(&self) -> Vec<(String, Stages)> {
-        let mut out: Vec<(String, Stages)> = Vec::new();
-        for e in ask(self.top(), &["ls-files", "-u", "-z"]).unwrap_or_default().split('\0') {
-            let Some((meta, path)) = e.split_once('\t') else { continue };
-            let f: Vec<&str> = meta.split(' ').collect();
-            let [_, id, stage] = f[..] else { continue };
-            let Some(k) = stage.parse::<usize>().ok().filter(|k| (1..=3).contains(k)) else { continue };
-            if out.last().is_none_or(|(p, _)| p != path) {
-                out.push((path.to_owned(), Stages::default()));
+    /// Every file a stopped rebase or merge touched: changed from `back_to`
+    /// (on disk or staged), staged now, in conflict, and new files in the
+    /// vault that Git doesn't ignore. `/`-separated, from the top.
+    fn touched(&self, back_to: &str) -> std::result::Result<Vec<String>, String> {
+        let failed = || "the list of files Git touched (Git couldn't list them)".to_owned();
+        if self.opts.preserve_fault == Some("list") {
+            return Err(failed());
+        }
+        let mut all: Vec<String> = Vec::new();
+        let vault: Vec<&str> = if self.remote.prefix.is_empty() { Vec::new() } else { vec![self.remote.prefix.as_str()] };
+        let lists: [Vec<&str>; 4] = [
+            vec!["diff", "--name-only", "-z", "--no-renames", back_to],
+            vec!["diff", "--cached", "--name-only", "-z", "--no-renames", back_to],
+            vec!["diff", "--cached", "--name-only", "-z", "--no-renames"],
+            [&["ls-files", "-z", "--others", "--exclude-standard", "--"][..], &vault[..]].concat(),
+        ];
+        for args in &lists {
+            let out = self.run(self.top(), args, LOCAL_TIMEOUT).map_err(|_| failed())?;
+            if !out.ok() {
+                return Err(failed());
             }
-            if let Some(last) = out.last_mut() {
-                last.1[k - 1] = Some(id.to_owned());
+            all.extend(names(&out.stdout));
+        }
+        all.extend(self.unmerged());
+        all.sort();
+        all.dedup();
+        // Paths come from Git; one that could lead out of its folder is refused (and so nothing is undone).
+        if let Some(bad) = all.iter().find(|r| Path::new(r.as_str()).components().any(|c| !matches!(c, std::path::Component::Normal(_)))) {
+            return Err(format!("{bad} (an odd path)"));
+        }
+        Ok(all)
+    }
+
+    /// Back up every file the stopped operation touched, as on disk and as
+    /// staged, into a new folder under `backup_root` (outside the vault, so
+    /// it's never synced), then look at the files once more and back up any
+    /// that changed meanwhile (up to three rounds). Any failure is an error,
+    /// and then nothing may be undone. The folder, on success.
+    ///
+    /// What's left: a file saved in the instant between the last look and
+    /// Git's abort is overwritten by the abort without a backup.
+    fn back_up(&self, back_to: &str) -> std::result::Result<PathBuf, String> {
+        let fault = |step: &str| self.opts.preserve_fault == Some(step);
+        let root = self.opts.backup_root.clone().ok_or_else(|| "the files (Strata has no settings folder to keep backups in)".to_owned())?;
+        prune_backups(&root);
+        let paths = self.touched(back_to)?;
+        let vault_key = {
+            use sha2::Digest;
+            let real = std::fs::canonicalize(&self.vault).unwrap_or_else(|_| self.vault.clone());
+            let digest: [u8; 32] = sha2::Sha256::digest(real.to_string_lossy().as_bytes()).into();
+            digest[..8].iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+        let stamp = format!("{}-{}", super::dates::format("YYYY-MM-DD_HH-mm-ss", &super::dates::DateTime::now()), &crate::swap::nonce()[..8]);
+        let dir = root.join(vault_key).join(stamp);
+        let made = |e: std::io::Error| format!("the files ({}: {e})", dir.display());
+        crate::private::create_dir_all(&dir).map_err(made)?;
+        let note = format!("Strata backed up these files before undoing a stopped Git rebase or merge in {}.\nworktree/ holds them as they were on disk, staged/ as they were staged (\".stageN\" for a file in conflict), worktree.2/ and on what changed while it worked.\nStrata removes backups after 30 days.\n", self.vault.display());
+        write_synced(&dir.join("README.txt"), note.as_bytes()).map_err(made)?;
+        // Staged versions: every index entry of every touched path.
+        for rel in &paths {
+            let entries = ask(self.top(), &["ls-files", "-s", "-z", "--", &format!(":(literal){rel}")]).ok_or_else(|| format!("{rel} (Git couldn't read what's staged)"))?;
+            for e in entries.split('\0').filter(|e| !e.is_empty()) {
+                let Some((meta, _)) = e.split_once('\t') else { continue };
+                let f: Vec<&str> = meta.split(' ').collect();
+                let [mode, id, stage] = f[..] else { continue };
+                if mode == "160000" {
+                    continue; // a submodule: nothing of its own to keep
+                }
+                let blob = git_io(self.top(), &["cat-file", "blob", id], None, OUT_LIMIT, READ_TIMEOUT).filter(|_| !fault("read")).ok_or_else(|| format!("{rel} (Git couldn't read the staged version)"))?;
+                let name = if stage == "0" { rel.clone() } else { format!("{rel}.stage{stage}") };
+                self.keep(&dir.join("staged").join(&name), &blob, rel)?;
             }
         }
+        // As on disk, then again for whatever changes before the abort.
+        let mut seen = HashMap::new();
+        let mut copy_round = |round: u32, which: &[String]| -> std::result::Result<(), String> {
+            let sub = if round == 1 { "worktree".to_owned() } else { format!("worktree.{round}") };
+            for rel in which {
+                let state = disk_state(&self.top().join(rel)).filter(|_| !fault("read")).ok_or_else(|| format!("{rel} (it couldn't be read)"))?;
+                if let DiskState::File(bytes) | DiskState::Link(bytes) = &state {
+                    let name = if matches!(state, DiskState::Link(_)) { format!("{rel}.symlink") } else { rel.clone() };
+                    self.keep(&dir.join(&sub).join(&name), bytes, rel)?;
+                }
+                seen.insert(rel.clone(), state);
+            }
+            Ok(())
+        };
+        copy_round(1, &paths)?;
+        if let Some(f) = &self.opts.after_backup {
+            f(1);
+        }
+        let mut round = 1u32;
+        loop {
+            let changed: Vec<String> = paths.iter().filter(|rel| disk_state(&self.top().join(rel.as_str())).as_ref() != seen.get(rel.as_str())).cloned().collect();
+            if changed.is_empty() {
+                break;
+            }
+            round += 1;
+            if round > 3 {
+                return Err(format!("{} (it kept changing while Strata backed it up)", changed.join(", ")));
+            }
+            let sub = format!("worktree.{round}");
+            for rel in &changed {
+                let state = disk_state(&self.top().join(rel)).ok_or_else(|| format!("{rel} (it couldn't be read)"))?;
+                if let DiskState::File(bytes) | DiskState::Link(bytes) = &state {
+                    let name = if matches!(state, DiskState::Link(_)) { format!("{rel}.symlink") } else { rel.clone() };
+                    self.keep(&dir.join(&sub).join(&name), bytes, rel)?;
+                }
+                seen.insert(rel.clone(), state);
+            }
+            if let Some(f) = &self.opts.after_backup {
+                f(round);
+            }
+        }
+        sync_dir(&dir);
+        log::info!("notes sync: backed up {} before undoing", plural(paths.len(), "file"));
+        Ok(dir)
+    }
+
+    /// Write `bytes` to `path` in a backup, flushed to disk.
+    fn keep(&self, path: &Path, bytes: &[u8], rel: &str) -> std::result::Result<(), String> {
+        if self.opts.preserve_fault == Some("create") {
+            return Err(format!("{rel} (injected)"));
+        }
+        path.parent().map_or(Ok(()), crate::private::create_dir_all).and_then(|_| write_synced(path, bytes)).map_err(|e| format!("{rel} ({e})"))
+    }
+
+    /// Files Git left in conflict.
+    fn unmerged(&self) -> Vec<String> {
+        let mut out: Vec<String> = ask(self.top(), &["ls-files", "-u", "-z"]).unwrap_or_default().split('\0').filter_map(|e| e.split_once('\t').map(|(_, p)| p.to_owned())).collect();
+        out.dedup();
         out
     }
 
     /// Is the file `rel` exactly what Git wrote while stopping: one of its
     /// stages, or their merge with conflict markers (labels aside)?
-    /// None: it couldn't be read (and so can't be called Git's).
-    fn git_wrote(&self, rel: &str, stages: &Stages) -> Option<bool> {
-        let path = self.top().join(rel);
-        if std::fs::symlink_metadata(&path).is_err() {
-            return Some(true); // gone: nothing of anyone's to keep
-        }
-        let work = std::fs::read(&path).ok()?;
-        Some(self.git_wrote_bytes(&work, stages))
-    }
-
-    fn git_wrote_bytes(&self, work: &[u8], stages: &Stages) -> bool {
-        let blob = |id: &Option<String>| id.as_deref().and_then(|id| git_io(self.top(), &["cat-file", "blob", id], None, OUT_LIMIT, READ_TIMEOUT));
-        let blobs: [Option<Vec<u8>>; 3] = [blob(&stages[0]), blob(&stages[1]), blob(&stages[2])];
-        if blobs.iter().flatten().any(|b| b.as_slice() == work) {
-            return true;
-        }
-        let (Some(ours), Some(theirs)) = (&blobs[1], &blobs[2]) else { return false };
-        let Some(dir) = ask(&self.vault, &["rev-parse", "--git-path", "strata-sync-merge"]).map(|p| self.vault.join(p)) else { return false };
-        if std::fs::create_dir_all(&dir).is_err() {
-            return false;
-        }
-        let files = [("ours", ours.as_slice()), ("base", blobs[0].as_deref().unwrap_or_default()), ("theirs", theirs.as_slice())];
-        if files.iter().any(|(name, bytes)| std::fs::write(dir.join(name), bytes).is_err()) {
-            let _ = std::fs::remove_dir_all(&dir);
-            return false;
-        }
-        let mut args = vec!["merge-file", "-p"];
-        match ask(self.top(), &["config", "--get", "merge.conflictStyle"]).as_deref() {
-            Some("diff3") => args.push("--diff3"),
-            Some("zdiff3") => args.push("--zdiff3"),
-            _ => {}
-        }
-        let paths: Vec<String> = ["ours", "base", "theirs"].iter().map(|n| dir.join(n).display().to_string()).collect();
-        args.extend(paths.iter().map(String::as_str));
-        let merged = self.run(self.top(), &args, LOCAL_TIMEOUT).ok().filter(|o| matches!(o.code, Some(c) if (0..128).contains(&c))).map(|o| o.stdout);
-        let _ = std::fs::remove_dir_all(&dir);
-        merged.is_some_and(|m| without_labels(&m) == without_labels(work))
-    }
-
     /// From here on Git rewrites files: unless Strata is quitting, or the
     /// window let go of this sync. Leaves `STARTED` in the Git folder until
     /// the guard goes, so a quit halfway is undone by the next sync.
@@ -1090,6 +1131,9 @@ impl Repo<'_> {
     /// Why a stopped operation with a marker isn't Strata's to undo, if it isn't.
     fn not_ours(&self, marker: &Path) -> Option<&'static str> {
         let Some(m) = Marker::read(marker) else { return Some("not sealed by this Strata") };
+        if nonce_used(self.opts.backup_root.as_deref(), &m.nonce) {
+            return Some("its record was used already");
+        }
         if process_start(m.pid).is_some_and(|s| s == m.start) {
             return Some("its Strata is still running");
         }
@@ -1108,16 +1152,29 @@ impl Repo<'_> {
 
     /// A rebase or merge left behind by a sync Strata quit during (`STARTED`
     /// is there): undone, keeping aside what other programs wrote meanwhile.
-    /// Only when the marker is sealed by this installation, its Strata has
-    /// ended, and the stopped operation is exactly the one it records:
-    /// anything else (a rebase started by hand, a planted marker) is left
-    /// as it is.
+    /// A sync Strata was interrupted in, whose rebase or merge is still
+    /// stopped. Never undone by itself: only when the marker is sealed by
+    /// this installation, unused, its Strata has ended, the stopped
+    /// operation is exactly the one it records, and the user said yes
+    /// (`undo_interrupted`). Anything else is left as it is.
     fn recover(&self) -> std::result::Result<(), Failure> {
-        let Some(marker) = ask(&self.vault, &["rev-parse", "--git-path", STARTED]).map(|p| self.vault.join(p)).filter(|m| std::fs::symlink_metadata(m).is_ok()) else { return Ok(()) };
+        let marker = ask(&self.vault, &["rev-parse", "--git-path", STARTED]).map(|p| self.vault.join(p)).filter(|m| std::fs::symlink_metadata(m).is_ok());
+        let Some(marker) = marker else {
+            if self.opts.undo_interrupted {
+                return Err(fail(Kind::Busy, "There's no interrupted sync to undo any more; nothing was changed"));
+            }
+            return Ok(());
+        };
         if !self.in_progress() {
             // Nothing stopped: a marker of ours is done with; another isn't ours to remove.
-            if Marker::read(&marker).is_some() {
+            if let Some(m) = Marker::read(&marker) {
+                if let Some(root) = &self.opts.backup_root {
+                    let _ = use_nonce(root, &m.nonce);
+                }
                 let _ = std::fs::remove_file(&marker);
+            }
+            if self.opts.undo_interrupted {
+                return Err(fail(Kind::Busy, "There's no interrupted sync to undo any more; nothing was changed"));
             }
             return Ok(());
         }
@@ -1125,18 +1182,23 @@ impl Repo<'_> {
             log::info!("notes sync: left an unfinished operation in {} alone ({why})", self.top().display());
             return Err(fail(Kind::Busy, "An unfinished Git operation (a rebase or merge) is in this vault's repository, and it isn't one Strata can safely undo. Strata left it as it is: finish or undo it in Git (git status)"));
         }
-        let unmerged = self.unmerged();
-        let back_to = self.rev("ORIG_HEAD");
         let op = if self.git_path_exists("MERGE_HEAD") { "merge" } else { "rebase" };
-        let copies = self.save_strays(&unmerged, back_to.as_deref()).map_err(|why| self.stopped(op, &why))?;
+        let back_to = self.rev("ORIG_HEAD").unwrap_or_default();
+        if !self.opts.undo_interrupted {
+            let files = self.touched(&back_to).map(|t| t.join("\n")).unwrap_or_default();
+            return Err(Failure { kind: Kind::Interrupted, message: format!("Strata's sync was interrupted in {} and left a {op} stopped. Undo it? Every file it touched is backed up first", folder(&self.vault)), detail: Some(files) });
+        }
+        let backup = self.back_up(&back_to).map_err(|why| self.stopped(op, &why))?;
         let abort: &[&str] = if op == "merge" { &["merge", "--abort"] } else { &["rebase", "--abort"] };
         let undone = self.run(self.top(), abort, LOCAL_TIMEOUT).is_ok_and(|o| o.ok()) && !self.in_progress();
         if !undone {
-            return Err(fail(Kind::Stuck, "A sync that was stopped when Strata quit left a rebase that Git couldn't undo; look at the repository in Git (git status)"));
+            return Err(fail(Kind::Stuck, format!("Git couldn't undo the {op} the interrupted sync left; look at the repository in Git (git status). Every file it touched was backed up in {}", backup.display())));
+        }
+        if let (Some(m), Some(root)) = (Marker::read(&marker), &self.opts.backup_root) {
+            let _ = use_nonce(root, &m.nonce);
         }
         let _ = std::fs::remove_file(&marker);
-        let kept = if copies.is_empty() { String::new() } else { format!(" Text written meanwhile was kept as {}.", copies.iter().filter_map(|c| c.file_name()).map(|n| n.to_string_lossy().into_owned()).collect::<Vec<_>>().join(", ")) };
-        Err(fail(Kind::Git, format!("A sync that was stopped when Strata quit has been undone; your files are as they were.{kept} Sync again")))
+        Err(fail(Kind::Git, format!("The interrupted sync has been undone; your files are as they were before it. Every file it touched was backed up first, in {}. Sync again", backup.display())))
     }
 
     /// Keep My Versions: a merge commit with the remote whose conflicting
@@ -1145,7 +1207,7 @@ impl Repo<'_> {
     fn settle(&self, r: &Resolution, phase: &dyn Fn(Phase)) -> std::result::Result<Option<Conflict>, Failure> {
         let tracking = self.remote.tracking.as_str();
         let theirs = self.rev(tracking).ok_or_else(|| fail(Kind::Git, "The remote branch is gone; nothing was changed"))?;
-        let conflict = |paths: Vec<String>, moved: bool| Conflict { top: self.top().to_owned(), upstream: self.remote.upstream.clone(), commit: theirs.clone(), paths, copies: Vec::new(), moved };
+        let conflict = |paths: Vec<String>, moved: bool| Conflict { top: self.top().to_owned(), upstream: self.remote.upstream.clone(), commit: theirs.clone(), paths, moved, backup: None };
         if theirs != r.commit {
             let mut args = vec!["diff-tree", "-r", "--name-only", "-z", "--no-renames", r.commit.as_str(), theirs.as_str(), "--"];
             args.extend(r.paths.iter().map(String::as_str));
@@ -1220,12 +1282,14 @@ impl Repo<'_> {
     }
 }
 
+/// A folder's name, for messages.
+fn folder(p: &Path) -> String {
+    p.file_name().map_or_else(|| p.display().to_string(), |n| format!("“{}”", n.to_string_lossy()))
+}
+
 fn plural(n: usize, word: &str) -> String {
     format!("{n} {word}{}", if n == 1 { "" } else { "s" })
 }
-
-/// A conflicted file's blobs: base, ours, theirs.
-type Stages = [Option<String>; 3];
 
 /// Removes `STARTED` once Git is done rewriting files.
 struct Started(Option<PathBuf>);
@@ -1238,45 +1302,75 @@ impl Drop for Started {
     }
 }
 
-/// `text` with conflict-marker lines cut to the marker (their labels name
-/// commits, which differ between Git's own merge and `git merge-file`).
-fn without_labels(text: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(text.len());
-    for line in text.split_inclusive(|&b| b == b'\n') {
-        match [b"<<<<<<<".as_slice(), b"|||||||", b">>>>>>>"].iter().find(|m| line.starts_with(m)) {
-            Some(m) => {
-                out.extend_from_slice(m);
-                out.push(b'\n');
-            }
-            None => out.extend_from_slice(line),
-        }
-    }
-    out
+/// A file as it is on disk, to tell whether it changed.
+#[derive(Debug, PartialEq, Eq)]
+enum DiskState {
+    Missing,
+    File(Vec<u8>),
+    /// A symbolic link: its target.
+    Link(Vec<u8>),
+    Other,
 }
 
-/// Copy `path` to "name (conflict).ext" beside it (or "(conflict 2)"…), never replacing a file.
-/// `taken` says a name is spoken for elsewhere (a file the abort will put back).
-fn copy_aside(path: &Path, taken: &dyn Fn(&Path) -> bool) -> std::io::Result<PathBuf> {
-    let bytes = std::fs::read(path)?;
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-    for n in 1..1000 {
-        let name = if n == 1 { format!("{stem} (conflict){ext}") } else { format!("{stem} (conflict {n}){ext}") };
-        let copy = path.with_file_name(name);
-        if taken(&copy) {
+/// None: it couldn't be read.
+fn disk_state(path: &Path) -> Option<DiskState> {
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(DiskState::Missing),
+        Err(_) => None,
+        Ok(m) if m.is_file() => std::fs::read(path).ok().map(DiskState::File),
+        Ok(m) if m.file_type().is_symlink() => std::fs::read_link(path).ok().map(|t| DiskState::Link(t.to_string_lossy().into_owned().into_bytes())),
+        Ok(_) => Some(DiskState::Other),
+    }
+}
+
+/// Create `path` (never replacing a file) with `bytes`, flushed to disk.
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    std::io::Write::write_all(&mut f, bytes)?;
+    f.sync_all()
+}
+
+/// Flush a backup folder's entries (best effort: not every system can).
+fn sync_dir(dir: &Path) {
+    let mut stack = vec![dir.to_owned()];
+    while let Some(d) = stack.pop() {
+        if let Ok(f) = std::fs::File::open(&d) {
+            let _ = f.sync_all();
+        }
+        stack.extend(std::fs::read_dir(&d).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+    }
+}
+
+/// How long backups are kept.
+const BACKUP_DAYS: u64 = 30;
+
+/// Remove backup folders (`<root>/<vault>/<time>`) older than `BACKUP_DAYS`.
+fn prune_backups(root: &Path) {
+    let cutoff = std::time::SystemTime::now() - Duration::from_secs(BACKUP_DAYS * 24 * 3600);
+    for vault in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        if !vault.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&copy) {
-            Ok(mut f) => {
-                std::io::Write::write_all(&mut f, &bytes)?;
-                f.sync_all()?;
-                return Ok(copy);
+        for b in std::fs::read_dir(vault.path()).into_iter().flatten().flatten() {
+            let old = b.file_type().is_ok_and(|t| t.is_dir()) && b.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < cutoff);
+            if old && b.path().join("README.txt").is_file() {
+                let _ = std::fs::remove_dir_all(b.path());
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
         }
     }
-    Err(std::io::Error::other("too many conflict copies"))
+}
+
+/// The nonces of markers already acted on (`<backup root>/used-markers`):
+/// a record copied back can't be honored twice.
+fn nonce_used(root: Option<&Path>, nonce: &str) -> bool {
+    root.and_then(|r| std::fs::read_to_string(r.join("used-markers")).ok()).is_some_and(|t| t.lines().any(|l| l == nonce))
+}
+
+fn use_nonce(root: &Path, nonce: &str) -> std::io::Result<()> {
+    crate::private::create_dir_all(root)?;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(root.join("used-markers"))?;
+    std::io::Write::write_all(&mut f, format!("{nonce}\n").as_bytes())?;
+    f.sync_all()
 }
 
 /// Vaults (false) and repositories (true) being synced in this process.

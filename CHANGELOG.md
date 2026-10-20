@@ -68,7 +68,11 @@ All notable changes to Strata are recorded here. The format follows
   refused sign-in or a replaced remote history change nothing and say so in
   the status bar, which also shows the last sync. Turning sync on is tied to
   that repository: a different one later at the same path is asked about
-  again before anything runs. See Notes ▸ Git sync in the manual.
+  again before anything runs. Before Strata ever undoes a rebase Git
+  started, it backs up every file it touched (on disk and staged) to
+  `sync-backups` in its settings folder, kept 30 days (**Notes: Show Sync
+  Backups**); a sync interrupted by quitting is only undone when you say so.
+  See Notes ▸ Git sync in the manual.
 - Optional AI helpers with a model you choose (Tools ▸ AI and the command
   palette): **Summarize Changes** (the whole review or one file), **Explain
   Change**, **Flag Risks**, **Draft Commit Message** and **Explain
