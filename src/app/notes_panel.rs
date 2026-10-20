@@ -338,7 +338,71 @@ impl crate::markdown::Notes for PreviewNotes<'_> {
 
 // ---- the window ------------------------------------------------------------------------
 
+/// One link to the note the backlinks panel is for.
+pub(super) struct Backlink {
+    /// The linking note (an index into the vault's files).
+    src: u32,
+    line: u32,
+    context: Box<str>,
+}
+
+/// What a backlinks list was made from: the vault, the note, the index
+/// generation and each open tab's (editor id, edit version).
+#[derive(PartialEq)]
+pub(super) struct BacklinksKey(PathBuf, u32, u64, Vec<(u64, u64)>);
+
 impl StrataApp {
+    /// The links to note `me`: the index's (what's on disk), with each open
+    /// note's own text in place of its file's, so links a rename just
+    /// updated in unsaved tabs (or typed and not saved) count at once.
+    /// By linking note, then in text order.
+    fn live_backlinks(&mut self, vault: &Vault, me: u32) -> Arc<Vec<Backlink>> {
+        let tabs = self.docs.iter().filter(|d| d.compare.is_none()).map(|d| (d.editor.id(), d.editor.version())).collect();
+        let key = BacklinksKey(vault.root.clone(), me, self.notes.index.generation(), tabs);
+        if let Some((k, list)) = &self.notes.backlinks
+            && *k == key
+        {
+            return list.clone();
+        }
+        let mut live: HashMap<u32, Arc<notes::index::NoteInfo>> = HashMap::new();
+        for d in self.docs.iter_mut().filter(|d| d.compare.is_none()) {
+            let id = d.editor.id();
+            // Only notes the index reads (not attachments, nor notes too big to read).
+            let Some(src) = d.path.as_deref().and_then(|p| vault.find(p)).filter(|&s| vault.note(s).is_some()) else { continue };
+            if live.contains_key(&src) {
+                continue;
+            }
+            let version = d.editor.version();
+            let info = match self.notes.live.get(&id) {
+                Some((v, info)) if *v == version => info.clone(),
+                _ => {
+                    let info = Arc::new(notes::index::NoteInfo::from_text(&d.editor.text_snapshot()));
+                    self.notes.live.insert(id, (version, info.clone()));
+                    info
+                }
+            };
+            live.insert(src, info);
+        }
+        self.notes.live.retain(|id, _| key.3.iter().any(|(t, _)| t == id));
+        let mut out: Vec<Backlink> = vault
+            .backlinks(me)
+            .iter()
+            .filter(|(n, _)| !live.contains_key(n))
+            .filter_map(|&(n, k)| vault.note(n)?.links.get(k as usize).map(|l| Backlink { src: n, line: l.line, context: l.context.clone() }))
+            .collect();
+        for (&src, info) in &live {
+            let from = vault.files.path(src);
+            // Like the index: a note's links to its own headings aren't backlinks.
+            let to_me = info.links.iter().filter(|l| !l.path.is_empty() && vault.files.resolve(&l.path, Some(from)) == Some(me));
+            out.extend(to_me.map(|l| Backlink { src, line: l.line, context: l.context.clone() }));
+        }
+        // Stable: each note's links stay in text order.
+        out.sort_by_key(|b| b.src);
+        let out = Arc::new(out);
+        self.notes.backlinks = Some((key, out.clone()));
+        out
+    }
+
     /// The preview's view of the notes index for the current tab, if it's a note.
     pub(super) fn preview_notes(&mut self) -> Option<(Arc<Vault>, PathBuf, bool)> {
         let root = self.note_root(self.active)?;
@@ -381,9 +445,9 @@ impl StrataApp {
         let (mut hide, mut undo) = (false, false);
         let can_undo = self.notes.last_rename.as_ref().is_some_and(super::notes_ui::UndoRename::undoable) && !self.notes.disk.running();
         let size = self.ui_size();
+        let links = me.map_or_else(Default::default, |i| self.live_backlinks(&vault, i));
         egui::Panel::bottom(self.link.id("notes-backlinks")).resizable(true).default_size((size * 9.0).max(120.0)).min_size(44.0).show(ui, |ui| {
-            let links: &[(u32, u32)] = me.map_or(&[], |i| vault.backlinks(i));
-            let mut sources: Vec<u32> = links.iter().map(|&(n, _)| n).collect();
+            let mut sources: Vec<u32> = links.iter().map(|b| b.src).collect();
             sources.dedup();
             // The buttons on the right first, so tags that don't fit can't push them out.
             ui.horizontal(|ui| ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -428,8 +492,7 @@ impl StrataApp {
                     if ui.add(egui::Label::new(RichText::new(crate::hidden::plain(without_md(rel)).into_owned()).strong()).sense(egui::Sense::click())).on_hover_text(src_path.display().to_string()).clicked() {
                         open = Some((src_path.clone(), 0));
                     }
-                    for &(n, k) in links.iter().filter(|(n, _)| *n == src) {
-                        let Some(l) = vault.note(n).and_then(|note| note.links.get(k as usize)) else { continue };
+                    for l in links.iter().filter(|b| b.src == src) {
                         crate::fonts::ensure_cjk(ui.ctx(), &l.context);
                         let mut job = egui::text::LayoutJob::default();
                         job.append(&format!("{:>5}  ", l.line + 1), 0.0, egui::TextFormat::simple(mono.clone(), ui.visuals().weak_text_color()));

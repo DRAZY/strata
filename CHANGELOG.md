@@ -29,9 +29,10 @@ on; see Security below.
   and writes the link the way the vault's Obsidian settings ask.
 - Notes: a backlinks panel under each note lists the notes linking to it,
   with the line that holds each link, and the note's tags. It's kept up to
-  date as Obsidian, a sync tool or Git changes files; `notes_backlinks`
-  chooses when it shows. `#tags` and frontmatter tags are tinted, and
-  **Notes: Find Tag…** lists every tag with its notes.
+  date as Obsidian, a sync tool or Git changes files, and counts notes open
+  in tabs as they are, saved or not; `notes_backlinks` chooses when it
+  shows. `#tags` and frontmatter tags are tinted, and **Notes: Find Tag…**
+  lists every tag with its notes.
 - Notes: **Notes: Open Daily Note**, **Notes: New Note…** and **Notes: New
   Note from Template…** follow Obsidian's Daily notes and Templates settings,
   filling in `{{date}}`, `{{time}}` and `{{title}}`.

@@ -357,6 +357,41 @@ fn rename_and_update(app: &mut StrataApp, ctx: &Context, dir: &Path) {
     frame(app, ctx, vec![]);
 }
 
+/// Right after Update Links the renamed note's backlinks count the links
+/// updated in open tabs, unsaved, as well as those rewritten on disk.
+#[test]
+fn backlinks_of_a_renamed_note_count_links_updated_in_unsaved_tabs() {
+    let dir = temp_dir("notes-rename-backlinks");
+    write(&dir, "Old.md", "# Old\n");
+    write(&dir, "B.md", "see [[Old]]\n");
+    write(&dir, "C.md", "and [[Old]] on disk\n");
+    let ctx = Context::default();
+    let mut app = open_vault(&dir, "B.md", &ctx);
+    rename_and_update(&mut app, &ctx, &dir);
+    let b = app.tab_for_path(&dir.join("B.md")).unwrap();
+    assert!(app.docs[b].is_dirty(), "B's tab changed, unsaved");
+    assert_eq!(std::fs::read_to_string(dir.join("C.md")).unwrap(), "and [[New]] on disk\n");
+    app.open_path(dir.join("New.md"), false);
+    let mut shown = Vec::new();
+    for _ in 0..40 {
+        app.notes.index.wait();
+        shown = texts(&frame(&mut app, &ctx, vec![]));
+        if shown.iter().any(|t| t.contains("2 links from 2 notes")) {
+            break;
+        }
+    }
+    assert!(shown.iter().any(|t| t.contains("2 links from 2 notes")), "{shown:?}");
+    assert!(shown.iter().any(|t| t.contains("see [[New]]")), "B's line as it is in its tab: {shown:?}");
+    // An unsaved edit that removes B's link counts at once too.
+    let b = app.tab_for_path(&dir.join("B.md")).unwrap();
+    let e = &mut app.docs[b].editor;
+    e.select_all();
+    e.insert_text("no links now\n");
+    let shown = texts(&frame(&mut app, &ctx, vec![]));
+    assert!(shown.iter().any(|t| t.contains("1 link from 1 note")), "{shown:?}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
 #[test]
 fn undo_rename_restores_a_tab_saved_and_closed_since() {
     let dir = temp_dir("notes-undo-closed-tab");
