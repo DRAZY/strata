@@ -81,7 +81,8 @@ surrounding code instead of reformatting files.
   names and menu items are the exception: they use title case
   ("Terminal: Send to Terminal"), like the existing ones.
 - Never log file contents or clipboard text; paths and errors only.
-- Strata makes no network connections except the opt-in update check. Don't
+- Strata makes no network connections except the opt-in update check and the
+  opt-in AI helpers (issue #10, `src/ai`). Don't
   add any without discussing it in an issue first.
 - New settings go in `Settings`, `src/settings_meta.rs` and the manual's
   Settings Reference (tests keep the three in step).

@@ -28,6 +28,32 @@ All notable changes to Strata are recorded here. The format follows
   `lsp_trust_all` skips the question. `lsp_servers` in settings.json changes
   the built-in servers or adds others, and `lsp_enabled` turns the feature
   off.
+- Optional AI helpers with a model you choose (Tools ▸ AI): **Summarize
+  Changes** (the whole review or one file), **Explain Change**, **Flag Risks**,
+  **Draft Commit Message** and **Explain Selection**. Providers: any
+  OpenAI-compatible server (Ollama and LM Studio on your computer or network,
+  OpenRouter, OpenAI…), the Anthropic API, or the `claude` and `codex`
+  command-line tools with your own login. Off until you turn them on in
+  Settings ▸ AI Helpers. Before the first request to a provider outside your
+  computer or local network, Strata shows exactly what it will send and to
+  which host, and asks (Allow Once, Always for This Provider, Cancel).
+  Answers stream into a panel as Markdown, can be cancelled, and never hold
+  up the editor. API keys live in the macOS Keychain or Windows Credential
+  Manager, are only sent to the address they were saved for, and never touch
+  `settings.json` or the log. Ignored and binary files are never sent, and a
+  size limit (`ai_max_prompt_kb`) says what was left out. See the manual's
+  AI Helpers page.
+- Terminal: ⌘-click (Ctrl+click on Windows and Linux) a file location in the
+  output to open the file at that line and column. Hold the key and point to
+  see the location underlined. Works with `path:line:col`, `path(line,col)`
+  (MSVC, C#, TypeScript), Rust errors and panics, Python tracebacks and Node
+  stack traces, including locations that wrap onto the next row. Relative
+  paths are found in the shell's current folder, then the side bar folders;
+  only files that exist are links.
+- **Send to Terminal** (Tools menu; ⌃↩ on macOS, Ctrl+Alt+Enter elsewhere)
+  sends the selection, or the current line, to the terminal and presses
+  Enter, starting a terminal if none is running. Multi-line text goes as one
+  bracketed paste when the shell or REPL supports it.
 - Review Changes, for checking what a coding agent changed and keeping or
   undoing each change (no AI involved). The **Changes** tab of the side bar
   lists every file that differs from the last commit, or from a snapshot taken

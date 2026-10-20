@@ -97,8 +97,10 @@ telemetry.
   collections work unchanged.
 - **Private by design**: no accounts, no telemetry. Strata only contacts
   GitHub to check for and download updates, and only if you allow it (or when
-  you choose Help ▸ Check for Updates…); it sends nothing else. Logs and crash
-  reports stay on your computer.
+  you choose Help ▸ Check for Updates…); it sends nothing else. The optional
+  AI helpers are off until you turn them on and pick a model, and they show
+  exactly what they'll send before anything goes to a provider outside your
+  computer or network. Logs and crash reports stay on your computer.
 - **Signed updates**: a new version is offered in the app and installs with
   one click; every download is checked against an ed25519 signature (and, on
   macOS, Strata's Developer ID) before it replaces anything, and the previous
@@ -595,6 +597,11 @@ own are update checks and downloads from GitHub, and only if you allow them
 Updates…; they send nothing but the request itself. Updates are fetched with
 the system's `curl` (HTTPS only) and verified against an ed25519 key built
 into the app before anything is installed; see [docs/UPDATES.md](docs/UPDATES.md).
+The optional AI helpers ([docs/manual/ai.md](docs/manual/ai.md)) are off by
+default; once you turn them on, they contact only the provider you choose,
+show the exact text and the host before the first request to anything that
+isn't on your computer or local network, and keep API keys in the system
+keychain.
 Markdown images aren't fetched. A link you click (in
 the Markdown preview, the manual, or Help ▸ Report a Problem…) opens in your
 browser; only `http`, `https` and `mailto` links leave Strata (other local

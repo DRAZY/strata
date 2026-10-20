@@ -238,6 +238,7 @@ objc2-metal	0.2.2	MIT
 objc2-metal	0.3.2	Zlib OR Apache-2.0 OR MIT
 objc2-quartz-core	0.2.2	MIT
 objc2-quartz-core	0.3.2	Zlib OR Apache-2.0 OR MIT
+objc2-security	0.3.2	Zlib OR Apache-2.0 OR MIT
 objc2-symbols	0.2.2	MIT
 objc2-ui-kit	0.2.2	MIT
 objc2-ui-kit	0.3.2	Zlib OR Apache-2.0 OR MIT

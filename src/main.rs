@@ -3,6 +3,7 @@
 // `select_ranges(&[a..b])` is a one-selection list, not a mistaken range array.
 #![allow(clippy::single_range_in_vec_init)]
 
+mod ai;
 mod app;
 mod brackets;
 mod build;

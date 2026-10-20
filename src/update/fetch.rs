@@ -56,7 +56,7 @@ fn temp_file(tag: &str) -> PathBuf {
 }
 
 /// The system's curl.
-fn curl_path() -> PathBuf {
+pub fn curl_path() -> PathBuf {
     if cfg!(windows) {
         let root = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
         root.join("System32").join("curl.exe")

@@ -42,6 +42,8 @@ pub struct SettingsUi {
     scroll_top: bool,
     /// Bring the own window to the front (opened again while open).
     raise: bool,
+    /// An API key being typed (Settings ▸ AI Helpers); cleared once saved or the window closes.
+    pub key_draft: String,
 }
 
 impl Default for SettingsUi {
@@ -63,11 +65,19 @@ impl Default for SettingsUi {
             pending: Vec::new(),
             scroll_top: false,
             raise: false,
+            key_draft: String::new(),
         }
     }
 }
 
 impl SettingsUi {
+    /// Show one category (clearing a search).
+    pub fn show_category(&mut self, c: Category) {
+        self.category = c;
+        self.search.clear();
+        self.scroll_top = true;
+    }
+
     #[cfg(test)]
     pub fn category_for_shots(&mut self, c: Category) {
         self.category = c;
@@ -83,6 +93,20 @@ pub(super) enum Change {
     /// Open settings.json, at a key if given.
     OpenJson(Option<&'static str>),
     Copy(&'static str),
+    /// Settings ▸ AI Helpers: save the typed key, remove it, test the connection.
+    AiSaveKey(Secret),
+    AiRemoveKey,
+    AiTest,
+}
+
+/// A key on its way to the keychain: never printed, even in a debug dump.
+#[derive(PartialEq)]
+pub(super) struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(…)")
+    }
 }
 
 /// The JSON key the other per-language settings live under (written by hand).
@@ -104,6 +128,7 @@ impl StrataApp {
         s.open = false;
         s.active = false;
         s.drafts.clear();
+        s.key_draft.clear();
         self.doc().view.focus();
     }
 
@@ -195,7 +220,7 @@ impl StrataApp {
 
     fn settings_look(&self) -> Look {
         let hl = &self.docs[self.active].highlighter;
-        Look { bg: hl.background(), accent: hl.accent(), ui_size: self.ui_size(), active_theme: self.active_theme(), ids: [self.link.id("settings-top"), self.link.id("settings-categories")] }
+        Look { bg: hl.background(), accent: hl.accent(), ui_size: self.ui_size(), active_theme: self.active_theme(), ids: [self.link.id("settings-top"), self.link.id("settings-categories")], ai: self.ai_look() }
     }
 
     fn settings_docked(&mut self, ctx: &egui::Context) -> Vec<Change> {
@@ -299,6 +324,9 @@ impl StrataApp {
                 ctx.copy_text(key.to_owned());
                 self.status = format!("Copied \"{key}\"");
             }
+            Change::AiSaveKey(key) => self.ai_save_key(&key.0),
+            Change::AiRemoveKey => self.ai_remove_key(),
+            Change::AiTest => self.ai_test(ctx),
         }
     }
 
@@ -359,6 +387,7 @@ struct Look {
     ui_size: f32,
     active_theme: String,
     ids: [egui::Id; 2],
+    ai: super::ai_ui::AiLook,
 }
 
 fn search_id() -> egui::Id {
@@ -479,6 +508,11 @@ fn contents(state: &mut SettingsUi, ui: &mut egui::Ui, values: &Map<String, Valu
                 let show_hint = if query.is_empty() { state.category == Category::Editor } else { query.split_whitespace().all(|w| per_language.contains(&w.to_lowercase())) };
                 if show_hint {
                     per_language_row(ui, values, look, &mut changes);
+                }
+                let ai_words = "ai api key keychain test connection provider";
+                let show_ai = if query.is_empty() { state.category == Category::Ai } else { query.split_whitespace().all(|w| ai_words.contains(&w.to_lowercase())) };
+                if show_ai {
+                    super::ai_ui::settings_row(&mut state.key_draft, ui, &look.ai, size, &mut changes);
                 }
             });
         });

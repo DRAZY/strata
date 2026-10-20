@@ -224,6 +224,21 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `sidebar_respect_gitignore` | true/false | `true` | The side bar's tree hides files and folders that `.gitignore` (and `.ignore`, `.git/info/exclude` and your global Git excludes) ignore, as Goto Anything and Find in Files do. See [Projects and Side Bar](projects.md#what-the-tree-shows). |
 | `file_exclude_patterns` | list of text | `[".git", ".DS_Store"]` | Names the side bar never shows, files or folders, as globs: for example `["*.pyc", "node_modules", ".git", ".DS_Store"]`. |
 
+### AI helpers
+
+These settings choose the model the [AI helpers](ai.md) use. Nothing is sent anywhere while `ai_enabled` is `false`. API keys are not settings: they're kept in the system keychain (see [API keys](ai.md#api-keys)).
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `ai_enabled` | true/false | `false` | Turn on the AI helpers. Until you do, their commands only point you here, and Strata sends nothing anywhere. |
+| `ai_provider` | text | `"openai"` | Which kind of provider answers: `"openai"` (any OpenAI-compatible server: Ollama, LM Studio, OpenRouter, OpenAI and others), `"anthropic"` (the Anthropic API), `"claude_cli"` or `"codex_cli"` (the `claude` or `codex` command-line tool, with your own login). See [Providers](ai.md#providers). |
+| `ai_base_url` | text | `"http://localhost:11434/v1"` | With `"openai"`: the server's address, up to and including `/v1`. The default is Ollama on this computer; LM Studio is `http://localhost:1234/v1`. Addresses that aren't on this computer or your local network must use `https://`. |
+| `ai_model` | text | `""` | With `"openai"`: the model to use, as the server names it (for example `llama3.2`). Test Connection lists the server's models. |
+| `ai_anthropic_model` | text | `"claude-sonnet-5-5"` | With `"anthropic"`: the model to use. |
+| `ai_cli_model` | text | `""` | With `"claude_cli"` or `"codex_cli"`: a model to ask the tool for. Empty uses the tool's own default. |
+| `ai_max_prompt_kb` | whole number | `200` | The most a helper sends, in KB (8 to 4096). Bigger reviews are cut to fit, and the panel says what was left out. |
+| `ai_timeout_seconds` | whole number | `180` | How long Strata waits when a provider sends nothing, before it stops the request (10 to 3600). Command-line tools print their whole answer at the end, so for them this covers the whole answer. |
+
 ### Updates
 
 | Setting | Type | Default | Description |

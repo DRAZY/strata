@@ -754,6 +754,12 @@ fn change(path: PathBuf, rel: &str, status: Status) -> FileChange {
     FileChange { path, rel: rel.to_owned(), old: None, status, lines: None, binary: false, blocked: None, filtered: false, crlf: false, alias: false, hash: 1, kept: false, stat: None, id: None }
 }
 
+/// One scan with nothing remembered, for work off the UI thread that needs
+/// the list now (the AI helpers' diffs). Runs git.
+pub fn scan_once(folder: &Path, base: &Base) -> Result<Scan, String> {
+    scan(folder, base, &HashMap::new(), &mut Cache::default())
+}
+
 /// Find the files under `folder`'s repository that differ from `base`.
 /// `kept` holds texts the user kept per file (see `FileChange::kept`).
 fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache: &mut Cache) -> Result<Scan, String> {
@@ -1085,7 +1091,7 @@ pub fn base_now(base: &Base, rel: &str) -> Option<Option<Vec<u8>>> {
 
 /// The base's bytes for `rel` (None: the file isn't in the base). `commit`
 /// is the one the list was made against. Runs git: off the UI thread.
-fn base_bytes(top: &Path, base: &Base, commit: Option<&str>, rel: &str) -> Option<Vec<u8>> {
+pub fn base_bytes(top: &Path, base: &Base, commit: Option<&str>, rel: &str) -> Option<Vec<u8>> {
     if let Some(found) = base_now(base, rel) {
         return found;
     }

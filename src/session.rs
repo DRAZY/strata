@@ -147,6 +147,21 @@ pub struct Settings {
     pub update_check_interval_hours: u32,
     /// "stable" releases only, or "prerelease" ones too.
     pub update_channel: String,
+    /// AI helpers (see `crate::ai`): off until the user turns them on.
+    pub ai_enabled: bool,
+    /// "openai" (any OpenAI-compatible endpoint), "anthropic", "claude_cli" or "codex_cli".
+    pub ai_provider: String,
+    /// The OpenAI-compatible endpoint, up to and including /v1.
+    pub ai_base_url: String,
+    /// The model on that endpoint.
+    pub ai_model: String,
+    pub ai_anthropic_model: String,
+    /// For the command-line tools; empty: their default.
+    pub ai_cli_model: String,
+    /// The most a helper sends, in KB.
+    pub ai_max_prompt_kb: u32,
+    /// Give up when a provider sends nothing for this long.
+    pub ai_timeout_seconds: u32,
 }
 
 impl Default for Settings {
@@ -220,6 +235,14 @@ impl Default for Settings {
             update_check: "ask".into(),
             update_check_interval_hours: 4,
             update_channel: "stable".into(),
+            ai_enabled: false,
+            ai_provider: "openai".into(),
+            ai_base_url: "http://localhost:11434/v1".into(),
+            ai_model: String::new(),
+            ai_anthropic_model: "claude-sonnet-5-5".into(),
+            ai_cli_model: String::new(),
+            ai_max_prompt_kb: 200,
+            ai_timeout_seconds: 180,
         }
     }
 }
