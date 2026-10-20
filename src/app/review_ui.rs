@@ -347,9 +347,22 @@ impl StrataApp {
             let Some(path) = self.docs[i].compare.as_ref().and_then(|c| c.review.clone()) else { continue };
             if let BaseText::Ready(text, enc) = self.review_base(&path, i) {
                 self.review.base_enc.insert(path.clone(), enc);
-                self.docs[i].compare.as_mut().expect("review tab").set_base(&text);
+                // The tab's name, window title and header say which base this is.
+                let label = self.review_base_label(&path, None);
+                let c = self.docs[i].compare.as_mut().expect("review tab");
+                c.set_base(&text);
+                c.base_name = label;
             }
         }
+    }
+
+    /// The fixed side's label for `path`: its name in the base (a renamed
+    /// file's old name, else `name`, else the file's own) and which base.
+    fn review_base_label(&self, path: &Path, name: Option<String>) -> String {
+        let old = self.review.file(path).and_then(|f| f.old.as_ref()).map(|(p, _)| p.as_path());
+        let file_name = |p: &Path| p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let name = old.map(file_name).or(name).unwrap_or_else(|| file_name(path));
+        format!("{name} ({})", if self.review.reviewing() { "review start" } else { "HEAD" })
     }
 
     /// The current tab, if it's a review tab.
@@ -438,8 +451,7 @@ impl StrataApp {
             d.editor.buffer.set_line_ending(crate::buffer::Buffer::from_str(&base).line_ending());
         }
         let plain = self.docs[r].view.id;
-        let name = f.old.as_ref().map_or_else(|| self.docs[r].name(), |(p, _)| p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
-        let label = format!("{name} ({})", if self.review.reviewing() { "review start" } else { "HEAD" });
+        let label = self.review_base_label(path, Some(self.docs[r].name()));
         let syntax = self.docs[r].highlighter.syntax_name().to_owned();
         self.open_compare(r, &base, label, None, &syntax, None);
         let tab = self.active;
@@ -1707,6 +1719,49 @@ mod tests {
         assert!(!app.review.reviewing());
         // The agent committed README.md and the rename; main.rs changed since.
         assert_eq!(listed(&app), vec![("src/main.rs".into(), Status::Modified)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A review tab open across Start Review and End Review: its name, the
+    /// window title and the header always name the base it shows.
+    #[test]
+    fn review_tab_labels_follow_the_base() {
+        let Some(dir) = temp_repo("ui-labels") else { return };
+        std::fs::write(dir.join("README.md"), "# Title\n\nMine.\n").unwrap();
+        let mut app = app_for(&dir);
+        assert!(open(&mut app, &dir.join("README.md")));
+        let t = app.active;
+        let shown = |app: &StrataApp| {
+            let c = app.docs[t].compare.as_ref().unwrap();
+            (c.base_text().to_owned(), c.base_name.clone(), app.docs[t].name(), app.title())
+        };
+        // Wait for the base read in the background after the change.
+        let follow = |app: &mut StrataApp, text: &str| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while shown(app).0 != text {
+                rescan(app);
+                app.review_poll();
+                assert!(Instant::now() < deadline, "the tab never got the new base");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let (text, base, tab, title) = shown(&app);
+        assert_eq!((text.as_str(), base.as_str()), ("# Title\n\nText.\n", "README.md (HEAD)"));
+        assert!(tab.starts_with("README.md (HEAD) ↔") && title.contains("README.md (HEAD)"), "{tab} / {title}");
+
+        app.review_start(None);
+        rescan(&mut app);
+        follow(&mut app, "# Title\n\nMine.\n");
+        let (_, base, tab, title) = shown(&app);
+        assert_eq!(base, "README.md (review start)");
+        assert!(tab.starts_with("README.md (review start) ↔") && title.contains("README.md (review start)"), "{tab} / {title}");
+
+        app.review_end();
+        rescan(&mut app);
+        follow(&mut app, "# Title\n\nText.\n");
+        let (_, base, tab, title) = shown(&app);
+        assert_eq!(base, "README.md (HEAD)");
+        assert!(tab.starts_with("README.md (HEAD) ↔") && !title.contains("review start"), "{tab} / {title}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
