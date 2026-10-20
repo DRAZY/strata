@@ -237,12 +237,14 @@ fn a_stalled_stream_is_given_up_on() {
         std::thread::sleep(Duration::from_secs(20));
     });
     let mut p = srv.provider(Kind::OpenAi);
-    p.stall = Duration::from_secs(1);
+    // 3 s, not 1: under a full parallel test run curl can take over a
+    // second to deliver the first chunk, which tripped the stall early.
+    p.stall = Duration::from_secs(3);
     let t = Instant::now();
     let ev = chat_events(&p, None, &no());
-    assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
+    assert!(t.elapsed() < Duration::from_secs(15), "{:?}", t.elapsed());
     assert_eq!(text(&ev), "start");
-    assert!(matches!(last(&ev), Event::Failed(m) if m.contains("sent nothing for 1 seconds")), "{ev:?}");
+    assert!(matches!(last(&ev), Event::Failed(m) if m.contains("sent nothing for 3 seconds")), "{ev:?}");
 }
 
 #[test]
