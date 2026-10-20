@@ -482,9 +482,12 @@ pub fn snapshot(config: &Path, dir: &Path) -> Result<(String, Manifest), String>
     let (moved, why, resealed, made_id) = name_sealed(&root, &tmp, &sha, d, lock);
     #[cfg(test)]
     if moved == crate::claim::Moved::Done && swap_after_naming().lock().unwrap_or_else(|e| e.into_inner()).iter().any(|c| c == config) {
-        // Another folder takes the name the moment it's given.
-        let _ = std::fs::rename(real.join(&sha), real.join(format!("{sha}-moved-away")));
-        let _ = std::fs::create_dir(real.join(&sha));
+        // Another folder takes the name the moment it's given. (Opened up
+        // first: macOS 14 won't rename a read-only folder.)
+        #[cfg(unix)]
+        let _ = std::fs::set_permissions(real.join(&sha), std::os::unix::fs::PermissionsExt::from_mode(0o700));
+        std::fs::rename(real.join(&sha), real.join(format!("{sha}-moved-away"))).expect("the test moves the snapshot away");
+        std::fs::create_dir(real.join(&sha)).expect("the test puts another folder there");
     }
     if moved != crate::claim::Moved::Done {
         remove_snapshot(&root, &real, &tmp);
