@@ -409,6 +409,11 @@ impl Document {
     /// overwritten: the tab is flagged instead. Returns true if reloaded.
     pub fn check_disk(&mut self) -> bool {
         let Some(path) = &self.path else { return false };
+        // Git sync is rewriting files there (a checkout removes a file
+        // before writing it again): look once it's done, not in between.
+        if crate::notes::sync::holds(path) {
+            return false;
+        }
         let (now, len) = stamp(path);
         if now.is_none() {
             // Gone from disk: keep the text as unsaved so hot exit backs it up.

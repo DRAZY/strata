@@ -102,6 +102,10 @@ fn command(dir: &Path, args: &[&str]) -> Command {
     for p in ["ssh", "ext", "file", "git", "http", "https"] {
         cmd.args(["-c", &format!("protocol.{p}.allow=never")]);
     }
+    // Inherited from a hook or a script, these would aim Git at another repository.
+    for v in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"] {
+        cmd.env_remove(v);
+    }
     cmd.arg("--no-pager")
         .args(args)
         .current_dir(dir)

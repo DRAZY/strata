@@ -95,9 +95,13 @@ surrounding code instead of reformatting files.
   names and menu items are the exception: they use title case
   ("Terminal: Send to Terminal"), like the existing ones.
 - Never log file contents or clipboard text; paths and errors only.
-- Strata makes no network connections except the opt-in update check and the
-  opt-in AI helpers (issue #10, `src/ai`). Don't
-  add any without discussing it in an issue first.
+- Strata makes no network connections except the opt-in update check, the
+  opt-in AI helpers (issue #10, `src/ai`) and Git sync for notes, which runs
+  the user's own `git` against their own remote in vaults they turned it on
+  for (issue #12, `src/notes/sync.rs`). Don't add any without discussing it in
+  an issue first. Git commands that change a repository or reach a remote
+  belong in `notes::sync` only; everything else uses the hardened read-only
+  helpers in `src/git.rs`.
 - New settings go in `Settings`, `src/settings_meta.rs` and the manual's
   Settings Reference (tests keep the three in step).
 - Every new command needs a name in the command palette and an entry on the

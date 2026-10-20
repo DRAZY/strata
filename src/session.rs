@@ -171,6 +171,10 @@ pub struct Settings {
     /// The backlinks panel under a note: "auto" (in Obsidian vaults and
     /// folders whose notes use wikilinks), "always" or "never".
     pub notes_backlinks: String,
+    /// Vaults with Git sync turned on, by real path (see `notes::sync`).
+    pub notes_git_sync: std::collections::BTreeMap<String, crate::notes::sync::VaultSync>,
+    /// The commit message Git sync writes: `{count}`, `{date}` and `{time}` are filled in.
+    pub notes_sync_message: String,
 }
 
 impl Default for Settings {
@@ -256,6 +260,8 @@ impl Default for Settings {
             ai_max_prompt_kb: 200,
             ai_timeout_seconds: 180,
             notes_backlinks: "auto".into(),
+            notes_git_sync: Default::default(),
+            notes_sync_message: crate::notes::sync::DEFAULT_MESSAGE.into(),
         }
     }
 }

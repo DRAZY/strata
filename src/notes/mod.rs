@@ -7,8 +7,8 @@
 //! This module is the part without a window: reading notes (`parse`),
 //! resolving links (`resolve`), the background index (`index`), Obsidian's
 //! settings (`config`), dates (`dates`), link updates on rename (`rename`)
-//! and sync conflict copies (`conflicts`). The window glue is
-//! `app/notes_ui.rs`.
+//! sync conflict copies (`conflicts`) and Git sync (`sync`). The window glue
+//! is `app/notes_ui.rs`.
 
 pub mod config;
 pub mod conflicts;
@@ -18,6 +18,7 @@ pub mod marks;
 pub mod parse;
 pub mod rename;
 pub mod resolve;
+pub mod sync;
 
 /// Fill a template's `{{title}}`, `{{date}}`, `{{time}}` and
 /// `{{date:FORMAT}}` / `{{time:FORMAT}}` (moment.js formats), as Obsidian's

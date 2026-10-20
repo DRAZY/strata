@@ -1,6 +1,6 @@
 # Notes
 
-Strata works with notes the way Obsidian does: plain Markdown files in a folder, linked with `[[wikilinks]]`, tagged with `#tags`, with backlinks, daily notes and templates. There is no database and no format of Strata's own, so you can keep the same folder open in Strata and in Obsidian at once, and sync it with iCloud, Dropbox, Syncthing or Git. Strata never connects to the network for notes.
+Strata works with notes the way Obsidian does: plain Markdown files in a folder, linked with `[[wikilinks]]`, tagged with `#tags`, with backlinks, daily notes and templates. There is no database and no format of Strata's own, so you can keep the same folder open in Strata and in Obsidian at once, and sync it with iCloud, Dropbox, Syncthing or Git. Strata connects to the network for notes only through [Git sync](#git-sync), which is off until you turn it on for a vault.
 
 ## Opening your notes
 
@@ -140,6 +140,44 @@ When two devices change a note at the same time, sync tools keep both versions, 
 
 iCloud's copies (`Note 2.md`) aren't recognized: they look like any note named that way.
 
+## Git sync
+
+If your vault is a Git repository with a remote you set up (on GitHub, your own server, or a folder on another disk), Strata can keep it in sync the way many people sync an Obsidian vault with Git: commit what changed, bring in the commits made elsewhere, push. Git sync is off until you turn it on for a vault, and Strata reaches the remote only when you sync or on a timer you set.
+
+### Turning it on
+
+Open a note in the vault (or the vault folder in the side bar) and choose **Notes: Enable Git Sync for This Vault** (also in Tools ▸ Notes). Strata looks at the repository and says which remote and branch it will use before anything happens. Sync needs:
+
+- **A branch with an upstream on a remote.** `git push -u origin main` in a terminal sets one. Strata never creates remotes or branches of its own.
+- **A remote reached over SSH, HTTPS or a local path.** Unencrypted `http://` and `git://` addresses, and remote helpers (`name::address`), aren't used.
+- **Credentials Git already has**: your credential helper (the macOS keychain, Git Credential Manager on Windows) or your SSH agent. Strata never asks for a password and never shows a sign-in window, and SSH runs in batch mode, so a key with a passphrase needs to be in the agent and the server's host key already known. If you've never pushed from this computer, push once from a terminal first. Strata doesn't store credentials.
+
+Git runs with the repository's own settings, as it does in a terminal: its hooks, filters (such as Git LFS) and credential helpers run when Strata commits, pulls and pushes. That's why Strata asks first, and why sync is meant for repositories you set up yourself. Reading a repository for the gutter, Compare with HEAD and [Review Changes](review.md) still never runs any of them.
+
+Tick **Also sync every … minutes** to sync on a timer while the vault is open in a window. Choose **Enable Git Sync for This Vault** again to change the interval, and **Notes: Disable Git Sync for This Vault** to turn sync off. The vaults are kept in `notes_git_sync` in settings.json (see [Settings](#settings)).
+
+### What a sync does
+
+**Notes: Sync Notes**, or a click on the sync item in the status bar:
+
+1. Saves the vault's notes that have unsaved changes, so what's committed is what you see. The timer doesn't save for you: it skips a vault with unsaved notes and tries again next time.
+2. Commits every changed file in the vault; files your `.gitignore` ignores are left out. When the vault is one folder of a bigger repository, only files inside it are committed. The commit message comes from `notes_sync_message`, with the number of files and the date and time filled in.
+3. Fetches, and rebases your commits onto the remote's, so the history stays a straight line. When your unpushed commits include a merge Strata made to settle a conflict (see below), it merges instead, so the conflict isn't replayed.
+4. Pushes, never forced. If the remote moved on in the meantime, Strata goes round once more.
+
+The status bar shows when the vault last synced ("Synced 14:05"), or "Sync failed" with the reason in its tooltip. Only one sync runs at a time, and the timer waits while a rename's link updates or their undo, Review Changes or Replace in Files is under way. While Git rewrites files during the rebase (usually a split second), saving a file in that repository waits: the status bar asks you to save again, and your text stays in the tab.
+
+When something's in the way, nothing is changed and the status bar says what: the branch has no upstream, the remote can't be reached, it refused the sign-in, a rebase or merge is already under way, the remote's history has nothing in common with yours (it was replaced), files outside the vault have uncommitted changes (commit or stash them first), the remote would replace files this computer ignores, or a hook refused the commit. If Git takes longer than two minutes it is stopped, and a rebase it began is undone. A commit made before the problem stays in your repository and goes up with the next sync.
+
+### Conflicts
+
+If the same note changed here and on the remote, Strata undoes the rebase (`git rebase --abort`), so your files are exactly as they were, pulls and pushes nothing, and lists the notes in conflict:
+
+1. **Compare with origin/main** opens the note in [Compare](compare.md): the remote's version on the fixed side, your file on the side you can edit. Bring over what you want to keep, and save.
+2. **Keep My Versions and Sync** records a merge that keeps those notes exactly as they are on your disk, and pushes it. The remote's versions stay in the history. If the remote changed the notes again since you compared, Strata says so and you compare again.
+
+Strata never settles a conflict by itself and never throws text away. If another program (Obsidian, a sync tool) writes a file while Git is working, its text is saved next to the file as a conflict copy, `Note (conflict).md`, before the rebase is undone; see [Sync conflicts](#sync-conflicts). The timer leaves a vault in conflict alone until it's settled; the status bar shows "Sync: conflict", and a click brings the list back.
+
 ## Obsidian settings Strata follows
 
 Strata reads these from the vault's `.obsidian` folder, and never writes them. Every folder and file they name must be inside the vault: a path that leads out of it (with `..`, a full path, or through a folder that links elsewhere) is refused, and nothing is read or created there.
@@ -179,6 +217,8 @@ Every notes command is in Tools ▸ Notes and the command palette. None has a ke
 |---|---|---|
 | `notes_backlinks` | `"auto"` | When the backlinks panel shows: `"auto"` (notes in an Obsidian vault, or in a folder whose notes use wikilinks), `"always"` (every note in an open folder) or `"never"`. |
 | `code_block_timeout_seconds` | `60` | How long Notes: Run Code Block and Capture Output lets a block run before stopping it. |
+| `notes_git_sync` | `{}` | The vaults with [Git sync](#git-sync) turned on, by folder, each with its timer in minutes (`0`: only when you sync): `{"/Users/me/Notes": {"interval_minutes": 15}}`. The Enable and Disable commands change it. |
+| `notes_sync_message` | `"Notes sync: {count} changed, {date} {time}"` | The message of the commits Git sync makes. `{count}` becomes the number of changed files, `{date}` the date (2026-10-19) and `{time}` the time (14:05). |
 
 ## What isn't here yet
 

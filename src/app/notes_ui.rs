@@ -184,6 +184,15 @@ pub(super) struct NotesState {
     pub make_hook: Option<Box<dyn FnMut() + Send>>,
     /// For lists opened from a palette pick (which has no context at hand).
     ctx: Option<egui::Context>,
+    /// Git sync (see `notes_sync_ui`).
+    pub sync: super::notes_sync_ui::SyncState,
+}
+
+impl NotesState {
+    /// A rename's link updates, or their undo, are under way.
+    pub(super) fn busy(&self) -> bool {
+        self.disk.running() || self.undoing.is_some()
+    }
 }
 
 /// Is `rel` an image Strata shows (embeds, links)?
@@ -302,7 +311,7 @@ impl StrataApp {
 
     /// The vault Notes commands act on: the current note's, else the first
     /// side bar folder.
-    fn command_root(&mut self) -> Option<PathBuf> {
+    pub(super) fn command_root(&mut self) -> Option<PathBuf> {
         let from_doc = self.docs[self.active].path.clone().and_then(|p| self.vault_root(&p));
         // A side bar folder in a vault (or one): as for a file in it.
         let root = from_doc.or_else(|| self.sidebar.root().map(|r| r.join(".")).and_then(|p| self.vault_root(&p)));
@@ -321,6 +330,7 @@ impl StrataApp {
         self.notes.ctx = Some(ctx.clone());
         self.notes.index.poll(Some(ctx));
         self.notes_disk_poll(ctx);
+        self.notes_sync_frame(ctx);
         // The vaults of open notes are indexed; the others are let go.
         let mut roots: Vec<PathBuf> = Vec::new();
         for i in 0..self.docs.len() {
@@ -1281,6 +1291,10 @@ impl StrataApp {
                 Item::cmd("Run Code Block", Cmd::NotesRunCodeBlock),
                 Item::cmd("Run Code Block and Capture Output", Cmd::NotesRunCodeBlockCapture),
                 Item::cmd("Forget Files Allowed to Run Code Blocks", Cmd::NotesForgetCodeBlockFiles),
+                Item::Separator,
+                Item::cmd("Sync Notes", Cmd::NotesSync),
+                Item::cmd("Enable Git Sync for This Vault…", Cmd::NotesSyncEnable),
+                Item::cmd("Disable Git Sync for This Vault", Cmd::NotesSyncDisable),
             ],
         )
     }

@@ -638,8 +638,9 @@ own are update checks and downloads from GitHub, and only if you allow them
 Updates…; they send nothing but the request itself. Updates are fetched with
 the system's `curl` (HTTPS only) and verified against an ed25519 key built
 into the app before anything is installed; see [docs/UPDATES.md](docs/UPDATES.md).
-Notes never use the network: links, backlinks and embedded images come only
-from files in the vault.
+Notes don't use the network: links, backlinks and embedded images come only
+from files in the vault. The one exception is Git sync, below, which is off
+unless you turn it on.
 
 The optional AI helpers ([docs/manual/ai.md](docs/manual/ai.md)) are off by
 default, and nothing is sent anywhere until you turn them on and choose a
@@ -660,6 +661,10 @@ provider. Then:
 - **API keys** live in the macOS Keychain or Windows Credential Manager, are
   only sent to the address they were saved for, and are never written to
   `settings.json` or the log.
+
+Git sync for notes is off until you turn it on for a vault; then it runs
+your own `git` against the remote you set up, when you sync or on a timer
+you choose, with your own credential helper or SSH agent.
 
 Markdown images aren't fetched. A link you click (in
 the Markdown preview, the manual, or Help ▸ Report a Problem…) opens in your
