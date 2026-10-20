@@ -595,20 +595,22 @@ fn a_rebase_stopped_for_taking_too_long_is_undone_with_its_hooks() {
     let Some(f) = fixture("slow") else { return };
     f.there_commits("vault/Ideas.md", "theirs\n");
     write(&f.vault(), "Plan.md", "mine\n");
-    // A hook that hangs once the rebase has begun (a slow LFS download, say),
-    // and would write a file late if it outlived the sync.
+    // A hook that hangs as the rebase checks out the remote's commit (a slow
+    // LFS download, say; only then, not when the rebase is undone), and would
+    // write a file late if it outlived the sync.
     let (once, late) = (f.base.join("hook-done"), f.base.join("late"));
     let hook = f.here.join(".git/hooks/post-checkout");
     let script = format!(
-        "#!/bin/sh\n[ -d \"$(git rev-parse --git-path rebase-merge)\" ] || exit 0\n[ -e '{0}' ] && exit 0\ntouch '{0}'\nsleep 7\ntouch '{1}'\n",
+        "#!/bin/sh\n[ \"$2\" = '{2}' ] || exit 0\n[ -e '{0}' ] && exit 0\ntouch '{0}'\nsleep 15\ntouch '{1}'\n",
         once.display(),
-        late.display()
+        late.display(),
+        f.remote_head()
     );
     std::fs::write(&hook, script).unwrap();
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     let head = f.head();
     let started = Instant::now();
-    let o = run(&f.vault(), &Options { integrate_timeout: Some(Duration::from_secs(3)), ..f.opts() }, &|_| {});
+    let o = run(&f.vault(), &Options { integrate_timeout: Some(Duration::from_secs(6)), ..f.opts() }, &|_| {});
     assert!(once.exists(), "the hook ran");
     let e = failed(&o);
     assert!(matches!(e.kind, Kind::Offline | Kind::Git | Kind::Stuck), "{e:?}");
@@ -617,7 +619,7 @@ fn a_rebase_stopped_for_taking_too_long_is_undone_with_its_hooks() {
     assert_eq!(g(&f, &f.here, &["symbolic-ref", "--short", "HEAD"]), "main", "on the branch, not detached");
     assert_eq!(read(&f.vault(), "Plan.md"), "mine\n");
     assert_eq!(read(&f.vault(), "Ideas.md"), "ideas\n");
-    std::thread::sleep(Duration::from_secs(8).saturating_sub(started.elapsed()) + Duration::from_millis(500));
+    std::thread::sleep(Duration::from_secs(16).saturating_sub(started.elapsed()) + Duration::from_millis(500));
     assert!(!late.exists(), "the hook was stopped along with Git: {e:?} after {:?}", started.elapsed());
 }
 
@@ -631,4 +633,125 @@ fn nothing_asks_for_a_password() {
         assert!(envs.contains(&(k.into(), Some(v.into()))), "{k}");
     }
     assert!(envs.contains(&("GIT_DIR".into(), None)), "an inherited GIT_DIR is dropped");
+}
+
+/// The "midway" history: one commit changes a line and the next changes it
+/// back, so the ends merge cleanly but replaying the first stops on Plan.md.
+fn midway(f: &Fixture) {
+    write(&f.vault(), "Plan.md", "# Plan\n\nline one\nX\nline three\n");
+    g(f, &f.here, &["commit", "-q", "-am", "x"]);
+    write(&f.vault(), "Plan.md", "# Plan\n\nline one\nline two\nline three\n");
+    g(f, &f.here, &["commit", "-q", "-am", "back"]);
+    f.there_commits("vault/Plan.md", "# Plan\n\nline one\nTHEIRS\nline three\n");
+}
+
+#[test]
+fn text_saved_into_a_conflicted_file_mid_rebase_is_kept() {
+    let Some(f) = fixture("stray-unmerged") else { return };
+    midway(&f);
+    // An older conflict copy is never replaced: the new one is numbered.
+    write(&f.vault(), "Plan (conflict).md", "an older copy\n");
+    let plan = f.vault().join("Plan.md");
+    let saved: Arc<dyn Fn() + Send + Sync> = Arc::new(move || std::fs::write(&plan, "saved by another program meanwhile\n").unwrap());
+    let o = run(&f.vault(), &Options { before_abort: Some(saved), ..f.opts() }, &|_| {});
+    let Result::Conflict(c) = &o.result else { panic!("{o:?}") };
+    assert_eq!(c.paths, vec!["vault/Plan.md".to_owned()]);
+    assert_eq!(c.copies, vec![f.vault().join("Plan (conflict 2).md")]);
+    assert_eq!(read(&f.vault(), "Plan (conflict 2).md"), "saved by another program meanwhile\n");
+    assert_eq!(read(&f.vault(), "Plan (conflict).md"), "an older copy\n");
+    assert_eq!(read(&f.vault(), "Plan.md"), "# Plan\n\nline one\nline two\nline three\n", "the committed text is back");
+    // Git's own conflict output (markers and all) isn't copied.
+    let o = f.sync();
+    let Result::Conflict(c) = &o.result else { panic!("{o:?}") };
+    assert!(c.copies.is_empty(), "{:?}", c.copies);
+}
+
+#[test]
+fn a_different_repository_at_the_same_path_is_refused_before_git_runs() {
+    let Some(f) = fixture("identity") else { return };
+    let first = identity(&f.vault()).expect("an identity");
+    assert!(!first.git_dir.is_empty() && !first.root.is_empty() && !first.remote.is_empty(), "{first:?}");
+    assert_eq!(identity(&f.vault()).unwrap(), first, "stable");
+    let expect = |i: &Identity| Options { expect: Some(i.clone()), ..f.opts() };
+    write(&f.vault(), "Plan.md", "edited\n");
+    assert_eq!(synced(&run(&f.vault(), &expect(&first), &|_| {})).0, 1, "the same repository syncs");
+    // An enablement without an identity (typed into settings.json) is asked about too.
+    assert_eq!(failed(&run(&f.vault(), &expect(&Identity::default()), &|_| {})).kind, Kind::Untrusted);
+    // Another repository at the same path, with a hook and its own remote.
+    std::fs::remove_dir_all(&f.here).unwrap();
+    g(&f, &f.base, &["init", "-q", "--bare", "-b", "main", "other-remote.git"]);
+    g(&f, &f.base, &["clone", "-q", f.base.join("other-remote.git").to_str().unwrap(), "here"]);
+    write(&f.vault(), "Plan.md", "someone else's repository\n");
+    g(&f, &f.here, &["add", "."]);
+    g(&f, &f.here, &["commit", "-q", "-m", "theirs"]);
+    g(&f, &f.here, &["push", "-q", "-u", "origin", "main"]);
+    let marker = f.base.join("hook-ran");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let hook = f.here.join(".git/hooks/pre-commit");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    write(&f.vault(), "Plan.md", "changed\n");
+    let head = f.head();
+    let o = run(&f.vault(), &expect(&first), &|_| {});
+    let e = failed(&o);
+    assert_eq!(e.kind, Kind::Untrusted, "{e:?}");
+    assert!(!marker.exists(), "nothing of the other repository's ran");
+    assert_eq!((o.committed, f.head()), (0, head));
+    assert_ne!(identity(&f.vault()).unwrap(), first);
+}
+
+#[test]
+fn a_sync_stopped_before_integrating_never_starts_a_rebase() {
+    let Some(f) = fixture("cancel") else { return };
+    f.there_commits("vault/Ideas.md", "theirs\n");
+    write(&f.vault(), "Plan.md", "mine\n");
+    let (go_tx, go_rx) = std::sync::mpsc::sync_channel::<()>(0);
+    let (at_tx, at_rx) = std::sync::mpsc::sync_channel::<Phase>(8);
+    let go_rx = Mutex::new(go_rx);
+    let on_phase: Arc<dyn Fn(Phase) + Send + Sync> = Arc::new(move |p| {
+        let _ = at_tx.send(p);
+        if p == Phase::Fetch {
+            let _ = go_rx.lock().unwrap().recv();
+        }
+    });
+    let job = Job::start(&f.vault(), Options { on_phase: Some(on_phase), ..f.opts() }, false, None).unwrap();
+    while at_rx.recv().unwrap() != Phase::Fetch {}
+    let head = f.head();
+    // Quitting (the window lets go of the job) while it fetches.
+    drop(job);
+    go_tx.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while busy(&f.vault()) {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(at_rx.try_iter().all(|p| p != Phase::Integrate), "never began rewriting files");
+    assert_eq!(f.head(), head, "no rebase");
+    assert_eq!(read(&f.vault(), "Ideas.md"), "ideas\n");
+    assert!(!f.here.join(".git/rebase-merge").exists());
+}
+
+#[test]
+fn a_rebase_left_behind_by_a_quit_is_undone_on_the_next_sync() {
+    let Some(f) = fixture("leftover") else { return };
+    midway(&f);
+    g(&f, &f.here, &["fetch", "-q"]);
+    // As if Strata quit while Git was stopped mid-rebase.
+    std::fs::write(f.here.join(".git").join(STARTED), "").unwrap();
+    let out = g_out(&f, &f.here, &["rebase", "-q", "origin/main"]);
+    assert!(!out.status.success() && f.here.join(".git/rebase-merge").exists());
+    let o = f.sync();
+    let e = failed(&o);
+    assert!(e.message.contains("A sync that was stopped when Strata quit has been undone"), "{e:?}");
+    assert!(!f.here.join(".git/rebase-merge").exists() && !f.here.join(".git").join(STARTED).exists());
+    assert_eq!(read(&f.vault(), "Plan.md"), "# Plan\n\nline one\nline two\nline three\n");
+    assert_eq!(g(&f, &f.here, &["symbolic-ref", "--short", "HEAD"]), "main");
+    // A rebase someone started by hand is theirs: left alone.
+    let out = g_out(&f, &f.here, &["rebase", "-q", "origin/main"]);
+    assert!(!out.status.success());
+    assert_eq!(failed(&f.sync()).kind, Kind::Busy);
+    assert!(f.here.join(".git/rebase-merge").exists());
 }

@@ -10,7 +10,7 @@
 
 use super::StrataApp;
 use crate::commands::Cmd;
-use crate::notes::sync::{self, Failure, Job, Remote, Resolution, VaultSync};
+use crate::notes::sync::{self, Failure, Identity, Job, Remote, Resolution, VaultSync};
 use egui::Color32;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -42,9 +42,13 @@ pub(super) struct ConflictView {
 struct Enable {
     vault: PathBuf,
     name: String,
-    /// The repository and remote, being looked up.
-    rx: Option<Receiver<Result<Remote, Failure>>>,
+    /// The repository, its remote and its identity, being looked up.
+    rx: Option<Receiver<Result<(Remote, Identity), Failure>>>,
     remote: Option<Result<Remote, Failure>>,
+    /// What turning sync on is bound to (see `sync::Identity`).
+    identity: Option<Identity>,
+    /// Asked again because the folder now holds another repository.
+    again: bool,
     timer: bool,
     minutes: u32,
 }
@@ -269,8 +273,10 @@ impl StrataApp {
     }
 
     fn start_sync(&mut self, ctx: &egui::Context, vault: PathBuf, manual: bool, resolve: Option<Resolution>) {
+        // Bound to the repository it was turned on for: checked before Git runs anything.
+        let expect = Some(self.vault_setting(&vault).map(|v| v.repository.clone()).unwrap_or_default());
         #[allow(unused_mut)]
-        let mut opts = sync::Options { message: self.settings.notes_sync_message.clone(), resolve, env: self.notes.sync.env.clone(), ..Default::default() };
+        let mut opts = sync::Options { message: self.settings.notes_sync_message.clone(), resolve, env: self.notes.sync.env.clone(), expect, ..Default::default() };
         #[cfg(test)]
         {
             opts.on_phase = self.notes.sync.on_phase.clone();
@@ -327,6 +333,17 @@ impl StrataApp {
             self.notes_saved(&p);
         }
         self.sidebar.refresh();
+        if let sync::Result::Failed(f) = &outcome.result
+            && f.kind == sync::Kind::Untrusted
+        {
+            // Another repository at this path: off, and the question again.
+            if let Some(key) = self.sync_key(&vault) {
+                let minutes = self.settings.notes_git_sync.remove(&key).map_or(0, |v| v.interval_minutes);
+                self.persist_settings();
+                self.ask_enable_for(ctx, vault.clone(), minutes, true);
+            }
+            self.notes.sync.due.remove(&vault);
+        }
         match outcome.result {
             sync::Result::Conflict(conflict) => {
                 self.notes.sync.show_conflict = job.manual || self.notes.sync.show_conflict;
@@ -445,14 +462,19 @@ impl StrataApp {
         let Some(root) = self.command_root() else { return };
         let vault = real(&root);
         let current = self.vault_setting(&vault).map_or(0, |v| v.interval_minutes);
+        self.ask_enable_for(ctx, vault, current, false);
+    }
+
+    /// "Enable Git sync?" for the vault at `vault` (a real path).
+    fn ask_enable_for(&mut self, ctx: &egui::Context, vault: PathBuf, current: u32, again: bool) {
         let (tx, rx) = std::sync::mpsc::channel();
         let (dir, ctx2) = (vault.clone(), ctx.clone());
         // Looking the remote up runs Git: off the UI thread.
         std::thread::spawn(move || {
-            let _ = tx.send(sync::describe(&dir));
+            let _ = tx.send(sync::describe(&dir).and_then(|r| sync::identity(&dir).map(|i| (r, i))));
             ctx2.request_repaint();
         });
-        self.notes.sync.enable = Some(Enable { name: folder_name(&root), vault, rx: Some(rx), remote: None, timer: current > 0, minutes: if current > 0 { current } else { 15 } });
+        self.notes.sync.enable = Some(Enable { name: folder_name(&vault), vault, rx: Some(rx), remote: None, identity: None, again, timer: current > 0, minutes: if current > 0 { current } else { 15 } });
     }
 
     fn disable_sync(&mut self) {
@@ -476,7 +498,10 @@ impl StrataApp {
     fn enable_window(&mut self, ctx: &egui::Context) {
         let Some(e) = self.notes.sync.enable.as_mut() else { return };
         if let Some(r) = e.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            e.remote = Some(r);
+            e.remote = Some(r.map(|(remote, identity)| {
+                e.identity = Some(identity);
+                remote
+            }));
             e.rx = None;
         }
         let (mut enable, mut close) = (false, false);
@@ -490,6 +515,9 @@ impl StrataApp {
                 let size = egui::TextStyle::Body.resolve(ui.style()).size;
                 ui.set_max_width((size * 34.0).max(440.0));
                 ui.strong(format!("Enable Git sync for “{}”?", e.name));
+                if e.again {
+                    ui.colored_label(AMBER, "This isn't the repository Git sync was turned on for here (it was replaced, its remote changed, or sync was added to settings.json by hand), so sync is off until you say again.");
+                }
                 ui.label(egui::RichText::new(e.vault.display().to_string()).weak());
                 ui.add_space(4.0);
                 match &e.remote {
@@ -532,14 +560,12 @@ impl StrataApp {
     /// The answer to "Enable Git sync?" (tests press the button through this).
     pub(super) fn enable_answered(&mut self, yes: bool) {
         let Some(e) = self.notes.sync.enable.take() else { return };
-        if !yes || !matches!(e.remote, Some(Ok(_))) {
-            return;
-        }
+        let (true, Some(Ok(_)), Some(identity)) = (yes, &e.remote, e.identity.clone()) else { return };
         let minutes = if e.timer { e.minutes.clamp(1, MAX_MINUTES) } else { 0 };
         if let Some(old) = self.sync_key(&e.vault) {
             self.settings.notes_git_sync.remove(&old);
         }
-        self.settings.notes_git_sync.insert(e.vault.to_string_lossy().into_owned(), VaultSync { interval_minutes: minutes });
+        self.settings.notes_git_sync.insert(e.vault.to_string_lossy().into_owned(), VaultSync { interval_minutes: minutes, repository: identity });
         self.persist_settings();
         self.notes.sync.due.remove(&e.vault);
         let when = if minutes > 0 { format!("every {} and when you choose Notes: Sync Notes", plural(minutes as usize, "minute")) } else { "when you choose Notes: Sync Notes".to_owned() };
@@ -696,7 +722,8 @@ mod tests {
 
     fn enable(app: &mut StrataApp, minutes: u32) {
         let key = real(&app.sidebar.roots[0]).to_string_lossy().into_owned();
-        app.settings.notes_git_sync.insert(key, VaultSync { interval_minutes: minutes });
+        let repository = sync::identity(&app.sidebar.roots[0]).expect("a repository");
+        app.settings.notes_git_sync.insert(key, VaultSync { interval_minutes: minutes, repository });
     }
 
     /// Frames until no sync runs.
@@ -771,6 +798,42 @@ mod tests {
         assert_eq!(app.status, "Git sync is off for vault");
         let out = frame(&mut app, &ctx, vec![]);
         assert!(!texts(&out).iter().any(|t| t.starts_with("Synced ")));
+    }
+
+    #[test]
+    fn a_different_repository_at_the_same_path_is_asked_about_again() {
+        let Some(f) = fixture("ui-identity") else { return };
+        let ctx = Context::default();
+        let mut app = open(&f, &ctx);
+        app.run(&ctx, Cmd::NotesSyncEnable);
+        while !app.enable_ready() {
+            frame(&mut app, &ctx, vec![]);
+        }
+        app.enable_answered(true);
+        assert_eq!(app.settings.notes_git_sync.len(), 1);
+        // The folder is replaced by another repository (with a remote of its own).
+        std::fs::remove_dir_all(&f.here).unwrap();
+        g(&f, &f.base, &["init", "-q", "--bare", "-b", "main", "other-remote.git"]);
+        g(&f, &f.base, &["clone", "-q", f.base.join("other-remote.git").to_str().unwrap(), "here"]);
+        write(&f.vault(), "Plan.md", "someone else's\n");
+        g(&f, &f.here, &["add", "."]);
+        g(&f, &f.here, &["commit", "-q", "-m", "x"]);
+        g(&f, &f.here, &["push", "-q", "-u", "origin", "main"]);
+        let head = g(&f, &f.here, &["rev-parse", "HEAD"]);
+        write(&f.vault(), "Plan.md", "changed\n");
+        app.run(&ctx, Cmd::NotesSync);
+        finish(&mut app, &ctx);
+        assert_eq!(g(&f, &f.here, &["rev-parse", "HEAD"]), head, "nothing committed");
+        assert!(app.settings.notes_git_sync.is_empty(), "turned off");
+        while !app.enable_ready() {
+            frame(&mut app, &ctx, vec![]);
+        }
+        let out = frame(&mut app, &ctx, vec![]);
+        assert!(shows(&out, "the repository Git sync was turned on for"), "{:?}", texts(&out));
+        assert!(shows(&out, "hooks, filters (such as Git LFS) and credential helpers will run"), "the disclosure again");
+        // The timer path is refused the same way (the check is in the sync itself).
+        app.enable_answered(true);
+        assert_eq!(app.settings.notes_git_sync.len(), 1, "on again for the new repository, after asking");
     }
 
     #[test]

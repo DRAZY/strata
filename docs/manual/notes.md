@@ -154,6 +154,8 @@ Open a note in the vault (or the vault folder in the side bar) and choose **Note
 
 Git runs with the repository's own settings, as it does in a terminal: its hooks, filters (such as Git LFS) and credential helpers run when Strata commits, pulls and pushes. That's why Strata asks first, and why sync is meant for repositories you set up yourself. Reading a repository for the gutter, Compare with HEAD and [Review Changes](review.md) still never runs any of them.
 
+Turning sync on is tied to that repository: its Git folder on disk, its remote's address and its first commit. If the folder later holds a different repository (you replaced it, or its remote changed), Strata runs nothing in it, turns sync off and asks again, with the same explanation.
+
 Tick **Also sync every … minutes** to sync on a timer while the vault is open in a window. Choose **Enable Git Sync for This Vault** again to change the interval, and **Notes: Disable Git Sync for This Vault** to turn sync off. The vaults are kept in `notes_git_sync` in settings.json (see [Settings](#settings)).
 
 ### What a sync does
@@ -176,7 +178,7 @@ If the same note changed here and on the remote, Strata undoes the rebase (`git 
 1. **Compare with origin/main** opens the note in [Compare](compare.md): the remote's version on the fixed side, your file on the side you can edit. Bring over what you want to keep, and save.
 2. **Keep My Versions and Sync** records a merge that keeps those notes exactly as they are on your disk, and pushes it. The remote's versions stay in the history. If the remote changed the notes again since you compared, Strata says so and you compare again.
 
-Strata never settles a conflict by itself and never throws text away. If another program (Obsidian, a sync tool) writes a file while Git is working, its text is saved next to the file as a conflict copy, `Note (conflict).md`, before the rebase is undone; see [Sync conflicts](#sync-conflicts). The timer leaves a vault in conflict alone until it's settled; the status bar shows "Sync: conflict", and a click brings the list back.
+Strata never settles a conflict by itself and never throws text away. If another program (Obsidian, a sync tool) writes a file while Git is working, including a note Git has just marked as in conflict, its text is saved next to the file as a conflict copy, `Note (conflict).md` (or `Note (conflict 2).md`, never replacing an older copy), before the rebase is undone; see [Sync conflicts](#sync-conflicts). Quitting Strata during a sync waits for Git to finish rewriting files, and a sync that hasn't started rewriting them yet stops there. If a rebase is still left over after Strata quit (it had to give up waiting), the next sync undoes it first. The timer leaves a vault in conflict alone until it's settled; the status bar shows "Sync: conflict", and a click brings the list back.
 
 ## Obsidian settings Strata follows
 
@@ -217,7 +219,7 @@ Every notes command is in Tools ▸ Notes and the command palette. None has a ke
 |---|---|---|
 | `notes_backlinks` | `"auto"` | When the backlinks panel shows: `"auto"` (notes in an Obsidian vault, or in a folder whose notes use wikilinks), `"always"` (every note in an open folder) or `"never"`. |
 | `code_block_timeout_seconds` | `60` | How long Notes: Run Code Block and Capture Output lets a block run before stopping it. |
-| `notes_git_sync` | `{}` | The vaults with [Git sync](#git-sync) turned on, by folder, each with its timer in minutes (`0`: only when you sync): `{"/Users/me/Notes": {"interval_minutes": 15}}`. The Enable and Disable commands change it. |
+| `notes_git_sync` | `{}` | The vaults with [Git sync](#git-sync) turned on, by folder, each with its timer in minutes (`0`: only when you sync) and the repository it was turned on for: `{"/Users/me/Notes": {"interval_minutes": 15, "repository": {…}}}`. The Enable and Disable commands change it; a vault added by hand is asked about before it syncs. |
 | `notes_sync_message` | `"Notes sync: {count} changed, {date} {time}"` | The message of the commits Git sync makes. `{count}` becomes the number of changed files, `{date}` the date (2026-10-19) and `{time}` the time (14:05). |
 
 ## What isn't here yet

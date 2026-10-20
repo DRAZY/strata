@@ -981,6 +981,7 @@ fn notification_from_server(method: &str, params: &Value, io: &Io) {
 
 /// A Windows job object that kills every process in it when closed or
 /// terminated, so a server and the processes it started end together.
+/// (Git sync uses it too, so a stopped Git takes its hooks and ssh along.)
 #[cfg(windows)]
 pub(crate) mod job {
     use std::os::windows::io::AsRawHandle;
@@ -1058,6 +1059,15 @@ pub(crate) mod job {
             // SAFETY: the handle is open until `drop`.
             unsafe {
                 TerminateJobObject(self.0, 1);
+            }
+        }
+
+        /// Close the job without ending what still runs in it.
+        pub fn release(self) {
+            // SAFETY: as in `holding`; clearing the limits first means closing kills nothing.
+            unsafe {
+                let info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                SetInformationJobObject(self.0, JobObjectExtendedLimitInformation, &info as *const _ as *const core::ffi::c_void, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
             }
         }
     }
