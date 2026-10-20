@@ -3,7 +3,9 @@
 //! A query matches when its chars appear in order in the candidate
 //! (case-insensitively). Among all such alignments a small DP picks the
 //! best-scoring one, rewarding runs and word starts and charging for gaps.
-//! Space-separated query terms must each match, in any order.
+//! Space-separated query terms must each match, in any order; when they
+//! also match in order, as one phrase, that scores higher ("rename note"
+//! prefers "Rename Note" to "Note … Rename").
 
 use std::cmp::Reverse;
 
@@ -78,6 +80,8 @@ struct Term {
 
 struct Pattern {
     terms: Vec<Term>,
+    /// The terms joined by single spaces, when there are several.
+    phrase: Option<Term>,
 }
 
 /// Buffers reused across candidates so scoring doesn't allocate per item.
@@ -100,11 +104,10 @@ fn is_path_sep(c: char) -> bool {
 
 impl Pattern {
     fn new(query: &str) -> Self {
-        let terms = query
-            .split_whitespace()
-            .map(|t| Term { chars: t.chars().collect(), folded: t.chars().map(fold).collect() })
-            .collect();
-        Self { terms }
+        let term = |t: &str| Term { chars: t.chars().collect(), folded: t.chars().map(fold).collect() };
+        let words: Vec<&str> = query.split_whitespace().collect();
+        let phrase = (words.len() > 1).then(|| term(&words.join(" ")));
+        Self { terms: words.into_iter().map(term).collect(), phrase }
     }
 
     fn score(&self, candidate: &str, s: &mut Scratch, mut positions: Option<&mut Vec<usize>>) -> Option<i32> {
@@ -120,12 +123,24 @@ impl Pattern {
         if let Some(p) = positions.as_deref_mut() {
             p.clear();
         }
+        let want = positions.is_some();
         let mut total = 0;
         for term in &self.terms {
-            let want = positions.is_some();
             total += match_term(term, s, want)?;
             if let Some(p) = positions.as_deref_mut() {
                 p.extend_from_slice(&s.term_positions);
+            }
+        }
+        // The whole query in order: its spaces must match whitespace too, so
+        // words that follow each other in the candidate earn the run bonuses.
+        if let Some(phrase) = self.phrase.as_ref().filter(|p| is_subsequence(&p.folded, candidate))
+            && let Some(best) = match_term(phrase, s, want).filter(|&b| b > total)
+        {
+            total = best;
+            if let Some(p) = positions.as_deref_mut() {
+                p.clear();
+                // The spaces between the words aren't highlighted.
+                p.extend(s.term_positions.iter().filter(|&&j| !s.chars[j].is_whitespace()));
             }
         }
         if let Some(p) = positions {
@@ -311,6 +326,14 @@ mod tests {
         assert!(score("main zz", "src/main.rs").is_none());
         let (_, p) = score("main rs", "src/main.rs").unwrap();
         assert_eq!(p, vec![4, 5, 6, 7, 9, 10]);
+    }
+
+    #[test]
+    fn terms_in_order_as_a_phrase_win() {
+        assert_eq!(top("rename note", &["Notes: Undo Rename", "Notes: Rename Note…"])[0], "Notes: Rename Note…");
+        assert_eq!(top("new term", &["Terminal: New Terminal", "Terminal: Send to Terminal (new)"])[0], "Terminal: New Terminal");
+        // The space between the words isn't highlighted.
+        assert_eq!(positions("rename note", "Notes: Rename Note…"), vec![7, 8, 9, 10, 11, 12, 14, 15, 16, 17]);
     }
 
     #[test]
