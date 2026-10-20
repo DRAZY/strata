@@ -601,7 +601,7 @@ fn a_rebase_stopped_for_taking_too_long_is_undone_with_its_hooks() {
     let (once, late) = (f.base.join("hook-done"), f.base.join("late"));
     let hook = f.here.join(".git/hooks/post-checkout");
     let script = format!(
-        "#!/bin/sh\n[ \"$2\" = '{2}' ] || exit 0\n[ -e '{0}' ] && exit 0\ntouch '{0}'\nsleep 15\ntouch '{1}'\n",
+        "#!/bin/sh\n[ \"$2\" = '{2}' ] || exit 0\n[ -e '{0}' ] && exit 0\nps -o pid,pgid,ppid -p $PPID > '{0}'\nsleep 15\ntouch '{1}'\n",
         once.display(),
         late.display(),
         f.remote_head()
@@ -620,7 +620,7 @@ fn a_rebase_stopped_for_taking_too_long_is_undone_with_its_hooks() {
     assert_eq!(read(&f.vault(), "Plan.md"), "mine\n");
     assert_eq!(read(&f.vault(), "Ideas.md"), "ideas\n");
     std::thread::sleep(Duration::from_secs(16).saturating_sub(started.elapsed()) + Duration::from_millis(500));
-    assert!(!late.exists(), "the hook was stopped along with Git: {e:?} after {:?}", started.elapsed());
+    assert!(!late.exists(), "the hook was stopped along with Git: {e:?} after {:?}; hook: {}", started.elapsed(), std::fs::read_to_string(&once).unwrap_or_default());
 }
 
 #[test]
@@ -637,7 +637,7 @@ fn nothing_asks_for_a_password() {
 
 /// The "midway" history: one commit changes a line and the next changes it
 /// back, so the ends merge cleanly but replaying the first stops on Plan.md.
-fn midway(f: &Fixture) {
+pub(crate) fn midway(f: &Fixture) {
     write(&f.vault(), "Plan.md", "# Plan\n\nline one\nX\nline three\n");
     g(f, &f.here, &["commit", "-q", "-am", "x"]);
     write(&f.vault(), "Plan.md", "# Plan\n\nline one\nline two\nline three\n");
@@ -695,9 +695,11 @@ fn a_different_repository_at_the_same_path_is_refused_before_git_runs() {
     }
     write(&f.vault(), "Plan.md", "changed\n");
     let head = f.head();
+    let spawned_before = git_spawns();
     let o = run(&f.vault(), &expect(&first), &|_| {});
     let e = failed(&o);
     assert_eq!(e.kind, Kind::Untrusted, "{e:?}");
+    assert_eq!(git_spawns(), spawned_before, "refused before any Git process ran in it");
     assert!(!marker.exists(), "nothing of the other repository's ran");
     assert_eq!((o.committed, f.head()), (0, head));
     assert_ne!(identity(&f.vault()).unwrap(), first);
@@ -734,13 +736,37 @@ fn a_sync_stopped_before_integrating_never_starts_a_rebase() {
     assert!(!f.here.join(".git/rebase-merge").exists());
 }
 
+/// A process id that has ended (its start time can't match anything).
+fn gone_pid() -> u32 {
+    let mut c = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    if cfg!(windows) {
+        c.args(["/C", "exit"]);
+    }
+    let mut child = c.spawn().expect("a short process");
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
+/// The midway history, fetched, with a rebase onto the remote stopped on
+/// Plan.md (as Git leaves it); returns (HEAD before, the commit it went onto).
+fn stopped_rebase(f: &Fixture) -> (String, String) {
+    midway(f);
+    g(f, &f.here, &["fetch", "-q"]);
+    let (head, onto) = (f.head(), g(f, &f.here, &["rev-parse", "origin/main"]));
+    let out = g_out(f, &f.here, &["rebase", "-q", "origin/main"]);
+    assert!(!out.status.success() && f.here.join(".git/rebase-merge").exists());
+    (head, onto)
+}
+
 #[test]
 fn a_rebase_left_behind_by_a_quit_is_undone_on_the_next_sync() {
     let Some(f) = fixture("leftover") else { return };
     midway(&f);
     g(&f, &f.here, &["fetch", "-q"]);
-    // As if Strata quit while Git was stopped mid-rebase.
-    std::fs::write(f.here.join(".git").join(STARTED), "").unwrap();
+    let (head, onto) = (f.head(), g(&f, &f.here, &["rev-parse", "origin/main"]));
+    // As a sync would have marked it, from a Strata that has since quit.
+    write_marker(&f.vault(), "rebase", gone_pid(), 1, &head, "main", &onto, true);
     let out = g_out(&f, &f.here, &["rebase", "-q", "origin/main"]);
     assert!(!out.status.success() && f.here.join(".git/rebase-merge").exists());
     let o = f.sync();
@@ -749,9 +775,74 @@ fn a_rebase_left_behind_by_a_quit_is_undone_on_the_next_sync() {
     assert!(!f.here.join(".git/rebase-merge").exists() && !f.here.join(".git").join(STARTED).exists());
     assert_eq!(read(&f.vault(), "Plan.md"), "# Plan\n\nline one\nline two\nline three\n");
     assert_eq!(g(&f, &f.here, &["symbolic-ref", "--short", "HEAD"]), "main");
-    // A rebase someone started by hand is theirs: left alone.
+    // A rebase someone started by hand, with no marker at all, is theirs.
     let out = g_out(&f, &f.here, &["rebase", "-q", "origin/main"]);
     assert!(!out.status.success());
     assert_eq!(failed(&f.sync()).kind, Kind::Busy);
     assert!(f.here.join(".git/rebase-merge").exists());
+}
+
+/// The marker doesn't match, isn't sealed, or its Strata still runs: the
+/// stopped rebase (and any resolutions in it) is left exactly as it is.
+fn assert_left_alone(f: &Fixture) {
+    let before = snapshot(&f.here);
+    let o = f.sync();
+    let e = failed(&o);
+    assert_eq!(e.kind, Kind::Busy, "{e:?}");
+    assert!(e.message.contains("An unfinished Git operation"), "{e:?}");
+    assert!(f.here.join(".git/rebase-merge").exists(), "not aborted");
+    assert!(f.here.join(".git").join(STARTED).exists(), "the marker is kept");
+    assert_eq!(snapshot(&f.here), before, "the user's state, byte for byte");
+}
+
+#[test]
+fn a_stale_marker_never_undoes_a_rebase_started_by_hand() {
+    let Some(f) = fixture("stale-marker") else { return };
+    midway(&f);
+    g(&f, &f.here, &["fetch", "-q"]);
+    // A marker from an older sync (a crash), onto an older remote commit…
+    let (head, old_onto) = (f.head(), g(&f, &f.here, &["rev-parse", "origin/main"]));
+    write_marker(&f.vault(), "rebase", gone_pid(), 1, &head, "main", &old_onto, true);
+    // …then the user rebases onto newer work by hand, and resolves part of it.
+    f.there_commits("vault/Ideas.md", "newer\n");
+    g(&f, &f.here, &["fetch", "-q"]);
+    let out = g_out(&f, &f.here, &["rebase", "-q", "origin/main"]);
+    assert!(!out.status.success());
+    write(&f.vault(), "Plan.md", "my resolution in progress\n");
+    assert_left_alone(&f);
+    assert_eq!(read(&f.vault(), "Plan.md"), "my resolution in progress\n");
+}
+
+#[test]
+fn a_planted_marker_is_ignored() {
+    let Some(f) = fixture("planted-marker") else { return };
+    let (head, onto) = stopped_rebase(&f);
+    // Every field right, but not sealed with this installation's key.
+    write_marker(&f.vault(), "rebase", gone_pid(), 1, &head, "main", &onto, false);
+    assert_left_alone(&f);
+}
+
+#[test]
+fn a_marker_of_a_strata_still_running_is_left_alone() {
+    let Some(f) = fixture("live-marker") else { return };
+    let (head, onto) = stopped_rebase(&f);
+    let me = std::process::id();
+    write_marker(&f.vault(), "rebase", me, process_start(me).expect("our own start time"), &head, "main", &onto, true);
+    assert_left_alone(&f);
+}
+
+#[test]
+fn keeping_files_aside_fails_closed() {
+    for fault in ["list", "read", "create", "names"] {
+        let Some(f) = fixture(&format!("fault-{fault}")) else { return };
+        midway(&f);
+        let plan = f.vault().join("Plan.md");
+        let saved: Arc<dyn Fn() + Send + Sync> = Arc::new(move || std::fs::write(&plan, "saved by another program meanwhile\n").unwrap());
+        let o = run(&f.vault(), &Options { before_abort: Some(saved), preserve_fault: Some(fault), ..f.opts() }, &|_| {});
+        let e = failed(&o);
+        assert_eq!(e.kind, Kind::Stuck, "{fault}: {e:?}");
+        assert!(e.message.contains("couldn't keep a copy") && e.message.contains("nothing was undone"), "{fault}: {}", e.message);
+        assert!(f.here.join(".git/rebase-merge").exists(), "{fault}: left stopped, not aborted");
+        assert_eq!(read(&f.vault(), "Plan.md"), "saved by another program meanwhile\n", "{fault}: the text is still there");
+    }
 }

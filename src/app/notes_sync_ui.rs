@@ -62,6 +62,8 @@ pub(super) struct SyncState {
     pub show_conflict: bool,
     /// When each vault's timer fires next (input time).
     due: HashMap<PathBuf, f64>,
+    /// Vaults whose last sync left a rebase stopped (see `sync::Kind::Stuck`): off the timer.
+    stuck: std::collections::HashSet<PathBuf>,
     last_check: f64,
     enable: Option<Enable>,
     /// This window's number in `BUSY` (0: not given yet).
@@ -73,6 +75,11 @@ pub(super) struct SyncState {
     /// Hears each sync's phases (tests).
     #[cfg(test)]
     pub on_phase: Option<std::sync::Arc<dyn Fn(sync::Phase) + Send + Sync>>,
+    /// Passed to each sync (tests; see `sync::Options`).
+    #[cfg(test)]
+    pub before_abort: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    #[cfg(test)]
+    pub preserve_fault: Option<&'static str>,
 }
 
 impl SyncState {
@@ -269,6 +276,7 @@ impl StrataApp {
             self.status = format!("Didn't sync: couldn't save {}", failed.join(", "));
             return;
         }
+        self.notes.sync.stuck.remove(&vault);
         self.start_sync(ctx, vault, true, resolve);
     }
 
@@ -280,6 +288,8 @@ impl StrataApp {
         #[cfg(test)]
         {
             opts.on_phase = self.notes.sync.on_phase.clone();
+            opts.before_abort = self.notes.sync.before_abort.clone();
+            opts.preserve_fault = self.notes.sync.preserve_fault;
         }
         match Job::start(&vault, opts, manual, Some(ctx.clone())) {
             Some(job) => {
@@ -333,6 +343,11 @@ impl StrataApp {
             self.notes_saved(&p);
         }
         self.sidebar.refresh();
+        if let sync::Result::Failed(f) = &outcome.result
+            && f.kind == sync::Kind::Stuck
+        {
+            self.notes.sync.stuck.insert(vault.clone());
+        }
         if let sync::Result::Failed(f) = &outcome.result
             && f.kind == sync::Kind::Untrusted
         {
@@ -396,6 +411,8 @@ impl StrataApp {
                 None // one sync at a time; this one is simply skipped
             } else if self.notes.sync.conflict.as_ref().is_some_and(|c| c.vault == vault) {
                 Some("notes are in conflict; settle them first".to_owned())
+            } else if self.notes.sync.stuck.contains(&vault) {
+                Some("the last sync stopped mid-rebase; sort it out in Git, then choose Notes: Sync Notes".to_owned())
             } else if let Some(why) = self.sync_blocked() {
                 Some(format!("{why}; trying again later"))
             } else if !self.unsaved_in(&vault).is_empty() {
@@ -685,7 +702,7 @@ impl StrataApp {
 mod tests {
     use super::super::ui_tests::frame;
     use super::*;
-    use crate::notes::sync::repo_tests::{Fixture, fixture, g, git_env, read, write};
+    use crate::notes::sync::repo_tests::{Fixture, fixture, g, git_env, midway, read, write};
     use egui::{Context, Event};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -918,6 +935,31 @@ mod tests {
         assert!(app.notes.sync.last[&vault].detail.as_deref().unwrap().contains("Review Changes is running"));
         app.run(&ctx, Cmd::NotesSync);
         assert!(!app.notes.sync.running() && app.status.contains("Review Changes is running"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_sync_that_couldnt_keep_a_copy_stops_the_timer_and_says_so() {
+        let Some(f) = fixture("ui-stuck") else { return };
+        let ctx = Context::default();
+        let mut app = open(&f, &ctx);
+        enable(&mut app, 5);
+        let vault = vault_key(&app);
+        midway(&f);
+        let plan = f.vault().join("Plan.md");
+        app.notes.sync.before_abort = Some(Arc::new(move || std::fs::write(&plan, "saved meanwhile\n").unwrap()));
+        app.notes.sync.preserve_fault = Some("create");
+        app.run(&ctx, Cmd::NotesSync);
+        let out = finish(&mut app, &ctx);
+        assert!(app.status.contains("nothing was undone"), "{}", app.status);
+        assert!(shows(&out, "Sync failed"), "{:?}", texts(&out));
+        assert!(f.here.join(".git/rebase-merge").exists());
+        // The timer leaves this vault alone until a sync is asked for by hand.
+        app.notes.sync.due.insert(vault.clone(), 0.0);
+        app.notes.sync.last_check = 0.0;
+        frame(&mut app, &ctx, vec![]);
+        assert_eq!(app.notes.sync.timer_starts, 0);
+        assert!(app.notes.sync.last[&vault].detail.as_deref().unwrap_or("").contains("stopped mid-rebase"), "{:?}", app.notes.sync.last[&vault].detail);
+        assert_eq!(read(&f.vault(), "Plan.md"), "saved meanwhile\n");
     }
 
     #[test]

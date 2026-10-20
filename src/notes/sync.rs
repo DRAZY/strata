@@ -80,10 +80,29 @@ pub fn identity(vault: &Path) -> std::result::Result<Identity, Failure> {
 
 fn identity_of(vault: &Path, remote: &Remote) -> std::result::Result<Identity, Failure> {
     let missing = || fail(Kind::Untrusted, "Couldn't tell which repository this is");
-    let dir = ask(vault, &["rev-parse", "--absolute-git-dir"]).ok_or_else(missing)?;
-    let git_dir = file_id(Path::new(&dir)).ok_or_else(missing)?;
+    let git_dir = git_dir_id(vault).ok_or_else(missing)?;
     let root = ask(vault, &["rev-list", "--max-parents=0", "HEAD"]).and_then(|r| r.lines().next().map(str::to_owned)).unwrap_or_default();
     Ok(Identity { git_dir, remote: remote.url.clone(), root })
+}
+
+/// The file identity of the Git folder `vault` is in, found by walking up
+/// to `.git` (a folder, or a file naming one): no Git runs for it, so a
+/// repository's config can't answer for itself.
+fn git_dir_id(vault: &Path) -> Option<String> {
+    let mut dir = Some(vault);
+    while let Some(d) = dir {
+        let dot = d.join(".git");
+        match std::fs::symlink_metadata(&dot) {
+            Ok(m) if m.is_dir() => return file_id(&dot),
+            Ok(m) if m.is_file() => {
+                let text = std::fs::read_to_string(&dot).ok()?;
+                let target = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+                return file_id(&d.join(target));
+            }
+            _ => dir = d.parent(),
+        }
+    }
+    None
 }
 
 /// A folder's identity on its disk: device and inode.
@@ -116,6 +135,132 @@ fn file_id(path: &Path) -> Option<String> {
 
 /// A file in the Git folder while a sync rewrites files: one left behind means Strata quit then.
 const STARTED: &str = "strata-sync-started";
+
+thread_local! {
+    /// Git processes this thread's syncs started (tests count them).
+    static GIT_SPAWNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The hardened read-only helpers of `crate::git`, counted (see `git_spawns`).
+fn git_io_code(dir: &Path, args: &[&str], input: Option<Vec<u8>>, limit: usize, timeout: Duration) -> Option<(Option<i32>, Vec<u8>)> {
+    spawned();
+    crate::git::git_io_code(dir, args, input, limit, timeout)
+}
+
+fn git_io(dir: &Path, args: &[&str], input: Option<Vec<u8>>, limit: usize, timeout: Duration) -> Option<Vec<u8>> {
+    spawned();
+    crate::git::git_io(dir, args, input, limit, timeout)
+}
+
+fn config_value(dir: &Path, key: &str, system: Option<&Path>) -> Option<String> {
+    spawned();
+    crate::git::config_value(dir, key, system)
+}
+
+/// Count a Git process about to start (see `git_spawns`).
+fn spawned() {
+    GIT_SPAWNS.with(|c| c.set(c.get() + 1));
+}
+
+/// Git processes this thread's syncs have started so far (tests).
+#[cfg(test)]
+pub fn git_spawns() -> usize {
+    GIT_SPAWNS.with(std::cell::Cell::get)
+}
+
+/// What `STARTED` records: which operation a sync began, from where, by
+/// which Strata process, sealed with this installation's key so a
+/// repository can't plant one.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct Marker {
+    /// "rebase" or "merge".
+    pub op: String,
+    pub pid: u32,
+    /// The process's start time (so a reused process id isn't taken for it).
+    pub start: u64,
+    /// HEAD and the branch it began from, and the commit it goes onto.
+    pub head: String,
+    pub branch: String,
+    pub onto: String,
+    pub nonce: String,
+    pub mac: String,
+}
+
+impl Marker {
+    /// The bytes the seal covers: everything but the seal.
+    fn body(&self) -> Vec<u8> {
+        serde_json::to_vec(&Marker { mac: String::new(), ..self.clone() }).unwrap_or_default()
+    }
+
+    /// Sealed with this installation's key; None without one (then no
+    /// marker is written, and nothing is ever undone on its strength).
+    fn sealed(mut self) -> Option<Marker> {
+        self.mac = crate::swap::seal(&self.body())?;
+        Some(self)
+    }
+
+    /// The marker at `path`, if it's one this installation sealed.
+    fn read(path: &Path) -> Option<Marker> {
+        std::fs::symlink_metadata(path).ok().filter(|m| m.is_file() && m.len() < 64 * 1024)?;
+        let m: Marker = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        let want = crate::swap::seal(&m.body())?;
+        // Compared in full either way (no early exit on the first difference).
+        let same = want.len() == m.mac.len() && want.bytes().zip(m.mac.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0;
+        same.then_some(m)
+    }
+}
+
+/// Write a marker for `vault` as a Strata process `pid` (started at
+/// `start`) would have (tests); `signed: false` leaves the seal off.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub fn write_marker(vault: &Path, op: &str, pid: u32, start: u64, head: &str, branch: &str, onto: &str, signed: bool) {
+    let m = Marker { op: op.into(), pid, start, head: head.into(), branch: branch.into(), onto: onto.into(), nonce: crate::swap::nonce(), mac: String::new() };
+    let m = if signed { m.sealed().expect("a key") } else { Marker { mac: "0".repeat(64), ..m } };
+    let path = ask(vault, &["rev-parse", "--git-path", STARTED]).map(|p| vault.join(p)).expect("a Git folder");
+    std::fs::write(path, serde_json::to_vec(&m).unwrap()).unwrap();
+}
+
+/// When process `pid` started (in the system's own units), if it runs.
+#[cfg(target_os = "macos")]
+pub fn process_start(pid: u32) -> Option<u64> {
+    let pid = i32::try_from(pid).ok()?;
+    // SAFETY: proc_pidinfo fills `info` up to the size given; zeroed is a valid value.
+    unsafe {
+        let mut info: libc::proc_bsdinfo = std::mem::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+        let n = libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size);
+        (n == size && info.pbi_pid as i32 == pid).then(|| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn process_start(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // After the name in parentheses, the start time is field 22.
+    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+}
+
+#[cfg(windows)]
+pub fn process_start(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: plain Win32 calls on a handle we own and close; the FILETIMEs outlive the call.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+        let ok = GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user);
+        let mut code = 0u32;
+        let running = windows_sys::Win32::System::Threading::GetExitCodeProcess(h, &mut code) != 0 && code == 259; // STILL_ACTIVE
+        CloseHandle(h);
+        (ok != 0 && running).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    }
+}
 
 /// Is a sync of `vault` running (in any window)? (Tests.)
 #[cfg(test)]
@@ -248,6 +393,8 @@ pub struct Options {
     pub before_abort: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Set when the window lets go of this sync: it mustn't start rewriting files then.
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Make this step of keeping files aside fail: "list", "read", "create" or "names" (tests).
+    pub preserve_fault: Option<&'static str>,
 }
 
 /// The vault's repository and remote, as `describe` finds them.
@@ -415,8 +562,29 @@ impl Out {
     }
 }
 
+/// The Git program sync runs. On Unix, the real binary in Git's exec path
+/// rather than a launcher in front of it: macOS's `/usr/bin/git` can start
+/// the real Git in a process group of its own, and then stopping the group
+/// (a timeout) would miss Git and its hooks.
+fn git_program() -> &'static std::ffi::OsStr {
+    static PROGRAM: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+    PROGRAM.get_or_init(|| {
+        if cfg!(unix)
+            && let Ok(out) = Command::new("git").arg("--exec-path").stdin(Stdio::null()).stderr(Stdio::null()).output()
+            && out.status.success()
+        {
+            let real = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("git");
+            if real.is_absolute() && real.is_file() {
+                return real.into_os_string();
+            }
+        }
+        "git".into()
+    })
+}
+
 /// Run `cmd` with nothing on its input, reading both outputs, ended at `timeout`.
 fn exec(mut cmd: Command, timeout: Duration) -> std::result::Result<Out, Failure> {
+    spawned();
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     // Its own process group, so a timeout stops Git's hooks, ssh and filters too.
     #[cfg(unix)]
@@ -478,7 +646,7 @@ fn exec(mut cmd: Command, timeout: Duration) -> std::result::Result<Out, Failure
 
 /// stdout of a read-only question through the hardened `crate::git`, on success.
 fn ask(dir: &Path, args: &[&str]) -> Option<String> {
-    match crate::git::git_io_code(dir, args, None, OUT_LIMIT, READ_TIMEOUT) {
+    match git_io_code(dir, args, None, OUT_LIMIT, READ_TIMEOUT) {
         Some((Some(0), out)) => Some(String::from_utf8_lossy(&out).trim().to_owned()),
         _ => None,
     }
@@ -542,7 +710,7 @@ struct Repo<'a> {
 impl Repo<'_> {
     /// Git for the sync's own steps (see the module comment).
     fn command(&self, dir: &Path, args: &[&str]) -> Command {
-        let mut cmd = Command::new("git");
+        let mut cmd = Command::new(git_program());
         cmd.args(["-c", "protocol.allow=never"]);
         for p in PROTOCOLS {
             let allow = if self.remote.protocols.contains(&p) { "always" } else { "never" };
@@ -689,7 +857,7 @@ impl Repo<'_> {
             let commit = self.rev(tracking).unwrap_or_default();
             return Ok(Some(Conflict { top: self.top().to_owned(), upstream: self.remote.upstream.clone(), commit, paths, copies: Vec::new(), moved: false }));
         }
-        let _started = self.enter(phase)?;
+        let onto = self.rev(tracking).unwrap_or_default();
         let merge = ahead > 0 && ask(self.top(), &["rev-list", "--merges", "--count", &format!("{tracking}..HEAD")]).is_some_and(|n| n != "0");
         let args: Vec<&str> = if ahead == 0 {
             vec!["merge", "-q", "--ff-only", tracking]
@@ -700,6 +868,7 @@ impl Repo<'_> {
         } else {
             vec!["rebase", "-q", tracking]
         };
+        let _started = self.enter(phase, args[0], &onto)?;
         let out = match self.run(self.top(), &args, self.opts.integrate_timeout.unwrap_or(LOCAL_TIMEOUT)) {
             Ok(out) => out,
             // Stopped (too slow): undo whatever it began, as for a failure.
@@ -721,7 +890,7 @@ impl Repo<'_> {
             f();
         }
         let unmerged = self.unmerged();
-        let copies = self.save_strays(&unmerged, Some(&before));
+        let copies = self.save_strays(&unmerged, Some(&before)).map_err(|why| self.stopped(args[0], &why))?;
         let kept = if copies.is_empty() {
             String::new()
         } else {
@@ -757,7 +926,7 @@ impl Repo<'_> {
         if ignored.is_empty() {
             return Ok(());
         }
-        let incoming = crate::git::git_io_code(self.top(), &["diff-tree", "-r", "--name-only", "-z", "--no-renames", "HEAD", tracking], None, OUT_LIMIT, READ_TIMEOUT).filter(|(c, _)| *c == Some(0)).map(|(_, o)| names(&o)).unwrap_or_default();
+        let incoming = git_io_code(self.top(), &["diff-tree", "-r", "--name-only", "-z", "--no-renames", "HEAD", tracking], None, OUT_LIMIT, READ_TIMEOUT).filter(|(c, _)| *c == Some(0)).map(|(_, o)| names(&o)).unwrap_or_default();
         let hit: Vec<&String> = incoming.iter().filter(|p| ignored.iter().any(|i| *p == i || (i.ends_with('/') && p.starts_with(i.as_str())))).collect();
         if hit.is_empty() {
             return Ok(());
@@ -791,18 +960,29 @@ impl Repo<'_> {
     /// something else.
     /// Copies never take a name tracked in `back_to` (the commit the abort
     /// returns to): the abort would refuse to put that file back.
-    fn save_strays(&self, unmerged: &[(String, Stages)], back_to: Option<&str>) -> Vec<PathBuf> {
+    /// Any part of that failing is an error: then nothing may be undone.
+    fn save_strays(&self, unmerged: &[(String, Stages)], back_to: Option<&str>) -> std::result::Result<Vec<PathBuf>, String> {
+        let fault = |step: &str| self.opts.preserve_fault == Some(step);
         let taken = |copy: &Path| {
+            if fault("names") {
+                return true;
+            }
             let Some(commit) = back_to else { return false };
             let Ok(rel) = copy.strip_prefix(self.top()) else { return false };
             let rel = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
-            crate::git::git_io_code(self.top(), &["cat-file", "-e", &format!("{commit}:{rel}")], None, 1 << 10, READ_TIMEOUT).is_some_and(|(c, _)| c == Some(0))
+            git_io_code(self.top(), &["cat-file", "-e", &format!("{commit}:{rel}")], None, 1 << 10, READ_TIMEOUT).is_some_and(|(c, _)| c == Some(0))
         };
-        let mut todo: Vec<String> = unmerged.iter().filter(|(rel, st)| !self.git_wrote(rel, st)).map(|(rel, _)| rel.clone()).collect();
-        // Fails closed: if Git can't say what changed, every touched file is kept aside.
+        let mut todo = Vec::new();
+        for (rel, st) in unmerged {
+            match self.git_wrote(rel, st).filter(|_| !fault("read")) {
+                Some(true) => {}
+                Some(false) => todo.push(rel.clone()),
+                None => return Err(format!("{rel} (it couldn't be read)")),
+            }
+        }
         match self.run(self.top(), &["diff", "--name-only", "-z", "--no-renames"], LOCAL_TIMEOUT) {
-            Ok(out) if out.ok() => todo.extend(names(&out.stdout).into_iter().filter(|r| !unmerged.iter().any(|(u, _)| u == r))),
-            _ => log::warn!("notes sync: couldn't list the files changed during the rebase"),
+            Ok(out) if out.ok() && !fault("list") => todo.extend(names(&out.stdout).into_iter().filter(|r| !unmerged.iter().any(|(u, _)| u == r))),
+            _ => return Err("the files changed while Git worked (Git couldn't list them)".into()),
         }
         let mut copies = Vec::new();
         for rel in todo {
@@ -810,12 +990,22 @@ impl Repo<'_> {
             if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
                 continue;
             }
-            match copy_aside(&path, &taken) {
+            let made = if fault("create") { Err(std::io::Error::other("injected")) } else { copy_aside(&path, &taken) };
+            match made {
                 Ok(c) => copies.push(c),
-                Err(e) => log::warn!("notes sync: couldn't keep a copy of {}: {e}", path.display()),
+                Err(e) => {
+                    log::warn!("notes sync: couldn't keep a copy of {}: {e}", path.display());
+                    return Err(format!("{rel} ({e})"));
+                }
             }
         }
-        copies
+        Ok(copies)
+    }
+
+    /// Couldn't keep files aside: the rebase or merge stays stopped, as Git left it.
+    fn stopped(&self, op: &str, what: &str) -> Failure {
+        log::warn!("notes sync: left the {op} in {} stopped (couldn't keep a copy of {what})", self.top().display());
+        fail(Kind::Stuck, format!("Sync stopped mid-{op} and couldn't keep a copy of {what}; nothing was undone, so nothing was lost. The {op} is still stopped in {}: finish or undo it in Git (see Notes ▸ Git sync in the manual)", self.top().display()))
     }
 
     /// Files Git left in conflict, with the blobs of their stages.
@@ -838,11 +1028,20 @@ impl Repo<'_> {
 
     /// Is the file `rel` exactly what Git wrote while stopping: one of its
     /// stages, or their merge with conflict markers (labels aside)?
-    fn git_wrote(&self, rel: &str, stages: &Stages) -> bool {
-        let Ok(work) = std::fs::read(self.top().join(rel)) else { return true };
-        let blob = |id: &Option<String>| id.as_deref().and_then(|id| crate::git::git_io(self.top(), &["cat-file", "blob", id], None, OUT_LIMIT, READ_TIMEOUT));
+    /// None: it couldn't be read (and so can't be called Git's).
+    fn git_wrote(&self, rel: &str, stages: &Stages) -> Option<bool> {
+        let path = self.top().join(rel);
+        if std::fs::symlink_metadata(&path).is_err() {
+            return Some(true); // gone: nothing of anyone's to keep
+        }
+        let work = std::fs::read(&path).ok()?;
+        Some(self.git_wrote_bytes(&work, stages))
+    }
+
+    fn git_wrote_bytes(&self, work: &[u8], stages: &Stages) -> bool {
+        let blob = |id: &Option<String>| id.as_deref().and_then(|id| git_io(self.top(), &["cat-file", "blob", id], None, OUT_LIMIT, READ_TIMEOUT));
         let blobs: [Option<Vec<u8>>; 3] = [blob(&stages[0]), blob(&stages[1]), blob(&stages[2])];
-        if blobs.iter().flatten().any(|b| *b == work) {
+        if blobs.iter().flatten().any(|b| b.as_slice() == work) {
             return true;
         }
         let (Some(ours), Some(theirs)) = (&blobs[1], &blobs[2]) else { return false };
@@ -865,37 +1064,72 @@ impl Repo<'_> {
         args.extend(paths.iter().map(String::as_str));
         let merged = self.run(self.top(), &args, LOCAL_TIMEOUT).ok().filter(|o| matches!(o.code, Some(c) if (0..128).contains(&c))).map(|o| o.stdout);
         let _ = std::fs::remove_dir_all(&dir);
-        merged.is_some_and(|m| without_labels(&m) == without_labels(&work))
+        merged.is_some_and(|m| without_labels(&m) == without_labels(work))
     }
 
     /// From here on Git rewrites files: unless Strata is quitting, or the
     /// window let go of this sync. Leaves `STARTED` in the Git folder until
     /// the guard goes, so a quit halfway is undone by the next sync.
-    fn enter(&self, phase: &dyn Fn(Phase)) -> std::result::Result<Started, Failure> {
+    fn enter(&self, phase: &dyn Fn(Phase), op: &str, onto: &str) -> std::result::Result<Started, Failure> {
+        let head = self.rev("HEAD").unwrap_or_default();
+        let marker = ask(&self.vault, &["rev-parse", "--git-path", STARTED]).map(|p| self.vault.join(p));
+        let pid = std::process::id();
+        let record = Marker { op: op.into(), pid, start: process_start(pid).unwrap_or(0), head, branch: self.remote.branch.clone(), onto: onto.into(), nonce: crate::swap::nonce(), mac: String::new() }.sealed();
         let _gate = GATE.lock().unwrap_or_else(|e| e.into_inner());
         if SHUTDOWN.load(Ordering::SeqCst) || self.opts.cancel.as_ref().is_some_and(|c| c.load(Ordering::SeqCst)) {
             return Err(fail(Kind::Busy, "Sync stopped before bringing in the remote's changes (Strata is quitting); nothing was pulled or pushed"));
         }
-        let marker = ask(&self.vault, &["rev-parse", "--git-path", STARTED]).map(|p| self.vault.join(p));
-        if let Some(m) = &marker {
-            let _ = std::fs::write(m, b"");
-        }
+        let written = match (&marker, &record) {
+            (Some(m), Some(r)) => serde_json::to_vec(r).ok().is_some_and(|b| crate::buffer::write_atomic(m, |out| std::io::Write::write_all(out, &b)).is_ok()),
+            _ => false,
+        };
         phase(Phase::Integrate);
-        Ok(Started(marker))
+        Ok(Started(marker.filter(|_| written)))
+    }
+
+    /// Why a stopped operation with a marker isn't Strata's to undo, if it isn't.
+    fn not_ours(&self, marker: &Path) -> Option<&'static str> {
+        let Some(m) = Marker::read(marker) else { return Some("not sealed by this Strata") };
+        if process_start(m.pid).is_some_and(|s| s == m.start) {
+            return Some("its Strata is still running");
+        }
+        let read = |name: &str| ask(&self.vault, &["rev-parse", "--git-path", name]).and_then(|p| std::fs::read_to_string(self.vault.join(p)).ok()).map(|t| t.trim().to_owned());
+        let matches = match m.op.as_str() {
+            "rebase" => {
+                read("rebase-merge/head-name").as_deref() == Some(format!("refs/heads/{}", m.branch).as_str())
+                    && read("rebase-merge/orig-head").as_deref() == Some(m.head.as_str())
+                    && read("rebase-merge/onto").as_deref() == Some(m.onto.as_str())
+            }
+            "merge" => read("MERGE_HEAD").as_deref() == Some(m.onto.as_str()) && self.rev("HEAD").as_deref() == Some(m.head.as_str()),
+            _ => false,
+        };
+        (!matches).then_some("it doesn't match what Strata started")
     }
 
     /// A rebase or merge left behind by a sync Strata quit during (`STARTED`
     /// is there): undone, keeping aside what other programs wrote meanwhile.
+    /// Only when the marker is sealed by this installation, its Strata has
+    /// ended, and the stopped operation is exactly the one it records:
+    /// anything else (a rebase started by hand, a planted marker) is left
+    /// as it is.
     fn recover(&self) -> std::result::Result<(), Failure> {
-        let Some(marker) = ask(&self.vault, &["rev-parse", "--git-path", STARTED]).map(|p| self.vault.join(p)).filter(|m| m.exists()) else { return Ok(()) };
+        let Some(marker) = ask(&self.vault, &["rev-parse", "--git-path", STARTED]).map(|p| self.vault.join(p)).filter(|m| std::fs::symlink_metadata(m).is_ok()) else { return Ok(()) };
         if !self.in_progress() {
-            let _ = std::fs::remove_file(&marker);
+            // Nothing stopped: a marker of ours is done with; another isn't ours to remove.
+            if Marker::read(&marker).is_some() {
+                let _ = std::fs::remove_file(&marker);
+            }
             return Ok(());
+        }
+        if let Some(why) = self.not_ours(&marker) {
+            log::info!("notes sync: left an unfinished operation in {} alone ({why})", self.top().display());
+            return Err(fail(Kind::Busy, "An unfinished Git operation (a rebase or merge) is in this vault's repository, and it isn't one Strata can safely undo. Strata left it as it is: finish or undo it in Git (git status)"));
         }
         let unmerged = self.unmerged();
         let back_to = self.rev("ORIG_HEAD");
-        let copies = self.save_strays(&unmerged, back_to.as_deref());
-        let abort: &[&str] = if self.git_path_exists("MERGE_HEAD") { &["merge", "--abort"] } else { &["rebase", "--abort"] };
+        let op = if self.git_path_exists("MERGE_HEAD") { "merge" } else { "rebase" };
+        let copies = self.save_strays(&unmerged, back_to.as_deref()).map_err(|why| self.stopped(op, &why))?;
+        let abort: &[&str] = if op == "merge" { &["merge", "--abort"] } else { &["rebase", "--abort"] };
         let undone = self.run(self.top(), abort, LOCAL_TIMEOUT).is_ok_and(|o| o.ok()) && !self.in_progress();
         if !undone {
             return Err(fail(Kind::Stuck, "A sync that was stopped when Strata quit left a rebase that Git couldn't undo; look at the repository in Git (git status)"));
@@ -915,7 +1149,7 @@ impl Repo<'_> {
         if theirs != r.commit {
             let mut args = vec!["diff-tree", "-r", "--name-only", "-z", "--no-renames", r.commit.as_str(), theirs.as_str(), "--"];
             args.extend(r.paths.iter().map(String::as_str));
-            let changed = crate::git::git_io_code(self.top(), &args, None, OUT_LIMIT, READ_TIMEOUT).filter(|(c, _)| *c == Some(0)).map(|(_, o)| names(&o));
+            let changed = git_io_code(self.top(), &args, None, OUT_LIMIT, READ_TIMEOUT).filter(|(c, _)| *c == Some(0)).map(|(_, o)| names(&o));
             if changed.is_none_or(|c| !c.is_empty()) {
                 return Ok(Some(conflict(r.paths.clone(), true)));
             }
@@ -940,7 +1174,7 @@ impl Repo<'_> {
         let result = self.settle_commit(&index, &tree, &conflicted, &theirs);
         let _ = std::fs::remove_file(&index);
         let commit = result?;
-        let _started = self.enter(phase)?;
+        let _started = self.enter(phase, "merge", &commit)?;
         let before = self.rev("HEAD");
         if let Err(mut f) = self.must(self.top(), &["merge", "-q", "--ff-only", &commit], LOCAL_TIMEOUT, "update the notes to the merge") {
             if self.rev("HEAD") != before || f.message.contains("was stopped") {
@@ -1091,17 +1325,24 @@ fn run_inner(vault: &Path, opts: &Options, phase: &dyn Fn(Phase), committed: &mu
         }
     };
     phase(Phase::Check);
+    // Only the repository sync was turned on for. Its Git folder is
+    // compared on disk before any Git runs at all; then (read-only Git) its
+    // remote and first commit, before anything reads more of its config.
+    let untrusted = || fail(Kind::Untrusted, "This isn't the repository Git sync was turned on for here (it was replaced, or its remote changed), so sync is off until you turn it on again. Nothing was run");
+    if let Some(expect) = &opts.expect
+        && (expect.git_dir.is_empty() || git_dir_id(vault).as_deref() != Some(expect.git_dir.as_str()))
+    {
+        return Err(untrusted());
+    }
     let remote = describe(vault)?;
+    if let Some(expect) = &opts.expect
+        && identity_of(vault, &remote)? != *expect
+    {
+        return Err(untrusted());
+    }
     let _claim = Claim::take(true, &remote.top).ok_or_else(|| fail(Kind::Busy, "Another sync is working in this repository"))?;
     let has_env = |k: &str| std::env::var_os(k).is_some() || opts.env.iter().any(|(e, _)| e == k);
-    let batch_ssh = !has_env("GIT_SSH_COMMAND") && !has_env("GIT_SSH") && crate::git::config_value(vault, "core.sshCommand", None).is_none();
-    // Only the repository sync was turned on for: checked before Git runs
-    // anything from this one's config (status alone can start its fsmonitor).
-    if let Some(expect) = &opts.expect
-        && (expect.git_dir.is_empty() || identity_of(vault, &remote)? != *expect)
-    {
-        return Err(fail(Kind::Untrusted, "This isn't the repository Git sync was turned on for here (it was replaced, or its remote changed), so sync is off until you turn it on again. Nothing was run"));
-    }
+    let batch_ssh = !has_env("GIT_SSH_COMMAND") && !has_env("GIT_SSH") && config_value(vault, "core.sshCommand", None).is_none();
     let repo = Repo { vault: vault.to_owned(), remote, opts, batch_ssh };
     repo.recover()?;
     repo.check_clean()?;
