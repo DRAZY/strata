@@ -265,20 +265,22 @@ fn a_crashing_plugin_is_restarted_then_given_up_on() {
     install_fake(&config, "fake", &[], &["notify"], json!({}));
     let mut m = Manager::new(Some(&config), None);
     start_granted(&mut m, "fake");
-    let mut pids = vec![m.plugins[0].pid().unwrap()];
+    let mut pid = m.plugins[0].pid().unwrap();
+    let mut run = m.plugins[0].run;
     for round in 1..=MAX_CRASHES {
         m.run_command("fake", "crash", None);
         until(&mut m, "the crash", |m| (!running(m, "fake")).then_some(()));
-        wait_gone(*pids.last().unwrap());
+        wait_gone(pid);
         if round < MAX_CRASHES {
             assert!(state(&m, "fake").contains("restarting in"), "{}", state(&m, "fake"));
             let started = Instant::now();
             until(&mut m, "the restart", |m| running(m, "fake").then_some(()));
             // The pause doubles: 1 s, then 2 s.
             assert!(started.elapsed() >= Duration::from_millis(900 * (1 << (round - 1))), "waited {:?}", started.elapsed());
-            let pid = m.plugins[0].pid().unwrap();
-            assert!(!pids.contains(&pid), "a new process");
-            pids.push(pid);
+            // A new start (Windows can hand the exited process's id straight
+            // to the new one, so the id alone can't tell).
+            assert!(m.plugins[0].run > run, "a new process");
+            (pid, run) = (m.plugins[0].pid().unwrap(), m.plugins[0].run);
         }
     }
     let s = state(&m, "fake");
