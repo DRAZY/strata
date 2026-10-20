@@ -790,7 +790,7 @@ impl StrataApp {
 mod tests {
     use super::super::ui_tests::frame;
     use super::*;
-    use crate::notes::sync::repo_tests::{Fixture, fixture, g, git_env, midway, read, write};
+    use crate::notes::sync::repo_tests::{Fixture, fixture, g, git_env, midway, read, remove_clone, write};
     use egui::{Context, Event};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -941,7 +941,7 @@ mod tests {
         app.enable_answered(true);
         assert_eq!(app.settings.notes_git_sync.len(), 1);
         // The folder is replaced by another repository (with a remote of its own).
-        std::fs::remove_dir_all(&f.here).unwrap();
+        remove_clone(&f.here);
         g(&f, &f.base, &["init", "-q", "--bare", "-b", "main", "other-remote.git"]);
         g(&f, &f.base, &["clone", "-q", f.base.join("other-remote.git").to_str().unwrap(), "here"]);
         write(&f.vault(), "Plan.md", "someone else's\n");

@@ -42,6 +42,24 @@ pub(crate) fn g(f: &Fixture, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
+/// Remove a clone. On Windows a folder can't go while a program works in
+/// it, and the window runs Git in the background now and then (a file's
+/// committed text, the branch): so it's tried again for a while. What
+/// couldn't be removed is named.
+pub(crate) fn remove_clone(dir: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return,
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => {
+                let left: Vec<String> = ignore::WalkBuilder::new(dir).hidden(false).ignore(false).git_ignore(false).build().flatten().take(10).map(|e| e.path().display().to_string()).collect();
+                panic!("couldn't remove {}: {e}; still there: {left:?}", dir.display());
+            }
+        }
+    }
+}
+
 pub(crate) fn write(dir: &Path, rel: &str, text: &str) {
     let p = dir.join(rel);
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
