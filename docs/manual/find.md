@@ -6,7 +6,7 @@ Strata can search the current file, a whole folder, and your project's file name
 
 Open the find bar with {{key:show_find}} (Find ▸ Find…). It appears at the bottom of the window with a Find field, the match count and Previous, Next and Find All buttons. Find always shows just the Find row, even if the bar was showing Replace. If you have text selected on a single line when you open it, that text becomes the search.
 
-Find is always incremental: as you type, Strata selects the first match after the spot where your cursor was when the bar opened, and highlights every match in the file. Find ▸ Incremental Find ({{key:incremental_find}}) opens the same bar.
+Find is always incremental: as you type, Strata selects the first match after the spot where your cursor was when the bar opened, and highlights every match in the file. Find ▸ Incremental Find ({{key:incremental_find}}) opens the same bar for a quick jump: type, press Enter, and the bar closes with the match selected and the cursor back in the editor (in Find, Enter goes on to the next match).
 
 The label next to the field tells you where you are: "3 of 12", "12 matches" (when the cursor isn't on a match) or "No results". An invalid regular expression shows its error in red instead.
 
@@ -61,7 +61,7 @@ Words joined by `-` or `_` are matched part by part when the found text and the 
 | Esc | Close the find bar and return to the editor. |
 | ↑ and ↓ | Go back through earlier searches and return to what you typed. The Replace field has its own history of replacements. |
 
-Outside the bar, {{key:find_next}} and {{key:find_prev}} (Find ▸ Find Next and Find Previous) step through matches of the last search. Both wrap around the end of the file. If nothing has been searched yet, Find Next opens the find bar.
+Outside the bar, {{key:find_next}} and {{key:find_prev}} (Find ▸ Find Next and Find Previous) step through matches of the last search. Both wrap around the end of the file. If nothing has been searched yet, Find Next opens the find bar. If the file has no match at all, the status bar says so ("No matches for “text”").
 
 ### Replace
 
@@ -79,8 +79,8 @@ Replace All is a single undo step, and the status bar tells you how many occurre
 
 | Command | Shortcut | What it does |
 |---|---|---|
-| Find ▸ Use Selection for Find | {{key:slurp_find_string}} | Put the selected text in the Find field (escaped if regular expressions are on). |
-| Find ▸ Use Selection for Replace | {{key:slurp_replace_string}} | Put the selected text in the Replace field. |
+| Find ▸ Use Selection for Find | {{key:slurp_find_string}} | Put the selected text (or, with nothing selected, the word at the cursor) in the Find field, escaped if regular expressions are on. The status bar shows what it took, so it's useful with the bar closed too: Find Next then searches for it. |
+| Find ▸ Use Selection for Replace | {{key:slurp_replace_string}} | Put the selected text (or the word at the cursor) in the Replace field. |
 
 ### Quick find
 
@@ -88,7 +88,7 @@ These commands search for the selection, or the word at the cursor, without open
 
 | Command | Shortcut | What it does |
 |---|---|---|
-| Find ▸ Quick Find | {{key:find_under}} | Select the next occurrence of the selected text. It needs a selection. The search is case sensitive, and Find Next continues from it. |
+| Find ▸ Quick Find | {{key:find_under}} | Select the next occurrence of the selected text, or of the word at the cursor when nothing is selected. The search is case sensitive, and Find Next continues from it. |
 | Find ▸ Quick Add Next | {{key:find_under_expand}} | Add the next occurrence as another selection. With nothing selected, it first selects the word under each cursor; after that it matches whole words only. |
 | Find ▸ Quick Find All | {{key:find_all_under}} | Select every occurrence at once. With nothing selected, it uses the word at the cursor and matches whole words. |
 
@@ -124,7 +124,7 @@ Without `.*`, the replacement text is inserted exactly as typed.
 
 ## Find in Files
 
-Find in Files searches every file in the folders open in the side bar. Open it with {{key:find_in_files}} (Find ▸ Find in Files…, or "Find: Find in Folder…" in the command palette). The side bar switches to its Search tab and puts the cursor in the Find field. A single-line selection in the editor becomes the search text. To search one folder of the tree, right-click it and choose Find in Folder…, which puts that folder in Where.
+Find in Files searches every file in the folders open in the side bar. Open it with {{key:find_in_files}} (Find ▸ Find in Files…, or "Find: Find in Files…" in the command palette). The side bar switches to its Search tab and puts the cursor in the Find field. A single-line selection in the editor becomes the search text. To search one folder of the tree, right-click it and choose Find in Folder…, which puts that folder in Where.
 
 With no folder open, Find in Files still works: it searches your open files (`<open files>`), and the side bar shows just the Search tab (its × hides it again). If no file is open either, the summary asks you to open a folder or a file. See [Projects and Side Bar](projects.md) for opening folders.
 
@@ -224,7 +224,7 @@ After a replace, an **Undo Replace in Files** button appears in the Search tab. 
 
 Goto Anything ({{key:goto_anything}}, Goto ▸ Goto Anything…) opens a quick panel at the top of the window that finds files by fuzzy name. Type a few letters from anywhere in the path, in order: `srmain` finds `src/main.rs`. Separate words with spaces to match several parts in any order. Matches are ranked, with matched letters highlighted.
 
-The file list covers every open folder (skipping `.gitignore`d and hidden files, up to 500,000 files) plus any open files outside it. Without a folder it lists your open files. While a large folder is still being indexed, the panel shows "Indexing…".
+The file list covers every open folder (skipping `.gitignore`d and hidden files, up to 500,000 files) plus any open files outside it. Without a folder it lists your open files and your recent files, and says "Open a folder to search its files". While a large folder is still being indexed, the panel shows "Indexing…".
 
 Add a suffix to go somewhere inside a file:
 

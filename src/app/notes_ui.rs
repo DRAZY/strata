@@ -757,6 +757,11 @@ impl StrataApp {
             Cmd::NotesFindTag => self.choose_tag(ctx, None),
             Cmd::NotesRename => self.ask_rename_note(),
             Cmd::NotesToggleBacklinks => {
+                // Not a note in a notes folder: there's nothing to show or hide.
+                if self.note_root(self.active).is_none() {
+                    self.status = "Backlinks are for notes in your notes folder (File ▸ Open Folder…)".into();
+                    return;
+                }
                 let shown = self.backlinks_shown();
                 self.settings.notes_backlinks = if shown { "never" } else { "always" }.into();
                 self.persist_settings();

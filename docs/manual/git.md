@@ -43,7 +43,7 @@ When the current file is in a repository, the status bar shows its branch, for e
 | Goto ▸ Next Modification | {{key:next_modification}} |
 | Goto ▸ Previous Modification | {{key:prev_modification}} |
 
-These move the cursor to the start of the next or previous changed area, wrapping around at the end of the file. If the file has no changes since the last commit, the status bar says "No changes since the last commit". Each jump is added to your navigation history, so Goto ▸ Jump Back returns to where you were.
+These move the cursor to the start of the next or previous changed area, wrapping around at the end of the file. If the file has no changes since the last commit, the status bar says "No changes since the last commit". For a file outside a Git repository it says "Not in a Git repository", and for a file that has never been saved, "Save the file first". Each jump is added to your navigation history, so Goto ▸ Jump Back returns to where you were.
 
 They work even when the change bars are turned off.
 

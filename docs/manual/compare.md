@@ -35,7 +35,7 @@ The header above the two sides says how many changes there are and how many line
 | Compare: Next Difference | {{key:next_difference}} | Go to the next change, wrapping around at the end. |
 | Compare: Previous Difference | {{key:prev_difference}} | Go to the previous change. |
 
-The caret lands on the first line of the change on the right side, and the change is scrolled into view. The ▲ and ▼ buttons in the header do the same. Outside a Compare tab, these commands jump between the lines you've changed since the last Git commit, like Goto ▸ Next Modification.
+The caret lands on the first line of the change on the right side, and the change is scrolled into view. The ▲ and ▼ buttons in the header do the same. Outside a Compare tab, these commands jump between the lines you've changed since the last Git commit, like Goto ▸ Next Modification (and say "Not in a Git repository" or "Save the file first" when there's nothing to compare against).
 
 ## Options
 

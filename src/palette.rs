@@ -89,6 +89,8 @@ pub struct Context {
     pub theme: String,
     /// Open files, so Goto Anything finds them without a folder.
     pub open: Vec<PathBuf>,
+    /// Recent files, which Goto Anything offers when no folder is open.
+    pub recent: Vec<PathBuf>,
 }
 
 struct Row {
@@ -220,7 +222,7 @@ impl Palette {
     }
 
     /// The highlighted row's label (tests).
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub fn selected_label(&self) -> Option<&str> {
         self.rows.get(self.selected).map(|r| r.label.as_str())
     }
@@ -320,11 +322,13 @@ impl Palette {
                 None => {}
             }
         }
-        // Files under the folders, plus open files outside them.
+        // Files under the folders, plus open files outside them; with no
+        // folder, recent files too.
         let roots = self.ctx.as_ref().map(|c| c.roots.clone()).unwrap_or_default();
         let mut paths: Vec<(String, PathBuf)> = self.files.entries().map(|(label, path)| (label.to_owned(), path)).collect();
-        for p in self.ctx.as_ref().map(|c| c.open.clone()).unwrap_or_default() {
-            if !roots.iter().any(|r| p.starts_with(r)) {
+        let recent = if roots.is_empty() { self.ctx.as_ref().map(|c| c.recent.clone()).unwrap_or_default() } else { Vec::new() };
+        for p in self.ctx.as_ref().map(|c| c.open.clone()).unwrap_or_default().into_iter().chain(recent) {
+            if !roots.iter().any(|r| p.starts_with(r)) && !paths.iter().any(|(_, q)| *q == p) {
                 paths.push((p.display().to_string(), p));
             }
         }
@@ -402,6 +406,8 @@ impl Palette {
                         ui.label(egui::RichText::new(format!("Indexing… {} files", self.files.len())).small().weak());
                     } else if self.mode == Mode::Files && self.files.is_truncated() {
                         ui.label(egui::RichText::new(format!("Only the first {} files are indexed", crate::files::FILE_LIMIT)).small().weak());
+                    } else if self.mode == Mode::Files && self.ctx.as_ref().is_some_and(|c| c.roots.is_empty()) {
+                        ui.label(egui::RichText::new("Open a folder to search its files").small().weak());
                     }
                     ui.add_space(4.0);
                     let row_h = (base + 14.0).max(26.0);
@@ -631,6 +637,7 @@ mod tests {
             roots: Vec::new(),
             theme: crate::highlight::DEFAULT_THEME.into(),
             open: vec![PathBuf::from("/tmp/x/main.rs"), PathBuf::from("/tmp/x/notes.md")],
+            recent: Vec::new(),
         }
     }
 

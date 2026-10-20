@@ -532,6 +532,11 @@ impl StrataApp {
 
     // ---- completion ------------------------------------------------------------------
 
+    /// A completion request is out (its list may still arrive).
+    pub(super) fn lsp_completion_pending(&self) -> bool {
+        self.lsp.completion.is_some()
+    }
+
     /// After the completion popup caught up with typing: ask the server
     /// when a word starts, after a trigger character (`.`), when its last
     /// list was incomplete, or on Ctrl+Space (`explicit`).
@@ -1231,7 +1236,15 @@ impl StrataApp {
         let mut rows: Vec<(PathBuf, Diagnostic, Encoding)> = all.into_iter().flat_map(|(p, items, enc)| items.iter().map(move |d| (p.clone(), d.clone(), enc)).collect::<Vec<_>>()).collect();
         rows.retain(|(_, d, _)| d.severity <= 3);
         if rows.is_empty() {
-            self.status = if self.settings.lsp_enabled { "No problems reported".into() } else { "Language servers are off (lsp_enabled)".into() };
+            // No server for this file: say why rather than "no problems".
+            let running = self.docs[self.active].path.as_ref().and_then(|p| self.lsp.hub.borrow().state_for(p)).is_some_and(|(_, s)| matches!(s, State::Ready | State::Busy(_)));
+            self.status = if !self.settings.lsp_enabled {
+                "Language servers are off (lsp_enabled)".into()
+            } else if running {
+                "No problems reported".into()
+            } else {
+                self.lsp_unavailable("Problems")
+            };
             return;
         }
         rows.sort_by(|a, b| (a.1.severity, &a.0, a.1.range.0).cmp(&(b.1.severity, &b.0, b.1.range.0)));

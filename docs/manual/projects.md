@@ -150,7 +150,7 @@ File ▸ Open Recent lists:
 
 Project ▸ Open Recent lists up to 15 recent projects, then your recent folders, then Clear Items.
 
-**Clear Items** ({{key:clear_recent_files}}, "File: Clear Recent Items") empties the recent files, the recent folders, the recent projects and the list of closed tabs. It does the same from either Open Recent menu.
+**Clear Items** ({{key:clear_recent_files}}, "File: Clear Recent Items") empties the recent files, the recent folders and the recent projects. It does the same from either Open Recent menu. Reopen Closed File still remembers the tabs you closed.
 
 Files opened as previews don't count as recently opened. The recent lists are shared by every window and kept between sessions.
 

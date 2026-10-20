@@ -226,7 +226,12 @@ impl StrataApp {
                 self.push_jump();
                 self.goto_line(l);
             }
-            None => self.status = "No differences: open a Compare tab (File ▸ Compare with…) or edit a file in a git repository".into(),
+            None => {
+                self.status = match self.not_tracked() {
+                    Some(why) => format!("{why}. File ▸ Compare with… compares any two files"),
+                    None => "No differences: open a Compare tab (File ▸ Compare with…) or edit a file in a git repository".into(),
+                }
+            }
         }
     }
 

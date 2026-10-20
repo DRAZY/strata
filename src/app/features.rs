@@ -48,7 +48,30 @@ impl StrataApp {
         self.recent_files.clear();
         self.recent_folders.clear();
         self.recent_projects.clear();
-        self.closed.clear();
+    }
+
+    /// Why a command the menu greys out can't run now (the palette and
+    /// keys run it too): None when it can.
+    pub(super) fn unavailable(&self, cmd: crate::commands::Cmd) -> Option<&'static str> {
+        use crate::commands::Cmd;
+        let d = &self.docs[self.active];
+        match cmd {
+            Cmd::ExportMarkdownHtml if !crate::markdown::is_markdown(d.path.as_deref(), d.highlighter.syntax_name()) => Some("Export as HTML is for Markdown files"),
+            Cmd::RevertFile if d.path.is_none() => Some("Nothing to revert: this file was never saved"),
+            Cmd::CloseGroup if self.layout.groups() < 2 => Some("There's only one group"),
+            Cmd::NewBuildSystem if self.config.is_none() => Some("Build systems need Strata's settings folder, which isn't available"),
+            _ => None,
+        }
+    }
+
+    /// Why the current file has no changes since the last commit to step
+    /// through: None when it's in a repo (or that isn't known yet).
+    pub(super) fn not_tracked(&self) -> Option<&'static str> {
+        match &self.docs[self.active].path {
+            None => Some("Save the file first"),
+            Some(p) if self.git.in_repo(p) == Some(false) => Some("Not in a Git repository"),
+            Some(_) => None,
+        }
     }
 
     /// Throw away unsaved edits and reload from disk (asks first when dirty).

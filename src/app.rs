@@ -21,6 +21,8 @@ struct FindBar {
     focus_query: bool,
     /// Where incremental search starts: the cursor when the bar opened.
     origin: usize,
+    /// Opened by Incremental Find: Return closes the bar on the match found.
+    incremental: bool,
     last_query: Query,
     in_selection: bool,
     wrap: bool,
@@ -180,6 +182,8 @@ mod diagnostics;
 mod doc_settings;
 mod dock;
 mod features;
+#[cfg(test)]
+mod feedback_tests;
 mod file_links;
 mod find_options;
 mod first_run;
@@ -1044,6 +1048,10 @@ impl StrataApp {
         if self.help_takes(cmd) || self.settings_takes(cmd) {
             return;
         }
+        if let Some(why) = self.unavailable(cmd) {
+            self.status = why.into();
+            return;
+        }
         match cmd {
             Cmd::NewTab => self.push_doc(Document::untitled()),
             Cmd::Open => {
@@ -1104,8 +1112,12 @@ impl StrataApp {
                 self.reload_build_systems();
                 let bctx = self.build_context();
                 self.build_choices = self.build.choices(&bctx);
-                let labels = self.build_choices.iter().map(|c| c.label.clone()).collect();
-                self.choose(ctx, more::Choosing::Build, "Build with…", labels);
+                if self.build_choices.is_empty() {
+                    self.status = self.build.no_build_system();
+                } else {
+                    let labels = self.build_choices.iter().map(|c| c.label.clone()).collect();
+                    self.choose(ctx, more::Choosing::Build, "Build with…", labels);
+                }
             }
             Cmd::ReplaceNext => self.replace_one(),
             Cmd::ToggleFindRegex | Cmd::ToggleFindCase | Cmd::ToggleFindWholeWord | Cmd::ToggleFindInSelection | Cmd::ToggleFindWrap | Cmd::ToggleFindPreserveCase | Cmd::ToggleFindHighlight => self.toggle_find_option(cmd),
@@ -1210,7 +1222,7 @@ impl StrataApp {
                         self.push_jump();
                         self.goto_line(l);
                     }
-                    None => self.status = "No changes since the last commit".into(),
+                    None => self.status = self.not_tracked().unwrap_or("No changes since the last commit").into(),
                 }
             }
             Cmd::UiLarger | Cmd::UiSmaller => {
@@ -1221,8 +1233,9 @@ impl StrataApp {
             Cmd::CancelBuild => self.build.cancel(),
             Cmd::NextResult | Cmd::PrevResult => {
                 let r = if cmd == Cmd::NextResult { self.build.next_result() } else { self.build.prev_result() };
-                if let Some(crate::build::BuildAction::Goto(p, line, col)) = r {
-                    self.open_at(p, line, col..col);
+                match r {
+                    Some(crate::build::BuildAction::Goto(p, line, col)) => self.open_at(p, line, col..col),
+                    None => self.status = "No build results".into(),
                 }
             }
             Cmd::ToggleBuildResults => self.build.visible = !self.build.visible,
@@ -1232,9 +1245,14 @@ impl StrataApp {
             Cmd::Snippets => self.show_snippets(ctx),
             Cmd::NewSnippet => self.new_snippet(),
             Cmd::ShowCompletions => {
+                let version = self.docs[self.active].editor.version();
                 self.completion.open(&mut self.docs[self.active], true, &self.snippets.lib);
                 self.snippet_from_completion();
                 self.lsp_completion("", true);
+                // No list, nothing inserted, and no server asked.
+                if !self.completion.is_open() && self.docs[self.active].editor.version() == version && !self.lsp_completion_pending() {
+                    self.status = "No completions".into();
+                }
             }
             Cmd::CloseWindow => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::NewWindow => self.link.requests.new_window = true,
@@ -1249,21 +1267,28 @@ impl StrataApp {
                 self.persist_settings();
             }
             Cmd::DistractionFree => self.toggle_distraction_free(ctx),
-            Cmd::IncrementalFind => self.open_find(false),
+            Cmd::IncrementalFind => {
+                self.open_find(false);
+                self.find.incremental = true;
+            }
             Cmd::UseSelectionForFind | Cmd::UseSelectionForReplace => {
-                let d = &self.docs[self.active];
-                let text = d.editor.buffer.slice(d.editor.primary().range());
+                // The selection, else the word under the caret.
+                let Some(text) = self.selection_or_word() else {
+                    self.status = "Select some text, or put the cursor in a word".into();
+                    return;
+                };
                 if cmd == Cmd::UseSelectionForFind {
+                    self.status = format!("Find: “{text}”");
                     self.find.query.text = if self.find.query.regex { regex::escape(&text) } else { text };
                 } else {
+                    self.status = format!("Replace with: “{text}”");
                     self.find.replacement = text;
                 }
             }
             Cmd::QuickFind => {
-                // The next occurrence of the selection becomes the (single) selection.
-                let d = &self.docs[self.active];
-                let text = d.editor.buffer.slice(d.editor.primary().range());
-                if !text.is_empty() {
+                // The next occurrence of the selection (or the word under the
+                // caret) becomes the (single) selection.
+                if let Some(text) = self.selection_or_word() {
                     self.find.query = Query::literal(&text, false);
                     self.find_step(true);
                 }
@@ -1428,6 +1453,8 @@ impl StrataApp {
             roots: self.sidebar.roots.clone(),
             theme: self.active_theme(),
             open: self.docs.iter().filter_map(|d| d.path.clone()).collect(),
+            // Only files still there: a missing one would just fail to open.
+            recent: self.recent_files.iter().filter(|p| p.is_file()).cloned().collect(),
         }
     }
 
@@ -1759,6 +1786,7 @@ impl StrataApp {
         }
         self.find.open = true;
         self.find.replace = replace;
+        self.find.incremental = false;
         self.find.focus_query = true;
         self.cancel_editor_focus();
         self.find.origin = p.start();
@@ -1799,8 +1827,26 @@ impl StrataApp {
             None if !d.finder.matches.is_empty() => {
                 self.status = format!("No more matches {} (Wrap is off)", if forward { "below" } else { "above" });
             }
-            None => {}
+            None => self.status = d.finder.error.clone().unwrap_or_else(|| format!("No matches for “{}”", self.find.query.text)),
         }
+    }
+
+    /// Return in Incremental Find: keep the match typing found (or find
+    /// one) and go back to the editor.
+    fn finish_incremental_find(&mut self) {
+        let d = &self.docs[self.active];
+        if d.finder.index_of(&d.editor.primary().range()).is_none() {
+            self.find_step(true);
+        }
+        self.find.open = false;
+        self.doc().view.focus();
+    }
+
+    /// The selection, else the word under the caret (Quick Find, Use Selection for Find).
+    fn selection_or_word(&self) -> Option<String> {
+        let ed = &self.docs[self.active].editor;
+        let p = ed.primary();
+        if p.is_empty() { self.word_at_cursor() } else { Some(ed.buffer.slice(p.range())) }
     }
 
     /// Every match becomes a cursor; the bar closes so you can type.
@@ -1883,6 +1929,7 @@ impl StrataApp {
         let field_w = (ui.available_width() - toggles_w - buttons_w - 4.0 * gap).clamp(80.0, 320.0);
         let label_w = if field_w < 320.0 { 64.0 } else { 90.0 };
         let mut measured = (toggles_w, buttons_w);
+        let incremental = self.find.incremental;
         // A grid keeps the Find and Replace fields in one column.
         egui::Grid::new("find-grid").num_columns(3).show(ui, |ui| {
             let r = ui.horizontal(|ui| find_options::search_toggles(ui, &self.find));
@@ -1892,13 +1939,13 @@ impl StrataApp {
             let id = egui::Id::new("find-query");
             crate::find_history::keys(ui, id, crate::find_history::Field::Find, &mut q.text);
             let field = crate::ctxmenu::text_field(ui, id, &mut q.text, |ui, text| {
-                ui.add_sized([field_w, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text("Find").font(egui::TextStyle::Monospace))
+                ui.add_sized([field_w, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text(if incremental { "Incremental Find" } else { "Find" }).font(egui::TextStyle::Monospace))
             });
             if std::mem::take(&mut self.find.focus_query) {
                 crate::ctxmenu::focus_selecting_all(ui.ctx(), id, &q.text);
             }
             if field.lost_focus() && enter {
-                action = Some(if mods.alt { "all" } else if mods.shift { "prev" } else { "next" });
+                action = Some(if mods.alt { "all" } else if mods.shift { "prev" } else if incremental { "done" } else { "next" });
                 field.request_focus();
             }
             let r = ui.horizontal(|ui| {
@@ -1951,6 +1998,11 @@ impl StrataApp {
         match action {
             Some("prev") => self.find_step(false),
             Some("next") => self.find_step(true),
+            Some("done") => {
+                // The Return that closes the bar mustn't reach the editor too.
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
+                self.finish_incremental_find();
+            }
             Some("all") => self.find_all(),
             Some("replace") => self.replace_one(),
             Some("replace-all") => self.replace_all(),
