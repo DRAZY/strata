@@ -13,7 +13,8 @@
 //!
 //! `initializationOptions` set it up: `{"utf8": true}` prefers UTF-8
 //! columns, `"marker"` is the crash marker's path, `"fail_to_start": true`
-//! exits instead of answering `initialize`.
+//! exits instead of answering `initialize`, `"refuse_init": true` answers
+//! it with an error and keeps running.
 
 use super::config::ServerConfig;
 use serde_json::{Value, json};
@@ -98,6 +99,11 @@ impl Fake {
         match method {
             "initialize" => {
                 let o = &p["initializationOptions"];
+                if o["refuse_init"].as_bool() == Some(true) {
+                    // Says no and keeps running: the client must end it.
+                    send(&json!({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32603, "message": "no workspace here"}}));
+                    return true;
+                }
                 if o["fail_to_start"].as_bool() == Some(true) {
                     // Like a rustup stub whose component isn't installed.
                     eprintln!("error: this server isn't really here");
@@ -200,9 +206,10 @@ impl Fake {
                         let path = e.path();
                         let u = super::uri::from_path(&path);
                         if path.extension().is_some_and(|x| x.to_string_lossy() == ext) && !self.docs.contains_key(&u)
-                            && let Ok(t) = std::fs::read_to_string(&path)
+                            && let Ok(t) = std::fs::read(&path).map(|b| String::from_utf8_lossy(&b).into_owned())
                         {
-                            texts.push((u, t));
+                            // A byte order mark isn't text (real servers skip it too).
+                            texts.push((u, t.strip_prefix('\u{feff}').map_or(t.clone(), str::to_owned)));
                         }
                     }
                 }

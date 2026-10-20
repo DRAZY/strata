@@ -218,22 +218,28 @@ pub fn language_id(path: &Path, fallback: &str) -> String {
 }
 
 /// The program `command` runs: itself if it's a path, else the first
-/// match in the `path` list (with Windows' executable extensions).
+/// match in the `path` list. On Windows only names with one of the
+/// `PATHEXT` extensions count (npm and pipx put a shell script without one
+/// next to the `.cmd`, which Windows can't start).
 pub fn find_executable(command: &str, path: &OsStr) -> Option<PathBuf> {
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    search(command, path, cfg!(windows), &pathext)
+}
+
+fn search(command: &str, path: &OsStr, windows: bool, pathext: &str) -> Option<PathBuf> {
+    let exts: Vec<&str> = pathext.split(';').map(str::trim).filter(|e| !e.is_empty()).collect();
+    let has_ext = |p: &Path| p.extension().is_some_and(|e| exts.iter().any(|x| x.trim_start_matches('.').eq_ignore_ascii_case(&e.to_string_lossy())));
+    let runnable = |p: &Path| if windows { has_ext(p) && p.is_file() } else { is_executable(p) };
     let p = Path::new(command);
     if p.components().count() > 1 {
-        return p.is_file().then(|| p.to_owned());
+        return runnable(p).then(|| p.to_owned());
     }
-    let exts: Vec<String> = if cfg!(windows) {
-        let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-        std::iter::once(String::new()).chain(pathext.split(';').filter(|e| !e.is_empty()).map(str::to_owned)).collect()
-    } else {
-        vec![String::new()]
-    };
+    // A name that already has an extension is tried as it is; otherwise each extension.
+    let names: Vec<String> = if !windows || has_ext(p) { vec![command.to_owned()] } else { exts.iter().map(|e| format!("{command}{}", e.to_ascii_lowercase())).collect() };
     for dir in std::env::split_paths(path) {
-        for ext in &exts {
-            let candidate = dir.join(format!("{command}{ext}"));
-            if is_executable(&candidate) {
+        for name in &names {
+            let candidate = dir.join(name);
+            if runnable(&candidate) {
                 return Some(candidate);
             }
         }
@@ -361,6 +367,22 @@ mod tests {
         assert_eq!(find_executable("fake-ls", &path), Some(exe.clone()));
         assert_eq!(find_executable("missing-ls", &path), None);
         assert_eq!(find_executable(&exe.to_string_lossy(), OsStr::new("")), Some(exe));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn windows_prefers_pathext_programs_over_extensionless_shims() {
+        // npm puts a shell script `name` next to `name.cmd`; Windows can't run the script.
+        let dir = std::env::temp_dir().join(format!("strata-lsp-pathext-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("typescript-language-server"), "#!/bin/sh\n").unwrap();
+        std::fs::write(dir.join("typescript-language-server.cmd"), "@node x\n").unwrap();
+        std::fs::write(dir.join("only-shim"), "#!/bin/sh\n").unwrap();
+        let pathext = ".COM;.EXE;.BAT;.CMD";
+        assert_eq!(search("typescript-language-server", dir.as_os_str(), true, pathext), Some(dir.join("typescript-language-server.cmd")));
+        assert_eq!(search("only-shim", dir.as_os_str(), true, pathext), None, "never an extensionless file on Windows");
+        assert_eq!(search("typescript-language-server.cmd", dir.as_os_str(), true, pathext), Some(dir.join("typescript-language-server.cmd")));
         std::fs::remove_dir_all(dir).ok();
     }
 

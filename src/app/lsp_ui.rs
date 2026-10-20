@@ -58,6 +58,12 @@ struct GotoFor {
     word: String,
 }
 
+struct RenameFor {
+    enc: Encoding,
+    /// The open files' texts when asked (see `open_texts`).
+    texts: Vec<(PathBuf, (u64, u64))>,
+}
+
 struct FormatFor {
     view: egui::Id,
     version: u64,
@@ -129,7 +135,7 @@ pub(super) struct LspState {
     resolve: Option<Asked<usize>>,
     goto: Option<Asked<GotoFor>>,
     rename_box: Option<RenameBox>,
-    rename: Option<Asked<Encoding>>,
+    rename: Option<Asked<RenameFor>>,
     format: Option<Asked<FormatFor>>,
     hover: HoverState,
     signature: Option<Asked<(egui::Id, usize)>>,
@@ -366,9 +372,15 @@ impl StrataApp {
     }
 
     /// Send a request to tab `i`'s server.
+    /// Send a request to tab `i`'s server, after the tab's latest text (an
+    /// edit made earlier this frame hasn't been synced yet): positions in the
+    /// request are in that text.
     fn lsp_request(&self, i: usize, method: &'static str, params: Value) -> Option<Pending> {
-        let path = self.docs.get(i)?.path.clone()?;
-        let hub = self.lsp.hub.borrow();
+        let d = self.docs.get(i)?;
+        let path = d.path.clone()?;
+        let mut hub = self.lsp.hub.borrow_mut();
+        let ed = &d.editor;
+        hub.sync(self.lsp.window, &path, (ed.id(), ed.version()), || ed.buffer.snapshot(), d.disk_mtime, &self.sidebar.roots);
         let (server, _) = hub.server_for(self.lsp.window, &path)?;
         Some(server.request(method, params))
     }
@@ -399,10 +411,10 @@ impl StrataApp {
         if let Some((what, reply)) = answered(&mut self.lsp.goto) {
             self.lsp_goto_answer(ctx, what, reply);
         }
-        if let Some((enc, reply)) = answered(&mut self.lsp.rename) {
+        if let Some((what, reply)) = answered(&mut self.lsp.rename) {
             match reply.map_err(|e| e.message).and_then(|v| edit::workspace_edit(&v)) {
                 Ok(files) if files.iter().all(|f| f.edits.is_empty()) => self.status = "Nothing to rename here".into(),
-                Ok(files) => match self.lsp_apply_workspace_edit(files, enc) {
+                Ok(files) => match self.lsp_apply_workspace_edit(files, what.enc, Some(&what.texts)) {
                     Ok(msg) => self.status = msg,
                     Err(e) => self.status = format!("Couldn't rename: {e}"),
                 },
@@ -811,56 +823,90 @@ impl StrataApp {
         let Some((path, enc)) = self.lsp_for(i, "renameProvider") else { return };
         let mut params = self.lsp_position(i, &path, b.at, enc);
         params["newName"] = json!(name);
+        // The text of every open file now: an answer is only good for that text.
+        let texts = self.open_texts();
         if let Some(pending) = self.lsp_request(i, "textDocument/rename", params) {
-            self.lsp.rename = Some(Asked { pending, what: enc });
+            self.lsp.rename = Some(Asked { pending, what: RenameFor { enc, texts } });
             self.status = format!("Renaming {} to {name}…", b.old);
         }
     }
 
+    /// (path, (editor id, editor version)) of every file open in this window.
+    fn open_texts(&self) -> Vec<(PathBuf, (u64, u64))> {
+        self.docs.iter().filter_map(|d| Some((uri::normalize(d.path.as_deref()?), (d.editor.id(), d.editor.version())))).collect()
+    }
+
     /// Apply a server's edits to every file they touch, each as one undo
     /// step in its tab; files that aren't open are opened (left unsaved for
-    /// review). Everything is checked first, so a problem changes nothing.
-    pub(super) fn lsp_apply_workspace_edit(&mut self, files: Vec<FileEdit>, enc: Encoding) -> Result<String, String> {
+    /// review). All or nothing: every file is checked, opened (off screen)
+    /// and its edits worked out on the text its tab holds before any
+    /// changes. With `asked`, the open files' texts when the server was
+    /// asked: an edit for a file changed since then is refused.
+    pub(super) fn lsp_apply_workspace_edit(&mut self, files: Vec<FileEdit>, enc: Encoding, asked: Option<&[(PathBuf, (u64, u64))]>) -> Result<String, String> {
+        enum Target {
+            Open(egui::Id),
+            New(Box<crate::document::Document>),
+        }
         let back_to = self.docs[self.active].view.id;
         let window = self.lsp.window;
-        // Check every file and work out its edits before changing any.
-        let mut plan: Vec<(PathBuf, Option<usize>, CharEdits)> = Vec::new();
+        let name = |p: &Path| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let mut plan: Vec<(PathBuf, Target, CharEdits)> = Vec::new();
         for f in files.into_iter().filter(|f| !f.edits.is_empty()) {
             let open = self.docs.iter().position(|d| d.path.as_deref().is_some_and(|p| uri::normalize(p) == f.path));
-            let edits = match open {
+            let then = asked.map(|a| a.iter().find(|(p, _)| *p == f.path).map(|(_, k)| *k));
+            let changed = || format!("{} changed while the server worked; try again", name(&f.path));
+            let (target, edits) = match open {
                 Some(i) => {
                     let d = &self.docs[i];
-                    if d.editor.read_only {
+                    if d.editor.read_only || d.binary.is_some() {
                         return Err(format!("{} is read-only", d.name()));
+                    }
+                    if then.is_some_and(|k| k != Some((d.editor.id(), d.editor.version()))) {
+                        return Err(changed());
                     }
                     if let (Some(v), Some((_, now))) = (f.version, self.lsp.hub.borrow().server_for(window, &f.path))
                         && v != now
                     {
-                        return Err(format!("{} changed in the meantime; try again", d.name()));
+                        return Err(changed());
                     }
-                    edit::to_char_edits(&d.editor.buffer.snapshot(), &f.edits, enc, d.editor.buffer.line_ending().as_str())?
+                    let edits = edit::to_char_edits(&d.editor.buffer.snapshot(), &f.edits, enc, d.editor.buffer.line_ending().as_str())?;
+                    (Target::Open(d.view.id), edits)
                 }
                 None => {
-                    let text = std::fs::read_to_string(&f.path).map_err(|e| format!("couldn't read {}: {e}", f.path.display()))?;
-                    let buf = crate::buffer::Buffer::from_str(&text);
-                    edit::to_char_edits(&buf.snapshot(), &f.edits, enc, buf.line_ending().as_str())?
+                    if then.is_some_and(|k| k.is_some()) {
+                        // Open (maybe with unsaved edits) when asked, closed now.
+                        return Err(changed());
+                    }
+                    if self.link.is_open_elsewhere(&f.path) {
+                        return Err(format!("{} is open in another window: rename from there, or close it there", name(&f.path)));
+                    }
+                    if !f.path.is_file() {
+                        return Err(format!("{} doesn't exist", f.path.display()));
+                    }
+                    // Decoded as its tab will hold it (encoding, BOM), so offsets match.
+                    let doc = crate::document::Document::open_with(f.path.clone(), self.large_file_bytes()).map_err(|e| format!("couldn't read {}: {e}", name(&f.path)))?;
+                    if doc.binary.is_some() || doc.editor.read_only {
+                        return Err(format!("{} isn't a text file", name(&f.path)));
+                    }
+                    let edits = edit::to_char_edits(&doc.editor.buffer.snapshot(), &f.edits, enc, doc.editor.buffer.line_ending().as_str())?;
+                    (Target::New(Box::new(doc)), edits)
                 }
             };
-            plan.push((f.path, open, edits));
+            plan.push((f.path, target, edits));
         }
+        // Everything checked: apply.
         let (mut places, mut opened) = (0, 0);
         let count = plan.len();
-        for (path, open, edits) in plan {
+        for (path, target, edits) in plan {
             places += edits.len();
-            let i = match open {
-                Some(i) => i,
-                None => {
-                    self.open_path(path.clone(), false);
+            let i = match target {
+                Target::Open(id) => self.docs.iter().position(|d| d.view.id == id).expect("checked above"),
+                Target::New(doc) => {
+                    self.remember_file(&path);
+                    self.push_doc(*doc);
+                    self.doc_settings(self.active);
                     opened += 1;
-                    match self.docs.iter().position(|d| d.path.as_deref().is_some_and(|p| uri::normalize(p) == path)) {
-                        Some(i) => i,
-                        None => continue,
-                    }
+                    self.active
                 }
             };
             self.docs[i].editor.apply_edits(edits);
@@ -1493,6 +1539,20 @@ mod tests {
     }
 
     #[test]
+    fn a_request_right_after_an_edit_sees_the_edit() {
+        let (mut app, ctx, _) = app_with("flush", &[("a.fake", "fn target\n")], json!({}));
+        wait(&mut app, &ctx, "ready", |a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+        // An edit and a request in the same frame, before the frame's sync.
+        let end = app.docs[0].editor.buffer.len_chars();
+        put_cursor(&mut app, end);
+        app.doc().editor.insert_text("call(target)\n");
+        put_cursor(&mut app, end + 6);
+        assert!(app.lsp_goto(true));
+        wait(&mut app, &ctx, "the jump", |a| a.lsp.goto.is_none());
+        assert_eq!(app.docs[0].editor.primary().range(), 3..9, "the server knew the new line");
+    }
+
+    #[test]
     fn rename_changes_open_and_closed_files_with_undo() {
         let (mut app, ctx, dir) = app_with("rename", &[("a.fake", "old = 1;\nprint(old);\n"), ("b.fake", "use old;\n"), ("c.txt", "old\n")], json!({}));
         wait(&mut app, &ctx, "ready", |a| a.lsp.hub.borrow().server_for(a.lsp.window, &dir.join("a.fake")).is_some());
@@ -1521,6 +1581,57 @@ mod tests {
         assert_eq!(all(&app, a), "old = 1;\nprint(old);\n", "one undo step");
     }
 
+    /// Start a rename of the word at `at` in the active tab to `name`, as Enter in the box would.
+    fn rename(app: &mut StrataApp, ctx: &Context, at: usize, name: &str) {
+        put_cursor(app, at);
+        frame(app, ctx, vec![]);
+        app.run(ctx, Cmd::LspRename);
+        let mut b = app.lsp.rename_box.take().expect("the rename box");
+        b.text = name.into();
+        app.lsp_rename_submit(b);
+        assert!(app.lsp.rename.is_some());
+    }
+
+    #[test]
+    fn a_rename_answer_for_text_that_changed_since_is_dropped() {
+        let (mut app, ctx, _) = app_with("rename-stale", &[("a.fake", "old = 1;\nprint(old);\n")], json!({}));
+        wait(&mut app, &ctx, "ready", |a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+        rename(&mut app, &ctx, 1, "new");
+        // Typing before the answer is applied: its positions are stale now.
+        put_cursor(&mut app, 0);
+        app.doc().editor.insert_text("// typed\n");
+        wait(&mut app, &ctx, "the answer", |a| a.lsp.rename.is_none());
+        assert_eq!(text(&app), "// typed\nold = 1;\nprint(old);\n", "nothing applied");
+        assert!(app.status.contains("changed"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_rename_that_cant_reach_every_file_changes_none() {
+        // b.fake isn't text: it would open in the hex view, which takes no edits.
+        let (mut app, ctx, dir) = app_with("rename-partial", &[("a.fake", "old = 1;\n"), ("b.fake", "\0\0 old \0\0")], json!({}));
+        wait(&mut app, &ctx, "ready", |a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+        rename(&mut app, &ctx, 1, "new");
+        wait(&mut app, &ctx, "the answer", |a| a.lsp.rename.is_none());
+        assert_eq!(text(&app), "old = 1;\n", "all or nothing");
+        assert!(app.status.contains("b.fake"), "says which file: {}", app.status);
+        assert!(!app.docs.iter().any(|d| d.path.as_deref() == Some(&dir.join("b.fake"))), "nothing opened");
+    }
+
+    #[test]
+    fn renaming_into_unopened_files_uses_the_text_their_tabs_will_hold() {
+        // A BOM (not part of the text), and a Latin-1 file (not UTF-8 at all).
+        let (mut app, ctx, dir) = app_with("rename-bom", &[("a.fake", "use foo;\n"), ("b.fake", "\u{feff}fn foo() {}\n")], json!({}));
+        std::fs::write(dir.join("c.fake"), b"// caf\xE9\nfn foo() {}\n").unwrap();
+        wait(&mut app, &ctx, "ready", |a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+        rename(&mut app, &ctx, 5, "bar");
+        wait(&mut app, &ctx, "the rename", |a| a.lsp.rename.is_none());
+        assert_eq!(text(&app), "use bar;\n", "{}", app.status);
+        let line = |app: &StrataApp, name: &str, n: usize| app.docs.iter().find(|d| d.path.as_deref() == Some(&dir.join(name))).map(|d| d.editor.buffer.line_text(n));
+        assert_eq!(line(&app, "b.fake", 0).as_deref(), Some("fn bar() {}"));
+        assert_eq!(line(&app, "c.fake", 1).as_deref(), Some("fn bar() {}"));
+        assert_eq!(line(&app, "c.fake", 0).as_deref(), Some("// café"));
+    }
+
     #[test]
     fn workspace_edits_check_everything_before_changing_anything() {
         let (mut app, _ctx, dir) = app_with("wsedit", &[("a.fake", "one\n"), ("ro.fake", "two\n")], json!({}));
@@ -1528,13 +1639,13 @@ mod tests {
         app.doc().editor.read_only = true;
         let edit = |line| crate::lsp::edit::TextEdit { range: (Pos::new(line, 0), Pos::new(line, 3)), text: "X".into() };
         let files = vec![FileEdit { path: uri::normalize(&dir.join("a.fake")), version: None, edits: vec![edit(0)] }, FileEdit { path: uri::normalize(&dir.join("ro.fake")), version: None, edits: vec![edit(0)] }];
-        let err = app.lsp_apply_workspace_edit(files, Encoding::Utf16).unwrap_err();
+        let err = app.lsp_apply_workspace_edit(files, Encoding::Utf16, None).unwrap_err();
         assert!(err.contains("read-only"), "{err}");
         let a = app.docs.iter().find(|d| d.path.as_deref() == Some(&dir.join("a.fake"))).unwrap();
         assert_eq!(a.editor.buffer.line_text(0), "one", "nothing changed");
         // A missing file is also refused up front.
         let files = vec![FileEdit { path: dir.join("gone.fake"), version: None, edits: vec![edit(0)] }];
-        assert!(app.lsp_apply_workspace_edit(files, Encoding::Utf16).is_err());
+        assert!(app.lsp_apply_workspace_edit(files, Encoding::Utf16, None).is_err());
     }
 
     #[test]

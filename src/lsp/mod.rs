@@ -154,6 +154,23 @@ mod tests {
     }
 
     #[test]
+    fn a_server_refusing_to_initialize_leaves_no_process() {
+        let dir = scratch("refuse");
+        let file = dir.join("a.fake");
+        let mut hub = Hub::new(false);
+        hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({"refuse_init": true}))]);
+        hub.sync(1, &file, (1, 0), || Rope::from_str(""), None, &[]);
+        let pid = hub.pid_for(&file).expect("started");
+        until("the refusal", || {
+            hub.tick();
+            let n = hub.take_notes();
+            (!n.is_empty()).then_some(())
+        });
+        until("the process to be gone", || (!process_alive(pid)).then_some(()));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn missing_programs_and_files_without_a_server() {
         let mut hub = Hub::new(false);
         let mut missing = fake::config("ghost", &["*.ghost"], json!({}));

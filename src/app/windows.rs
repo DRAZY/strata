@@ -83,6 +83,11 @@ impl Link {
         true
     }
 
+    /// `path` is open in another window (nothing is asked of it).
+    pub fn is_open_elsewhere(&self, path: &Path) -> bool {
+        self.elsewhere.iter().any(|p| p == path)
+    }
+
     /// Select `cols` on `line` where `open_elsewhere` sent `path`.
     pub fn select_elsewhere(&mut self, path: &Path, line: usize, cols: Range<usize>) {
         if let Some(r) = self.requests.reveal.iter_mut().rev().find(|(p, _)| p == path) {

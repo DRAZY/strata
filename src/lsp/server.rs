@@ -236,7 +236,27 @@ fn notification(method: &str, params: Value) -> Value {
 pub struct Server {
     io: Io,
     tx: Sender<Out>,
-    child: Arc<Mutex<Option<Child>>>,
+    child: Arc<Proc>,
+}
+
+/// The server's process, and on Windows the job object that holds it and
+/// everything it starts (killing `cmd.exe` alone would leave a `.cmd`
+/// server's node running).
+struct Proc {
+    child: Mutex<Option<Child>>,
+    #[cfg(windows)]
+    job: Option<job::Job>,
+}
+
+impl Proc {
+    fn lock(&self) -> MutexGuard<'_, Option<Child>> {
+        self.child.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Still running (not exited, not reaped).
+    fn running(&self) -> bool {
+        self.lock().as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)))
+    }
 }
 
 impl Server {
@@ -277,7 +297,13 @@ impl Server {
             was_ready: false,
         }));
         let io = Io { shared, stdin: Arc::new(Mutex::new(stdin)), next_id: Arc::new(AtomicI64::new(1)), ctx };
-        let child = Arc::new(Mutex::new(Some(child)));
+        #[cfg(windows)]
+        let job = job::Job::holding(&child);
+        let child = Arc::new(Proc {
+            child: Mutex::new(Some(child)),
+            #[cfg(windows)]
+            job,
+        });
         let (tx, rx) = channel();
         let name = config.display_name();
 
@@ -371,7 +397,7 @@ impl Server {
     pub fn wait_exit(&self, deadline: Instant) -> bool {
         loop {
             {
-                let mut c = self.child.lock().unwrap_or_else(|e| e.into_inner());
+                let mut c = self.child.lock();
                 match c.as_mut().map(Child::try_wait) {
                     None | Some(Ok(Some(_))) | Some(Err(_)) => return true,
                     Some(Ok(None)) => {}
@@ -392,12 +418,38 @@ impl Server {
 
     #[cfg(test)]
     pub fn pid(&self) -> Option<u32> {
-        self.child.lock().unwrap().as_ref().map(Child::id)
+        self.child.lock().as_ref().map(Child::id)
     }
 }
 
-fn kill(child: &Mutex<Option<Child>>) {
-    let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
+impl Drop for Server {
+    /// A server let go of while its process still runs (it failed to
+    /// initialize, or was replaced) is asked to exit and, if it doesn't,
+    /// killed: no process is ever left behind.
+    fn drop(&mut self) {
+        if !self.child.running() {
+            return;
+        }
+        self.stop();
+        let proc = self.child.clone();
+        spawn("lsp-reap", move || {
+            let deadline = Instant::now() + Duration::from_millis(1500);
+            while proc.running() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if proc.running() {
+                kill(&proc);
+            }
+        });
+    }
+}
+
+fn kill(proc: &Proc) {
+    #[cfg(windows)]
+    if let Some(job) = &proc.job {
+        job.terminate();
+    }
+    let mut c = proc.lock();
     if let Some(ch) = c.as_mut() {
         #[cfg(unix)]
         unsafe {
@@ -673,7 +725,7 @@ fn read_stderr(mut err: impl Read, io: Io) {
     }
 }
 
-fn read_loop(mut out: impl Read, io: Io, child: Arc<Mutex<Option<Child>>>, settings: Option<Value>, root: PathBuf) {
+fn read_loop(mut out: impl Read, io: Io, child: Arc<Proc>, settings: Option<Value>, root: PathBuf) {
     let mut decoder = jsonrpc::Decoder::default();
     let mut buf = vec![0u8; 64 << 10];
     loop {
@@ -692,7 +744,7 @@ fn read_loop(mut out: impl Read, io: Io, child: Arc<Mutex<Option<Child>>>, setti
     // The server closed its output: it has exited, or is about to.
     let status = {
         let deadline = Instant::now() + Duration::from_secs(2);
-        let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
+        let mut c = child.lock();
         let mut status = None;
         if let Some(ch) = c.as_mut() {
             while status.is_none() && Instant::now() < deadline {
@@ -847,6 +899,62 @@ fn notification_from_server(method: &str, params: &Value, io: &Io) {
         }
         "window/showMessage" => show_message(params, io),
         _ => {}
+    }
+}
+
+/// A Windows job object that kills every process in it when closed or
+/// terminated, so a server and the processes it started end together.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        TerminateJobObject,
+    };
+
+    pub struct Job(HANDLE);
+
+    // SAFETY: a job handle may be used and closed from any thread.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        /// A new job holding `child`; None if Windows refuses (the process
+        /// then still runs, it just isn't grouped).
+        pub fn holding(child: &std::process::Child) -> Option<Job> {
+            // SAFETY: plain Win32 calls on a handle we own; `info` outlives the call.
+            unsafe {
+                let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if job.is_null() {
+                    return None;
+                }
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let set = SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info as *const _ as *const core::ffi::c_void, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
+                if set == 0 || AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) == 0 {
+                    CloseHandle(job);
+                    return None;
+                }
+                Some(Job(job))
+            }
+        }
+
+        pub fn terminate(&self) {
+            // SAFETY: the handle is open until `drop`.
+            unsafe {
+                TerminateJobObject(self.0, 1);
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: closing our own handle once; KILL_ON_JOB_CLOSE ends what's left.
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
     }
 }
 
