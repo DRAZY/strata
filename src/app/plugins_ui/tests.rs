@@ -422,3 +422,61 @@ fn installing_from_a_zip_and_refusing_a_bad_one() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+
+/// No drawn label or value holds a raw U+202E (a marker or `[RLO]` instead).
+fn no_raw_rlo(nodes: &[(String, Rect)], step: &str) {
+    let raw: Vec<&String> = nodes.iter().map(|n| &n.0).filter(|l| l.contains('\u{202E}')).collect();
+    assert!(raw.is_empty(), "{step}: a raw direction override reached the screen: {raw:?}");
+}
+
+#[test]
+fn direction_overrides_from_a_plugin_never_reach_the_screen_raw() {
+    let dir = temp_dir("plugin-rlo");
+    let config = dir.join("config");
+    let evil = json!({
+        "title": "Evil\u{202E}Name",
+        "description": "Looks \u{202E}harmless",
+        "author": "Some\u{202E}one",
+        "contributes": {"commands": [{"id": "read", "title": "Read\u{202E} Me"}], "settings": {"mode": {"default": "a\u{202E}b", "description": "x\u{202E}y"}}}
+    });
+    install_fake(&config, "fake", &[], &["panel", "notify"], evil);
+    let ctx = Context::default();
+    let mut app = window(&ctx, &dir, &config, "a.txt", "x\n");
+    // The consent dialog: title, author, description.
+    app.plugins.mgr.borrow_mut().start("fake");
+    let nodes = until(&mut app, &ctx, "the dialog", |_, n| has(n, "Allow the Evil"));
+    no_raw_rlo(&nodes, "consent");
+    assert!(has(&nodes, "Evil[RLO]Name") && has(&nodes, "Looks [RLO]harmless"), "spelled out");
+    click(&mut app, &ctx, "Allow and Start");
+    until(&mut app, &ctx, "the plugin to run", |a, _| a.plugins.mgr.borrow().plugins.iter().any(|p| matches!(p.state, State::Running)));
+    // Menus take plain strings.
+    let Item::Sub(_, kids) = app.plugins_menu() else { panic!() };
+    let sub = kids.iter().find_map(|k| if let Item::Sub(l, items) = k { Some((l.clone(), items)) } else { None }).unwrap();
+    assert_eq!(sub.0, "Evil[RLO]Name");
+    assert!(matches!(&sub.1[0], Item::Action { label, .. } if label == "Read[RLO] Me"));
+    // A status item, a message, a panel (its title and plain text).
+    let rlo = "\u{202E}";
+    fake(&mut app, &ctx, "call", json!({"method": "ui/statusItem", "params": {"id": "s", "text": format!("count{rlo}321"), "tooltip": format!("t{rlo}ip")}}));
+    fake(&mut app, &ctx, "call", json!({"method": "ui/notify", "params": {"message": format!("note{rlo}evil")}}));
+    fake(&mut app, &ctx, "call", json!({"method": "ui/showPanel", "params": {"title": format!("panel{rlo}title"), "text": format!("body{rlo}text")}}));
+    let nodes = until(&mut app, &ctx, "the panel", |_, n| has(n, "panel") && has(n, "count") && has(n, "body"));
+    no_raw_rlo(&nodes, "status item, message and panel");
+    assert!(has(&nodes, "RLO"), "markers drawn");
+    // A pick list: its rows and hint.
+    let mut p = app.plugins.mgr.borrow().request("fake", "command/execute", json!({"command": "call", "args": {"method": "ui/pick", "params": {"items": [format!("row{rlo}one")], "placeholder": format!("pick{rlo}hint")}}})).unwrap();
+    let nodes = until(&mut app, &ctx, "the list", |a, _| a.palette.open);
+    no_raw_rlo(&nodes, "pick");
+    assert!(!crate::hidden::any(&crate::palette::highlighted_for_tests(&app.palette.choice_labels()[0])), "pick row");
+    frame(&mut app, &ctx, vec![key(Key::Escape, Modifiers::NONE)]);
+    poll_until(&mut app, &ctx, &mut p);
+    // The palette's row for the command.
+    let item = app.plugin_palette_items().into_iter().find(|i| i.1 == "plugin:fake:read").unwrap();
+    assert!(!crate::hidden::any(&crate::palette::highlighted_for_tests(&item.0)), "palette row");
+    // The manager: names, description, settings, the log.
+    app.plugins.mgr.borrow().log("fake", format!("log{rlo}line"));
+    app.plugins.manager_open = true;
+    let nodes = until(&mut app, &ctx, "the manager", |_, n| has(n, "Copy Log") && has(n, "log[RLO]line"));
+    no_raw_rlo(&nodes, "manager");
+    assert!(has(&nodes, "Evil[RLO]Name") && has(&nodes, "x[RLO]y"));
+    std::fs::remove_dir_all(dir).ok();
+}

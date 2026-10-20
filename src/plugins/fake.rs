@@ -37,7 +37,7 @@ pub fn launch(words: &[String], dir: &Path) -> Launch {
         program: exe,
         args: ["--exact", "plugins::fake::fake_plugin", "--nocapture", "--test-threads=1", "-q"].iter().map(|s| s.to_string()).collect(),
         cwd: dir.to_owned(),
-        env: vec![("STRATA_FAKE_PLUGIN".into(), words.join(" "))],
+        env: vec![("STRATA_FAKE_PLUGIN".into(), words.join(" ").into())],
     }
 }
 

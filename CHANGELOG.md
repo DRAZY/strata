@@ -93,11 +93,16 @@ All notable changes to Strata are recorded here. The format follows
   may do and their log, and removes them.
 - A plugin asks before it first runs: Strata lists the permissions it wants
   in plain words and remembers your answer for that exact package (by its
-  SHA-256), so any change to it asks again. Every request a plugin makes is
+  SHA-256), so any change to it asks again; it then runs from a read-only
+  copy of exactly that package, checked again right before it starts, with
+  the environment variables that load code from elsewhere (`PYTHONPATH`,
+  `NODE_OPTIONS`, `DYLD_*`…) removed. Every request a plugin makes is
   checked against what you allowed, and its file access stays inside the
-  open folders, never following links. Strata can't sandbox a plugin's own
-  program, and the question says so: running other programs and using the
-  network are shown as things Strata can't limit.
+  open folders, never following links or reaching hard-linked files. Text
+  from plugins shows hidden and direction-changing characters as markers.
+  Strata can't sandbox a plugin's own program, and the question says so:
+  running other programs and using the network are shown as things Strata
+  can't limit, and an interpreter's own libraries aren't part of the check.
 - Review Changes, for checking what a coding agent changed and keeping or
   undoing each change (no AI involved). The **Changes** tab of the side bar
   lists every file that differs from the last commit, or from a snapshot taken

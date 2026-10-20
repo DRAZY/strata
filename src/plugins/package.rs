@@ -377,6 +377,152 @@ pub fn tidy(config: &Path) {
     }
 }
 
+/// Where approved copies of packages are kept, each named by its SHA-256
+/// (in `Plugins`, which `installed` skips since the name starts with a dot).
+pub const SNAPSHOTS: &str = ".snapshots";
+
+/// Copy an installed package into a sealed (read-only) snapshot named by
+/// its SHA-256, and return (sha, manifest, snapshot). The identity is that
+/// of the copy itself, so what's approved is exactly what runs: a plugin
+/// always runs from its snapshot, never from the installed folder, which
+/// could change between the check and the start (or while the user reads
+/// the permission question).
+pub fn snapshot(config: &Path, dir: &Path) -> Result<(String, Manifest, PathBuf), String> {
+    let root = plugins_dir(config).join(SNAPSHOTS);
+    crate::private::create_dir_all(&root).map_err(|e| format!("couldn't create {}: {e}", root.display()))?;
+    let tmp = root.join(format!(".copy-{}", unique()));
+    let (sha, manifest) = match copy_tree(dir, &tmp).and_then(|_| identity(&tmp)) {
+        Ok(r) => r,
+        Err(e) => {
+            remove_sealed(&tmp);
+            return Err(e);
+        }
+    };
+    let target = root.join(&sha);
+    if std::fs::symlink_metadata(&target).is_err() {
+        seal(&tmp);
+        if std::fs::rename(&tmp, &target).is_ok() {
+            return Ok((sha, manifest, target));
+        }
+    }
+    // One for this identity is there already (from an earlier start, or
+    // another window just now): it must still be exactly that package.
+    remove_sealed(&tmp);
+    verify_snapshot(&target, &sha)?;
+    Ok((sha, manifest, target))
+}
+
+/// The snapshot is still the package `sha` names. If not, it's removed
+/// (it was changed outside Strata) and the plugin isn't started.
+pub fn verify_snapshot(snap: &Path, sha: &str) -> Result<(), String> {
+    match hash_and_manifest(snap) {
+        Ok((s, _)) if s == sha => Ok(()),
+        _ => {
+            remove_sealed(snap);
+            Err("Strata's approved copy of it was changed outside Strata, so it wasn't started; start it again to check it afresh".into())
+        }
+    }
+}
+
+/// Remove snapshots nothing was granted for (and copies left half made).
+pub fn prune_snapshots(config: &Path, keep: &std::collections::HashSet<String>) {
+    let Ok(entries) = std::fs::read_dir(plugins_dir(config).join(SNAPSHOTS)) else { return };
+    let ours = format!("-{}-", std::process::id());
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let stale_copy = name.starts_with(".copy-") && !name.contains(&ours);
+        if stale_copy || (!name.starts_with('.') && !keep.contains(&name)) {
+            remove_sealed(&e.path());
+        }
+    }
+}
+
+/// Copy every folder and file of `src` (none may be a link) into `dst`.
+fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
+    let mut entries = Vec::new();
+    walk(src, &mut Vec::new(), &mut entries, false)?;
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    crate::private::create_dir_all(dst).map_err(|e| format!("couldn't create {}: {e}", dst.display()))?;
+    let mut total = 0u64;
+    for (rel, kind) in entries {
+        let to = rel.iter().fold(dst.to_path_buf(), |p, s| p.join(s));
+        let shown = rel.join("/");
+        match kind {
+            Kind::Dir => crate::private::create_dir_all(&to).map_err(|e| format!("couldn't create {shown}: {e}"))?,
+            Kind::File { executable } => {
+                let from = rel.iter().fold(src.to_path_buf(), |p, s| p.join(s));
+                let opened = crate::claim::open_inside(src, &from).map_err(|_| format!("couldn't read {shown}: it changed, or a link was put in its way"))?;
+                let mut data = Vec::new();
+                (&opened.file).take(MAX_FILE_BYTES + 1).read_to_end(&mut data).map_err(|e| format!("couldn't read {shown}: {e}"))?;
+                total += data.len() as u64;
+                if data.len() as u64 > MAX_FILE_BYTES || total > MAX_TOTAL_BYTES {
+                    return Err(format!("the package is larger than {} MB", MAX_TOTAL_BYTES >> 20));
+                }
+                write_new(&to, &data, executable).map_err(|e| format!("couldn't copy {shown}: {e}"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Make a snapshot read-only: files lose their write bits (Windows: the
+/// read-only attribute), folders become read-and-enter only, deepest first.
+fn seal(dir: &Path) {
+    let Ok(meta) = std::fs::symlink_metadata(dir) else { return };
+    if meta.is_dir() {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            seal(&e.path());
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if meta.is_dir() { 0o500 } else { meta.permissions().mode() & 0o500 };
+        if !meta.file_type().is_symlink() {
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode));
+        }
+    }
+    #[cfg(not(unix))]
+    if meta.is_file() {
+        let mut p = meta.permissions();
+        p.set_readonly(true);
+        let _ = std::fs::set_permissions(dir, p);
+    }
+}
+
+/// Undo `seal` (so a snapshot can be removed), never following a link.
+fn unseal(path: &Path) {
+    let Ok(meta) = std::fs::symlink_metadata(path) else { return };
+    if meta.file_type().is_symlink() {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode() | if meta.is_dir() { 0o700 } else { 0o200 };
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o7777));
+    }
+    #[cfg(not(unix))]
+    {
+        let mut p = meta.permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        p.set_readonly(false);
+        let _ = std::fs::set_permissions(path, p);
+    }
+    if meta.is_dir() {
+        for e in std::fs::read_dir(path).into_iter().flatten().flatten() {
+            unseal(&e.path());
+        }
+    }
+}
+
+fn remove_sealed(dir: &Path) {
+    unseal(dir);
+    if std::fs::symlink_metadata(dir).is_ok() {
+        remove_tree(dir);
+    }
+}
+
 /// An installed plugin as found on disk: its folder and manifest (or why
 /// the manifest can't be used).
 pub struct Found {
@@ -409,12 +555,19 @@ pub fn read_manifest(dir: &Path) -> Result<Manifest, String> {
     manifest::parse(&text)
 }
 
+/// Make a tree writable again so a test can delete it (snapshots are read-only).
+#[cfg(test)]
+pub fn unseal_for_tests(dir: &Path) {
+    unseal(dir);
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn temp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("strata-plugins-{tag}-{}", std::process::id()));
+        super::unseal_for_tests(&dir);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

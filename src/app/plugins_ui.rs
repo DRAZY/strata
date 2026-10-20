@@ -90,6 +90,13 @@ fn reserved(mods: egui::Modifiers, key: egui::Key) -> bool {
     crate::keys::exact(mods, crate::keys::CMD) && matches!(key, C | X | V | Q | H | M)
 }
 
+/// A plugin's text for a place that takes only a plain string (menus,
+/// tooltips, dialog lines): hidden and direction-changing characters
+/// spelled out (`[RLO]`), so one can't reorder or hide what's around it.
+fn shown(s: &str) -> String {
+    crate::hidden::plain(s).into_owned()
+}
+
 /// One line of text from a plugin, without control characters, at most `max` chars.
 fn line(s: &str, max: usize) -> String {
     s.lines().next().unwrap_or_default().chars().filter(|c| !c.is_control()).take(max).collect()
@@ -237,11 +244,11 @@ impl StrataApp {
                 .filter(|c| c.menu)
                 .map(|c| {
                     let hint = bound.iter().find(|b| b.plugin == p.name && b.command == c.id).map(|b| crate::keys::label(b.mods, b.key));
-                    Item::Action { label: c.title.clone(), act: Act::Named(format!("{ACT_PREFIX}{}:{}", p.name, c.id)), keys: None, hint, check: None, enabled: true }
+                    Item::Action { label: shown(&c.title), act: Act::Named(format!("{ACT_PREFIX}{}:{}", p.name, c.id)), keys: None, hint, check: None, enabled: true }
                 })
                 .collect();
             if !cmds.is_empty() {
-                subs.push(Item::Sub(mf.title.clone(), cmds));
+                subs.push(Item::Sub(shown(&mf.title), cmds));
             }
         }
         if !subs.is_empty() {
@@ -438,7 +445,8 @@ impl StrataApp {
             .collect::<Result<Vec<String>, RpcError>>()?;
         let hint = inc.params.get("placeholder").and_then(Value::as_str).map(|p| line(p, 100)).filter(|p| !p.is_empty()).unwrap_or_else(|| format!("{}: choose one", self.plugin_title(name)));
         self.plugins.pick = Some((name.to_owned(), run, inc.id.clone()));
-        self.choose(ctx, Choosing::Plugin, &hint, labels);
+        // The rows are drawn with markers by the palette; its hint is plain text.
+        self.choose(ctx, Choosing::Plugin, &shown(&hint), labels);
         Ok(())
     }
 
@@ -466,7 +474,8 @@ impl StrataApp {
         egui::Panel::bottom(id).resizable(true).default_size(200.0).min_size(80.0).show(ui, |ui| {
             ui.horizontal(|ui| {
                 let head = if p.title.is_empty() { p.plugin.clone() } else { format!("{}: {}", p.plugin, p.title) };
-                ui.label(RichText::new(head).strong());
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                ui.label(crate::hidden::widget(&head, font, ui.visuals().strong_text_color()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     close = ui.small_button("Close").clicked();
                 });
@@ -474,7 +483,10 @@ impl StrataApp {
             ui.separator();
             egui::ScrollArea::vertical().id_salt("plugin-panel-text").auto_shrink(false).show(ui, |ui| match &p.text {
                 Some(t) => {
-                    ui.add(egui::Label::new(RichText::new(t).monospace()).wrap());
+                    let font = egui::TextStyle::Monospace.resolve(ui.style());
+                    let mut job = crate::hidden::job(t, egui::text::TextFormat::simple(font, ui.visuals().text_color()));
+                    job.wrap.max_width = ui.available_width();
+                    ui.add(egui::Label::new(job).wrap());
                 }
                 None => link = render.show(ui, hl, size, &p.blocks).clicked,
             });
@@ -502,10 +514,11 @@ impl StrataApp {
             if k > 0 {
                 ui.label(RichText::new("·").weak());
             }
-            let tip = if s.tooltip.is_empty() { self.plugin_title(&s.plugin) } else { format!("{}: {}", self.plugin_title(&s.plugin), s.tooltip) };
+            let tip = shown(&if s.tooltip.is_empty() { self.plugin_title(&s.plugin) } else { format!("{}: {}", self.plugin_title(&s.plugin), s.tooltip) });
+            let text = crate::hidden::label(ui, &s.text);
             let r = match &s.command {
-                Some(_) => ui.add(egui::Button::new(&s.text).frame(false)),
-                None => ui.label(&s.text),
+                Some(_) => ui.add(egui::Button::new(text).frame(false)),
+                None => ui.label(text),
             };
             if r.on_hover_text(tip).clicked()
                 && let Some(c) = &s.command
@@ -537,23 +550,27 @@ impl StrataApp {
         let (mut allow, mut deny) = (false, false);
         egui::Modal::new(egui::Id::new("plugin-consent")).show(ctx, |ui| {
             ui.set_width((screen.width() - 80.0).clamp(320.0, 640.0));
-            ui.label(RichText::new(format!("Allow the {} plugin to run?", mf.title)).strong().size(size * 1.1));
+            ui.label(RichText::new(format!("Allow the {} plugin to run?", shown(&mf.title))).strong().size(size * 1.1));
             ui.add_space(4.0);
             let mut who = format!("{} {}", mf.title, mf.version);
             if !mf.author.is_empty() {
                 who.push_str(&format!(" by {}", mf.author));
             }
-            ui.label(RichText::new(who).size(small));
+            ui.label(RichText::new(shown(&who)).size(small));
             if !mf.description.is_empty() {
-                ui.add(egui::Label::new(RichText::new(&mf.description).size(small)).wrap());
+                ui.add(egui::Label::new(RichText::new(shown(&mf.description)).size(small)).wrap());
             }
             let mut command = mf.run.command.clone();
             for a in &mf.run.args {
                 command.push(' ');
                 command.push_str(a);
             }
-            ui.add(egui::Label::new(RichText::new(format!("Strata will run: {command}")).size(small).monospace()).wrap());
+            ui.add(egui::Label::new(RichText::new(format!("Strata will run: {}", shown(&command))).size(small).monospace()).wrap());
             ui.add(egui::Label::new(RichText::new(format!("In: {}", dir.display())).size(small)).wrap());
+            if !mf.run.in_package() {
+                let note = format!("{} itself, and libraries installed on your computer, aren't part of the package Strata checks.", shown(&mf.run.command));
+                ui.add(egui::Label::new(RichText::new(note).size(small).color(ui.visuals().weak_text_color())).wrap());
+            }
             ui.add_space(6.0);
             if mf.permissions.is_empty() {
                 ui.label(RichText::new("It asks for no permissions: it can add its commands and write to its own log, nothing more through Strata.").size(small));
@@ -590,7 +607,7 @@ impl StrataApp {
         let (mut remove, mut cancel) = (false, false);
         egui::Modal::new(egui::Id::new("plugin-remove")).show(ctx, |ui| {
             ui.set_width(420.0);
-            ui.label(RichText::new(format!("Remove {title}?")).strong());
+            ui.label(RichText::new(format!("Remove {}?", shown(&title))).strong());
             ui.add(egui::Label::new("Its copy in Strata's settings folder is deleted and what you allowed it is forgotten. Its own data (in the PluginData folder) stays.").wrap());
             ui.horizontal(|ui| {
                 remove = ui.button("Remove").clicked();
@@ -667,7 +684,7 @@ impl StrataApp {
                             for p in &m.plugins {
                                 let on = m.enabled(&p.name);
                                 let version = p.manifest.as_ref().map(|m| m.version.clone()).unwrap_or_default();
-                                let mut text = RichText::new(format!("{}  {version}", p.title()));
+                                let mut text = RichText::new(shown(&format!("{}  {version}", p.title())));
                                 if !on || p.manifest.is_err() {
                                     text = text.weak();
                                 }
@@ -681,11 +698,11 @@ impl StrataApp {
                     let Some(p) = m.plugins.iter().find(|p| st.selected.as_deref() == Some(p.name.as_str())) else { return };
                     ui.vertical(|ui| {
                         egui::ScrollArea::vertical().id_salt("plugin-details").show(ui, |ui| {
-                            ui.label(RichText::new(p.title()).strong().size(16.0));
+                            ui.label(RichText::new(shown(&p.title())).strong().size(16.0));
                             let on = m.enabled(&p.name);
                             match &p.manifest {
                                 Err(e) => {
-                                    ui.add(egui::Label::new(RichText::new(format!("This plugin can't be used: {e}")).color(ui.visuals().error_fg_color)).wrap());
+                                    ui.add(egui::Label::new(RichText::new(shown(&format!("This plugin can't be used: {e}"))).color(ui.visuals().error_fg_color)).wrap());
                                 }
                                 Ok(mf) => {
                                     let mut who = format!("Version {}", mf.version);
@@ -695,15 +712,15 @@ impl StrataApp {
                                     if !mf.license.is_empty() {
                                         who.push_str(&format!(" · {}", mf.license));
                                     }
-                                    ui.label(RichText::new(who).small());
+                                    ui.label(RichText::new(shown(&who)).small());
                                     if !mf.description.is_empty() {
-                                        ui.add(egui::Label::new(&mf.description).wrap());
+                                        ui.add(egui::Label::new(shown(&mf.description)).wrap());
                                     }
                                 }
                             }
                             ui.label(RichText::new(format!("Folder: {}", p.dir.display())).small().weak());
                             ui.add_space(4.0);
-                            ui.label(format!("Status: {}", if on { p.state.label() } else { "Turned off".into() }));
+                            ui.label(shown(&format!("Status: {}", if on { p.state.label() } else { "Turned off".into() })));
                             ui.horizontal(|ui| {
                                 let mut enabled = on;
                                 if ui.checkbox(&mut enabled, "Turned on").changed() {
@@ -744,11 +761,11 @@ impl StrataApp {
                                     ui.label(RichText::new("Commands").strong());
                                     for c in &mf.commands {
                                         let key = mf.keys.iter().find(|k| k.command == c.id).map(|k| format!("  ({})", crate::keys::label(k.mods, k.key))).unwrap_or_default();
-                                        ui.label(RichText::new(format!("{}: {}{key}", mf.title, c.title)).small());
+                                        ui.label(RichText::new(shown(&format!("{}: {}{key}", mf.title, c.title))).small());
                                     }
                                 }
                                 for c in conflicts.iter().filter(|c| c.plugin == p.name) {
-                                    ui.label(RichText::new(format!("Key {} isn't bound: {}", c.key, c.why)).small().color(ui.visuals().warn_fg_color));
+                                    ui.label(RichText::new(shown(&format!("Key {} isn't bound: {}", c.key, c.why))).small().color(ui.visuals().warn_fg_color));
                                 }
                                 if !mf.settings.is_empty() {
                                     ui.add_space(6.0);
@@ -756,7 +773,7 @@ impl StrataApp {
                                     ui.label(RichText::new(format!("Change these in settings.json under \"plugins\": {{\"{}\": {{…}}}}.", mf.name)).small().weak());
                                     for (k, s) in &mf.settings {
                                         let desc = if s.description.is_empty() { String::new() } else { format!(": {}", s.description) };
-                                        ui.label(RichText::new(format!("{k} (default {}){desc}", s.default)).small());
+                                        ui.label(RichText::new(shown(&format!("{k} (default {}){desc}", s.default))).small());
                                     }
                                 }
                             }
@@ -774,7 +791,7 @@ impl StrataApp {
                                         ui.label(RichText::new("Nothing logged yet.").small().weak());
                                     }
                                     for l in lines.iter().rev().take(300).rev() {
-                                        ui.label(RichText::new(l).small().monospace());
+                                        ui.label(RichText::new(shown(l)).small().monospace());
                                     }
                                 });
                             });

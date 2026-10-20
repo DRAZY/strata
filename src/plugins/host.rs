@@ -46,7 +46,8 @@ pub struct Launch {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub cwd: PathBuf,
-    pub env: Vec<(String, String)>,
+    /// The whole environment (nothing else is inherited; see `manager::clean_env`).
+    pub env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
 }
 
 /// A request (with an `id` to answer) or a notification for a window.
@@ -188,10 +189,7 @@ impl Host {
     /// the caller's first request.
     pub fn start(name: &str, launch: &Launch, perms: BTreeSet<Perm>, folders: Arc<Mutex<Vec<PathBuf>>>, log: Arc<Mutex<Log>>, ctx: Option<egui::Context>) -> Result<Host, String> {
         let mut cmd = std::process::Command::new(&launch.program);
-        cmd.args(&launch.args).current_dir(&launch.cwd);
-        for (k, v) in &launch.env {
-            cmd.env(k, v);
-        }
+        cmd.args(&launch.args).current_dir(&launch.cwd).env_clear().envs(launch.env.iter().map(|(k, v)| (k, v)));
         let (proc, stdin, stdout, stderr) = spawn_group(&mut cmd).map_err(|e| format!("couldn't start {}: {e}", launch.program.display()))?;
         log::info!("started plugin {name} (pid {})", proc.pid().unwrap_or(0));
         let shared = Arc::new(Mutex::new(Shared::default()));

@@ -26,7 +26,9 @@ The first time a plugin is about to start, Strata shows what it is and what it a
 - each permission it asks for, in plain words (the table below);
 - that Strata can't sandbox the program.
 
-**Allow and Start** remembers your answer for this exact package, by its name and a SHA-256 of every file in it. If any of its files change (an update, an edit, a file added), Strata asks again. **Don't Start** (or Esc) leaves it stopped; it won't ask again on its own until you quit, but running one of its commands or choosing **Start** in the Plugins manager asks again. Your answers are kept in `plugins.json` in the settings folder.
+**Allow and Start** remembers your answer for this exact package, by its name and a SHA-256 of every file in it. If any of its files change (an update, an edit, a file added), Strata asks again. What runs is always that exact package: when a plugin starts, Strata copies it into a read-only folder named by its SHA-256 (`Plugins/.snapshots`), asks about that copy, checks the copy once more right before starting it, and runs it from there, so files changed in the installed folder meanwhile never run unapproved. A copy changed outside Strata is refused and removed. Copies nothing was allowed for are removed when Strata starts.
+
+A plugin run by an interpreter (`python3`, `node`) depends on that interpreter and on libraries installed on your computer, which aren't part of the package Strata checks; the dialog says so. Strata does start plugins without the environment variables that make interpreters or the system load code from elsewhere (such as `PYTHONPATH`, `PYTHONSTARTUP`, `NODE_OPTIONS`, `NODE_PATH`, `RUBYLIB`, `PERL5LIB`, `LD_PRELOAD` and `DYLD_*`), and tells Python to ignore your user site folder and the current folder. **Don't Start** (or Esc) leaves it stopped; it won't ask again on its own until you quit, but running one of its commands or choosing **Start** in the Plugins manager asks again. Your answers are kept in `plugins.json` in the settings folder.
 
 | Permission | What the dialog says | What it allows through Strata |
 |---|---|---|
@@ -124,9 +126,9 @@ A plugin with no commands needs at least one activation event. Strata explains a
 
 ### Running
 
-The program starts in its own folder, with these in its environment: `STRATA_PLUGIN_API=strata.plugin/1`, `PYTHONUNBUFFERED=1` and `PYTHONDONTWRITEBYTECODE=1` (so Python doesn't write `__pycache__` into the package, which would change it and make Strata ask again). Strata looks for programs on your PATH and in the usual install folders, as for build systems.
+The program starts in its approved, read-only copy (see [Permission to run](#permission-to-run)), with Strata's environment minus the variables listed there, plus `STRATA_PLUGIN_API=strata.plugin/1`, `PYTHONUNBUFFERED=1`, `PYTHONDONTWRITEBYTECODE=1`, `PYTHONNOUSERSITE=1` and `PYTHONSAFEPATH=1`. Strata looks for programs on your PATH and in the usual install folders, as for build systems.
 
-A plugin must never write into its own folder. For files of its own, use the folder Strata gives it in `initialize` (`storagePath`).
+A plugin can't write into its own folder. For files of its own, use the folder Strata gives it in `initialize` (`storagePath`).
 
 Standard output is only for messages. Anything else (debugging, errors) goes to standard error, which Strata puts in the plugin's log.
 
@@ -221,7 +223,7 @@ Permission: `read_workspace` or `write_workspace`. No params. Result: `{"folders
 
 Permission: `read_workspace`. Params: `path`, absolute. Result: `{"text"}`.
 
-The file must be inside a folder open in the side bar, reached without going through any link (a link to somewhere else in the folder is refused too), and not inside a `.git` folder, whatever the path calls it (on Windows, names Windows would change, such as short `GIT~1` names, names ending in a dot or space, and `name:stream`, are refused). Errors: `-32013` (outside the folders, through a link, or in `.git`), `-32017` (not a file, or not UTF-8 text), `-32014` (larger than 16 MB).
+The file must be inside a folder open in the side bar, reached without going through any link (a link to somewhere else in the folder is refused too), have no other names (a hard-linked file could also live outside the folders, so it's refused), and not be inside a `.git` folder, whatever the path calls it (on Windows, names Windows would change, such as short `GIT~1` names, names ending in a dot or space, and `name:stream`, are refused). Errors: `-32013` (outside the folders, through a link, or in `.git`), `-32017` (not a file, or not UTF-8 text), `-32014` (larger than 16 MB).
 
 #### workspace/writeFile
 

@@ -268,7 +268,9 @@ pub(crate) type Spawned = (Arc<Proc>, Option<ChildStdin>, Option<ChildStdout>, O
 
 /// Start `cmd` with piped standard streams in a process group of its own
 /// (a job object on Windows, and no console window), so that `kill` also
-/// ends whatever it started (cargo check, a plugin's helpers…).
+/// ends whatever it started (cargo check, a plugin's helpers…). On Windows
+/// it starts suspended and runs only once it's in the job, so nothing it
+/// starts can get out first; if Windows won't put it in a job it never runs.
 pub(crate) fn spawn_group(cmd: &mut Command) -> std::io::Result<Spawned> {
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
@@ -280,12 +282,22 @@ pub(crate) fn spawn_group(cmd: &mut Command) -> std::io::Result<Spawned> {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
     }
     let mut child = cmd.spawn()?;
     let (stdin, stdout, stderr) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
     #[cfg(windows)]
-    let job = job::Job::holding(&child);
+    let job = match job::Job::holding(&child) {
+        Some(j) if job::Job::resume(&child) => Some(j),
+        // Not contained, so not run: it's still suspended and hasn't done anything.
+        other => {
+            drop(other);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::other("Windows wouldn't let Strata keep track of the processes it would start"));
+        }
+    };
     let proc = Arc::new(Proc {
         child: Mutex::new(Some(child)),
         #[cfg(windows)]
@@ -1003,6 +1015,43 @@ pub(crate) mod job {
                 }
                 Some(Job(job))
             }
+        }
+
+        /// Resume the threads of `child`, started suspended (once it's in a
+        /// job). False if there were none to resume or one couldn't be.
+        pub fn resume(child: &std::process::Child) -> bool {
+            use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+            use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next};
+            use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+            let pid = child.id();
+            let mut resumed = 0;
+            // SAFETY: plain Win32 calls on handles we open and close here; `entry` outlives them.
+            unsafe {
+                let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+                if snap == INVALID_HANDLE_VALUE {
+                    return false;
+                }
+                let mut entry: THREADENTRY32 = std::mem::zeroed();
+                entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+                let mut more = Thread32First(snap, &mut entry) != 0;
+                while more {
+                    if entry.th32OwnerProcessID == pid {
+                        let t = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                        if t.is_null() || ResumeThread(t) == u32::MAX {
+                            if !t.is_null() {
+                                CloseHandle(t);
+                            }
+                            CloseHandle(snap);
+                            return false;
+                        }
+                        CloseHandle(t);
+                        resumed += 1;
+                    }
+                    more = Thread32Next(snap, &mut entry) != 0;
+                }
+                CloseHandle(snap);
+            }
+            resumed > 0
         }
 
         pub fn terminate(&self) {

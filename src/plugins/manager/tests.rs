@@ -678,3 +678,168 @@ fn answers_to_an_earlier_run_never_reach_a_new_one() {
     drop(m);
     std::fs::remove_dir_all(config).ok();
 }
+
+/// A plugin whose program is a script in its package (`run.sh`), which
+/// starts the fake plugin with `words`; `PLUGIN_TEST_EXE` comes from the
+/// test environment (`parent_env_for_tests`).
+#[cfg(unix)]
+fn install_script(config: &Path, name: &str, words: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = config.join("Plugins").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let m = json!({"name": name, "version": "1.0.0", "api": API, "run": {"command": "./run.sh"}, "contributes": {"commands": [{"id": "read", "title": "Read"}]}});
+    std::fs::write(dir.join(crate::plugins::manifest::FILE), m.to_string()).unwrap();
+    write_script(&dir.join("run.sh"), words);
+    let _ = std::fs::Permissions::from_mode(0o700);
+    dir
+}
+
+#[cfg(unix)]
+fn write_script(path: &Path, words: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let body = format!("#!/bin/sh\nSTRATA_FAKE_PLUGIN='{words}' exec \"$PLUGIN_TEST_EXE\" --exact plugins::fake::fake_plugin --nocapture --test-threads=1 -q\n");
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+    std::fs::write(path, body).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[cfg(unix)]
+fn script_manager(config: &Path) -> Manager {
+    let mut m = Manager::new(Some(config), None);
+    let exe = std::env::current_exe().unwrap();
+    m.parent_env_for_tests = vec![("PLUGIN_TEST_EXE".into(), exe.into_os_string())];
+    m
+}
+
+#[cfg(unix)]
+#[test]
+fn the_approved_snapshot_runs_not_files_changed_since() {
+    let config = temp("mgr-snapshot");
+    let dir = install_script(&config, "script", "");
+    let mut m = script_manager(&config);
+    m.start("script");
+    let sha = until(&mut m, "the question", |m| m.question().map(|(_, s, _)| s.to_owned()));
+    // While the question is up, the installed copy is changed to one that can't start.
+    write_script(&dir.join("run.sh"), "exit-at-start");
+    m.answer(true);
+    until(&mut m, "the approved code to run", |m| match &m.plugins[0].state {
+        State::Running => Some(()),
+        State::Failed(why) => panic!("the changed files ran: {why}"),
+        _ => None,
+    });
+    let snap = config.join("Plugins/.snapshots").join(&sha);
+    assert!(snap.join("run.sh").is_file(), "it runs from its snapshot");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(snap.join("run.sh")).unwrap().permissions().mode() & 0o222, 0, "read-only");
+    }
+    m.stop("script");
+    // The changed install is another package: it asks again.
+    m.start("script");
+    let again = until(&mut m, "a new question", |m| m.question().map(|(_, s, _)| s.to_owned()));
+    assert_ne!(again, sha);
+    m.answer(false);
+    drop(m);
+    // Snapshots nothing was granted for go when Strata starts.
+    let m = script_manager(&config);
+    assert!(snap.exists(), "the granted one stays");
+    assert!(!config.join("Plugins/.snapshots").join(&again).exists(), "the refused one is pruned");
+    drop(m);
+    crate::plugins::package::unseal_for_tests(&config.join("Plugins"));
+    std::fs::remove_dir_all(config).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tampered_snapshot_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let config = temp("mgr-tamper");
+    install_script(&config, "script", "");
+    let mut m = script_manager(&config);
+    m.start("script");
+    let sha = until(&mut m, "the question", |m| m.question().map(|(_, s, _)| s.to_owned()));
+    // Changed while the question is up: refused right before it would run.
+    let snap = config.join("Plugins/.snapshots").join(&sha);
+    std::fs::set_permissions(&snap, std::fs::Permissions::from_mode(0o700)).unwrap();
+    write_script(&snap.join("run.sh"), "refuse");
+    m.answer(true);
+    let why = until(&mut m, "the refusal", |m| if let State::Failed(w) = &m.plugins[0].state { Some(w.clone()) } else { None });
+    assert!(why.contains("changed"), "{why}");
+    assert!(m.plugins[0].pid().is_none());
+    // Started again: a fresh copy of the (unchanged) install runs.
+    m.start("script");
+    until(&mut m, "the plugin to run", |m| matches!(m.plugins[0].state, State::Running).then_some(()));
+    drop(m);
+    crate::plugins::package::unseal_for_tests(&config.join("Plugins"));
+    std::fs::remove_dir_all(config).ok();
+}
+
+#[test]
+fn plugins_get_a_clean_environment() {
+    if !std::process::Command::new("python3").arg("--version").output().is_ok_and(|o| o.status.success()) {
+        eprintln!("python3 isn't installed: skipped");
+        return;
+    }
+    let config = temp("mgr-env");
+    let evil = config.join("evil");
+    std::fs::create_dir_all(&evil).unwrap();
+    std::fs::write(evil.join("strata_probe.py"), "FOUND = True\n").unwrap();
+    let dir = config.join("Plugins/probe");
+    std::fs::create_dir_all(&dir).unwrap();
+    let m = json!({"name": "probe", "version": "1.0.0", "api": API, "run": {"command": "python3", "args": ["probe.py"]}, "contributes": {"commands": [{"id": "env", "title": "Env"}]}});
+    std::fs::write(dir.join(crate::plugins::manifest::FILE), m.to_string()).unwrap();
+    // A minimal plugin that says whether it could import a module from PYTHONPATH.
+    let probe = r#"import json, os, sys
+def read():
+    n = None
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            sys.exit(0)
+        line = line.strip()
+        if not line:
+            if n is not None:
+                return json.loads(sys.stdin.buffer.read(n))
+            continue
+        if line.lower().startswith(b"content-length"):
+            n = int(line.split(b":")[1])
+def send(m):
+    b = json.dumps(m).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(b) + b)
+    sys.stdout.buffer.flush()
+try:
+    import strata_probe
+    found = True
+except ImportError:
+    found = False
+while True:
+    m = read()
+    if m.get("method") == "initialize":
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"api": "strata.plugin/1"}})
+    elif m.get("method") == "command/execute":
+        keys = ["PYTHONPATH", "PYTHONSTARTUP", "NODE_OPTIONS", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "PYTHONNOUSERSITE", "PYTHONSAFEPATH"]
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"found": found, "env": {k: os.environ.get(k) for k in keys}}})
+    elif "id" in m:
+        send({"jsonrpc": "2.0", "id": m["id"], "result": None})
+"#;
+    std::fs::write(dir.join("probe.py"), probe).unwrap();
+    let mut m = Manager::new(Some(&config), None);
+    let e = |s: &str| std::ffi::OsString::from(s);
+    m.parent_env_for_tests = vec![
+        (e("PYTHONPATH"), evil.clone().into_os_string()),
+        (e("PYTHONSTARTUP"), evil.join("strata_probe.py").into_os_string()),
+        (e("NODE_OPTIONS"), e("--require /tmp/evil.js")),
+        (e("DYLD_INSERT_LIBRARIES"), e("/tmp/evil.dylib")),
+        (e("LD_PRELOAD"), e("/tmp/evil.so")),
+    ];
+    start_granted(&mut m, "probe");
+    let r = command(&mut m, "probe", "env", json!({}), |_, _, _, _| {}).unwrap();
+    assert_eq!(r["found"], false, "PYTHONPATH wasn't honored: {r}");
+    for k in ["PYTHONPATH", "PYTHONSTARTUP", "NODE_OPTIONS", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD"] {
+        assert!(r["env"][k].is_null(), "{k} reached the plugin: {r}");
+    }
+    assert_eq!((r["env"]["PYTHONNOUSERSITE"].as_str(), r["env"]["PYTHONSAFEPATH"].as_str()), (Some("1"), Some("1")));
+    drop(m);
+    crate::plugins::package::unseal_for_tests(&config.join("Plugins"));
+    std::fs::remove_dir_all(config).ok();
+}

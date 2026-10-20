@@ -48,6 +48,37 @@ fn locate(roots: &[PathBuf], path: &Path) -> Result<(PathBuf, Vec<String>), RpcE
     Ok((root.clone(), parts))
 }
 
+/// How many names (hard links) the open file has. One elsewhere on the disk
+/// would let a plugin read or change a file outside the open folders.
+fn links(file: &std::fs::File) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        file.metadata().map_or(u64::MAX, |m| m.nlink())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+        // SAFETY: plain data, filled in by the call.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: a valid handle and a valid out pointer.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
+            return u64::MAX;
+        }
+        info.nNumberOfLinks as u64
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = file;
+        u64::MAX
+    }
+}
+
+fn hard_linked(path: &Path) -> RpcError {
+    RpcError::new(OUTSIDE_WORKSPACE, format!("{} has other names (hard links), maybe outside the open folders, so plugins can't read or write it", path.display()))
+}
+
 /// The folder holding the file, reached without following links, and not
 /// inside a `.git` folder by its real path.
 fn open_dir(root: &Path, dirs: &[&str], path: &Path) -> Result<imp::Dir, RpcError> {
@@ -74,6 +105,9 @@ pub fn read(roots: &[PathBuf], path: &Path) -> Result<String, RpcError> {
     if !file.metadata().is_ok_and(|m| m.is_file()) {
         return Err(RpcError::new(IO_ERROR, format!("{} isn't a file that can be read", path.display())));
     }
+    if links(&file) > 1 {
+        return Err(hard_linked(path));
+    }
     let mut bytes = Vec::new();
     (&file).take(MAX_TEXT as u64 + 1).read_to_end(&mut bytes).map_err(|e| RpcError::new(IO_ERROR, format!("couldn't read {}: {e}", path.display())))?;
     if bytes.len() > MAX_TEXT {
@@ -99,6 +133,9 @@ pub fn write(roots: &[PathBuf], path: &Path, text: &str) -> Result<(), RpcError>
             let meta = f.metadata().map_err(|e| RpcError::new(IO_ERROR, e.to_string()))?;
             if !meta.is_file() {
                 return Err(RpcError::new(OUTSIDE_WORKSPACE, format!("{} is a link or a folder, not a file", path.display())));
+            }
+            if links(&f) > 1 {
+                return Err(hard_linked(path));
             }
             #[cfg(unix)]
             {
@@ -236,6 +273,22 @@ mod tests {
         assert!(read(std::slice::from_ref(&inner), &inner.join("pre-commit.sample")).is_err());
         // Another spelling of the name, for case-insensitive disks.
         assert_eq!(write(std::slice::from_ref(&root), &root.join(".GIT/hooks/pre-commit"), "x").unwrap_err().code, OUTSIDE_WORKSPACE);
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn hard_linked_files_are_refused() {
+        let (base, root) = setup("ws-hardlink");
+        let roots = vec![root.clone()];
+        // A name inside the folder for a file that also lives outside it.
+        std::fs::hard_link(base.join("secret/key"), root.join("src/key")).unwrap();
+        let e = read(&roots, &root.join("src/key")).unwrap_err();
+        assert_eq!(e.code, OUTSIDE_WORKSPACE, "{}", e.message);
+        assert!(e.message.contains("hard link"), "{}", e.message);
+        let e = write(&roots, &root.join("src/key"), "pwned").unwrap_err();
+        assert_eq!(e.code, OUTSIDE_WORKSPACE, "{}", e.message);
+        assert_eq!(std::fs::read_to_string(base.join("secret/key")).unwrap(), "TOP SECRET");
+        assert_eq!(std::fs::read_to_string(root.join("src/key")).unwrap(), "TOP SECRET", "the inside name isn't replaced either");
         std::fs::remove_dir_all(base).ok();
     }
 

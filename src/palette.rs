@@ -572,6 +572,12 @@ fn rank_rows<T>(
 }
 
 /// The label with matched chars bold and tinted.
+/// The text a row named `label` is laid out as (tests of other modules' rows).
+#[cfg(test)]
+pub fn highlighted_for_tests(label: &str) -> String {
+    highlighted(label, &[], 14.0, Color32::WHITE, Color32::RED).text
+}
+
 fn highlighted(label: &str, hits: &[usize], size: f32, fg: Color32, accent: Color32) -> LayoutJob {
     let font = FontId::proportional(size);
     let normal = TextFormat::simple(font.clone(), fg);
