@@ -786,7 +786,7 @@ pub fn unseal_for_tests(dir: &Path) {
 
 /// Tests: sealing snapshots under `config` fails, as a refused
 /// `set_permissions` would.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub fn fail_seal_for_tests(config: &Path) {
     seal_fails().lock().unwrap_or_else(|e| e.into_inner()).push(config.to_path_buf());
 }

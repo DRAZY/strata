@@ -220,7 +220,7 @@ impl Palette {
     }
 
     /// The highlighted row's label (tests).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn selected_label(&self) -> Option<&str> {
         self.rows.get(self.selected).map(|r| r.label.as_str())
     }
@@ -585,7 +585,7 @@ fn rank_rows<T>(
 
 /// The label with matched chars bold and tinted.
 /// The text a row named `label` is laid out as (tests of other modules' rows).
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub fn highlighted_for_tests(label: &str) -> String {
     highlighted(label, &[], 14.0, Color32::WHITE, Color32::RED).text
 }

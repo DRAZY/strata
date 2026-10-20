@@ -1373,6 +1373,7 @@ pub(crate) mod tests {
 
     // ---- against real repositories ----
 
+    #[cfg(unix)]
     const GIT_WAIT: Duration = Duration::from_secs(60);
 
     pub(crate) fn run(dir: &Path, args: &[&str]) {

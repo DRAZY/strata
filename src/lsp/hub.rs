@@ -774,7 +774,7 @@ impl Hub {
     }
 
     /// The folder the server handling `path` runs in (tests).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn root_for(&self, path: &Path) -> Option<PathBuf> {
         let i = (*self.assigned.get(&uri::normalize(path))?)?;
         Some(self.slots[i].root.clone())

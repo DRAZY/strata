@@ -294,6 +294,7 @@ mod tests {
     }
 
     /// The fake server's hover at the start of `path`'s word `at`: says how often it was opened.
+    #[cfg(unix)]
     fn hover_text(hub: &Hub, window: u64, path: &Path, col: u32) -> Option<String> {
         let (server, _) = hub.server_for(window, path)?;
         let mut p = server.request("textDocument/hover", json!({"textDocument": {"uri": uri::from_path(&hub.server_path(path))}, "position": {"line": 0, "character": col}}));
@@ -454,6 +455,7 @@ mod tests {
 
     /// Replace `path` as an atomic save does (Strata's, for a file with one
     /// name): a new file renamed over it, so a new inode.
+    #[cfg(unix)]
     fn save_atomically(path: &Path, text: &str) {
         let tmp = path.with_extension("tmp-save");
         std::fs::write(&tmp, text).unwrap();
