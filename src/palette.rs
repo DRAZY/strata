@@ -186,6 +186,28 @@ impl Palette {
         self.show_mode(Mode::Choice, "", ctx, egui_ctx);
     }
 
+    /// New labels for the choices on show, in the same order (a list shown
+    /// at once and filled in when its details arrive). The highlighted
+    /// choice stays highlighted. Ignored if another list is up by now.
+    pub fn update_choices(&mut self, choices: Vec<String>) {
+        if !self.open || self.mode != Mode::Choice || choices.len() != self.choices.len() {
+            return;
+        }
+        let chosen = self.rows.get(self.selected).and_then(|r| if let Pick::Choice(i) = r.pick { Some(i) } else { None });
+        self.choices = choices;
+        self.rows_key = None;
+        self.rebuild();
+        if let Some(k) = chosen.and_then(|c| self.rows.iter().position(|r| matches!(r.pick, Pick::Choice(i) if i == c))) {
+            self.selected = k;
+        }
+    }
+
+    /// The choice labels on show (tests).
+    #[cfg(test)]
+    pub fn choice_labels(&self) -> &[String] {
+        &self.choices
+    }
+
     pub fn mode(&self) -> Mode {
         self.mode
     }

@@ -83,6 +83,11 @@ impl Link {
         true
     }
 
+    /// `path` is open in another window (nothing is asked of it).
+    pub fn is_open_elsewhere(&self, path: &Path) -> bool {
+        self.elsewhere.iter().any(|p| p == path)
+    }
+
     /// Select `cols` on `line` where `open_elsewhere` sent `path`.
     pub fn select_elsewhere(&mut self, path: &Path, line: usize, cols: Range<usize>) {
         if let Some(r) = self.requests.reveal.iter_mut().rev().find(|(p, _)| p == path) {
@@ -111,6 +116,8 @@ impl StrataApp {
         app.clip_history.clone_from(&self.clip_history);
         // Fonts belong to the egui context, which every window shares.
         app.fonts_key.clone_from(&self.fonts_key);
+        // So do the language servers.
+        app.lsp = super::lsp_ui::LspState::sharing(self.lsp.hub.clone());
         // A shell starts on launch only in the first window.
         app.terminal_started = true;
         // Dev aids act on the first window.

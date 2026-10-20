@@ -128,6 +128,11 @@ pub struct EditorView {
     jump: bool,
     /// Misspelled words to underline (filled by the app, see `spell::Marks`).
     pub spell: crate::spell::Marks,
+    /// The char the mouse pointer rests on (never past a line's end) and
+    /// where the pointer is, as of this frame: for hover information.
+    pub pointer_char: Option<(usize, Pos2)>,
+    /// The line whose gutter the pointer is over, and where the pointer is.
+    pub pointer_gutter: Option<(usize, Pos2)>,
     /// First and last line painted last frame.
     painted: (usize, usize),
     /// Column maps of long lines, for the text version and tab width they were made for.
@@ -322,6 +327,8 @@ impl EditorView {
             jump: false,
             context_line: None,
             spell: Default::default(),
+            pointer_char: None,
+            pointer_gutter: None,
             painted: (0, 0),
             long_lines: Default::default(),
         }
@@ -641,6 +648,12 @@ impl EditorView {
         self.scroll.y += std::mem::take(&mut self.pending_scroll) as f32 * m.row_h;
         let hover = ui.input(|i| i.pointer.hover_pos()).filter(|_| resp.hovered());
         self.gutter_hover = hover.is_some_and(|p| m.gutter.contains(p));
+        let resting = hover.filter(|_| !resp.dragged() && !ui.input(|i| i.pointer.any_down()));
+        self.pointer_char = resting.filter(|p| m.text.contains(*p)).and_then(|p| self.char_under(ui, ed, &m, p).map(|c| (c, p)));
+        self.pointer_gutter = resting.filter(|p| m.gutter.contains(*p)).and_then(|p| {
+            let row = self.row_at(&m, p.y);
+            (row >= 0.0 && (row as usize) < self.total_rows(ed, &m)).then(|| (self.row_line(ed, &m, row as usize).0, p))
+        });
         let on_sticky = hover.is_some_and(|p| self.sticky.iter().any(|(r, ..)| r.contains(p)));
         if on_sticky || hover.is_some_and(|p| self.pills.iter().any(|(r, _)| r.contains(p))) {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -1073,6 +1086,26 @@ impl EditorView {
         (line, lr.dcols[r.start] + col)
     }
 
+    /// The char whose cell `p` is in; None past a line's end or the last line.
+    fn char_under(&self, ui: &Ui, ed: &Editor, m: &Metrics, p: Pos2) -> Option<usize> {
+        let row = self.row_at(m, p.y);
+        if row < 0.0 || row as usize >= self.total_rows(ed, m) {
+            return None;
+        }
+        let (line, seg, sub, galley) = self.hit_row(ui, ed, m, row as usize);
+        let x = p.x - seg.x(m);
+        if x < 0.0 || x >= galley.size().x {
+            return None;
+        }
+        let cursor = galley.cursor_from_pos(vec2(x, m.row_h * 0.5));
+        // The nearest boundary may be the char's right edge: step back into it.
+        let mut col = cursor.index.0;
+        if col > 0 && galley.pos_from_cursor(cursor).min.x > x {
+            col -= 1;
+        }
+        Some(ed.buffer.line_start(line) + seg.start + seg.rows.off_at_col(sub, col))
+    }
+
     fn pos_to_char(&self, ui: &Ui, ed: &Editor, m: &Metrics, p: Pos2) -> usize {
         let row = self.row_at(m, p.y);
         if row < 0.0 {
@@ -1297,6 +1330,9 @@ impl EditorView {
         let mut indent_above = 0;
         let all_empty = ed.selections().iter().all(|s| s.is_empty());
         self.pills.clear();
+        // Diagnostic markers that touch the lines on screen.
+        let shown_end = ed.buffer.line_end(last);
+        let markers: Vec<&crate::editor::Marker> = ed.markers().iter().filter(|mk| mk.range.start <= shown_end && mk.range.end >= first_char && marker_color(mk.style, light).is_some()).collect();
 
         for &col in &self.rulers {
             let x = (m.origin_x + col as f32 * m.char_w).round() + 0.5;
@@ -1321,6 +1357,10 @@ impl EditorView {
             let on_caret_line = caret_lines.contains(&line);
             let fold_end = self.folds.at_header(line).map_or(line, |i| self.folds.list()[i].end);
             let mark = line_mark(&self.line_marks, line..=fold_end);
+            let (whole_start, whole_end) = (ed.buffer.line_start(line), ed.buffer.line_end(line));
+            let line_markers: Vec<&crate::editor::Marker> = markers.iter().copied().filter(|mk| mk.range.start <= whole_end && mk.range.end >= whole_start).collect();
+            // The gutter dot: the most severe diagnostic starting on the line.
+            let gutter_style = line_markers.iter().filter(|mk| mk.range.start >= whole_start).map(|mk| mk.style).min();
 
             // Trailing whitespace, unless a caret is in it (typing).
             let trail = decor::trailing_ws(text).filter(|&t| {
@@ -1494,6 +1534,22 @@ impl EditorView {
                     }
                 }
 
+                // Diagnostics: a wavy underline in the severity's color. An
+                // empty range marks the char at it, or a char's width past the
+                // line's end.
+                for mk in &line_markers {
+                    let Some(color) = marker_color(mk.style, light) else { continue };
+                    let (s, e) = if mk.range.is_empty() { (mk.range.start, mk.range.start + 1) } else { (mk.range.start, mk.range.end) };
+                    let (a, b) = (s.max(row_start), e.min(row_end));
+                    let base = y + m.pad + m.text_h - 1.0;
+                    if b > a {
+                        squiggle(&text_painter, x_at(a), x_at(b), base, color);
+                    } else if last_sub && s >= whole_end && s <= row_end && row_end == whole_end {
+                        let x = x_at(row_end);
+                        squiggle(&text_painter, x, x + m.char_w, base, color);
+                    }
+                }
+
                 if let Some(chars) = &ws_chars {
                     let spans: Vec<Range<usize>> = match self.show_whitespace {
                         Whitespace::All => vec![r.clone()],
@@ -1579,6 +1635,11 @@ impl EditorView {
                     notch(y + m.row_h);
                 }
                 if sub == 0 {
+                    // A line with a diagnostic gets a dot (a bookmark is drawn over it).
+                    if let Some(color) = gutter_style.and_then(|s| marker_color(s, light)) {
+                        let c = pos2(m.gutter.left() + m.char_w * 0.9, y + m.row_h / 2.0);
+                        painter.circle_filled(c, (m.row_h * 0.17).max(2.5), color);
+                    }
                     // Bookmarked lines get a marker at the left of the gutter.
                     let marks = ed.bookmarks();
                     let k = marks.partition_point(|&b| b < line_start);
@@ -1942,6 +2003,19 @@ fn squiggle(painter: &egui::Painter, x0: f32, x1: f32, y: f32, color: Color32) {
 /// Unmatched brackets, and misspelled words.
 fn error_color(light: bool) -> Color32 {
     if light { Color32::from_rgb(0xD0, 0x20, 0x20) } else { Color32::from_rgb(0xFF, 0x55, 0x55) }
+}
+
+/// A diagnostic marker's color by its style (the protocol's severity: 1
+/// error, 2 warning, 3 information). Hints (4) aren't drawn.
+pub fn marker_color(style: u8, light: bool) -> Option<Color32> {
+    match (style, light) {
+        (1, _) => Some(error_color(light)),
+        (2, false) => Some(Color32::from_rgb(0xE5, 0xA3, 0x3A)),
+        (2, true) => Some(Color32::from_rgb(0xB2, 0x6B, 0x00)),
+        (3, false) => Some(Color32::from_rgb(0x5C, 0x9C, 0xF5)),
+        (3, true) => Some(Color32::from_rgb(0x1F, 0x6F, 0xD8)),
+        _ => None,
+    }
 }
 
 /// Green, blue and red, toned to sit on the theme background.

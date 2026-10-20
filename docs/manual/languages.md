@@ -117,3 +117,75 @@ Brackets, colons and tags inside strings and comments are ignored. With `smart_i
 | Shell scripts (bash) | Functions |
 
 For other languages, Strata lists lines that start with a common definition keyword such as `function`, `func`, `fn`, `def`, `sub`, `proc`, `class`, `struct`, `interface` or `module`.
+
+## Language servers
+
+A language server is a program, made by a language's community, that understands the language the way its compiler does. When one is installed for a file's language, Strata starts it in the background and uses it for:
+
+- **Problems.** Errors get a red wavy underline, warnings an amber one and notes a blue one, with a dot in the gutter on their line. Rest the mouse pointer on the underline or the dot to read the message. The status bar counts the current file's errors and warnings; click it, or run **LSP: Show Problems…** ({{key:lsp_problems}}), to list every problem the server reports in the project. **LSP: Next Problem** ({{key:lsp_next_problem}}) and **LSP: Previous Problem** ({{key:lsp_prev_problem}}) select the next or previous problem in the current file and show its message.
+- **Completions.** The server's suggestions come first in the completion list, with a short description at the right (the function's signature, say) and its documentation beside the list. They appear as you type a word and after a `.` (or whatever the language uses); {{key:auto_complete}} asks for them right away. Choosing one may also add what it needs, such as an import at the top of the file.
+- **Hover information.** Rest the mouse pointer on a name for half a second to see its type and documentation, or run **LSP: Show Hover Info** ({{key:lsp_hover}}) for the name at the cursor. Moving the pointer away, typing or pressing Esc closes it.
+- **Go to Definition and Go to Reference.** {{key:goto_definition}} and {{key:goto_reference}} ask the server first (see [Go to Definition](find.md#go-to-definition)).
+- **Rename Symbol.** **LSP: Rename Symbol…** ({{key:lsp_rename}}) renames the name at the cursor everywhere it's used. Type the new name and press Enter (Esc cancels). Files that aren't open are opened so you can look over the changes; nothing is saved until you save. Each file's change is one step of Undo in its tab.
+- **Format Document.** **LSP: Format Document** ({{key:lsp_format}}) has the server reformat the file, as one step of Undo. Cursors stay on the text they were on.
+- **Parameter hints.** Typing `(` or `,` in a call shows the function's parameters above the cursor, the current one underlined. **LSP: Show Parameter Hints** ({{key:lsp_signature_help}}) shows them on request; Esc closes them.
+
+These commands are also in **Tools ▸ Language Server**.
+
+The status bar shows the server for the current file and how it's doing: "starting…", what it's working on (rust-analyzer says "Indexing" while it reads a project), the problem counts once it's ready, or "restarting" if it stopped. A server that stops on its own is started again after a short pause (longer each time); after five stops in a few minutes Strata waits until you run **LSP: Restart Language Servers** or click the status bar. Messages about a server appear in the status bar, never in a dialog.
+
+Servers see files by their real paths, with links resolved, so a file reached through a link, or under another spelling, is still the same file. If one file is open in more than one tab (in two windows, or opened through two different paths), its server follows the tab that opened it first; the others show no problems and get no completions or other server features until that tab closes. Files a rename opens appear under their real paths.
+
+Strata talks to servers only on your computer, through their input and output: it doesn't download servers, and makes no network connections for them. Large files opened in [large-file mode](troubleshooting.md#very-large-files) aren't sent to servers.
+
+### Trusting a project
+
+Language servers can run code from the project they work on: rust-analyzer runs build scripts and procedural macros and the tools a project's `.cargo/config.toml` names, and other servers may load plugins from the project. So the first time a server would start for a project folder, Strata asks in the corner of the window: "Start language servers for “folder”?"
+
+- **Start** starts them until you quit Strata.
+- **Always for This Folder** starts them and remembers the folder (and the folders inside it) in Strata's own settings folder, in `lsp_trusted_folders.json`, never in the project.
+- **Not Now** leaves them off for this session. The status bar shows the server as "not started"; click it to be asked again.
+
+You can keep typing while the question is up; until you answer, completions are words from the file and Go to Definition uses Strata's own search. Servers you add in `lsp_servers` are asked about the same way. To start servers everywhere without being asked, set `lsp_trust_all` to `true` (**Start language servers without asking** in the Settings window).
+
+### Built-in servers
+
+Strata knows these servers and uses them when their program is installed (on your `PATH`, or in a usual place such as `~/.cargo/bin`, `/opt/homebrew/bin` or `~/go/bin`; apps opened from the Finder on macOS don't see your shell's `PATH`, so Strata adds those folders itself):
+
+| Name | Server | Files | How to install it |
+|------|--------|-------|-------------------|
+| `rust` | rust-analyzer | `.rs` | `rustup component add rust-analyzer` |
+| `typescript` | typescript-language-server | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts` | `npm install -g typescript-language-server typescript` |
+| `python` | pyright | `.py`, `.pyi` | `npm install -g pyright` |
+| `go` | gopls | `.go` | `go install golang.org/x/tools/gopls@latest` |
+| `c` | clangd | C, C++ and Objective-C files | Xcode's command line tools (macOS) or LLVM |
+
+One server runs per language and project. The project is the nearest folder above the file that holds one of the server's marker files: for Rust `Cargo.lock`, then `Cargo.toml` (so a workspace's crates share one server); for TypeScript `tsconfig.json`, `jsconfig.json` or `package.json`; for Python `pyrightconfig.json`, `pyproject.toml`, `setup.py`, `setup.cfg` or `requirements.txt`; for Go `go.work` or `go.mod`; for C `.clangd`, `compile_commands.json` or `compile_flags.txt`. Without one, it's the open folder that holds the file, or else the file's own folder.
+
+### Setting up servers
+
+`lsp_servers` in `settings.json` changes the built-in servers and adds your own. Each entry is named; an entry with a built-in name changes only the fields it gives:
+
+```json
+"lsp_servers": {
+    "rust": { "settings": { "rust-analyzer": { "check": { "command": "clippy" } } } },
+    "python": { "enabled": false },
+    "zig": { "command": "zls", "file_patterns": ["*.zig"], "root_markers": ["build.zig"] }
+}
+```
+
+| Field | What it does |
+|-------|--------------|
+| `command` | The server's program: a name looked up on `PATH`, or a full path. Required for a new server. |
+| `args` | Arguments for it, for example `["--stdio"]`. |
+| `file_patterns` | The file names it handles, as patterns such as `*.zig`. Required for a new server. A new server is tried before the built-in ones, so it can take over their files. |
+| `root_markers` | File names that mark a project's top folder, tried in order. |
+| `initialization_options` | A value sent to the server when it starts (see its documentation). |
+| `settings` | The server's settings, which it asks for by section; for rust-analyzer they go under `"rust-analyzer"`. |
+| `language_id` | The language name sent to the server; by default it follows the file extension (`rust`, `typescriptreact`, `cpp`…). |
+| `env` | Environment variables for the server, for example `{"RUST_LOG": "info"}`. |
+| `enabled` | `false` turns the server off. |
+
+If the program of a server you added (or whose `command` you changed) can't be found, the status bar says so. Built-in servers that aren't installed are skipped quietly. Changes apply when you save `settings.json`: the running servers stop and start again as files need them.
+
+Set `lsp_enabled` to `false` (**Language servers** in the Settings window's Editor section) to turn language servers off altogether; Go to Definition and Go to Reference then use Strata's own search.

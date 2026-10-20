@@ -27,6 +27,8 @@ pub(super) enum Choosing {
     Snippet(Vec<crate::snippets::Snippet>),
     /// Compare with…: the other side, for the tab with this view id.
     Compare(Vec<super::compare_ui::CompareChoice>, egui::Id),
+    /// Places a language server named (references, problems), in its positions.
+    Locations(Vec<(PathBuf, (crate::lsp::position::Pos, crate::lsp::position::Pos), crate::lsp::position::Encoding)>),
 }
 
 impl StrataApp {
@@ -128,6 +130,12 @@ impl StrataApp {
                     self.push_jump();
                     self.open_path(p, false);
                     self.goto_line(line);
+                }
+            }
+            Choosing::Locations(spots) => {
+                if let Some((p, range, enc)) = spots.get(i).cloned() {
+                    self.push_jump();
+                    self.lsp_open_location(&p, range, enc);
                 }
             }
         }

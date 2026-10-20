@@ -1405,7 +1405,7 @@ fn command(p: &Prepared) -> Command {
 }
 
 /// GUI apps on macOS start with a bare PATH; add the usual toolchain dirs that exist.
-fn augmented_path() -> Option<std::ffi::OsString> {
+pub(crate) fn augmented_path() -> Option<std::ffi::OsString> {
     if cfg!(windows) {
         return None;
     }
