@@ -254,7 +254,7 @@ impl StrataApp {
                 c("HTML…", Cmd::ExportHtml),
                 c("PDF…", Cmd::ExportPdf),
                 SEP(),
-                c("Markdown as HTML…", Cmd::ExportMarkdownHtml).enabled(crate::markdown::is_markdown(d.path.as_deref(), d.highlighter.syntax_name())),
+                c("Markdown as HTML…", Cmd::ExportMarkdownHtml).enabled(self.unavailable(Cmd::ExportMarkdownHtml).is_none()),
             ]),
             sub("Compare", {
                 let comparing = d.compare.as_ref();
@@ -272,7 +272,7 @@ impl StrataApp {
             c("Close Window", Cmd::CloseWindow),
             SEP(),
             c("Close File", Cmd::CloseTab),
-            c("Revert File", Cmd::RevertFile).enabled(d.path.is_some()),
+            c("Revert File", Cmd::RevertFile).enabled(self.unavailable(Cmd::RevertFile).is_none()),
             c("Close All Files", Cmd::CloseAll),
         ];
         if !MAC {
@@ -488,7 +488,7 @@ impl StrataApp {
                         layout("Grid: 4", Cmd::LayoutGrid, (cols, rows) == (2, 2)),
                     ],
                 ),
-                sub("Groups", vec![c("Move File to New Group", Cmd::MoveToNewGroup), c("New Group", Cmd::NewGroup), c("Close Group", Cmd::CloseGroup).enabled(groups > 1)]),
+                sub("Groups", vec![c("Move File to New Group", Cmd::MoveToNewGroup), c("New Group", Cmd::NewGroup), c("Close Group", Cmd::CloseGroup).enabled(self.unavailable(Cmd::CloseGroup).is_none())]),
                 sub("Focus Group", group_items(Cmd::FocusGroup, Cmd::FocusNextGroup, Cmd::FocusPrevGroup)),
                 sub("Move File to Group", group_items(Cmd::MoveToGroup, Cmd::MoveToNextGroup, Cmd::MoveToPrevGroup)),
                 SEP(),
@@ -632,7 +632,7 @@ impl StrataApp {
         names.sort_unstable_by_key(|n| n.to_lowercase());
         names.dedup();
         systems.extend(names.into_iter().map(|n| Item::new(n, Act::Named(format!("bs:{n}"))).checked(self.build_system.as_deref() == Some(n))));
-        systems.extend([SEP(), c("New Build System…", Cmd::NewBuildSystem).enabled(self.config.is_some())]);
+        systems.extend([SEP(), c("New Build System…", Cmd::NewBuildSystem).enabled(self.unavailable(Cmd::NewBuildSystem).is_none())]);
         m.push((
             "Tools".into(),
             vec![

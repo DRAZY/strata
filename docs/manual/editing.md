@@ -98,7 +98,7 @@ As you type a word, Strata shows a list of matching words from the current file,
 
 - The list appears once you've typed two letters of a word.
 - Use the Up and Down arrows to choose, then Enter or Tab to insert. Esc closes the list. You can also click an entry.
-- **Edit ▸ Show Completions** ({{key:auto_complete}}) shows the list on demand. If only one word matches, it's inserted right away.
+- **Edit ▸ Show Completions** ({{key:auto_complete}}) shows the list on demand. If only one word matches, it's inserted right away. If nothing matches, the status bar says "No completions".
 
 To stop the list appearing while you type, set `"auto_complete": false` in your settings. Show Completions still works. See [Settings](settings.md).
 

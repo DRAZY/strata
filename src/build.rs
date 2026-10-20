@@ -1066,8 +1066,22 @@ impl Build {
         {
             return self.run_choice(&last, ctx);
         }
-        let sys = self.systems.automatic(ctx).cloned().ok_or_else(|| "No build system for this file".to_owned())?;
+        let Some(sys) = self.systems.automatic(ctx).cloned() else { return Err(self.no_build_system()) };
         self.start(&sys, None, ctx)
+    }
+
+    /// Nothing fits the file: say so in the panel too (unless a build is
+    /// running there), with where to make one. Returns the message.
+    pub fn no_build_system(&mut self) -> String {
+        let e = "No build system for this file. Make one with Tools ▸ Build System ▸ New Build System…".to_owned();
+        if !self.running {
+            self.rx = None;
+            self.visible = true;
+            self.current = None;
+            self.scroll_to = None;
+            self.fail_early("Build", e.clone());
+        }
+        e
     }
 
     /// ⇧⌘B: run `choice` and remember it for ⌘B.

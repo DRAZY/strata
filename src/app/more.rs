@@ -274,7 +274,7 @@ impl StrataApp {
 
     /// Jump between foo.h and foo.c / foo.cpp / foo.m (and back).
     pub(super) fn switch_header(&mut self) {
-        let Some(path) = self.docs[self.active].path.clone() else { return };
+        let path = self.docs[self.active].path.clone().unwrap_or_default();
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
         let headers = ["h", "hh", "hpp", "hxx", "h++", "inl", "ipp"];
         let sources = ["c", "cc", "cpp", "cxx", "c++", "m", "mm"];

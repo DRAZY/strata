@@ -80,7 +80,7 @@ Edit ▸ Copy as HTML is a different command: it copies the selected source code
 
 ## Exporting to HTML
 
-Choose File ▸ Export ▸ Markdown as HTML… (or "Markdown: Export as HTML…" in the command palette, or Export as HTML… in the preview's right-click menu). The menu item is available when the current file is Markdown. Strata asks where to save, suggesting the file's name with `.html` in the same folder, and the status bar confirms when the file is written.
+Choose File ▸ Export ▸ Markdown as HTML… (or "Markdown: Export as HTML…" in the command palette, or Export as HTML… in the preview's right-click menu). The menu item is available when the current file is Markdown; from the palette, a file that isn't Markdown gets a message in the status bar instead. Strata asks where to save, suggesting the file's name with `.html` in the same folder, and the status bar confirms when the file is written.
 
 The page is exported from the text in the editor, so unsaved changes are included.
 

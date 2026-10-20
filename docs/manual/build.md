@@ -33,7 +33,7 @@ A build system that fits gets 2 points for matching the file and 2 points for fi
 
 For example, a `.rs` file inside a Cargo project fits both Cargo and Rust with the same score, and Cargo wins because it comes first. A `.js` file in a folder with `package.json` fits both Node and npm; Node wins, and you can use Build With… to run npm instead.
 
-If nothing fits, the status bar says "No build system for this file".
+If nothing fits (a plain text or Markdown file, say, or an untitled one), the Build Results panel and the status bar say "No build system for this file", and point you to Tools ▸ Build System ▸ New Build System… to make one. Build With… says the same instead of opening an empty list.
 
 ### Choosing one yourself
 
@@ -90,7 +90,7 @@ Output lines that the build system recognizes as a file location, such as `src/m
 
 File locations printed in the [terminal](terminal.md#opening-files-from-the-output) can be opened too, with a ⌘-click (Ctrl+click on Windows and Linux).
 
-To step through results from the keyboard, use Tools ▸ Build Results ▸ Next Result ({{key:next_result}}) and Previous Result ({{key:prev_result}}). Both wrap around, open the file at the result, and highlight the result in the panel.
+To step through results from the keyboard, use Tools ▸ Build Results ▸ Next Result ({{key:next_result}}) and Previous Result ({{key:prev_result}}). Both wrap around, open the file at the result, and highlight the result in the panel. When there's nothing to step through (no build has run, or it printed no file locations), the status bar says "No build results".
 
 Each built-in build system recognizes its tools' messages: Rust compiler locations, the `file:line:column: message` style of C compilers, Go and Make, Python tracebacks, Node stack traces, Ruby and bash errors, and TypeScript compiler errors for npm.
 
@@ -228,7 +228,7 @@ Problems are reported in the status bar, and problems with a build also appear i
 | Build systems: untitled.json: expected value at line 1 column 11 | The file isn't valid JSON (a missing comma or quote, a comment, a trailing comma). |
 | Build systems: untitled.json: a build system needs a "name" and a "cmd" | Add the missing field. |
 | Build systems: My Make: bad file_regex: … | Fix the regular expression. |
-| No build system for this file | Nothing fits the current file. Use Build With…, or add a selector to your build system. |
+| No build system for this file | Nothing fits the current file. Make one with New Build System…, or add a selector to your build system. |
 | $file: this build needs a saved file | Save the file first. |
 | $folder: this build needs an open folder | Open a folder, or use `$file_path` instead. |
 | My Make: working directory … does not exist | Check `working_dir`. |

@@ -507,6 +507,12 @@ impl GitWatcher {
         let dir = path.parent()?;
         self.shared.repos.lock().unwrap_or_else(|e| e.into_inner()).get(dir).cloned().flatten()
     }
+
+    /// Whether a file's folder is in a repo; None until that's known.
+    pub fn in_repo(&self, path: &Path) -> Option<bool> {
+        let dir = path.parent()?;
+        self.shared.repos.lock().unwrap_or_else(|e| e.into_inner()).get(dir).map(Option::is_some)
+    }
 }
 
 impl Drop for GitWatcher {

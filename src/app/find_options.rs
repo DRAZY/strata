@@ -20,6 +20,7 @@ impl Default for FindBar {
             replacement: String::new(),
             focus_query: false,
             origin: 0,
+            incremental: false,
             last_query: Query::default(),
             in_selection: o.in_selection,
             wrap: o.wrap,
