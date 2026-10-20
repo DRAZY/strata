@@ -461,25 +461,35 @@ pub fn snapshot(config: &Path, dir: &Path) -> Result<(String, Manifest), String>
         // The marker first: whatever happens next, the folder is Strata's to remove.
         imp::write_new_mode(&d, MARKER, MARKER_TEXT, 0o400).map_err(|e| format!("couldn't make a copy of it: {e}"))?;
         imp::write_new_mode(&d, LOCK, b"", 0o400).map_err(|e| format!("couldn't make a copy of it: {e}"))?;
+        // Held until it has its name and is sealed again (see below).
+        let lock = imp::open_file_at(&d, LOCK).map_err(|e| format!("couldn't make a copy of it: {e}"))?;
+        lock.try_lock().map_err(|e| format!("couldn't make a copy of it: {e}"))?;
         let package = real.join(&tmp).join(PACKAGE);
         copy_tree(dir, &package)?;
         let found = identity(&package)?;
         seal(config, &package)?;
         seal(config, &real.join(&tmp))?;
         check_sealed(&real.join(&tmp))?;
-        Ok(found)
+        Ok((found, d, lock))
     })();
-    let (sha, manifest) = match made {
+    let ((sha, manifest), d, lock) = match made {
         Ok(r) => r,
         Err(e) => {
             remove_snapshot(&root, &real, &tmp);
             return Err(e);
         }
     };
-    if imp::move_noreplace(&root, &tmp, &root, &sha) != crate::claim::Moved::Done {
-        // One for this identity is there already (an earlier start, or
-        // another window just now); `open_snapshot` checks it before it runs.
+    let (moved, why, resealed) = name_sealed(&root, &tmp, &sha, d, lock);
+    if moved != crate::claim::Moved::Done {
         remove_snapshot(&root, &real, &tmp);
+        // Else one for this identity is there already (an earlier start, or
+        // another window just now); `open_snapshot` checks it before it runs.
+        if imp::open_dir(&root, &sha).is_err() {
+            return Err(format!("couldn't keep its approved copy ({why}), so it wasn't started"));
+        }
+    } else if let Err(e) = resealed {
+        remove_snapshot(&root, &real, &sha);
+        return Err(format!("couldn't make its approved copy read-only ({e}), so it wasn't started"));
     }
     Ok((sha, manifest))
 }
@@ -600,6 +610,36 @@ fn writable_dir(d: &imp::Dir) {
 
 #[cfg(not(unix))]
 fn writable_dir(_d: &imp::Dir) {}
+
+/// Give the sealed snapshot `tmp` (open as `d`, its `lock` held) its name
+/// `sha`, never replacing one: how the move went, the error if it didn't,
+/// and whether the folder is sealed again.
+///
+/// Some systems (macOS 14) won't rename a folder its owner can't write to,
+/// so the folder is opened up for the move and sealed again through its
+/// handle; meanwhile the lock keeps any other Strata from running (or
+/// pruning) it unsealed.
+#[cfg(unix)]
+fn name_sealed(root: &imp::Dir, tmp: &str, sha: &str, d: imp::Dir, lock: std::fs::File) -> (crate::claim::Moved, std::io::Error, std::io::Result<()>) {
+    use std::os::fd::AsRawFd;
+    writable_dir(&d);
+    let moved = imp::move_noreplace(root, tmp, root, sha);
+    let why = std::io::Error::last_os_error();
+    // SAFETY: changing our own folder's permissions through its descriptor.
+    let resealed = if unsafe { libc::fchmod(d.as_raw_fd(), 0o500) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) };
+    drop(lock);
+    (moved, why, resealed)
+}
+
+/// Windows seals files only, and an open handle in a folder keeps it from
+/// being renamed: both are let go first.
+#[cfg(not(unix))]
+fn name_sealed(root: &imp::Dir, tmp: &str, sha: &str, d: imp::Dir, lock: std::fs::File) -> (crate::claim::Moved, std::io::Error, std::io::Result<()>) {
+    drop(lock);
+    drop(d);
+    let moved = imp::move_noreplace(root, tmp, root, sha);
+    (moved, std::io::Error::last_os_error(), Ok(()))
+}
 
 #[cfg(unix)]
 fn clear_read_only(_d: &imp::Dir, _name: &str) {
