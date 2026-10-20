@@ -113,6 +113,47 @@ fn find_bar_keeps_focus_after_the_palette_closes() {
     assert_eq!(app.docs[0].editor.buffer.line_text(0), "hello world", "not into the editor");
 }
 
+/// A find field opened with text in it has that text selected, so typing
+/// replaces it; after Return the field keeps the keyboard.
+#[test]
+fn find_fields_open_with_their_text_selected() {
+    let dir = temp_dir("find-select");
+    std::fs::write(dir.join("a.txt"), "hello world\n").unwrap();
+    let ctx = Context::default();
+    let mut app = StrataApp::new(None, None);
+    app.open_folder(dir.clone());
+    app.open_path(dir.join("a.txt"), false);
+    for _ in 0..3 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    // Find: the query from last time is selected.
+    app.find.query.text = "earlier".into();
+    frame(&mut app, &ctx, vec![press(Key::F, primary())]);
+    frame(&mut app, &ctx, vec![]);
+    frame(&mut app, &ctx, vec![Event::Text("wor".into())]);
+    assert_eq!(app.find.query.text, "wor", "typing replaced the query");
+    frame(&mut app, &ctx, vec![press(Key::Escape, Modifiers::NONE)]);
+    assert!(!app.find.open);
+
+    // Find in Files: prefilled from the selection, selected too.
+    app.docs[app.active].editor.select_ranges(&[0..5], 0);
+    frame(&mut app, &ctx, vec![press(Key::F, primary() | Modifiers::SHIFT)]);
+    frame(&mut app, &ctx, vec![]);
+    assert_eq!(app.sidebar.query.text, "hello");
+    frame(&mut app, &ctx, vec![Event::Text("wor".into())]);
+    assert_eq!(app.sidebar.query.text, "wor", "typing replaced the prefill");
+    // Return searches and leaves the keyboard in the field.
+    frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+    for _ in 0..3 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    frame(&mut app, &ctx, vec![press(Key::A, primary())]);
+    frame(&mut app, &ctx, vec![Event::Text("hel".into())]);
+    assert_eq!(app.sidebar.query.text, "hel", "Select All and typing still reach the field");
+    assert_eq!(app.docs[app.active].editor.buffer.line_text(0), "hello world");
+    std::fs::remove_dir_all(dir).ok();
+}
+
 #[test]
 fn toggle_side_bar_check_matches_what_is_shown() {
     use crate::menus::Item;

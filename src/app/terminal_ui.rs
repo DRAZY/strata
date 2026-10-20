@@ -662,6 +662,48 @@ mod tests {
         assert_eq!(app.terminal.tabs.len(), 1, "later sends reuse it");
     }
 
+    /// However a terminal is opened (palette, menu, shortcut, toggle), it
+    /// gets the keyboard: what you type next goes to the shell, not the file.
+    #[test]
+    fn a_new_terminal_gets_the_keyboard() {
+        let palette = if crate::keys::MAC { Modifiers::MAC_CMD | Modifiers::COMMAND | Modifiers::SHIFT } else { Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT };
+        type Open<'a> = &'a dyn Fn(&mut StrataApp, &egui::Context);
+        let ways: [(&str, Open); 4] = [
+            ("palette", &|app, ctx| {
+                frame(app, ctx, vec![key(Key::P, palette)]);
+                frame(app, ctx, vec![Event::Text("new terminal".into())]);
+                frame(app, ctx, vec![]);
+                assert_eq!(app.palette.selected_label(), Some("Terminal: New Terminal"));
+                frame(app, ctx, vec![key(Key::Enter, Modifiers::NONE)]);
+            }),
+            ("menu", &|app, ctx| app.run_act(ctx, crate::menus::Act::Cmd(Cmd::NewTerminal))),
+            ("shortcut", &|app, ctx| {
+                let (mods, k) = Cmd::NewTerminal.default_keys()[0];
+                frame(app, ctx, vec![key(k, mods)]);
+            }),
+            ("toggle", &|app, ctx| {
+                let (mods, k) = Cmd::ToggleTerminal.default_keys()[0];
+                frame(app, ctx, vec![key(k, mods)]);
+            }),
+        ];
+        for (way, open) in ways {
+            let ctx = egui::Context::default();
+            let mut app = StrataApp::new(None, None);
+            app.docs[0].editor.insert_text("file");
+            frame(&mut app, &ctx, vec![]);
+            app.doc().view.focus();
+            frame(&mut app, &ctx, vec![]);
+            assert!(app.docs[app.active].view.has_focus(&ctx));
+            open(&mut app, &ctx);
+            frame(&mut app, &ctx, vec![]);
+            frame(&mut app, &ctx, vec![]);
+            assert_eq!(app.terminal.tabs.len(), 1, "{way}");
+            assert!(app.terminal.has_focus(&ctx), "{way}: the new terminal has the keyboard");
+            frame(&mut app, &ctx, vec![Event::Text("x".into())]);
+            assert_eq!(app.docs[app.active].editor.buffer.line_text(0), "file", "{way}: nothing typed into the file");
+        }
+    }
+
     #[test]
     fn toggle_type_and_hide() {
         let ctx = egui::Context::default();

@@ -775,10 +775,12 @@ impl Sidebar {
                     ui.add(egui::TextEdit::singleline(text).id(id).hint_text(hint).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY))
                 });
                 if focus {
-                    r.request_focus();
+                    crate::ctxmenu::focus_selecting_all(ui.ctx(), id, text);
                 }
+                // Return searches and keeps the keyboard here, like the find bar.
                 if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     find = true;
+                    r.request_focus();
                 }
             });
         };
