@@ -475,8 +475,12 @@ impl StrataApp {
             c.go_to_hunk(&mut d.editor, k);
         }
         c.focus();
+        // Line breaks of lines that matched all along show as no change.
+        let breaks_differ = left == 0 && *d.editor.text_snapshot() != *c.base_text();
         let unsaved = if d.is_dirty() { " (unsaved)" } else { "" };
-        self.status = if left == 0 {
+        self.status = if breaks_differ {
+            format!("{done}. No changes left in {}, but some line endings still differ: Revert File puts them back{unsaved}", Self::review_name(path))
+        } else if left == 0 {
             format!("{done}. No changes left in {}{unsaved}", Self::review_name(path))
         } else {
             format!("{done}. {} left in {}{unsaved}", plural(left, "change"), Self::review_name(path))
@@ -494,8 +498,14 @@ impl StrataApp {
         let d = &mut self.docs[i];
         let c = d.compare.as_mut().expect("review tab");
         let cur = d.editor.text_snapshot();
-        let new = review::keep_edit(c.base_text(), &cur, &c.hunks()[k]);
+        let mut new = review::keep_edit(c.base_text(), &cur, &c.hunks()[k]);
         c.set_base(&new);
+        c.refresh(&mut d.editor, 0.0, true);
+        // The last change kept: the whole text is accepted, line breaks too.
+        if c.hunks().is_empty() {
+            new = cur.to_string();
+            c.set_base(&new);
+        }
         self.review.kept.insert(path.clone(), Arc::new(new));
         self.review_after_edit(i, k, "Kept", &path);
     }
@@ -539,12 +549,16 @@ impl StrataApp {
         }
         let enc = self.review.base_enc.get(&path).copied().unwrap_or(self.docs[i].encoding);
         match (f.status, f.old.clone()) {
-            (Status::Renamed, _) if f.case_only => {
-                self.status = format!("{} was only renamed in letter case: rename it back in the side bar, or with Git", f.rel);
+            (Status::Renamed, _) if f.alias => {
+                self.status = format!("{} was only respelled (letter case or accents), so it's the same file: rename it back in the side bar, or with Git", f.rel);
                 return;
             }
             (Status::Added, _) => {
-                self.review.confirm = Some(Confirm { path, restore: None });
+                if let Some(twin) = self.review_twin(&path) {
+                    self.status = format!("{} is the same file as {twin} under another spelling: rename it back in the side bar, or with Git", f.rel);
+                } else {
+                    self.review.confirm = Some(Confirm { path, restore: None });
+                }
                 return;
             }
             (Status::Renamed, Some((old, _))) => {
@@ -590,6 +604,17 @@ impl StrataApp {
         }
     }
 
+    /// A file in the base that is the same file on disk as `path` under
+    /// another spelling (see `review::tracked_twin`).
+    fn review_twin(&self, path: &Path) -> Option<String> {
+        let scan = self.review.scan.as_ref()?;
+        let at_start: Vec<&String> = match &self.review.base {
+            Base::Snapshot(s) => s.files.iter().filter(|(_, b)| b.is_some()).map(|(r, _)| r).collect(),
+            Base::Head => Vec::new(),
+        };
+        review::tracked_twin(&scan.top, path, scan.tracked.keys().chain(at_start))
+    }
+
     fn review_needs_tab(&mut self) {
         self.status = "Open a file from the Changes list first (Review: Show Changes)".into();
     }
@@ -632,15 +657,21 @@ impl StrataApp {
     pub(super) fn review_confirmed(&mut self) {
         let Some(Confirm { path, restore }) = self.review.confirm.take() else { return };
         // Still the file the list showed, inside this repository, and not one
-        // that is the same file as a tracked one under other letter case.
+        // that is the same file as a tracked one under another spelling.
         let Some(f) = self.review.file(&path).cloned() else {
             self.status = format!("{} is no longer in the list: nothing was moved", Self::review_name(&path));
             return;
         };
-        if !matches!(f.status, Status::Added | Status::Renamed) || f.case_only || !self.review_path_ok(&f) {
-            if f.case_only {
-                self.status = format!("{} was only renamed in letter case: nothing was moved", f.rel);
+        if !matches!(f.status, Status::Added | Status::Renamed) || f.alias || !self.review_path_ok(&f) {
+            if f.alias {
+                self.status = format!("{} is the same file as before, only respelled: nothing was moved", f.rel);
             }
+            return;
+        }
+        // A "new" file that is really a tracked one under another spelling
+        // is the only copy: never trashed, whatever the list said.
+        if let Some(twin) = self.review_twin(&path) {
+            self.status = format!("{} is the same file as {twin}: nothing was moved", f.rel);
             return;
         }
         if let Err(e) = crate::trash::move_to_trash(&path) {
@@ -1029,7 +1060,7 @@ impl StrataApp {
                             action = Some(ListAction::KeepFile(f.path.clone()));
                             ui.close();
                         }
-                        if ui.add_enabled(!f.binary && f.blocked.is_none() && !f.case_only, egui::Button::new("Revert File…")).on_hover_text("Put the whole file back as it was").clicked() {
+                        if ui.add_enabled(!f.binary && f.blocked.is_none() && !f.alias, egui::Button::new("Revert File…")).on_hover_text("Put the whole file back as it was").clicked() {
                             action = Some(ListAction::RevertFile(f.path.clone()));
                             ui.close();
                         }
@@ -1045,7 +1076,7 @@ impl StrataApp {
                             (_, true) => (None, Some("binary".to_owned())),
                             (Some((0, 0)), _) if f.status == Status::Modified => (None, Some("line endings".to_owned())),
                             (Some((a, r)), _) => ((a > 0).then(|| format!("+{a}")), (r > 0).then(|| format!("−{r}"))),
-                            _ if f.case_only => (None, None),
+                            _ if f.alias => (None, None),
                             (None, _) => (None, Some("large".to_owned())),
                         };
                         // Right to left: removed, then added.
@@ -1235,24 +1266,65 @@ mod tests {
     /// README.md renamed to Readme.md is one file (on a case-insensitive
     /// disk, the same file): listed as a rename, never trashed by Revert.
     #[test]
-    fn a_case_only_rename_is_never_trashed() {
+    fn a_respelled_file_is_never_trashed() {
         let Some(dir) = temp_repo("ui-case") else { return };
+        // café.txt, its name in composed form (NFC), as most tools write it.
+        std::fs::write(dir.join("caf\u{e9}.txt"), "accent\n").unwrap();
+        run(&dir, &["add", "."]);
+        run(&dir, &["commit", "-q", "-m", "accent"]);
         let mut app = app_for(&dir);
-        std::fs::rename(dir.join("README.md"), dir.join("Readme.md")).unwrap();
+        // Renamed by letter case, and by Unicode form (decomposed, NFD).
+        let renames = [("README.md", "Readme.md", "# Title\n\nText.\n"), ("caf\u{e9}.txt", "cafe\u{301}.txt", "accent\n")];
+        for (old, new, _) in renames {
+            std::fs::rename(dir.join(old), dir.join("tmp")).unwrap();
+            std::fs::rename(dir.join("tmp"), dir.join(new)).unwrap();
+        }
         rescan(&mut app);
-        assert_eq!(listed(&app), vec![("Readme.md".into(), Status::Renamed)]);
-        let new = dir.join("Readme.md");
-        assert!(app.review.file(&new).unwrap().case_only);
-        assert!(open(&mut app, &new));
+        for (old, new, text) in renames {
+            let path = dir.join(new);
+            let f = app.review.file(&path).unwrap_or_else(|| panic!("{new} not listed: {:?}", listed(&app))).clone();
+            assert_eq!(f.status, Status::Renamed, "{new}");
+            // Whether the disk treats both names as one file decides how it's shown.
+            assert_eq!(f.alias, review::same_file(&dir.join(old), &path), "{new}");
+            assert!(open(&mut app, &path));
+            let t = app.active;
+            app.review_revert_file(t);
+            if f.alias {
+                assert!(app.review.confirm.is_none(), "no Trash question for {new}");
+                assert!(app.status.contains("respelled"), "{}", app.status);
+                // Even if asked somehow, nothing moves.
+                app.review.confirm = Some(Confirm { path: path.clone(), restore: None });
+                app.review_confirmed();
+            }
+            assert!(path.exists() || dir.join(old).exists(), "{new}: the only copy went");
+            if f.alias {
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+            }
+            app.review.confirm = None;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The last line of defense: a "new" file that is the same file as a
+    /// tracked one (here a hard link, on any disk) is never trashed.
+    #[cfg(unix)]
+    #[test]
+    fn a_new_file_that_is_a_tracked_one_is_never_trashed() {
+        let Some(dir) = temp_repo("ui-twin") else { return };
+        let mut app = app_for(&dir);
+        let twin = dir.join("twin.md");
+        std::fs::hard_link(dir.join("README.md"), &twin).unwrap();
+        std::fs::write(dir.join("README.md"), "# Title\n\nText, edited through the twin.\n").unwrap();
+        rescan(&mut app);
+        assert_eq!(app.review.file(&twin).map(|f| f.status), Some(Status::Added));
+        assert!(open(&mut app, &twin));
         let t = app.active;
         app.review_revert_file(t);
         assert!(app.review.confirm.is_none(), "no Trash question");
-        assert!(app.status.contains("letter case"), "{}", app.status);
-        // Even if asked somehow, nothing moves.
-        app.review.confirm = Some(Confirm { path: new.clone(), restore: None });
+        assert!(app.status.contains("same file as README.md"), "{}", app.status);
+        app.review.confirm = Some(Confirm { path: twin.clone(), restore: None });
         app.review_confirmed();
-        assert!(new.exists());
-        assert_eq!(std::fs::read_to_string(&new).unwrap(), "# Title\n\nText.\n");
+        assert!(twin.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

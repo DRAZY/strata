@@ -93,8 +93,10 @@ pub struct FileChange {
     /// Git checks this file out with `\r\n` where the base has `\n`
     /// (`core.autocrlf`, `eol=crlf`): the base reads that way too.
     pub crlf: bool,
-    /// A rename that only changed letter case: one file on a case-insensitive disk.
-    pub case_only: bool,
+    /// A rename to another spelling of the same file on this disk (letter
+    /// case, or the Unicode form of an accent, on macOS and Windows): one
+    /// file, never two to delete or restore separately.
+    pub alias: bool,
     /// Fingerprint of the file's bytes (of the base's, for a deleted file;
     /// of its size and times, for one too big to read).
     pub hash: u64,
@@ -132,6 +134,8 @@ pub struct Scan {
     pub files: Vec<FileChange>,
     /// Files on disk that Git filters (LFS and the like), not compared.
     pub filtered: usize,
+    /// The base commit's files (relative path → blob id).
+    pub tracked: Arc<HashMap<String, String>>,
     pub took: Duration,
 }
 
@@ -356,6 +360,8 @@ struct Stat {
     len: u64,
     mtime: Option<SystemTime>,
     change: u64,
+    /// Which file it is (device and inode), where the system says; 0 elsewhere.
+    id: (u64, u64),
 }
 
 fn stat_of(m: &std::fs::Metadata) -> Stat {
@@ -364,9 +370,14 @@ fn stat_of(m: &std::fs::Metadata) -> Stat {
         use std::os::unix::fs::MetadataExt;
         m.ino() ^ (m.ctime() as u64).rotate_left(32) ^ m.ctime_nsec() as u64
     };
+    #[cfg(unix)]
+    let id = {
+        use std::os::unix::fs::MetadataExt;
+        (m.dev(), m.ino())
+    };
     #[cfg(not(unix))]
-    let change = 0;
-    Stat { len: m.len(), mtime: m.modified().ok(), change }
+    let (change, id) = (0, (0, 0));
+    Stat { len: m.len(), mtime: m.modified().ok(), change, id }
 }
 
 /// A regular file's stat (not a link, not a folder).
@@ -420,11 +431,15 @@ struct Cache {
     /// Bytes of base blobs one scan may read; past it, files are listed
     /// without line counts (and read when opened).
     blob_budget: usize,
+    /// Another system config file for the line-ending settings (tests).
+    system_config: Option<PathBuf>,
+    /// Files hashed by the last scan (tests check rescans skip unchanged ones).
+    hashed: usize,
 }
 
 impl Default for Cache {
     fn default() -> Self {
-        Self { top: None, tree: None, seen: HashMap::new(), blob_budget: BLOB_BUDGET }
+        Self { top: None, tree: None, seen: HashMap::new(), blob_budget: BLOB_BUDGET, system_config: None, hashed: 0 }
     }
 }
 
@@ -554,12 +569,16 @@ struct Attrs {
 
 /// Attributes for `rels` (`git check-attr`, which only reads the attribute
 /// files and config; it runs nothing).
-fn attributes(top: &Path, rels: &[&str]) -> HashMap<String, Attrs> {
+fn attributes(top: &Path, rels: &[&str], system: Option<&Path>) -> HashMap<String, Attrs> {
     let mut out: HashMap<String, Attrs> = HashMap::new();
     if rels.is_empty() {
         return out;
     }
-    let autocrlf = crate::git::git_line(top, &["config", "--get", "core.autocrlf"]).is_some_and(|v| v.eq_ignore_ascii_case("true"));
+    // As Git sees them, system config included (Git for Windows sets
+    // core.autocrlf=true there), in any of Git's spellings of true.
+    let config = |key: &str| crate::git::config_value(top, key, system).map(|v| v.to_ascii_lowercase());
+    let autocrlf = config("core.autocrlf").is_some_and(|v| matches!(v.as_str(), "true" | "yes" | "on" | "1"));
+    let eol_crlf = config("core.eol").as_deref() == Some("crlf");
     for chunk in rels.chunks(BATCH) {
         let input: Vec<u8> = chunk.iter().flat_map(|r| [r.as_bytes(), b"\0"]).flatten().copied().collect();
         let args = ["check-attr", "-z", "--stdin", "eol", "text", "filter", "working-tree-encoding"];
@@ -574,7 +593,12 @@ fn attributes(top: &Path, rels: &[&str]) -> HashMap<String, Attrs> {
             let crlf = match get("eol") {
                 "crlf" => true,
                 "lf" => false,
-                _ => autocrlf && get("text") != "unset",
+                _ => match get("text") {
+                    "unset" => false,
+                    // core.eol applies to files marked as text (or text=auto).
+                    "set" | "auto" => autocrlf || eol_crlf,
+                    _ => autocrlf,
+                },
             };
             let named = |k: &str| (!matches!(get(k), "unspecified" | "unset")).then(|| format!("{k}={}", get(k)));
             out.insert(path.to_owned(), Attrs { crlf, filter: named("filter").or_else(|| named("working-tree-encoding")) });
@@ -650,8 +674,44 @@ pub fn inside(top: &Path, path: &Path) -> bool {
     }
 }
 
+/// `a` and `b` are the same file on disk (one file under two spellings, or
+/// a hard link): same device and inode where there are such, else the same
+/// real path as the system resolves it.
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(x), Ok(y)) = (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+            return (x.dev(), x.ino()) == (y.dev(), y.ino());
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// A file in `tracked` (relative paths in the base) that is the same file
+/// on disk as `path`, under another spelling. Before trashing a "new" file:
+/// if it's really a tracked one, it's the only copy.
+pub fn tracked_twin<'a>(top: &Path, path: &Path, tracked: impl Iterator<Item = &'a String>) -> Option<String> {
+    let rel = rel_of(top, path)?;
+    let parent = path.parent()?;
+    let dir = |r: &str| r.rsplit_once('/').map_or(String::new(), |(d, _)| d.to_owned());
+    // Tracked files in the same folder, which may be spelled differently too:
+    // the folders are compared by identity, once each.
+    let mut folders: HashMap<String, bool> = HashMap::new();
+    tracked
+        .filter(|t| **t != rel)
+        .filter(|t| *folders.entry(dir(t)).or_insert_with_key(|d| same_file(&top.join(d), parent)))
+        .find(|t| same_file(&top.join(t.as_str()), path))
+        .cloned()
+}
+
 fn change(path: PathBuf, rel: &str, status: Status) -> FileChange {
-    FileChange { path, rel: rel.to_owned(), old: None, status, lines: None, binary: false, blocked: None, filtered: false, crlf: false, case_only: false, hash: 1, kept: false }
+    FileChange { path, rel: rel.to_owned(), old: None, status, lines: None, binary: false, blocked: None, filtered: false, crlf: false, alias: false, hash: 1, kept: false }
 }
 
 /// Find the files under `folder`'s repository that differ from `base`.
@@ -668,7 +728,7 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
     };
     // Another repository: nothing remembered applies.
     if cache.top.as_ref() != Some(&top) {
-        *cache = Cache { top: Some(top.clone()), blob_budget: cache.blob_budget, ..Cache::default() };
+        *cache = Cache { top: Some(top.clone()), blob_budget: cache.blob_budget, system_config: cache.system_config.take(), ..Cache::default() };
     }
     let commit = match &snapshot {
         Some(s) => s.commit.clone(),
@@ -686,28 +746,40 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
         None => Arc::default(),
     };
     let mut work = walk(&top)?;
-    let lower: HashMap<String, String> = work.keys().map(|r| (r.to_lowercase(), r.clone())).collect();
     let mut in_base: Vec<&String> = tree.keys().collect();
     if let Some(s) = &snapshot {
         in_base.extend(s.files.iter().filter(|(_, b)| b.is_some()).map(|(r, _)| r));
     }
     // Files in the base the walk didn't list: a link now (never followed),
-    // the same file under other letter case (on a case-insensitive disk),
-    // or ignored yet committed (still counts).
+    // another spelling of a file the walk did list (letter case, Unicode
+    // form: the disk finds the same file under both names), or ignored yet
+    // committed (still counts). Which file a name reaches is decided by its
+    // identity, not by comparing names.
+    let by_id: HashMap<(u64, u64), &String> = work.iter().filter(|(_, s)| s.id != (0, 0)).map(|(r, s)| (s.id, r)).collect();
+    let lower: HashMap<String, &String> = work.keys().map(|r| (r.to_lowercase(), r)).collect();
     let mut links = HashSet::new();
     let mut case_pairs = Vec::new();
+    let mut extra = Vec::new();
     for rel in in_base {
         if work.contains_key(rel) {
             continue;
         }
         if link_in(&top, rel) {
             links.insert(rel.clone());
-        } else if let Some(other) = lower.get(&rel.to_lowercase()).filter(|o| *o != rel) {
-            case_pairs.push((rel.clone(), other.clone()));
-        } else if let Some(s) = stat(&top.join(rel)) {
-            work.insert(rel.clone(), s);
+            continue;
+        }
+        let Some(s) = stat(&top.join(rel)) else { continue };
+        let other = match by_id.get(&s.id) {
+            Some(other) if s.id != (0, 0) => Some((*other).clone()),
+            // No file ids here: the same file is what the system resolves both names to.
+            _ => lower.get(&rel.to_lowercase()).filter(|o| same_file(&top.join(rel), &top.join(o))).map(|o| (*o).clone()),
+        };
+        match other {
+            Some(other) if other != *rel => case_pairs.push((rel.clone(), other)),
+            _ => extra.push((rel.clone(), s)),
         }
     }
+    work.extend(extra);
     let mut paths: HashSet<&String> = work.keys().collect();
     paths.extend(tree.keys());
     if let Some(s) = &snapshot {
@@ -748,6 +820,7 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
         }
     }
     let to_hash: Vec<&str> = todo.iter().filter(|(r, st, src)| st.is_some() && matches!(src, Some(Src::Blob(_))) && !r.contains('\n')).map(|(r, _, _)| r.as_str()).collect();
+    cache.hashed = to_hash.len();
     let ids = hash_files(&top, &to_hash);
     let mut slow = Vec::new();
     for (rel, st, src) in todo {
@@ -761,7 +834,7 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
         slow.push((rel, st, src, key));
     }
     let blob_rels: Vec<&str> = slow.iter().filter(|s| matches!(s.2, Some(Src::Blob(_)))).map(|s| s.0.as_str()).collect();
-    let attrs = attributes(&top, &blob_rels);
+    let attrs = attributes(&top, &blob_rels, cache.system_config.as_deref());
     // Base blobs a chunk at a time, within the scan's budget.
     let mut budget = cache.blob_budget;
     for chunk in slow.chunks(BATCH) {
@@ -794,8 +867,6 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
                 Some(Src::Bytes(b)) => Some(b.clone()),
                 None => None,
             };
-            // A blob that wasn't read (budget, size): list the file, don't remember it.
-            let complete = !matches!(src, Some(Src::Blob(_))) || base_bytes.is_some() || a.filter.is_some();
             let blob_filter = a.filter.clone().filter(|_| matches!(src, Some(Src::Blob(_))));
             let work_bytes = match (st, &blob_filter) {
                 (Some(_), None) => read_small(&path),
@@ -843,9 +914,10 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
                 }
             }
             found.extend(f.clone());
-            if complete {
-                seen.insert(rel.clone(), (*st, *key, f));
-            }
+            // Remembered even when the blob wasn't read (too big, past the
+            // budget): a huge file isn't hashed again until it changes; it
+            // just stays without line counts.
+            seen.insert(rel.clone(), (*st, *key, f));
         }
     }
     cache.seen = seen;
@@ -858,7 +930,7 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
         let f = &mut found[j];
         f.status = Status::Renamed;
         f.old = Some((old_path, old));
-        f.case_only = true;
+        f.alias = true;
         f.lines = (same && !f.binary).then_some((0, 0));
         found.remove(i);
     }
@@ -877,7 +949,7 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
     found.retain(|f| !(f.filtered && f.status == Status::Modified));
     let filtered = before - found.len();
     found.sort_by(|a, b| a.rel.cmp(&b.rel));
-    Ok(Scan { top, commit, files: found, filtered, took: started.elapsed() })
+    Ok(Scan { top, commit, files: found, filtered, tracked: tree.clone(), took: started.elapsed() })
 }
 
 /// A deleted file and a new one with the same bytes are one renamed file.
@@ -1511,6 +1583,99 @@ pub(crate) mod tests {
         assert!(text.starts_with("日本語"));
         // Bytes that aren't clean text in any encoding: refused.
         assert!(decode_base(b"\xEF\xBB\xBFok \xFF\xFE\xFD", crate::encoding::Encoding::UTF8).is_err());
+    }
+
+    /// The re-audit's fuzz: 300,000 random pairs; each single change swaps
+    /// exactly its lines, and reverting every change gives the base's lines back.
+    #[test]
+    fn keep_and_revert_fuzz() {
+        let mut seed: u64 = 0x1234_5678;
+        let mut rnd = move |n: u64| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % n
+        };
+        let alpha = ["a", "b", "c", "\n", "\n", "\r\n", "\r", "é"];
+        let mut fails = Vec::new();
+        for _ in 0..300_000 {
+            let n = rnd(12);
+            let base: String = (0..n).map(|_| alpha[rnd(alpha.len() as u64) as usize]).collect();
+            let n = rnd(12);
+            let cur: String = (0..n).map(|_| alpha[rnd(alpha.len() as u64) as usize]).collect();
+            let (bl, cl) = (crate::compare::buffer_lines(&base), crate::compare::buffer_lines(&cur));
+            for h in diff::diff_lines(&bl, &cl, false) {
+                let (r, with) = revert_edit(&base, &cur, &h);
+                let mut t: Vec<char> = cur.chars().collect();
+                t.splice(r, with.chars());
+                let t: String = t.into_iter().collect();
+                let mut want: Vec<&str> = cl[..h.b.start].to_vec();
+                want.extend_from_slice(&bl[h.a.clone()]);
+                want.extend_from_slice(&cl[h.b.end..]);
+                if crate::compare::buffer_lines(&t) != want {
+                    fails.push(format!("revert {h:?} {base:?} ← {cur:?}: {t:?}"));
+                }
+                let kept = keep_edit(&base, &cur, &h);
+                let mut want: Vec<&str> = bl[..h.a.start].to_vec();
+                want.extend_from_slice(&cl[h.b.clone()]);
+                want.extend_from_slice(&bl[h.a.end..]);
+                if crate::compare::buffer_lines(&kept) != want {
+                    fails.push(format!("keep {h:?} {base:?} → {cur:?}: {kept:?}"));
+                }
+            }
+            // Every line back. (Line breaks of lines that matched all along can
+            // differ: no change shows them, and Revert File puts them back too.)
+            let text = revert_all(&base, &cur);
+            if crate::compare::buffer_lines(&text) != bl {
+                fails.push(format!("revert all {base:?} ← {cur:?}: {text:?}"));
+            }
+        }
+        assert!(fails.is_empty(), "{} failures, first: {:?}", fails.len(), &fails[..fails.len().min(5)]);
+    }
+
+    /// Git for Windows sets core.autocrlf=true in the system config: a CRLF
+    /// checkout isn't a change, and the base reads with CRLF. Any of Git's
+    /// spellings of true count, and core.eol=crlf does it for text files.
+    #[test]
+    fn line_ending_settings_from_the_system_config() {
+        let Some(dir) = temp_repo("sysconfig") else { return };
+        let sys = dir.with_extension("sysconfig");
+        std::fs::write(dir.join("README.md"), "# Title\r\n\r\nText.\r\n").unwrap();
+        let with = |config: &str| {
+            std::fs::write(&sys, config).unwrap();
+            let mut cache = Cache { system_config: Some(sys.clone()), ..Cache::default() };
+            scan(&dir, &Base::Head, &HashMap::new(), &mut cache).unwrap().files
+        };
+        for yes in ["true", "yes", "on", "1", "True"] {
+            assert_eq!(with(&format!("[core]\n\tautocrlf = {yes}\n")), vec![], "autocrlf = {yes}");
+        }
+        let files = with("[core]\n\tautocrlf = input\n");
+        assert_eq!((files.len(), files[0].crlf), (1, false));
+        // core.eol=crlf: only for files Git treats as text.
+        assert_eq!(with("[core]\n\teol = crlf\n").len(), 1, "no text attribute: not converted");
+        std::fs::write(dir.join(".gitattributes"), "*.md text=auto\n").unwrap();
+        run(&dir, &["add", ".gitattributes"]);
+        run(&dir, &["commit", "-q", "-m", "attrs"]);
+        assert_eq!(with("[core]\n\teol = crlf\n"), vec![]);
+        // A deleted file's base then reads with CRLF.
+        std::fs::remove_file(dir.join("README.md")).unwrap();
+        let files = with("[core]\n\tautocrlf = true\n");
+        assert!(files[0].status == Status::Deleted && files[0].crlf);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&sys);
+    }
+
+    /// A file whose base wasn't read (too big, past the budget) is still
+    /// remembered: the next scan doesn't hash it again unless it changed.
+    #[test]
+    fn unread_files_are_not_hashed_again() {
+        let Some(dir) = temp_repo("rehash") else { return };
+        std::fs::write(dir.join("README.md"), "# Title\n\nChanged.\n").unwrap();
+        let mut cache = Cache { blob_budget: 0, ..Cache::default() };
+        let first = scan(&dir, &Base::Head, &HashMap::new(), &mut cache).unwrap();
+        assert_eq!((first.files.len(), first.files[0].lines), (1, None));
+        assert!(cache.hashed > 0);
+        let again = scan(&dir, &Base::Head, &HashMap::new(), &mut cache).unwrap();
+        assert_eq!((again.files.len(), cache.hashed), (1, 0));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
