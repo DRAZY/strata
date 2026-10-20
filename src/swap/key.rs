@@ -29,13 +29,16 @@ pub fn load_from(dir: &Path) -> Option<[u8; 32]> {
     }
     crate::private::create_dir_all(dir).ok()?;
     let k = super::random_bytes();
-    let temp = dir.join(format!(
-        "{FILE}.{}-{}.new",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())
-    ));
-    let made = write_new(&temp, &k);
-    let installed = made.and_then(|()| install(&temp, &path));
+    // Random, not pid + time: clock ticks are coarse enough that two threads
+    // could pick the same name, and the loser would remove the winner's file.
+    let tag: String = super::random_bytes()[..8].iter().map(|b| format!("{b:02x}")).collect();
+    let temp = dir.join(format!("{FILE}.{}-{tag}.new", std::process::id()));
+    // Our own temporary file is never left behind or someone else's removed.
+    if write_new(&temp, &k).is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return None;
+    }
+    let installed = install(&temp, &path);
     let _ = std::fs::remove_file(&temp);
     sync_dir(dir);
     match installed {
