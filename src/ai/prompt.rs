@@ -211,13 +211,22 @@ pub fn prepare(task: Task, limit: usize) -> Result<Prepared, String> {
 /// keys and passwords. Shown in the manual's AI Helpers page.
 pub const SECRET_NAMES: &[&str] = &[".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*.p12", "*.pfx", ".npmrc", ".pypirc", "credentials*", "*.keystore"];
 
-/// The file name (last part of `rel`) matches `SECRET_NAMES`, ignoring case.
+/// Folders whose contents are never sent: keys, cloud logins, cluster
+/// credentials. Also shown in the manual.
+pub const SECRET_FOLDERS: &[&str] = &[".ssh", ".aws", ".gnupg", ".kube", "secrets"];
+
+/// Some part of `rel` (a file or any folder above it, relative to the
+/// repository top) matches `SECRET_NAMES` or `SECRET_FOLDERS`, ignoring case:
+/// `.env/production.json` and `.ssh/config` count as much as `.env` does.
 pub fn looks_secret(rel: &str) -> bool {
-    let name = rel.rsplit(['/', '\\']).next().unwrap_or(rel).to_lowercase();
-    SECRET_NAMES.iter().any(|p| match (p.strip_prefix('*'), p.strip_suffix('*')) {
-        (Some(ext), _) => name.ends_with(ext),
-        (_, Some(start)) => name.starts_with(start),
-        _ => name == *p,
+    rel.split(['/', '\\']).filter(|p| !p.is_empty()).any(|part| {
+        let part = part.to_lowercase();
+        SECRET_FOLDERS.contains(&part.as_str())
+            || SECRET_NAMES.iter().any(|p| match (p.strip_prefix('*'), p.strip_suffix('*')) {
+                (Some(ext), _) => part.ends_with(ext),
+                (_, Some(start)) => part.starts_with(start),
+                _ => part == *p,
+            })
     })
 }
 
@@ -243,19 +252,23 @@ fn ignored_set(top: &Path, rels: &[&str]) -> Result<std::collections::HashSet<St
 /// disk, and in a repository, not ignored (tracked or not) and not
 /// converted by a Git filter. Err says why not.
 fn check_file(path: &Path, name: &str) -> Result<(), String> {
-    if looks_secret(name) || path.file_name().is_some_and(|n| looks_secret(&n.to_string_lossy())) {
+    // The repository as the path spells it (a `.git` in a folder above), so
+    // a linked folder on the way is caught; else as Git finds it.
+    let lexical = path.ancestors().skip(1).find(|a| std::fs::symlink_metadata(a.join(".git")).is_ok()).map(Path::to_path_buf);
+    let top = lexical.or_else(|| review::repo_top(path.parent().unwrap_or(Path::new("."))));
+    let rel = top.as_ref().and_then(|t| path.strip_prefix(t).ok()).map(|r| r.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"));
+    // Every folder counts: inside a repository from its top, elsewhere the whole path.
+    let checked = rel.clone().unwrap_or_else(|| path.to_string_lossy().into_owned());
+    if looks_secret(name) || looks_secret(&checked) {
         return Err(format!("{name} looks like a secret, so Strata won't send any of it (see the list in the manual)"));
     }
     if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err(format!("{name} is a link, so Strata won't send any of it"));
     }
-    // The repository as the path spells it (a `.git` in a folder above), so
-    // a linked folder on the way is caught; else as Git finds it.
-    let lexical = path.ancestors().skip(1).find(|a| std::fs::symlink_metadata(a.join(".git")).is_ok()).map(Path::to_path_buf);
-    let file = match lexical.or_else(|| review::repo_top(path.parent().unwrap_or(Path::new(".")))) {
+    let file = match top {
         Some(top) => {
             let opened = crate::claim::open_inside(&top, path).map_err(|_| format!("{name} is reached through a link, or isn't a plain file, so Strata won't send any of it"))?;
-            let rel = path.strip_prefix(&top).ok().map(|r| r.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")).ok_or_else(|| format!("{name} isn't inside its repository"))?;
+            let rel = rel.ok_or_else(|| format!("{name} isn't inside its repository"))?;
             if ignored_set(&top, &[&rel])?.contains(&rel) {
                 return Err(format!("{name} is ignored by Git, so Strata won't send any of it (the AI helpers never send ignored files)"));
             }
@@ -659,10 +672,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Files under secret-named folders, tracked and changed.
+    const UNDER_SECRET_FOLDERS: &[&str] = &[".env/production.json", "credentials/account.json", "id_rsa/archive.txt", ".ssh/config", ".aws/config", ".gnupg/pubring.kbx", ".kube/config", "secrets/db.txt", "deploy/Secrets/token.txt"];
+
+    /// Security re-check: every part of the path counts, not just the file name.
+    #[test]
+    fn folders_named_like_secrets_count() {
+        for rel in UNDER_SECRET_FOLDERS {
+            assert!(looks_secret(rel), "{rel}");
+        }
+        for rel in ["src/main.rs", "docs/secrets.md", "envs/dev.json", "my.ssh.notes/a.txt", "credential_check/a.rs"] {
+            assert!(!looks_secret(rel), "{rel}");
+        }
+    }
+
+    #[test]
+    fn review_and_selection_leave_out_files_under_secret_folders() {
+        let Some(dir) = temp_repo("ai-secret-dirs") else { return };
+        for rel in UNDER_SECRET_FOLDERS {
+            std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(rel), "old\n").unwrap();
+            run(&dir, &["add", "-f", rel]);
+        }
+        run(&dir, &["commit", "-q", "-m", "tracked"]);
+        for rel in UNDER_SECRET_FOLDERS {
+            std::fs::write(dir.join(rel), format!("NEW-SECRET {rel}\n")).unwrap();
+        }
+        std::fs::write(dir.join("src/main.rs"), "fn main() {\n    one();\n    three();\n}\n").unwrap();
+        let p = prepare(Task::Changes { ask: Ask::Summarize, folder: dir.clone(), base: Base::Head, scan: None, open: HashMap::new() }, 1 << 20).unwrap();
+        assert!(p.prompt.user.contains("+    three();"));
+        assert!(!p.prompt.user.contains("NEW-SECRET"), "{}", p.prompt.user);
+        for rel in UNDER_SECRET_FOLDERS {
+            assert!(!p.prompt.user.contains(rel), "{rel}");
+            assert!(p.notes.iter().any(|n| n.contains("looks like a secret") && n.contains(rel)), "{rel}: {:?}", p.notes);
+            let sel = Task::Selection { name: rel.rsplit('/').next().unwrap().into(), syntax: "Plain Text".into(), text: "NEW-SECRET".into(), path: Some(dir.join(rel)) };
+            assert!(prepare(sel, 1 << 20).unwrap_err().contains("secret"), "selection from {rel}");
+            let tab = Task::File { ask: Ask::Summarize, path: dir.join(rel), rel: (*rel).into(), base: "old\n".into(), current: "NEW-SECRET\n".into() };
+            assert!(prepare(tab, 1 << 20).unwrap_err().contains("secret"), "review tab of {rel}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_manual_lists_every_secret_pattern() {
         let manual = include_str!("../../docs/manual/ai.md");
-        for p in SECRET_NAMES {
+        for p in SECRET_NAMES.iter().chain(SECRET_FOLDERS) {
             assert!(manual.contains(&format!("`{p}`")), "docs/manual/ai.md doesn't list {p}");
         }
     }

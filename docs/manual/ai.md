@@ -70,16 +70,17 @@ The changes go as diffs. Unsaved edits in a tab of a changed file count. Strata 
 
 Explain Selection and the review-tab helpers check the file the same way: no secrets, no links, nothing ignored, filtered or binary.
 
-These file names count as secrets (letter case doesn't matter):
+A file counts as a secret when its name, or the name of any folder it's in (counted from the repository's top folder; outside a repository, anywhere in its path), matches one of these. Letter case doesn't matter. So `.env/production.json`, `credentials/account.json` and `.ssh/config` are never sent, just like `.env`.
 
 | Pattern | For example |
 |---|---|
-| `.env`, `.env.*` | `.env`, `.env.local`, `.env.production` |
+| `.env`, `.env.*` | `.env`, `.env.local`, `.env.production`, `.env/production.json` |
 | `*.pem`, `*.key` | `server.pem`, `tls.key` |
-| `id_rsa*`, `id_ed25519*` | `id_rsa`, `id_ed25519.pub` |
+| `id_rsa*`, `id_ed25519*` | `id_rsa`, `id_ed25519.pub`, `id_rsa/archive.txt` |
 | `*.p12`, `*.pfx`, `*.keystore` | `cert.p12`, `release.keystore` |
 | `.npmrc`, `.pypirc` | package registry logins |
-| `credentials*` | `credentials`, `credentials.json` |
+| `credentials*` | `credentials`, `credentials.json`, `credentials/account.json` |
+| `.ssh`, `.aws`, `.gnupg`, `.kube`, `secrets` | everything in these folders: `.ssh/config`, `.aws/config`, `secrets/db.txt` |
 
 ### The size limit
 

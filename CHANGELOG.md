@@ -40,7 +40,8 @@ All notable changes to Strata are recorded here. The format follows
   Answers stream into a panel as Markdown, can be cancelled, and never hold
   up the editor. API keys live in the macOS Keychain or Windows Credential
   Manager, are only sent to the address they were saved for, and never touch
-  `settings.json` or the log. Ignored and binary files are never sent, and a
+  `settings.json` or the log. Ignored, binary and secret-looking files (and
+  anything in folders like `.ssh` or `secrets`) are never sent, and a
   size limit (`ai_max_prompt_kb`) says what was left out. See the manual's
   AI Helpers page.
 - Terminal: ⌘-click (Ctrl+click on Windows and Linux) a file location in the
