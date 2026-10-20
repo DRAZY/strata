@@ -1534,7 +1534,7 @@ fn read_output(mut reader: impl Read, tx: &Sender<Msg>, ctx: &Option<egui::Conte
 }
 
 #[cfg(unix)]
-fn kill_tree(child: &mut Child, force: bool) {
+pub(crate) fn kill_tree(child: &mut Child, force: bool) {
     unsafe extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
     }
@@ -1551,7 +1551,7 @@ fn kill_tree(child: &mut Child, force: bool) {
 }
 
 #[cfg(windows)]
-fn kill_tree(child: &mut Child, _force: bool) {
+pub(crate) fn kill_tree(child: &mut Child, _force: bool) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     // taskkill /T takes the children (cargo → rustc, cmd → program) with it.
@@ -1565,7 +1565,7 @@ fn kill_tree(child: &mut Child, _force: bool) {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn kill_tree(child: &mut Child, _force: bool) {
+pub(crate) fn kill_tree(child: &mut Child, _force: bool) {
     let _ = child.kill();
 }
 

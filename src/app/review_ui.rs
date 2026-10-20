@@ -141,7 +141,7 @@ impl StrataApp {
 
     /// The folder whose repository is reviewed: the snapshot's, the first
     /// side bar folder, or the current file's.
-    fn review_folder(&self) -> Option<PathBuf> {
+    pub(super) fn review_folder(&self) -> Option<PathBuf> {
         if let Base::Snapshot(s) = &self.review.base {
             return Some(s.top.clone());
         }

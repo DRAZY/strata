@@ -112,6 +112,45 @@ pub fn open_plain(path: &Path) -> std::io::Result<std::fs::File> {
     imp::open_file(path)
 }
 
+/// A plain file inside a folder, opened by `open_inside`.
+pub struct Opened {
+    /// Keeps the folders on the way held (Windows) while the file is read.
+    _dir: imp::Dir,
+    pub file: std::fs::File,
+}
+
+/// Open `path` (inside `top`) for reading, reached from `top` without
+/// following any link or junction: not a folder on the way, not the file
+/// itself. Err unless it's a plain file there. Used where a path from an
+/// earlier listing could have been swapped for a link to somewhere else
+/// (the AI helpers read files to send them).
+pub fn open_inside(top: &Path, path: &Path) -> Result<Opened, Refused> {
+    let rel = path.strip_prefix(top).map_err(|_| Refused::Outside)?;
+    let parts: Vec<&str> = rel.components().map(|c| match c {
+        std::path::Component::Normal(s) => s.to_str(),
+        _ => None,
+    }).collect::<Option<_>>().ok_or(Refused::Outside)?;
+    let Some((name, dirs)) = parts.split_last() else { return Err(Refused::Outside) };
+    let dir = imp::open_parent(top, dirs).map_err(|_| Refused::Outside)?;
+    let file = imp::open_file_at(&dir, name).map_err(|_| Refused::Changed)?;
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Err(Refused::Changed);
+    }
+    Ok(Opened { _dir: dir, file })
+}
+
+/// Whether `file`, whose whole content is `bytes`, is still the one a
+/// listing described (same file, size, time and fingerprint).
+pub fn is_listed(file: &std::fs::File, bytes: &[u8], expected: &Expected) -> bool {
+    let Ok(meta) = file.metadata() else { return false };
+    meta.is_file()
+        && meta.len() == expected.len
+        && bytes.len() as u64 == expected.len
+        && meta.modified().ok() == expected.mtime
+        && (expected.id.is_none() || imp::id_of(file) == expected.id)
+        && fingerprint(bytes) == expected.hash
+}
+
 /// `claimed` is the listed file, and a renamed file's old name is still free.
 fn check(claimed: &mut std::fs::File, expected: &Expected, old: Option<&Path>) -> Result<(), Refused> {
     if old.is_some_and(|o| std::fs::symlink_metadata(o).is_ok()) {

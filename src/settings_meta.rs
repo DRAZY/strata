@@ -18,12 +18,13 @@ pub enum Category {
     Find,
     Terminal,
     SideBar,
+    Ai,
     Help,
     Advanced,
 }
 
 impl Category {
-    pub const ALL: [Category; 8] = [Category::Appearance, Category::Editor, Category::Files, Category::Find, Category::Terminal, Category::SideBar, Category::Help, Category::Advanced];
+    pub const ALL: [Category; 9] = [Category::Appearance, Category::Editor, Category::Files, Category::Find, Category::Terminal, Category::SideBar, Category::Ai, Category::Help, Category::Advanced];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -33,6 +34,7 @@ impl Category {
             Category::Find => "Find & Spelling",
             Category::Terminal => "Terminal & Build",
             Category::SideBar => "Side Bar",
+            Category::Ai => "AI Helpers",
             Category::Help => "Help",
             Category::Advanced => "Advanced",
         }
@@ -153,6 +155,15 @@ pub static SETTINGS: &[Meta] = &[
     // Side Bar
     m("sidebar_respect_gitignore", SideBar, "Hide ignored files", Toggle),
     m("file_exclude_patterns", SideBar, "Hidden names", Words),
+    // AI Helpers
+    m("ai_enabled", Ai, "Turn on AI helpers", Toggle),
+    m("ai_provider", Ai, "Provider", Choice(&[("openai", "OpenAI-compatible"), ("anthropic", "Anthropic API"), ("claude_cli", "claude command line"), ("codex_cli", "codex command line")])),
+    m("ai_base_url", Ai, "Base URL (OpenAI-compatible)", Text),
+    m("ai_model", Ai, "Model (OpenAI-compatible)", Text),
+    m("ai_anthropic_model", Ai, "Model (Anthropic)", Text),
+    m("ai_cli_model", Ai, "Model (command line)", Text),
+    m("ai_max_prompt_kb", Ai, "Most to send (KB)", whole(8.0, 4096.0)),
+    m("ai_timeout_seconds", Ai, "Give up after (seconds without an answer)", whole(10.0, 3600.0)),
     // Help
     m("help_in_own_window", Help, "Documentation in its own window", Toggle),
     m("update_check", Help, "Check for updates", Choice(&[("ask", "Ask me"), ("auto", "Automatically"), ("off", "Manually only")])),

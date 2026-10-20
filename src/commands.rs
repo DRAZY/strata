@@ -179,6 +179,18 @@ pub enum Cmd {
     LspPrevProblem,
     LspSignatureHelp,
     LspRestart,
+    // AI helpers (see `app/ai_ui.rs`).
+    AiSummarizeChanges,
+    AiSummarizeFile,
+    AiExplainChange,
+    AiFlagRisks,
+    AiDraftCommitMessage,
+    AiExplainSelection,
+    AiCancel,
+    AiTogglePanel,
+    AiTestConnection,
+    AiSettings,
+    AiForgetAllowed,
 }
 
 impl Cmd {
@@ -352,6 +364,17 @@ impl Cmd {
         Cmd::LspPrevProblem,
         Cmd::LspSignatureHelp,
         Cmd::LspRestart,
+        Cmd::AiSummarizeChanges,
+        Cmd::AiSummarizeFile,
+        Cmd::AiExplainChange,
+        Cmd::AiFlagRisks,
+        Cmd::AiDraftCommitMessage,
+        Cmd::AiExplainSelection,
+        Cmd::AiCancel,
+        Cmd::AiTogglePanel,
+        Cmd::AiTestConnection,
+        Cmd::AiSettings,
+        Cmd::AiForgetAllowed,
     ];
 
     pub fn name(self) -> &'static str {
@@ -525,6 +548,17 @@ impl Cmd {
             Cmd::LspPrevProblem => "LSP: Previous Problem",
             Cmd::LspSignatureHelp => "LSP: Show Parameter Hints",
             Cmd::LspRestart => "LSP: Restart Language Servers",
+            Cmd::AiSummarizeChanges => "AI: Summarize Changes",
+            Cmd::AiSummarizeFile => "AI: Summarize File Changes",
+            Cmd::AiExplainChange => "AI: Explain Change",
+            Cmd::AiFlagRisks => "AI: Flag Risks",
+            Cmd::AiDraftCommitMessage => "AI: Draft Commit Message",
+            Cmd::AiExplainSelection => "AI: Explain Selection",
+            Cmd::AiCancel => "AI: Cancel Request",
+            Cmd::AiTogglePanel => "AI: Toggle Panel",
+            Cmd::AiTestConnection => "AI: Test Connection",
+            Cmd::AiSettings => "AI: Provider Settings…",
+            Cmd::AiForgetAllowed => "AI: Forget Allowed Providers",
         }
     }
 
@@ -695,6 +729,18 @@ impl Cmd {
             // (see `Keymap::defaults`); F8 and its variants are Review Changes'.
             Cmd::LspSignatureHelp => &[(CMD_SHIFT, Key::Space)],
             Cmd::LspHover | Cmd::LspRename | Cmd::LspFormat | Cmd::LspProblems | Cmd::LspNextProblem | Cmd::LspPrevProblem | Cmd::LspRestart => &[],
+            // No default keys: bind them in keybindings.json if you use them often.
+            Cmd::AiSummarizeChanges
+            | Cmd::AiSummarizeFile
+            | Cmd::AiExplainChange
+            | Cmd::AiFlagRisks
+            | Cmd::AiDraftCommitMessage
+            | Cmd::AiExplainSelection
+            | Cmd::AiCancel
+            | Cmd::AiTogglePanel
+            | Cmd::AiTestConnection
+            | Cmd::AiSettings
+            | Cmd::AiForgetAllowed => &[],
         }
     }
 
@@ -876,6 +922,17 @@ impl Cmd {
             Cmd::LspPrevProblem => "lsp_prev_problem",
             Cmd::LspSignatureHelp => "lsp_signature_help",
             Cmd::LspRestart => "lsp_restart",
+            Cmd::AiSummarizeChanges => "ai_summarize_changes",
+            Cmd::AiSummarizeFile => "ai_summarize_file",
+            Cmd::AiExplainChange => "ai_explain_change",
+            Cmd::AiFlagRisks => "ai_flag_risks",
+            Cmd::AiDraftCommitMessage => "ai_draft_commit_message",
+            Cmd::AiExplainSelection => "ai_explain_selection",
+            Cmd::AiCancel => "ai_cancel",
+            Cmd::AiTogglePanel => "ai_toggle_panel",
+            Cmd::AiTestConnection => "ai_test_connection",
+            Cmd::AiSettings => "ai_settings",
+            Cmd::AiForgetAllowed => "ai_forget_allowed",
         }
     }
 }

@@ -125,7 +125,19 @@ fn command(dir: &Path, args: &[&str]) -> Command {
 }
 
 /// Run `cmd` (see `git_io` for `input`, `limit` and `timeout`).
-fn run(mut cmd: Command, input: Option<Vec<u8>>, limit: usize, timeout: Duration) -> Option<Vec<u8>> {
+fn run(cmd: Command, input: Option<Vec<u8>>, limit: usize, timeout: Duration) -> Option<Vec<u8>> {
+    let (code, out) = run_code(cmd, input, limit, timeout)?;
+    (code == Some(0)).then_some(out)
+}
+
+/// `git_io`, for commands whose exit code means something (`check-ignore`
+/// exits 1 when nothing matched): the code and the output. None when git
+/// couldn't run or took too long.
+pub(crate) fn git_io_code(dir: &Path, args: &[&str], input: Option<Vec<u8>>, limit: usize, timeout: Duration) -> Option<(Option<i32>, Vec<u8>)> {
+    run_code(command(dir, args), input, limit, timeout)
+}
+
+fn run_code(mut cmd: Command, input: Option<Vec<u8>>, limit: usize, timeout: Duration) -> Option<(Option<i32>, Vec<u8>)> {
     cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() });
     let mut child = cmd.spawn().ok()?;
     let stdout = child.stdout.take()?;
@@ -156,7 +168,7 @@ fn run(mut cmd: Command, input: Option<Vec<u8>>, limit: usize, timeout: Duration
         }
     };
     let out = reader.join().ok()?.ok()?;
-    status.success().then_some(out)
+    Some((status.code(), out))
 }
 
 pub(crate) fn git_line(dir: &Path, args: &[&str]) -> Option<String> {

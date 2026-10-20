@@ -695,6 +695,24 @@ impl StrataApp {
                         c("Mark File as Reviewed", Cmd::ReviewMarkReviewed),
                     ]
                 }),
+                sub("AI", {
+                    let busy = self.ai.busy();
+                    vec![
+                        c("Summarize Changes", Cmd::AiSummarizeChanges),
+                        c("Summarize File Changes", Cmd::AiSummarizeFile),
+                        c("Explain Change", Cmd::AiExplainChange),
+                        c("Flag Risks", Cmd::AiFlagRisks),
+                        c("Draft Commit Message", Cmd::AiDraftCommitMessage),
+                        c("Explain Selection", Cmd::AiExplainSelection),
+                        SEP(),
+                        c("Cancel Request", Cmd::AiCancel).enabled(busy),
+                        c("Show Panel", Cmd::AiTogglePanel).checked(self.ai.visible),
+                        SEP(),
+                        c("Test Connection", Cmd::AiTestConnection),
+                        c("Provider Settings…", Cmd::AiSettings),
+                        c("Forget Allowed Providers", Cmd::AiForgetAllowed),
+                    ]
+                }),
                 SEP(),
                 sub("Developer", vec![c("New Snippet…", Cmd::NewSnippet)]),
                 SEP(),

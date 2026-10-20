@@ -156,8 +156,11 @@ pub struct StrataApp {
     review: review_ui::ReviewState,
     /// Language servers (see `lsp_ui`), shared by the windows.
     lsp: lsp_ui::LspState,
+    /// AI helpers (see `ai_ui`).
+    ai: ai_ui::AiState,
 }
 
+mod ai_ui;
 mod autosave;
 mod binary_ui;
 #[cfg(test)]
@@ -328,6 +331,7 @@ impl StrataApp {
             delayed_save: Default::default(),
             review: Default::default(),
             lsp,
+            ai: Default::default(),
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -1136,6 +1140,17 @@ impl StrataApp {
             | Cmd::ReviewKeepFile
             | Cmd::ReviewRevertFile
             | Cmd::ReviewMarkReviewed => self.review_command(ctx, cmd),
+            Cmd::AiSummarizeChanges
+            | Cmd::AiSummarizeFile
+            | Cmd::AiExplainChange
+            | Cmd::AiFlagRisks
+            | Cmd::AiDraftCommitMessage
+            | Cmd::AiExplainSelection
+            | Cmd::AiCancel
+            | Cmd::AiTogglePanel
+            | Cmd::AiTestConnection
+            | Cmd::AiSettings
+            | Cmd::AiForgetAllowed => self.ai_command(ctx, cmd),
             Cmd::Print => self.open_print(printing::Output::Viewer),
             Cmd::ExportPdf => self.open_print(printing::Output::Pdf),
             Cmd::ExportHtml => self.open_print(printing::Output::Html),
@@ -2647,6 +2662,7 @@ impl eframe::App for StrataApp {
         }
         self.update_git(ctx, now);
         self.review_frame(ctx, now);
+        self.ai_frame(ctx);
         // Save on focus lost (a setting, off by default like Sublime's).
         let focused = ctx.input(|i| i.focused);
         if self.window_focused && !focused && self.settings.save_on_focus_lost {
@@ -2757,6 +2773,7 @@ impl eframe::App for StrataApp {
                 self.open_at(p, line, col..col);
             }
         }
+        self.ai_panel(ui);
         match self.pending_encoding.take() {
             Some((true, e)) => self.reopen_with_encoding(e),
             Some((false, e)) => self.save_with_encoding(e),

@@ -64,10 +64,14 @@ muda = { version = "0.21.2", default-features = false }
 objc2 = "0.6.5"
 block2 = "0.6.2"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAppleEventDescriptor", "NSAppleEventManager", "NSError", "NSFileManager", "NSNotification", "NSOperation", "NSString", "NSURL"] }
+# AI helpers: API keys in the Keychain (src/ai/keychain.rs; core-foundation is already in the build).
+objc2-security = { version = "0.3.2", default-features = false, features = ["std", "SecBase", "SecItem"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFBase", "CFData", "CFDictionary", "CFNumber", "CFString"] }
 
 [target.'cfg(windows)'.dependencies]
 # Side bar Delete (the Recycle Bin), putting restored windows on a monitor,
-# Review Changes' file identity and no-replace moves (src/claim.rs), and job
-# objects that end a language server together with the processes it starts
+# Review Changes' file identity and no-replace moves (src/claim.rs), job
+# objects that end a language server together with the processes it starts,
+# and the AI helpers' keys in Credential Manager (src/ai/keychain.rs)
 # (the version already in the build, through winit).
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_Security"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_Security", "Win32_Security_Credentials"] }
