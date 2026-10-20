@@ -536,7 +536,7 @@ bindings, with comments and trailing commas allowed:
   and Run Code Block and Capture Output (and the preview's ▶ Run buttons) run
   `bash`, `sh`, `zsh`, `fish`, `pwsh`, `powershell`, `cmd`, `python`, `node`
   and `ruby` blocks, asking before a file's first block runs
-  (`code_block_timeout_seconds` limits a capture). Enable Git Sync for This Vault, Sync Notes and an
+  (`code_block_timeout_seconds` limits a capture). Enable Git Sync for This Vault…, Sync Notes and an
   optional timer (`notes_git_sync`) commit, rebase and push with your own
   `git`; a conflict changes nothing and is settled with Compare and Keep My
   Versions and Sync.

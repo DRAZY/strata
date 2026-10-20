@@ -62,7 +62,7 @@ on; see Security below.
   asks again. Files outside the open folders ask every time, and a block
   with invisible or text-reordering characters never runs. See Notes ▸ Running code blocks in the manual.
 - Notes: optional Git sync, off until you turn it on for a vault with
-  **Notes: Enable Git Sync for This Vault** (which says first that the
+  **Notes: Enable Git Sync for This Vault…** (which says first that the
   repository's hooks, filters and credential helpers will run). **Notes: Sync
   Notes** saves the vault's notes, commits what changed in the vault
   (respecting `.gitignore`, with a message from `notes_sync_message`),

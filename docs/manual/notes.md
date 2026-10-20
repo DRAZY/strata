@@ -219,7 +219,7 @@ Every notes command is in Tools ▸ Notes and the command palette. None has a ke
 | Notes: Run Code Block and Capture Output | `run_code_block_and_capture` |
 | Notes: Forget Files Allowed to Run Code Blocks | `forget_code_block_files` |
 | Notes: Sync Notes | `sync_notes` |
-| Notes: Enable Git Sync for This Vault | `enable_notes_sync` |
+| Notes: Enable Git Sync for This Vault… | `enable_notes_sync` |
 | Notes: Disable Git Sync for This Vault | `disable_notes_sync` |
 | Notes: Show Sync Backups | `show_sync_backups` |
 
