@@ -71,10 +71,13 @@ impl StrataApp {
     }
 
     pub(super) fn toggle_terminal(&mut self, ctx: &egui::Context) {
-        if self.terminal.visible {
+        if self.terminal.visible && self.distraction.is_none() {
             self.set_terminal_visible(false);
             self.doc().view.focus();
-        } else if self.terminal.tabs.is_empty() {
+            return;
+        }
+        self.reveal(ctx, "the terminal");
+        if self.terminal.tabs.is_empty() {
             self.new_terminal(ctx);
         } else {
             self.set_terminal_visible(true);

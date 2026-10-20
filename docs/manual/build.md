@@ -82,7 +82,7 @@ When the build ends, a final line says how:
 | [Finished in 1.2s, terminated by a signal] | The command was killed from outside. |
 | [Cancelled] | You cancelled the build. |
 
-To show or hide the panel, use Tools ▸ Build Results ▸ Show Build Results, View ▸ Show Panel ▸ Build Results, or {{key:toggle_build_results}} ("Tools: Build Results: Show/Hide"). Drag its top edge to resize it. It is hidden in distraction-free mode.
+To show or hide the panel, use Tools ▸ Build Results ▸ Show Build Results, View ▸ Show Panel ▸ Build Results, or {{key:toggle_build_results}} ("Tools: Build Results: Show/Hide"). Drag its top edge to resize it. It is hidden in distraction-free mode; showing it from one of these leaves that mode.
 
 ## Jumping to errors
 

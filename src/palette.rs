@@ -91,6 +91,8 @@ pub struct Context {
     pub open: Vec<PathBuf>,
     /// Recent files, which Goto Anything offers when no folder is open.
     pub recent: Vec<PathBuf>,
+    /// A macro is being recorded: Record Macro reads Stop Recording Macro.
+    pub recording_macro: bool,
 }
 
 struct Row {
@@ -274,11 +276,19 @@ impl Palette {
         self.selected = if first_build { 0 } else { kept.and_then(|k| self.rows.iter().position(|r| r.label == k)).unwrap_or(0) };
     }
 
+    /// A command's name in the list, which may say what it does right now.
+    fn command_name(&self, c: Cmd) -> &'static str {
+        match c {
+            Cmd::RecordMacro if self.ctx.as_ref().is_some_and(|x| x.recording_macro) => "Tools: Stop Recording Macro",
+            _ => c.name(),
+        }
+    }
+
     fn command_rows(&self) -> Vec<Row> {
         let mut items: Vec<(String, String, Pick)> = Cmd::ALL
             .iter()
             .filter(|c| **c != Cmd::CommandPalette)
-            .map(|&c| (c.name().to_owned(), c.shortcut_label().unwrap_or_default(), Pick::Cmd(c)))
+            .map(|&c| (self.command_name(c).to_owned(), c.shortcut_label().unwrap_or_default(), Pick::Cmd(c)))
             .collect();
         let keymap = crate::keybindings::current();
         items.extend(self.editor_cmds.iter().map(|&(id, name)| (name.to_string(), keymap.label(crate::keybindings::Target::Editor(id)).unwrap_or_default(), Pick::Editor(id))));
@@ -638,6 +648,7 @@ mod tests {
             theme: crate::highlight::DEFAULT_THEME.into(),
             open: vec![PathBuf::from("/tmp/x/main.rs"), PathBuf::from("/tmp/x/notes.md")],
             recent: Vec::new(),
+            recording_macro: false,
         }
     }
 

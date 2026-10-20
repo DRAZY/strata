@@ -42,6 +42,8 @@ const LONG_MARGIN: usize = 512;
 const SHORT_VIEW: usize = 1_024;
 /// Overview ticks are drawn one per item up to this many, then per pixel.
 const TICKS_DIRECT: usize = 2_000;
+/// The minimap hides itself in views this narrow or narrower (points).
+pub const MINIMAP_MIN_WIDTH: f32 = 640.0;
 
 pub struct EditorView {
     /// Distinct per view, so several editors can share a window (split panes).
@@ -146,6 +148,8 @@ pub struct EditorView {
     pub link_click: Option<usize>,
     /// The link under the pointer while ⌘/Ctrl is held: (line, char range in it).
     link_hover: Option<(usize, Range<usize>)>,
+    /// Width of the view last frame (None before its first).
+    width: Option<f32>,
 }
 
 #[derive(Default)]
@@ -357,6 +361,7 @@ impl EditorView {
             note_marks: Default::default(),
             link_click: None,
             link_hover: None,
+            width: None,
         }
     }
 
@@ -384,6 +389,11 @@ impl EditorView {
     /// Screen rect of the primary caret as last painted (for popups).
     pub fn caret_rect(&self) -> Option<Rect> {
         self.caret_rect
+    }
+
+    /// Is the view wide enough for the minimap (as of last frame)?
+    pub fn minimap_fits(&self) -> bool {
+        self.width.is_none_or(|w| w > MINIMAP_MIN_WIDTH)
     }
 
     pub fn has_focus(&self, ctx: &egui::Context) -> bool {
@@ -631,6 +641,7 @@ impl EditorView {
         let id = self.id;
         let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
         let resp = ui.interact(rect, id, Sense::click_and_drag());
+        self.width = Some(rect.width());
 
         if self.wants_focus || resp.clicked() || resp.drag_started() {
             resp.request_focus();
@@ -769,7 +780,7 @@ impl EditorView {
         let gutter_w = (digits as f32 + 3.0) * char_w;
         let gutter = Rect::from_min_size(rect.min, vec2(gutter_w, rect.height()));
         // The minimap hides itself in narrow windows.
-        let mm_w = if self.minimap && rect.width() > 640.0 { MINIMAP_W } else { 0.0 };
+        let mm_w = if self.minimap && rect.width() > MINIMAP_MIN_WIDTH { MINIMAP_W } else { 0.0 };
         let text = Rect::from_min_max(
             pos2(rect.left() + gutter_w, rect.top()),
             pos2(rect.right() - SCROLLBAR_W - mm_w, rect.bottom()),

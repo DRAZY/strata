@@ -448,32 +448,35 @@ impl StrataApp {
         indentation.extend([SEP(), e("Guess Settings From Buffer", "guess_indent"), SEP(), e("Convert Indentation to Spaces", "to_spaces"), e("Convert Indentation to Tabs", "to_tabs")]);
         let ending = d.editor.buffer.line_ending();
         let layout = |label: &str, cmd: Cmd, on: bool| c(label, cmd).checked(on);
-        let group_items = |cmd: fn(u8) -> Cmd, next: Cmd, prev: Cmd| {
+        // Focusing needs the group to exist; moving a file there makes it.
+        let group_items = |cmd: fn(u8) -> Cmd, next: Cmd, prev: Cmd, only_existing: bool| {
             let mut v = vec![c("Next", next), c("Previous", prev), SEP()];
-            v.extend((0..4u8).map(|g| c(&format!("Group {}", g + 1), cmd(g))));
+            v.extend((0..4u8).map(|g| c(&format!("Group {}", g + 1), cmd(g)).enabled(!only_existing || usize::from(g) < groups)));
             v
         };
+        // What's on screen: distraction-free mode hides these.
+        let shown = |on: bool| on && self.distraction.is_none();
         m.push((
             "View".into(),
             vec![
                 sub("Side Bar", vec![c("Toggle Side Bar", Cmd::ToggleSidebar).checked(self.sidebar.shown()), SEP(), c("Toggle Show Open Files", Cmd::ToggleOpenFiles).checked(self.sidebar.show_open_files)]),
-                c("Toggle Minimap", Cmd::ToggleMinimap).checked(self.settings.minimap),
-                c("Toggle Tabs", Cmd::ToggleTabs).checked(self.settings.show_tabs),
-                c("Toggle Status Bar", Cmd::ToggleStatusBar).checked(self.settings.show_status_bar),
-                c("Terminal", Cmd::ToggleTerminal).checked(self.terminal.visible),
+                c("Toggle Minimap", Cmd::ToggleMinimap).checked(self.minimap_shown()),
+                c("Toggle Tabs", Cmd::ToggleTabs).checked(shown(self.settings.show_tabs)),
+                c("Toggle Status Bar", Cmd::ToggleStatusBar).checked(self.status_bar_shown()),
+                c("Terminal", Cmd::ToggleTerminal).checked(shown(self.terminal.visible)),
                 sub(
                     "Show Panel",
                     vec![
                         c("Find", Cmd::Find),
                         c("Replace", Cmd::Replace),
                         c("Find in Files", Cmd::FindInFiles),
-                        c("Build Results", Cmd::ToggleBuildResults).checked(self.build.visible),
+                        c("Build Results", Cmd::ToggleBuildResults).checked(shown(self.build.visible)),
                     ],
                 ),
                 SEP(),
                 c("Toggle Full Screen", Cmd::Fullscreen).checked(self.fullscreen),
                 c("Toggle Distraction Free", Cmd::DistractionFree).checked(self.distraction.is_some()),
-                c("Markdown Preview", Cmd::ToggleMarkdownPreview).checked(self.settings.markdown_preview),
+                c("Markdown Preview", Cmd::ToggleMarkdownPreview).checked(shown(self.settings.markdown_preview)),
                 sub("Interface Size", ui_size_items(&self.settings)),
                 SEP(),
                 sub(
@@ -489,8 +492,8 @@ impl StrataApp {
                     ],
                 ),
                 sub("Groups", vec![c("Move File to New Group", Cmd::MoveToNewGroup), c("New Group", Cmd::NewGroup), c("Close Group", Cmd::CloseGroup).enabled(self.unavailable(Cmd::CloseGroup).is_none())]),
-                sub("Focus Group", group_items(Cmd::FocusGroup, Cmd::FocusNextGroup, Cmd::FocusPrevGroup)),
-                sub("Move File to Group", group_items(Cmd::MoveToGroup, Cmd::MoveToNextGroup, Cmd::MoveToPrevGroup)),
+                sub("Focus Group", group_items(Cmd::FocusGroup, Cmd::FocusNextGroup, Cmd::FocusPrevGroup, true)),
+                sub("Move File to Group", group_items(Cmd::MoveToGroup, Cmd::MoveToNextGroup, Cmd::MoveToPrevGroup, false)),
                 SEP(),
                 sub("Syntax", syntax),
                 sub("Indentation", indentation),
@@ -502,26 +505,31 @@ impl StrataApp {
                     ],
                 ),
                 c("Word Wrap", Cmd::ToggleWordWrap).checked(self.wraps(self.active)),
+                // These show the current file's settings, which `.editorconfig`
+                // or the syntax's settings may set over settings.json.
                 sub("Word Wrap Column", {
-                    let mut v = vec![Item::new("Automatic", Act::Named("wrapcol:auto".into())).checked(self.settings.wrap_column.is_none()), SEP()];
-                    v.extend(wraps.iter().map(|w| Item::new(w.to_string(), Act::Named(format!("wrapcol:{w}"))).checked(self.settings.wrap_column == Some(*w))));
+                    let col = d.local.effective.wrap_column;
+                    let mut v = vec![Item::new("Automatic", Act::Named("wrapcol:auto".into())).checked(col.is_none()), SEP()];
+                    v.extend(wraps.iter().map(|w| Item::new(w.to_string(), Act::Named(format!("wrapcol:{w}"))).checked(col == Some(*w))));
                     v
                 }),
                 sub("Ruler", {
-                    let mut v = vec![Item::new("None", Act::Named("ruler:none".into())).checked(self.settings.rulers.is_empty()), SEP()];
-                    v.extend(wraps.iter().map(|w| Item::new(w.to_string(), Act::Named(format!("ruler:{w}"))).checked(self.settings.rulers.contains(w))));
+                    let rulers = &d.local.effective.rulers;
+                    let mut v = vec![Item::new("None", Act::Named("ruler:none".into())).checked(rulers.is_empty()), SEP()];
+                    v.extend(wraps.iter().map(|w| Item::new(w.to_string(), Act::Named(format!("ruler:{w}"))).checked(rulers.contains(w))));
                     v
                 }),
                 SEP(),
                 sub("Color Scheme", theme),
                 sub("Editor Extras", {
-                    let s = &self.settings;
+                    let (s, local) = (&self.settings, &d.local.effective);
                     let t = |label: &str, key: &str, on: bool| Item::new(label, Act::Named(format!("x:{key}"))).checked(on);
+                    let ws = local.draw_white_space.as_str();
                     vec![
-                        t("Show Whitespace in Selection", "ws_sel", s.draw_white_space == "selection"),
-                        t("Show All Whitespace", "ws_all", s.draw_white_space == "all"),
-                        t("Hide Whitespace", "ws_none", s.draw_white_space == "none"),
-                        t("Highlight Trailing Whitespace", "trailing", s.highlight_trailing_whitespace),
+                        t("Show Whitespace in Selection", "ws_sel", ws != "all" && ws != "none"),
+                        t("Show All Whitespace", "ws_all", ws == "all"),
+                        t("Hide Whitespace", "ws_none", ws == "none"),
+                        t("Highlight Trailing Whitespace", "trailing", local.highlight_trailing_whitespace),
                         SEP(),
                         t("Bracket Pair Colors", "brackets", s.bracket_colors),
                         t("Color Swatches", "swatches", s.color_swatches),
@@ -646,7 +654,7 @@ impl StrataApp {
                 sub(
                     "Build Results",
                     vec![
-                        c("Show Build Results", Cmd::ToggleBuildResults).checked(self.build.visible),
+                        c("Show Build Results", Cmd::ToggleBuildResults).checked(shown(self.build.visible)),
                         c("Next Result", Cmd::NextResult),
                         c("Previous Result", Cmd::PrevResult),
                     ],
@@ -708,7 +716,7 @@ impl StrataApp {
                         c("Explain Selection", Cmd::AiExplainSelection),
                         SEP(),
                         c("Cancel Request", Cmd::AiCancel).enabled(busy),
-                        c("Show Panel", Cmd::AiTogglePanel).checked(self.ai.visible),
+                        c("Show Panel", Cmd::AiTogglePanel).checked(shown(self.ai.visible)),
                         SEP(),
                         c("Test Connection", Cmd::AiTestConnection),
                         c("Provider Settings…", Cmd::AiSettings),
@@ -901,6 +909,11 @@ impl StrataApp {
                         _ => {}
                     }
                     self.persist_settings();
+                    match &n[2..] {
+                        "ws_sel" | "ws_all" | "ws_none" => self.note_override("whitespace", |e| e.draw_white_space.clone()),
+                        "trailing" => self.note_override("trailing whitespace", |e| e.highlight_trailing_whitespace),
+                        _ => {}
+                    }
                 }
                 n if n.starts_with("caret:") => {
                     self.settings.caret_style = n[6..].to_owned();
@@ -932,10 +945,12 @@ impl StrataApp {
                 n if n.starts_with("wrapcol:") => {
                     self.settings.wrap_column = n[8..].parse().ok();
                     self.persist_settings();
+                    self.note_override("wrap column", |e| e.wrap_column);
                 }
                 n if n.starts_with("ruler:") => {
                     self.settings.rulers = n[6..].parse().into_iter().collect();
                     self.persist_settings();
+                    self.note_override("ruler", |e| e.rulers.clone());
                 }
                 "show_find_results" => {
                     self.sidebar.visible = true;

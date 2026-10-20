@@ -204,7 +204,12 @@ impl StrataApp {
     pub(super) fn ai_command(&mut self, ctx: &egui::Context, cmd: Cmd) {
         match cmd {
             Cmd::AiCancel => self.ai_cancel(),
-            Cmd::AiTogglePanel => self.ai.visible = !self.ai.visible,
+            Cmd::AiTogglePanel => {
+                self.ai.visible = !(self.ai.visible && self.distraction.is_none());
+                if self.ai.visible {
+                    self.reveal(ctx, "the AI panel");
+                }
+            }
             Cmd::AiSettings => self.ai_open_settings(),
             Cmd::AiTestConnection => self.ai_test(ctx),
             Cmd::AiForgetAllowed => {

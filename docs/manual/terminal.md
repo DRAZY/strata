@@ -16,7 +16,7 @@ Toggle Terminal works like a switch:
 - If the panel is hidden and a shell is already running, it shows the panel again and puts the keyboard in the terminal.
 - If no shell is running yet, it starts one.
 
-The panel is hidden in distraction-free mode and comes back when you leave it.
+The panel is hidden in distraction-free mode and comes back when you leave it. View ▸ Terminal (or its shortcut) leaves distraction-free mode to show it.
 
 ## Shell and starting folder
 

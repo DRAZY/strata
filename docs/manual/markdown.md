@@ -8,7 +8,7 @@ Choose View ▸ Markdown Preview or press {{key:toggle_markdown_preview}} ("Mark
 
 The preview opens as a panel on the right side of the window. Drag its left edge to make it wider or narrower.
 
-The preview always shows the file you're working on. When you switch to a file that isn't Markdown, the panel stays open and says "open a .md file to see it here"; switch back to a Markdown file and the preview returns. The panel is hidden in distraction-free mode.
+The preview always shows the file you're working on. When you switch to a file that isn't Markdown, the panel stays open and says "open a .md file to see it here"; switch back to a Markdown file and the preview returns. The panel is hidden in distraction-free mode; View ▸ Markdown Preview leaves that mode to show it.
 
 The preview is on or off for every window at once, and Strata remembers your choice.
 

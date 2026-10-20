@@ -137,7 +137,7 @@ The View menu's Groups, Focus Group and Move File to Group submenus manage panes
 | View ▸ Move File to Group ▸ Next | {{key:move_to_next_group}} | Move the current file to the next pane. |
 | View ▸ Move File to Group ▸ Previous | {{key:move_to_prev_group}} | Move the current file to the previous pane. |
 
-To focus pane 1 to 4 directly, press Ctrl+1 to Ctrl+4 (⌃1 to ⌃4 on macOS), or use View ▸ Focus Group ▸ Group 1–4. To move the current file to pane 1 to 4, press Ctrl+Shift+1 to Ctrl+Shift+4 (⌃⇧1 to ⌃⇧4 on macOS), or use View ▸ Move File to Group ▸ Group 1–4. Moving a file to a pane that doesn't exist yet switches to a layout with that many columns.
+To focus pane 1 to 4 directly, press Ctrl+1 to Ctrl+4 (⌃1 to ⌃4 on macOS), or use View ▸ Focus Group ▸ Group 1–4 (only the panes there are can be chosen). To move the current file to pane 1 to 4, press Ctrl+Shift+1 to Ctrl+Shift+4 (⌃⇧1 to ⌃⇧4 on macOS), or use View ▸ Move File to Group ▸ Group 1–4. Moving a file to a pane that doesn't exist yet switches to a layout with that many columns.
 
 With hot exit on (see below), your layout, the pane sizes and which pane each tab is in are saved with the window and restored next time.
 
@@ -188,7 +188,7 @@ On macOS, Strata ▸ Quit and Keep Windows (⌥⌘Q) does the same as Quit. Hot 
 | View ▸ Toggle Full Screen | {{key:toggle_full_screen}} | Fill the screen with the window. |
 | View ▸ Toggle Distraction Free | {{key:toggle_distraction_free}} | Full screen with only the text. |
 
-Distraction-free mode hides the side bar, tabs, status bar, minimap and build results, plus the menu bar on Windows and Linux. Use the same shortcut, or the command palette's "View: Toggle Distraction Free Mode", to come back; the side bar and minimap return as they were.
+Distraction-free mode hides the side bar, tabs, status bar, minimap and build results, plus the menu bar on Windows and Linux. Use the same shortcut, or the command palette's "View: Toggle Distraction Free Mode", to come back; the side bar and minimap return as they were. Leaving full screen any other way, such as the window's full-screen button or Esc, also ends it. Asking for something it hides, such as View ▸ Toggle Minimap or View ▸ Terminal, leaves distraction-free mode so that it shows. While the status bar is hidden, its messages appear briefly at the bottom of the window instead.
 
 ## Showing and hiding parts of the window
 

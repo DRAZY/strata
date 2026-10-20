@@ -295,7 +295,7 @@ Choosing a preset from the menu sets `line_height` and resets both paddings to 0
 
 ## Minimap
 
-The minimap is the small overview of the file at the right edge of the editor. Click or drag in it to scroll. Turn it on or off with **View ▸ Toggle Minimap** ({{key:toggle_minimap}}); the setting is `minimap`. The minimap hides itself when the editor is too narrow for it.
+The minimap is the small overview of the file at the right edge of the editor. Click or drag in it to scroll. Turn it on or off with **View ▸ Toggle Minimap** ({{key:toggle_minimap}}); the setting is `minimap`. The minimap hides itself in panes 640 points wide or narrower; if you turn it on in one, the status bar says why it doesn't appear.
 
 ## Editor extras
 
@@ -327,12 +327,18 @@ All of these are on by default, with whitespace shown in selections only.
 
 **View ▸ Word Wrap Column** makes wrapped lines break at one of the same columns instead of the window edge (**Automatic** wraps at the window edge). The setting is `wrap_column`. Lines still wrap at the window edge if the window is narrower than the column. Word wrap itself is covered in [Editing](editing.md).
 
+The check marks in these menus, and in Editor Extras' whitespace items, show what the current file gets. A project's `.editorconfig` (`max_line_length`) or your `syntax_settings` can set these for a file over `settings.json`; when one does, choosing an item still saves the setting, and the status bar says what sets it for that file, for example "Saved, but .editorconfig sets the ruler for main.rs".
+
 ## Tabs and status bar
 
 **View ▸ Toggle Tabs** ({{key:toggle_tabs}}) hides or shows the tab bar, and **View ▸ Toggle Status Bar** ({{key:toggle_status_bar}}) hides or shows the status bar. The settings are `show_tabs` and `show_status_bar`.
 
+While the status bar is hidden, and in distraction-free mode, its messages (such as "Saved project" or why a command did nothing) appear for a few seconds in a small box at the bottom of the window.
+
 ## Distraction-free mode
 
-**View ▸ Toggle Distraction Free** ({{key:toggle_distraction_free}}) goes full screen and shows only your text: the side bar, tabs, status bar, minimap, Markdown preview and build results are hidden, and on Windows and Linux the menu bar too. Run it again to return; the side bar and minimap come back as they were. Hiding the minimap here only affects this window and doesn't change your `minimap` setting.
+**View ▸ Toggle Distraction Free** ({{key:toggle_distraction_free}}) goes full screen and shows only your text: the side bar, tabs, status bar, minimap, Markdown preview and build results are hidden, and on Windows and Linux the menu bar too. Run it again to return; the side bar and minimap come back as they were. Leaving full screen any other way (the window's full-screen button, Esc, or Toggle Full Screen) ends distraction-free mode too. Hiding the minimap here only affects this window and doesn't change your `minimap` setting.
+
+While it's on, the View menu's check marks for these parts are off, since they aren't on screen. Choosing one of them (Toggle Minimap, Toggle Tabs, Toggle Status Bar, Terminal, Build Results, Markdown Preview, or Tools ▸ AI ▸ Show Panel) leaves distraction-free mode so it shows.
 
 **View ▸ Toggle Full Screen** ({{key:toggle_full_screen}}) goes full screen without hiding anything.
