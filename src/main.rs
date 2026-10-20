@@ -12,6 +12,7 @@ mod cli;
 mod commands;
 mod crash;
 mod compare;
+mod claim;
 mod ctxmenu;
 mod decor;
 mod dev;

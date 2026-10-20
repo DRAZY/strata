@@ -20,7 +20,7 @@
 use crate::diff::{self, Hunk};
 use crate::encoding::Encoding;
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -105,6 +105,8 @@ pub struct FileChange {
     /// What the file looked like on disk when listed (None: not there).
     /// Trashing it checks it still does.
     pub stat: Option<Stat>,
+    /// Which file a new file is (see `claim::file_id`), for the Trash.
+    pub id: Option<(u64, u64)>,
 }
 
 /// What the changes are measured against.
@@ -149,17 +151,7 @@ pub enum Outcome {
     /// A review tab's base: its file, and the bytes (None: not in the base).
     Base(PathBuf, Option<Vec<u8>>),
     /// A file moved to the Trash, or why not.
-    Trashed(PathBuf, Result<(), TrashRefused>),
-}
-
-/// Why a file wasn't moved to the Trash.
-#[derive(Debug, PartialEq)]
-pub enum TrashRefused {
-    /// It changed (or was replaced) since it was listed.
-    Changed,
-    /// It isn't really inside the repository (a link on the way).
-    Outside,
-    Failed(String),
+    Trashed(PathBuf, Result<(), crate::claim::Refused>),
 }
 
 // ---------------------------------------------------------------------------
@@ -312,9 +304,7 @@ pub fn decode_base(bytes: &[u8], doc: Encoding) -> Result<(String, Encoding), St
 // ---------------------------------------------------------------------------
 
 fn fingerprint(bytes: &[u8]) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut h);
-    h.finish()
+    crate::claim::fingerprint(bytes)
 }
 
 /// Git's test for binary, a NUL byte near the start, except that UTF-16
@@ -400,22 +390,18 @@ fn stat(path: &Path) -> Option<Stat> {
     std::fs::symlink_metadata(path).ok().filter(|m| m.is_file()).map(|m| stat_of(&m))
 }
 
-/// Fingerprint of a file: of its bytes, or of its stat for one too big to read.
-fn hash_of(bytes: Option<&[u8]>, st: Option<Stat>) -> u64 {
-    match (bytes, st) {
-        (Some(b), _) => fingerprint(b),
-        (None, Some(s)) => {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            s.hash(&mut h);
-            h.finish()
-        }
-        (None, None) => 1,
+/// Fingerprint of a file: of the bytes read, or (too big to keep in memory)
+/// of every byte, read a piece at a time. 1 when it can't be read.
+fn hash_of(bytes: Option<&[u8]>, path: &Path) -> u64 {
+    match bytes {
+        Some(b) => fingerprint(b),
+        None => crate::claim::open_plain(path).ok().and_then(|mut f| crate::claim::fingerprint_file(&mut f)).unwrap_or(1),
     }
 }
 
 /// The fingerprint a scan gives the file at `path` as it is now (see `FileChange::hash`).
 pub fn file_hash(path: &Path) -> u64 {
-    hash_of(read_small(path).as_deref(), stat(path))
+    hash_of(read_small(path).as_deref(), path)
 }
 
 /// Where a file's base comes from.
@@ -637,13 +623,20 @@ fn attributes(top: &Path, rels: &[&str], system: Option<&Path>) -> HashMap<Strin
 
 /// The working tree's files: relative path → stat. Respects .gitignore
 /// like Git does, and leaves out `.git`, nested repositories and links.
-fn walk(top: &Path, bad: &mut Vec<PathBuf>) -> Result<HashMap<String, Stat>, String> {
+fn walk(top: &Path, bad: &mut Vec<PathBuf>, staged: &mut Vec<PathBuf>) -> Result<HashMap<String, Stat>, String> {
     let mut files = HashMap::new();
+    // Staging folders an interrupted Trash left behind (see `claim`).
+    let left = Arc::new(Mutex::new(Vec::new()));
+    let found = left.clone();
     let walker = ignore::WalkBuilder::new(top)
         .hidden(false)
         .require_git(false)
-        .filter_entry(|e| {
+        .filter_entry(move |e| {
             let dir = e.file_type().is_some_and(|t| t.is_dir());
+            if dir && e.file_name().to_string_lossy().starts_with(crate::claim::STAGING) {
+                found.lock().unwrap_or_else(|e| e.into_inner()).push(e.path().to_path_buf());
+                return false;
+            }
             !(dir && (e.file_name() == ".git" || (e.depth() > 0 && e.path().join(".git").exists())))
         })
         .build();
@@ -661,6 +654,7 @@ fn walk(top: &Path, bad: &mut Vec<PathBuf>) -> Result<HashMap<String, Stat>, Str
             return Err(format!("Over {MAX_FILES} files: too many to review"));
         }
     }
+    staged.append(&mut left.lock().unwrap_or_else(|e| e.into_inner()));
     Ok(files)
 }
 
@@ -757,7 +751,7 @@ pub fn tracked_twin<'a>(top: &Path, path: &Path, tracked: impl Iterator<Item = &
 }
 
 fn change(path: PathBuf, rel: &str, status: Status) -> FileChange {
-    FileChange { path, rel: rel.to_owned(), old: None, status, lines: None, binary: false, blocked: None, filtered: false, crlf: false, alias: false, hash: 1, kept: false, stat: None }
+    FileChange { path, rel: rel.to_owned(), old: None, status, lines: None, binary: false, blocked: None, filtered: false, crlf: false, alias: false, hash: 1, kept: false, stat: None, id: None }
 }
 
 /// Find the files under `folder`'s repository that differ from `base`.
@@ -793,7 +787,8 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
         None => (Arc::default(), Arc::default()),
     };
     let mut bad_names: Vec<PathBuf> = tree_bad.to_vec();
-    let mut work = walk(&top, &mut bad_names)?;
+    let mut staged = Vec::new();
+    let mut work = walk(&top, &mut bad_names, &mut staged)?;
     bad_names.sort();
     bad_names.dedup();
     let mut in_base: Vec<&String> = tree.keys().collect();
@@ -854,6 +849,18 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
             f
         })
         .collect();
+    // An interrupted Trash: say what's in its staging folder, never lose it.
+    for dir in staged {
+        let inside: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let rel = dir.strip_prefix(&top).unwrap_or(&dir).to_string_lossy().replace('\\', "/");
+        let mut f = change(dir, &rel, Status::Added);
+        f.blocked = Some(format!(
+            "Left by an interrupted move to the Trash. Nothing was deleted: it holds {}. Move {} back where you want it, then remove this folder.",
+            if inside.is_empty() { "nothing".to_owned() } else { inside.join(", ") },
+            if inside.len() == 1 { "it" } else { "them" }
+        ));
+        found.push(f);
+    }
     let mut todo: Vec<(String, Option<Stat>, Option<Src>)> = Vec::new();
     let mut seen = HashMap::with_capacity(paths.len());
     for rel in paths {
@@ -937,7 +944,9 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
                     let mut f = change(path, rel, Status::Added);
                     f.lines = w.and_then(|w| count_lines(b"", w));
                     f.binary = w.is_some_and(is_binary);
-                    f.hash = hash_of(w, *st);
+                    f.hash = hash_of(w, &f.path);
+                    // Which file it is, for the Trash to check it's still this one.
+                    f.id = crate::claim::file_id(&f.path);
                     Some(f)
                 }
                 (Some(_), None) => {
@@ -950,7 +959,8 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
                 (Some(_), Some(_)) if blob_filter.is_some() => {
                     let mut f = change(path, rel, Status::Modified);
                     f.filtered = true;
-                    f.hash = hash_of(None, *st);
+                    // Never listed or acted on: no need to read it.
+                    f.hash = 1;
                     Some(f)
                 }
                 (Some(_), Some(_)) => match (b, w) {
@@ -959,7 +969,7 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
                         let mut f = change(path, rel, Status::Modified);
                         f.lines = b.zip(w).and_then(|(b, w)| count_lines(b, w));
                         f.binary = b.is_some_and(is_binary) || w.is_some_and(is_binary);
-                        f.hash = hash_of(w, *st);
+                        f.hash = hash_of(w, &f.path);
                         Some(f)
                     }
                 },
@@ -1095,31 +1105,20 @@ struct Job {
     generation: u64,
 }
 
-/// Move one file to the Trash, if it's still what was listed.
+/// Move one file to the Trash, if it's still what was listed (see `claim`).
 struct TrashJob {
     path: PathBuf,
     top: PathBuf,
-    listed: Option<Stat>,
-    hash: u64,
+    /// A renamed file's old path, which must still be free.
+    old: Option<PathBuf>,
+    expected: crate::claim::Expected,
 }
 
-/// The file at `path` is still the one listed: the same file (device,
-/// inode, size, times) with the same bytes.
-pub fn unchanged_since(path: &Path, listed: Option<Stat>, hash: u64) -> bool {
-    listed.is_some() && stat(path) == listed && file_hash(path) == hash
-}
-
-/// Move `path` to the Trash, checking right before that it's inside `top`
-/// (no link on the way) and still the file listed: an agent may have
-/// replaced it with new work since.
-fn trash_if_unchanged(top: &Path, path: &Path, listed: Option<Stat>, hash: u64) -> Result<(), TrashRefused> {
-    if !inside(top, path) {
-        return Err(TrashRefused::Outside);
-    }
-    if !unchanged_since(path, listed, hash) {
-        return Err(TrashRefused::Changed);
-    }
-    crate::trash::move_to_trash(path).map_err(|e| TrashRefused::Failed(e.to_string()))
+/// What a listed file must still be for the Trash to take it.
+pub fn expected(f: &FileChange) -> Option<crate::claim::Expected> {
+    let st = f.stat?;
+    let id = f.id.or((st.id != (0, 0)).then_some(st.id));
+    Some(crate::claim::Expected { id, len: st.len, mtime: st.mtime, hash: f.hash })
 }
 
 /// Fetch one file's base for a review tab.
@@ -1185,11 +1184,11 @@ impl Scanner {
         self.shared.wake.notify_one();
     }
 
-    /// Queue moving `path` to the Trash if it's still as listed (`listed`,
-    /// `hash` from its `FileChange`); the answer is an `Outcome::Trashed`.
-    pub fn trash(&self, path: &Path, top: &Path, listed: Option<Stat>, hash: u64) {
+    /// Queue moving `path` to the Trash if it's still as listed (`expected`;
+    /// for a renamed file `old` must be free); the answer is an `Outcome::Trashed`.
+    pub fn trash(&self, path: &Path, top: &Path, old: Option<PathBuf>, expected: crate::claim::Expected) {
         let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        st.trash.push(TrashJob { path: path.to_owned(), top: top.to_owned(), listed, hash });
+        st.trash.push(TrashJob { path: path.to_owned(), top: top.to_owned(), old, expected });
         self.shared.wake.notify_one();
     }
 
@@ -1229,7 +1228,7 @@ fn work(shared: &Shared, tx: &Sender<Outcome>, ctx: Option<&egui::Context>) {
             }
         };
         let outcome = if let Some(t) = trash {
-            let result = trash_if_unchanged(&t.top, &t.path, t.listed, t.hash);
+            let result = crate::claim::trash_listed(&t.top, &t.path, t.old.as_deref(), &t.expected);
             Outcome::Trashed(t.path, result)
         } else if let Some(b) = base {
             let bytes = base_bytes(&b.top, &b.base, b.commit.as_deref(), &b.rel);
@@ -1804,6 +1803,39 @@ pub(crate) mod tests {
         let bad = s.files.iter().find(|f| f.path.as_os_str().as_bytes().ends_with(b"a\xff.txt")).expect("listed");
         assert_eq!(bad.blocked.as_deref(), Some(BAD_NAME));
         assert!(!inside(&s.top, &bad.path), "never acted on");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A staging folder an interrupted Trash left behind is reported, with
+    /// what's in it; its file isn't listed as new (and so never trashed).
+    #[test]
+    fn a_leftover_staging_folder_is_reported_not_lost() {
+        let Some(dir) = temp_repo("staged") else { return };
+        let stage = dir.join(format!("src/{}123-456", crate::claim::STAGING));
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(stage.join("work.rs"), "the agent's work\n").unwrap();
+        let s = scan(&dir, &Base::Head, &HashMap::new(), &mut Cache::default()).unwrap();
+        assert_eq!(s.files.len(), 1, "{:?}", s.files);
+        assert_eq!(s.files[0].path, stage);
+        assert!(s.files[0].blocked.as_deref().is_some_and(|w| w.contains("work.rs") && w.contains("Nothing was deleted")), "{:?}", s.files[0].blocked);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Big files are fingerprinted from every byte (not their size and
+    /// time), so a same-size rewrite in the same second still shows.
+    #[test]
+    fn big_files_are_fingerprinted_by_content() {
+        let Some(dir) = temp_repo("bighash") else { return };
+        let file = dir.join("big.bin");
+        let mut bytes = vec![b'a'; (MAX_READ_BYTES + 10) as usize];
+        std::fs::write(&file, &bytes).unwrap();
+        let first = file_hash(&file);
+        let when = std::fs::metadata(&file).unwrap().modified().unwrap();
+        bytes[5] = b'b';
+        std::fs::write(&file, &bytes).unwrap();
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(when).unwrap();
+        assert_ne!(file_hash(&file), first);
+        assert_eq!(file_hash(&file), fingerprint(&bytes));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

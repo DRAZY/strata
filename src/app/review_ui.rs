@@ -703,16 +703,21 @@ impl StrataApp {
             self.status = format!("{} is the same file as {twin}: nothing was moved", f.rel);
             return;
         }
-        // Off this thread; the worker checks once more, right before, that
-        // the file is still the one listed and still inside the repository.
+        // Off this thread. The worker claims the file first and then checks
+        // it's the one listed (see `claim`): what's trashed can't be swapped.
         let Some(top) = self.review.scan.as_ref().map(|s| s.top.clone()) else { return };
-        self.review_scanner(None).trash(&path, &top, listed, hash);
+        let Some(expected) = review::expected(&f) else {
+            self.status = format!("{} changed since it was listed; look again", f.rel);
+            return;
+        };
+        self.review_scanner(None).trash(&path, &top, renamed_from, expected);
         self.review.pending_trash = Some((path.clone(), restore));
         self.status = format!("Moving {} to the {}…", Self::review_name(&path), crate::trash::trash_name());
     }
 
     /// The Trash's answer for `path`.
-    fn review_trashed(&mut self, path: PathBuf, result: Result<(), review::TrashRefused>) {
+    fn review_trashed(&mut self, path: PathBuf, result: Result<(), crate::claim::Refused>) {
+        use crate::claim::Refused;
         let restore = match self.review.pending_trash.take() {
             Some((p, restore)) if p == path => restore,
             other => {
@@ -724,9 +729,11 @@ impl StrataApp {
         let name = Self::review_name(&path);
         match result {
             Ok(()) => {}
-            Err(review::TrashRefused::Changed) => return self.status = format!("{name} changed since it was listed; look again"),
-            Err(review::TrashRefused::Outside) => return self.status = format!("{name} isn't inside the repository (a link leads elsewhere): nothing was moved"),
-            Err(review::TrashRefused::Failed(e)) => return self.status = format!("Could not move {name} to the {}: {e}", crate::trash::trash_name()),
+            Err(Refused::Changed) => return self.status = format!("{name} changed since it was listed; look again"),
+            Err(Refused::OldBack) => return self.status = format!("The old name of {name} exists again: nothing was moved"),
+            Err(Refused::KeptAt(at)) => return self.status = format!("{name} changed and its name was taken meanwhile; nothing was deleted: it's in {}", at.display()),
+            Err(Refused::Outside) => return self.status = format!("{name} isn't inside the repository (a link leads elsewhere): nothing was moved"),
+            Err(Refused::Failed(e)) => return self.status = format!("Could not move {name} to the {}: {e}", crate::trash::trash_name()),
         }
         self.follow_delete(&path);
         self.status = format!("Moved {name} to the {}", crate::trash::trash_name());

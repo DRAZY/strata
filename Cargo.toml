@@ -66,6 +66,7 @@ block2 = "0.6.2"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAppleEventDescriptor", "NSAppleEventManager", "NSError", "NSFileManager", "NSNotification", "NSOperation", "NSString", "NSURL"] }
 
 [target.'cfg(windows)'.dependencies]
-# Side bar Delete (the Recycle Bin) and putting restored windows on a monitor
+# Side bar Delete (the Recycle Bin), putting restored windows on a monitor, and
+# Review Changes' file identity and no-replace moves (src/claim.rs)
 # (the version already in the build, through winit).
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
