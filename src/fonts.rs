@@ -265,11 +265,17 @@ fn definitions(editor: Option<&FontSource>, ui: Option<&FontSource>) -> (egui::F
         defs.font_data.insert("macos-symbols".to_owned(), Arc::new(FontData::from_owned(bytes)));
         defs.families.entry(FontFamily::Proportional).or_default().push("macos-symbols".to_owned());
     }
-    // Last, the bundled Inter: it has the key symbols the fonts above lack
-    // (San Francisco has no ⇥, egui's fonts no ⌃ ⌥ ⇧ ⌘).
-    let inter = BUNDLED.iter().find(|f| f.name == "Inter").expect("Inter is bundled");
-    defs.font_data.insert("strata-symbols".to_owned(), Arc::new(FontData::from_static(inter.data)));
-    defs.families.entry(FontFamily::Proportional).or_default().push("strata-symbols".to_owned());
+    // Last, two bundled fonts for the symbols Strata's own text uses that the
+    // fonts above lack: Inter has the key symbols (San Francisco has no ⇥,
+    // egui's fonts no ⌃ ⌥ ⇧ ⌘), JetBrains Mono ▸ ⟨ ⟩ and � (no San
+    // Francisco off macOS). Both families get them, for the manual's code.
+    for (key, name) in [("strata-symbols", "Inter"), ("strata-symbols-2", "JetBrains Mono")] {
+        let font = BUNDLED.iter().find(|f| f.name == name).expect("bundled");
+        defs.font_data.insert(key.to_owned(), Arc::new(FontData::from_static(font.data)));
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            defs.families.entry(family).or_default().push(key.to_owned());
+        }
+    }
     (defs, errors)
 }
 
@@ -432,6 +438,134 @@ mod tests {
             // box, so compare with the box itself as well.
             let boxed: String = glyphs.iter().filter(|&&c| !ctx.fonts_mut(|f| f.has_glyph(&font, c)) && uv(c) == uv('◻')).collect();
             assert!(boxed.is_empty(), "interface font {ui:?} draws {boxed} as a box");
+        }
+    }
+
+    /// The chars of `text` (with no CJK: those fonts load from the system
+    /// when needed) that `font` draws as the "◻" box.
+    fn boxed(ctx: &Context, font: &FontId, text: &str) -> String {
+        let uv = |c: char| ctx.fonts_mut(|f| f.layout_no_wrap(c.to_string(), font.clone(), Color32::WHITE).rows[0].glyphs[0].uv_rect);
+        let mut chars: Vec<char> = text.chars().filter(|&c| !c.is_ascii() && !is_cjk(c) && !c.is_whitespace() && !c.is_control()).collect();
+        chars.sort_unstable();
+        chars.dedup();
+        // `has_glyph` is false for glyphs of the face that also draws the box.
+        chars.into_iter().filter(|&c| c != '◻' && !ctx.fonts_mut(|f| f.has_glyph(font, c)) && uv(c) == uv('◻')).collect()
+    }
+
+    /// The text of the string and char literals in Rust source, comments and
+    /// the test module (from `#[cfg(test)]` or `#[cfg(all(test, …))]` on) left out.
+    fn literals(src: &str) -> String {
+        let src = ["#[cfg(test)]\nmod ", "#[cfg(all(test"].iter().filter_map(|m| src.find(m)).min().map_or(src, |i| &src[..i]);
+        let (mut out, mut chars) = (String::new(), src.chars().peekable());
+        while let Some(c) = chars.next() {
+            match c {
+                '/' if chars.peek() == Some(&'/') => {
+                    chars.by_ref().take_while(|&c| c != '\n').for_each(drop);
+                }
+                '/' if chars.peek() == Some(&'*') => {
+                    let mut prev = ' ';
+                    for c in chars.by_ref() {
+                        if prev == '*' && c == '/' {
+                            break;
+                        }
+                        prev = c;
+                    }
+                }
+                'r' if matches!(chars.peek(), Some('"' | '#')) => {
+                    let mut hashes = 0;
+                    while chars.next_if_eq(&'#').is_some() {
+                        hashes += 1;
+                    }
+                    if chars.next_if_eq(&'"').is_none() {
+                        continue;
+                    }
+                    let mut body = String::new();
+                    while let Some(c) = chars.next() {
+                        if c == '"' && (0..hashes).all(|_| chars.next_if_eq(&'#').is_some()) {
+                            break;
+                        }
+                        body.push(c);
+                    }
+                    out.push_str(&body);
+                }
+                '"' => {
+                    while let Some(c) = chars.next() {
+                        match c {
+                            '\\' => {
+                                chars.next();
+                            }
+                            '"' => break,
+                            c => out.push(c),
+                        }
+                    }
+                }
+                '\'' => {
+                    // A char literal, not a lifetime.
+                    let mut ahead = chars.clone();
+                    if let (Some(a), Some('\'')) = (ahead.next(), ahead.next())
+                        && a != '\\'
+                    {
+                        out.push(a);
+                        chars.next();
+                        chars.next();
+                    }
+                }
+                c if c.is_alphanumeric() || c == '_' => {
+                    // Skip the rest of an identifier (so `br"…"` or `xr` aren't raw strings).
+                    while chars.next_if(|c| c.is_alphanumeric() || *c == '_').is_some() {}
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn literals_skip_comments_and_tests() {
+        let src = "let a = \"x▸y\"; // ⚠ comment\nlet b = '→'; let c: &'a str = r#\"q\"\"#; /* ✔ */ x\n#[cfg(test)]\nmod t { \"🖼\" }";
+        assert_eq!(literals(src), "x▸y→q\"");
+        assert_eq!(literals("\"a\"\n#[cfg(all(test, unix))]\nmod tests { \"b\" }"), "a");
+    }
+
+    /// Every character in Strata's own interface text (its string literals
+    /// and the manual, which it shows) is drawn by the interface and editor
+    /// fonts, with or without macOS's San Francisco: never the "◻" box.
+    #[test]
+    fn interface_text_is_drawn_on_every_platform() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut text = String::new();
+        let mut stack = vec![root.join("src")];
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                let name = p.file_name().unwrap().to_string_lossy().into_owned();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if name.ends_with(".rs") && name != "tests.rs" && !name.ends_with("_tests.rs") {
+                    text.push_str(&literals(&std::fs::read_to_string(&p).unwrap()));
+                }
+            }
+        }
+        for e in std::fs::read_dir(root.join("docs/manual")).unwrap().flatten() {
+            if e.path().extension().is_some_and(|x| x == "md") {
+                text.push_str(&std::fs::read_to_string(e.path()).unwrap());
+            }
+        }
+        assert!(text.contains('▸') && text.contains('⟳'), "the scan found the interface text");
+        let (mut defs, _) = definitions(None, None);
+        let mut platforms = vec![("this platform", defs.clone())];
+        if defs.font_data.remove("macos-symbols").is_some() {
+            defs.families.values_mut().for_each(|f| f.retain(|k| k != "macos-symbols"));
+            platforms.push(("Windows and Linux", defs));
+        }
+        for (platform, defs) in platforms {
+            let ctx = Context::default();
+            ctx.set_fonts(defs);
+            ctx.run_ui(RawInput::default(), |_| {}).textures_delta.clear();
+            for font in [FontId::proportional(14.0), FontId::monospace(14.0)] {
+                let missing = boxed(&ctx, &font, &text);
+                assert!(missing.is_empty(), "{platform}, {:?}: {missing} drawn as a box", font.family);
+            }
         }
     }
 }
