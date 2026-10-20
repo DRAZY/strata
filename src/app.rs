@@ -843,6 +843,7 @@ impl StrataApp {
         self.recent_projects = session.recent_projects.clone();
         self.recent_folders = session.recent_folders.clone();
         crate::find_history::restore(&session.find_history);
+        crate::notes::sync::restore_synced(&session.notes_synced);
         // This is the first window; `Windows` takes the others from here.
         let mut unreadable = session.window_states().first().map(|w| self.restore_window(&dir, w)).unwrap_or_default();
         unreadable.extend(self.restore_other_windows(&dir, &session));
@@ -955,7 +956,7 @@ impl StrataApp {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (self.active, &self.sidebar.roots, self.sidebar.visible, self.layout.cols.len(), self.layout.rows.len()).hash(&mut h);
-        (&self.recent_files, &self.recent_folders, self.find_options(), crate::find_history::generation()).hash(&mut h);
+        (&self.recent_files, &self.recent_folders, self.find_options(), crate::find_history::generation(), crate::notes::sync::synced_generation()).hash(&mut h);
         for d in &self.docs {
             (&d.path, d.is_dirty(), d.editor.version(), d.group, d.stamp).hash(&mut h);
             for s in d.editor.selections() {

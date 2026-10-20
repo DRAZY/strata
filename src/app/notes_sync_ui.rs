@@ -391,6 +391,9 @@ impl StrataApp {
         if job.manual || !ok {
             self.status = text.clone();
         }
+        if ok {
+            sync::note_synced(&vault, crate::notes::dates::format("YYYY-MM-DD HH:mm", &crate::notes::dates::DateTime::now()));
+        }
         self.notes.sync.last.insert(vault, Last { at: clock(), ok, text, detail });
         ctx.request_repaint();
     }
@@ -477,7 +480,15 @@ impl StrataApp {
             }
             last => {
                 let skipped = last.and_then(|l| l.detail.clone()).map(|d| format!("\n{d}")).unwrap_or_default();
-                ("Not synced yet".into(), None, format!("Git sync is on for this vault and runs {every}. Click to sync now.{skipped}"))
+                // Synced in another window, or before Strata last quit.
+                match sync::synced_at(&vault) {
+                    Some(at) => {
+                        let today = crate::notes::dates::format("YYYY-MM-DD ", &crate::notes::dates::DateTime::now());
+                        let short = at.strip_prefix(&today).unwrap_or_else(|| at.split(' ').next().unwrap_or(&at));
+                        (format!("Synced {short}"), None, format!("Last synced {at}.\nGit sync runs {every}. Click to sync now.{skipped}"))
+                    }
+                    None => ("Not synced yet".into(), None, format!("Git sync is on for this vault and runs {every}. Click to sync now.{skipped}")),
+                }
             }
         })
     }
@@ -904,6 +915,38 @@ mod tests {
         assert_eq!(app.status, "Git sync is off for vault");
         let out = frame(&mut app, &ctx, vec![]);
         assert!(!texts(&out).iter().any(|t| t.starts_with("Synced ")));
+    }
+
+    /// After a relaunch (and in another window) the status bar still says
+    /// when the vault last synced: the time is kept in the session.
+    #[test]
+    fn the_last_sync_time_outlives_the_window() {
+        let Some(f) = fixture("ui-sync-relaunch") else { return };
+        let ctx = Context::default();
+        let mut app = open(&f, &ctx);
+        enable(&mut app, 0);
+        app.run(&ctx, Cmd::NotesSync);
+        finish(&mut app, &ctx);
+        let vault = vault_key(&app);
+        let at = sync::synced_at(&vault).expect("noted");
+        let today = crate::notes::dates::format("YYYY-MM-DD ", &crate::notes::dates::DateTime::now());
+        let time = at.strip_prefix(&today).map_or_else(|| at[..10].to_owned(), str::to_owned);
+        // Written with the session and read back.
+        let json = serde_json::to_string(&crate::session::Session::of_windows(Vec::new())).unwrap();
+        let saved: crate::session::Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(saved.notes_synced.get(&vault), Some(&at));
+        sync::restore_synced(&saved.notes_synced);
+        // A new window (as after a relaunch) knows it.
+        let ctx2 = Context::default();
+        let mut again = open(&f, &ctx2);
+        enable(&mut again, 0);
+        let out = frame(&mut again, &ctx2, vec![]);
+        assert!(shows(&out, &format!("Synced {time}")), "{:?}", texts(&out));
+        assert!(!shows(&out, "Not synced yet"));
+        // A date and time only: anything else in the session is ignored.
+        let odd = std::collections::BTreeMap::from([(PathBuf::from("/elsewhere"), "\u{202e}evil".to_owned())]);
+        sync::restore_synced(&odd);
+        assert_eq!(sync::synced_at(Path::new("/elsewhere")), None);
     }
 
     #[test]
