@@ -268,13 +268,15 @@ fn definitions(editor: Option<&FontSource>, ui: Option<&FontSource>) -> (egui::F
     // Last, two bundled fonts for the symbols Strata's own text uses that the
     // fonts above lack: Inter has the key symbols (San Francisco has no ⇥,
     // egui's fonts no ⌃ ⌥ ⇧ ⌘), JetBrains Mono ▸ ⟨ ⟩ and � (no San
-    // Francisco off macOS). Both families get them, for the manual's code.
-    for (key, name) in [("strata-symbols", "Inter"), ("strata-symbols-2", "JetBrains Mono")] {
+    // Francisco off macOS). Both families get them, for the manual's code;
+    // the monospace one tries JetBrains Mono first, so what it draws takes
+    // one cell and the editor's columns stay on the grid.
+    for (key, name) in [("strata-symbols", "Inter"), ("strata-symbols-mono", "JetBrains Mono")] {
         let font = BUNDLED.iter().find(|f| f.name == name).expect("bundled");
         defs.font_data.insert(key.to_owned(), Arc::new(FontData::from_static(font.data)));
-        for family in [FontFamily::Proportional, FontFamily::Monospace] {
-            defs.families.entry(family).or_default().push(key.to_owned());
-        }
+    }
+    for (family, keys) in [(FontFamily::Proportional, ["strata-symbols", "strata-symbols-mono"]), (FontFamily::Monospace, ["strata-symbols-mono", "strata-symbols"])] {
+        defs.families.entry(family).or_default().extend(keys.map(str::to_owned));
     }
     (defs, errors)
 }
@@ -438,6 +440,20 @@ mod tests {
             // box, so compare with the box itself as well.
             let boxed: String = glyphs.iter().filter(|&&c| !ctx.fonts_mut(|f| f.has_glyph(&font, c)) && uv(c) == uv('◻')).collect();
             assert!(boxed.is_empty(), "interface font {ui:?} draws {boxed} as a box");
+        }
+    }
+
+    /// Symbols the editor font lacks come from a monospaced fallback first,
+    /// so they take one cell and the columns after them stay on the grid.
+    #[test]
+    fn editor_fallback_symbols_take_one_cell() {
+        let ctx = context_with(None);
+        let font = FontId::monospace(14.0);
+        let cell = ctx.fonts_mut(|f| f.glyph_width(&font, 'M'));
+        // ⌃ ⌥ �: in none of egui's fonts, so drawn by Strata's fallbacks.
+        for c in ['⌃', '⌥', '\u{FFFD}'] {
+            let w = ctx.fonts_mut(|f| f.glyph_width(&font, c));
+            assert!((w - cell).abs() < 0.1, "{c:?} is {w} wide, a cell is {cell}");
         }
     }
 
