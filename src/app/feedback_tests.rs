@@ -102,6 +102,9 @@ fn use_selection_for_find_takes_the_word_and_says_so() {
 fn build_with_no_build_system_says_so_in_the_panel() {
     let ctx = Context::default();
     let mut app = app_with("plain text\n");
+    let config = crate::app::ui_tests::temp_dir("no-build-system");
+    app.config = Some(config.clone());
+    app.build = crate::build::Build::new(Some(config));
     app.run(&ctx, Cmd::Build);
     assert!(app.build.visible, "the Build Results panel shows the message");
     assert!(app.build.output_text().contains("New Build System"), "{}", app.build.output_text());
@@ -110,6 +113,11 @@ fn build_with_no_build_system_says_so_in_the_panel() {
     assert!(!app.palette.open, "no empty picker");
     assert!(app.status.starts_with("No build system for this file"), "{}", app.status);
     assert!(app.build.visible);
+    // Without a settings folder New Build System can't run, so it isn't offered.
+    app.config = None;
+    app.build = crate::build::Build::new(None);
+    app.run(&ctx, Cmd::Build);
+    assert!(!app.build.output_text().contains("New Build System"), "{}", app.build.output_text());
 }
 
 #[test]

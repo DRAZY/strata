@@ -1073,7 +1073,8 @@ impl Build {
     /// Nothing fits the file: say so in the panel too (unless a build is
     /// running there), with where to make one. Returns the message.
     pub fn no_build_system(&mut self) -> String {
-        let e = "No build system for this file. Make one with Tools ▸ Build System ▸ New Build System…".to_owned();
+        // New Build System needs the settings folder.
+        let e = if self.config_dir.is_some() { "No build system for this file. Make one with Tools ▸ Build System ▸ New Build System…" } else { "No build system for this file" }.to_owned();
         if !self.running {
             self.rx = None;
             self.visible = true;

@@ -90,6 +90,8 @@ fn answered<T>(slot: &mut Option<Asked<T>>, epoch: u64) -> Option<(T, Reply)> {
 struct CompletionFor {
     view: egui::Id,
     start: usize,
+    /// Show Completions asked: an empty answer says so.
+    explicit: bool,
 }
 
 struct GotoFor {
@@ -583,7 +585,7 @@ impl StrataApp {
         params["context"] = context;
         let view = d.view.id;
         if let Some(pending) = self.lsp_request(i, "textDocument/completion", params) {
-            self.lsp.completion = Some(Asked { epoch: self.lsp.hub.borrow().handoffs(), pending, what: CompletionFor { view, start } });
+            self.lsp.completion = Some(Asked { epoch: self.lsp.hub.borrow().handoffs(), pending, what: CompletionFor { view, start, explicit } });
         }
     }
 
@@ -604,6 +606,9 @@ impl StrataApp {
         }
         let list = ServerList { view: what.view, start: what.start, items, incomplete };
         self.completion.set_server_items(&mut self.docs[i], list, &self.snippets.lib);
+        if what.explicit && !self.completion.is_open() {
+            self.status = "No completions".into();
+        }
     }
 
     /// Insert the server completion chosen in the popup: its text edit (or
@@ -1862,6 +1867,17 @@ mod tests {
         frame(&mut app, &ctx, vec![Event::Text(".".into())]);
         wait(&mut app, &ctx, "completions after a dot", |a| a.completion.is_open() && a.completion.labels().contains(&"fake_beta".to_owned()));
         frame(&mut app, &ctx, vec![press(egui::Key::Escape, Modifiers::NONE)]);
+        assert!(!app.completion.is_open());
+    }
+
+    /// Show Completions with a server that offers nothing says so once it answers.
+    #[test]
+    fn show_completions_says_so_when_the_server_offers_none() {
+        let (mut app, ctx, _) = app_with("complete-none", &[("a.fake", "zzz\n")], json!({"completions": []}));
+        put_cursor(&mut app, 3);
+        app.run(&ctx, Cmd::ShowCompletions);
+        wait(&mut app, &ctx, "the server's empty answer", |a| !a.lsp_completion_pending());
+        assert_eq!(app.status, "No completions");
         assert!(!app.completion.is_open());
     }
 
