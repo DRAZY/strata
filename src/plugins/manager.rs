@@ -64,9 +64,9 @@ pub struct StatusItem {
 pub enum State {
     Stopped,
     /// Hashing the package (off the window's thread) to see if it's the one consented to.
-    Checking(Receiver<Result<(String, Manifest, PathBuf), String>>),
-    /// Waiting for the user's answer; `snapshot` is the approved copy that would run.
-    Asking { sha256: String, manifest: Box<Manifest>, snapshot: PathBuf },
+    Checking(Receiver<Result<(String, Manifest), String>>),
+    /// Waiting for the user's answer (about the snapshot named `sha256`).
+    Asking { sha256: String, manifest: Box<Manifest> },
     Starting { init: Pending },
     Running,
     Restarting { at: Instant, why: String },
@@ -97,6 +97,8 @@ pub struct Plugin {
     pub state: State,
     pub log: Arc<Mutex<Log>>,
     host: Option<Host>,
+    /// The shared lock on the snapshot it runs from (see `package::open_snapshot`).
+    lock: Option<std::fs::File>,
     /// Counts starts, so an answer meant for an earlier process never reaches a new one.
     run: u64,
     crashes: Vec<Instant>,
@@ -123,6 +125,7 @@ impl Plugin {
             state: State::Stopped,
             log: Default::default(),
             host: None,
+            lock: None,
             run: 0,
             crashes: Vec::new(),
             queued: Vec::new(),
@@ -164,6 +167,7 @@ impl Plugin {
         if let Some(h) = self.host.take() {
             h.stop();
         }
+        self.lock = None;
         self.status.clear();
         self.told.clear();
         self.commands.clear();
@@ -238,9 +242,7 @@ impl Manager {
             parent_env_for_tests: Vec::new(),
         };
         m.reload();
-        if let Some(c) = config
-            && first_for(c)
-        {
+        if let Some(c) = config {
             let keep: HashSet<String> = m.store.state.plugins.values().filter_map(|e| e.grant.as_ref().map(|g| g.sha256.clone())).collect();
             package::prune_snapshots(c, &keep);
         }
@@ -346,8 +348,8 @@ impl Manager {
     }
 
     /// The package was checked: start it, or ask first.
-    fn checked(&mut self, i: usize, result: Result<(String, Manifest, PathBuf), String>) {
-        let (sha, manifest, snapshot) = match result {
+    fn checked(&mut self, i: usize, result: Result<(String, Manifest), String>) {
+        let (sha, manifest) = match result {
             Ok(r) => r,
             Err(e) => return self.fail(i, format!("its package can't be used: {e}")),
         };
@@ -356,9 +358,9 @@ impl Manager {
             return self.fail(i, "its manifest was changed to another name".into());
         }
         if self.store.granted(&p.name, &sha, &manifest.permissions) {
-            self.start_host(i, manifest, &sha, &snapshot);
+            self.start_host(i, manifest, &sha);
         } else {
-            p.state = State::Asking { sha256: sha, manifest: Box::new(manifest), snapshot };
+            p.state = State::Asking { sha256: sha, manifest: Box::new(manifest) };
             let name = p.name.clone();
             if !self.asking.contains(&name) {
                 self.asking.push_back(name);
@@ -385,7 +387,7 @@ impl Manager {
         self.asking.iter().find_map(|name| {
             let p = self.plugins.iter().find(|p| &p.name == name)?;
             match &p.state {
-                State::Asking { sha256, manifest, .. } => Some((p, sha256.as_str(), &**manifest)),
+                State::Asking { sha256, manifest } => Some((p, sha256.as_str(), &**manifest)),
                 _ => None,
             }
         })
@@ -399,7 +401,7 @@ impl Manager {
         self.asking = keep;
         let Some(name) = self.asking.pop_front() else { return };
         let Some(i) = self.index(&name) else { return };
-        let State::Asking { sha256, manifest, snapshot } = std::mem::replace(&mut self.plugins[i].state, State::Stopped) else { return };
+        let State::Asking { sha256, manifest } = std::mem::replace(&mut self.plugins[i].state, State::Stopped) else { return };
         if !allow {
             let p = &mut self.plugins[i];
             p.declined = true;
@@ -413,7 +415,7 @@ impl Manager {
             self.note(e);
         }
         self.plugins[i].declined = false;
-        self.start_host(i, *manifest, &sha256, &snapshot);
+        self.start_host(i, *manifest, &sha256);
     }
 
     fn launch(&self, dir: &Path, m: &Manifest) -> Result<Launch, String> {
@@ -452,12 +454,15 @@ impl Manager {
         Ok(Launch { program, args: m.run.args.clone(), cwd: dir.to_path_buf(), env })
     }
 
-    /// Run plugin `i` from its approved copy, checked once more right before.
-    fn start_host(&mut self, i: usize, manifest: Manifest, sha: &str, snapshot: &Path) {
-        if let Err(e) = package::verify_snapshot(snapshot, sha) {
-            return self.fail(i, e);
-        }
-        let launch = match self.launch(snapshot, &manifest) {
+    /// Run plugin `i` from its approved copy, checked once more right
+    /// before, and locked while it runs (so no Strata prunes it).
+    fn start_host(&mut self, i: usize, manifest: Manifest, sha: &str) {
+        let Some(config) = self.config.clone() else { return self.fail(i, "there's no settings folder".into()) };
+        let (snapshot, snap_lock) = match package::open_snapshot(&config, sha) {
+            Ok(s) => s,
+            Err(e) => return self.fail(i, e),
+        };
+        let launch = match self.launch(&snapshot, &manifest) {
             Ok(l) => l,
             Err(e) => return self.fail(i, e),
         };
@@ -468,6 +473,7 @@ impl Manager {
             let _ = crate::private::create_dir_all(s);
         }
         let p = &mut self.plugins[i];
+        p.lock = Some(snap_lock);
         let host = match Host::start(&p.name, &launch, manifest.permissions.clone(), self.folders.clone(), p.log.clone(), self.ctx.clone()) {
             Ok(h) => h,
             Err(e) => return self.fail(i, e),
@@ -979,21 +985,6 @@ impl Manager {
     }
 }
 
-/// Managers alive for each settings folder (a window opening makes one it
-/// then swaps for the shared one: it mustn't prune copies in use).
-fn live() -> &'static Mutex<HashMap<PathBuf, usize>> {
-    static LIVE: std::sync::OnceLock<Mutex<HashMap<PathBuf, usize>>> = std::sync::OnceLock::new();
-    LIVE.get_or_init(Default::default)
-}
-
-/// Count a new manager for `config`; true if it's the only one.
-fn first_for(config: &Path) -> bool {
-    let mut l = lock(live());
-    let n = l.entry(config.to_path_buf()).or_insert(0);
-    *n += 1;
-    *n == 1
-}
-
 /// Interpreters' search paths and startup hooks, and the dynamic loader's,
 /// would let code outside the approved package run inside the plugin.
 const SCRUBBED: &[&str] = &[
@@ -1021,11 +1012,6 @@ pub fn clean_env(parent: impl IntoIterator<Item = (std::ffi::OsString, std::ffi:
 
 impl Drop for Manager {
     fn drop(&mut self) {
-        if let Some(c) = &self.config
-            && let Some(n) = lock(live()).get_mut(c)
-        {
-            *n = n.saturating_sub(1);
-        }
         for p in &mut self.plugins {
             p.drop_host();
         }

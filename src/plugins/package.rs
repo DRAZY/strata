@@ -8,6 +8,7 @@
 //! can't point outside itself.
 
 use super::manifest::{self, Manifest};
+use crate::claim::imp;
 use sha2::Digest;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -377,63 +378,245 @@ pub fn tidy(config: &Path) {
     }
 }
 
-/// Where approved copies of packages are kept, each named by its SHA-256
-/// (in `Plugins`, which `installed` skips since the name starts with a dot).
+/// Where approved copies of packages are kept (in `Plugins`, which
+/// `installed` skips since the name starts with a dot). Each is a folder
+/// named by the package's SHA-256 holding `MARKER`, `LOCK` and the copy
+/// itself in `PACKAGE`.
 pub const SNAPSHOTS: &str = ".snapshots";
+const MARKER: &str = ".strata-snapshot";
+const MARKER_TEXT: &[u8] = b"strata plugin snapshot\n";
+const LOCK: &str = ".strata-lock";
+const PACKAGE: &str = "package";
+/// Snapshots younger than this are never pruned (another Strata may be
+/// about to ask about, or start, one).
+const PRUNE_AGE: std::time::Duration = std::time::Duration::from_secs(86_400);
+
+/// Only these are ever deleted: Strata names snapshots this way.
+fn is_sha_name(name: &str) -> bool {
+    name.len() == 64 && name.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// `Plugins/.snapshots`, created if needed and opened without following a
+/// link at any step, and only if each is a real folder the user owns that
+/// no one else may write to; with its real path.
+fn snapshot_root(config: &Path) -> Result<(imp::Dir, PathBuf), String> {
+    let mut dir = imp::open_parent(config, &[]).map_err(|e| format!("couldn't open {}: {e}", config.display()))?;
+    for name in [DIR, SNAPSHOTS] {
+        if let Err(e) = imp::make_dir_mode(&dir, name, 0o700)
+            && e.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(format!("couldn't create the {name} folder: {e}"));
+        }
+        dir = imp::open_dir(&dir, name).map_err(|_| format!("the {name} folder in Strata's settings folder isn't a plain folder (a link?), so Strata won't keep plugin copies there"))?;
+        check_private(&dir, name)?;
+    }
+    let real = imp::real_path(&dir).map_err(|e| format!("couldn't find the {SNAPSHOTS} folder: {e}"))?;
+    Ok((dir, real))
+}
+
+#[cfg(unix)]
+fn check_private(dir: &imp::Dir, name: &str) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: zeroed plain data, filled in by the call on a descriptor we own.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    if unsafe { libc::fstat(dir.as_raw_fd(), &mut st) } != 0 {
+        return Err(format!("couldn't check the {name} folder"));
+    }
+    // SAFETY: no arguments, no failure.
+    let me = unsafe { libc::geteuid() };
+    if st.st_uid != me || st.st_mode & 0o022 != 0 {
+        return Err(format!("the {name} folder in Strata's settings folder can be changed by other users (or isn't yours), so Strata won't run plugins from it"));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_private(_dir: &imp::Dir, _name: &str) -> Result<(), String> {
+    // The per-user settings folder's ACL keeps others out; links and
+    // junctions were refused when the folder was opened.
+    Ok(())
+}
+
+/// A fresh random name for a snapshot being made (shaped like a SHA-256,
+/// so a copy left by a crash is pruned like any other).
+fn copy_name() -> String {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seed = format!("{}-{}-{}", unique(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed), std::process::id());
+    sha2::Sha256::digest(seed.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
 
 /// Copy an installed package into a sealed (read-only) snapshot named by
-/// its SHA-256, and return (sha, manifest, snapshot). The identity is that
-/// of the copy itself, so what's approved is exactly what runs: a plugin
-/// always runs from its snapshot, never from the installed folder, which
-/// could change between the check and the start (or while the user reads
-/// the permission question).
-pub fn snapshot(config: &Path, dir: &Path) -> Result<(String, Manifest, PathBuf), String> {
-    let root = plugins_dir(config).join(SNAPSHOTS);
-    crate::private::create_dir_all(&root).map_err(|e| format!("couldn't create {}: {e}", root.display()))?;
-    let tmp = root.join(format!(".copy-{}", unique()));
-    let (sha, manifest) = match copy_tree(dir, &tmp).and_then(|_| identity(&tmp)) {
+/// its SHA-256, and return (sha, manifest). The identity is that of the
+/// copy itself, so what's approved is exactly what runs: a plugin always
+/// runs from its snapshot (`open_snapshot`), never from the installed
+/// folder, which could change between the check and the start (or while
+/// the user reads the permission question).
+pub fn snapshot(config: &Path, dir: &Path) -> Result<(String, Manifest), String> {
+    let (root, real) = snapshot_root(config)?;
+    let tmp = copy_name();
+    imp::make_dir_mode(&root, &tmp, 0o700).map_err(|e| format!("couldn't make a copy of it: {e}"))?;
+    let made = (|| {
+        let d = imp::open_dir(&root, &tmp).map_err(|e| format!("couldn't make a copy of it: {e}"))?;
+        // The marker first: whatever happens next, the folder is Strata's to remove.
+        imp::write_new_mode(&d, MARKER, MARKER_TEXT, 0o400).map_err(|e| format!("couldn't make a copy of it: {e}"))?;
+        imp::write_new_mode(&d, LOCK, b"", 0o400).map_err(|e| format!("couldn't make a copy of it: {e}"))?;
+        let package = real.join(&tmp).join(PACKAGE);
+        copy_tree(dir, &package)?;
+        let found = identity(&package)?;
+        seal(config, &package)?;
+        seal(config, &real.join(&tmp))?;
+        check_sealed(&real.join(&tmp))?;
+        Ok(found)
+    })();
+    let (sha, manifest) = match made {
         Ok(r) => r,
         Err(e) => {
-            remove_sealed(&tmp);
+            remove_snapshot(&root, &real, &tmp);
             return Err(e);
         }
     };
-    let target = root.join(&sha);
-    if std::fs::symlink_metadata(&target).is_err() {
-        seal(&tmp);
-        if std::fs::rename(&tmp, &target).is_ok() {
-            return Ok((sha, manifest, target));
-        }
+    if imp::move_noreplace(&root, &tmp, &root, &sha) != crate::claim::Moved::Done {
+        // One for this identity is there already (an earlier start, or
+        // another window just now); `open_snapshot` checks it before it runs.
+        remove_snapshot(&root, &real, &tmp);
     }
-    // One for this identity is there already (from an earlier start, or
-    // another window just now): it must still be exactly that package.
-    remove_sealed(&tmp);
-    verify_snapshot(&target, &sha)?;
-    Ok((sha, manifest, target))
+    Ok((sha, manifest))
 }
 
-/// The snapshot is still the package `sha` names. If not, it's removed
-/// (it was changed outside Strata) and the plugin isn't started.
-pub fn verify_snapshot(snap: &Path, sha: &str) -> Result<(), String> {
-    match hash_and_manifest(snap) {
-        Ok((s, _)) if s == sha => Ok(()),
-        _ => {
-            remove_sealed(snap);
-            Err("Strata's approved copy of it was changed outside Strata, so it wasn't started; start it again to check it afresh".into())
-        }
+/// The approved copy of package `sha`, ready to run: its `package` folder,
+/// and a shared lock on it held for as long as the plugin runs (so no
+/// other Strata prunes it meanwhile). Refused if it's no longer exactly
+/// that package or no longer read-only; then it's removed.
+pub fn open_snapshot(config: &Path, sha: &str) -> Result<(PathBuf, std::fs::File), String> {
+    let (root, real) = snapshot_root(config)?;
+    if !is_sha_name(sha) {
+        return Err("its approved copy has an odd name".into());
     }
+    let changed = "Strata's approved copy of it was changed outside Strata, so it wasn't started; start it again to check it afresh";
+    let gone = "its approved copy is gone (another Strata removed it?); start it again";
+    let d = imp::open_dir(&root, sha).map_err(|_| gone.to_owned())?;
+    let lock = imp::open_file_at(&d, LOCK).map_err(|_| gone.to_owned())?;
+    match lock.try_lock_shared() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Err("its approved copy is being removed by another Strata; start it again".into()),
+        Err(std::fs::TryLockError::Error(e)) => return Err(format!("couldn't lock its approved copy: {e}")),
+    }
+    let snap = real.join(sha);
+    let ok = check_sealed(&snap).is_ok() && hash_and_manifest(&snap.join(PACKAGE)).is_ok_and(|(s, _)| s == sha);
+    if !ok {
+        drop(lock);
+        remove_snapshot(&root, &real, sha);
+        return Err(changed.into());
+    }
+    Ok((snap.join(PACKAGE), lock))
 }
 
-/// Remove snapshots nothing was granted for (and copies left half made).
+/// Remove snapshots that are old, granted to nothing, and not in use by
+/// any Strata (their lock can be taken). Nothing else is ever deleted.
 pub fn prune_snapshots(config: &Path, keep: &std::collections::HashSet<String>) {
-    let Ok(entries) = std::fs::read_dir(plugins_dir(config).join(SNAPSHOTS)) else { return };
-    let ours = format!("-{}-", std::process::id());
+    let Ok((root, real)) = snapshot_root(config) else { return };
+    let Ok(entries) = std::fs::read_dir(&real) else { return };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        let stale_copy = name.starts_with(".copy-") && !name.contains(&ours);
-        if stale_copy || (!name.starts_with('.') && !keep.contains(&name)) {
-            remove_sealed(&e.path());
+        if !is_sha_name(&name) || keep.contains(&name) {
+            continue;
         }
+        let Ok(d) = imp::open_dir(&root, &name) else { continue };
+        // Its age by path is only a hint: what's deleted is decided by the
+        // handle, the marker and the lock below.
+        let old = std::fs::symlink_metadata(real.join(&name)).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age >= PRUNE_AGE);
+        if !old {
+            continue;
+        }
+        // Taken (and held while it goes) only if no Strata runs it. A copy
+        // cut short before its lock was written can't be running.
+        let lock = match imp::open_file_at(&d, LOCK) {
+            Ok(f) if f.try_lock().is_ok() => Some(f),
+            Ok(_) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => continue,
+        };
+        drop(d);
+        remove_snapshot(&root, &real, &name);
+        drop(lock);
+    }
+}
+
+/// Delete snapshot `name`: only a folder named like a SHA-256 that holds
+/// Strata's marker, and only through folder handles (never by a path that
+/// could have been turned into a link meanwhile).
+fn remove_snapshot(root: &imp::Dir, real: &Path, name: &str) {
+    if !is_sha_name(name) {
+        return;
+    }
+    let Ok(d) = imp::open_dir(root, name) else { return };
+    let marked = imp::open_file_at(&d, MARKER).ok().and_then(|f| {
+        let mut b = Vec::new();
+        (&f).take(64).read_to_end(&mut b).ok().map(|_| b)
+    });
+    if marked.as_deref() != Some(MARKER_TEXT) {
+        return;
+    }
+    drop(d);
+    delete_at(root, &real.join(name), name, 0);
+}
+
+/// Delete `name` in `parent` (a folder handle) and everything in it,
+/// opening each folder below without following links.
+fn delete_at(parent: &imp::Dir, path: &Path, name: &str, depth: usize) {
+    if depth > MAX_DEPTH + 2 {
+        return;
+    }
+    match imp::open_dir(parent, name) {
+        Ok(d) => {
+            writable_dir(&d);
+            // Names listed by path, but removed through the handle: a name
+            // that isn't really in this folder removes nothing.
+            let names: Vec<String> = std::fs::read_dir(imp::real_path(&d).unwrap_or_else(|_| path.to_path_buf())).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+            for n in names {
+                clear_read_only(&d, &n);
+                if imp::remove_file_at(&d, &n).is_err() {
+                    delete_at(&d, &path.join(&n), &n, depth + 1);
+                }
+            }
+            drop(d);
+            let _ = imp::remove_empty_dir(parent, name);
+        }
+        Err(_) => {
+            let _ = imp::remove_file_at(parent, name);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn writable_dir(d: &imp::Dir) {
+    use std::os::fd::AsRawFd;
+    // SAFETY: changing our own folder's permissions through its descriptor.
+    unsafe {
+        libc::fchmod(d.as_raw_fd(), 0o700);
+    }
+}
+
+#[cfg(not(unix))]
+fn writable_dir(_d: &imp::Dir) {}
+
+#[cfg(unix)]
+fn clear_read_only(_d: &imp::Dir, _name: &str) {
+    // Unix removes a name by its folder's permissions, not the file's.
+}
+
+#[cfg(not(unix))]
+fn clear_read_only(d: &imp::Dir, name: &str) {
+    if let Ok(f) = imp::open_file_at(d, name)
+        && let Ok(meta) = f.metadata()
+        && meta.is_file()
+        && let Ok(real) = imp::real_path(d)
+    {
+        let mut p = meta.permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        p.set_readonly(false);
+        let _ = std::fs::set_permissions(real.join(name), p);
     }
 }
 
@@ -465,32 +648,79 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Make a snapshot read-only: files lose their write bits (Windows: the
-/// read-only attribute), folders become read-and-enter only, deepest first.
-fn seal(dir: &Path) {
-    let Ok(meta) = std::fs::symlink_metadata(dir) else { return };
+/// Tests: settings folders whose snapshots can't be sealed.
+#[cfg(test)]
+fn seal_fails() -> &'static std::sync::Mutex<Vec<PathBuf>> {
+    static F: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();
+    F.get_or_init(Default::default)
+}
+
+fn set_perms(config: &Path, path: &Path, p: std::fs::Permissions) -> std::io::Result<()> {
+    #[cfg(test)]
+    if seal_fails().lock().unwrap_or_else(|e| e.into_inner()).iter().any(|c| path.starts_with(c) || config == c.as_path()) {
+        return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    }
+    let _ = config;
+    std::fs::set_permissions(path, p)
+}
+
+/// Make a snapshot folder read-only, deepest first: files lose their write
+/// bits (Windows: the read-only attribute), folders become read-and-enter
+/// only. Any refusal is an error (the copy then doesn't run).
+fn seal(config: &Path, dir: &Path) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("couldn't make its approved copy read-only ({e}), so it wasn't started");
+    let meta = std::fs::symlink_metadata(dir).map_err(fail)?;
+    if meta.file_type().is_symlink() {
+        return Err("its approved copy holds a link, so it wasn't started".into());
+    }
     if meta.is_dir() {
-        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            seal(&e.path());
+        for e in std::fs::read_dir(dir).map_err(fail)? {
+            seal(config, &e.map_err(fail)?.path())?;
         }
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = if meta.is_dir() { 0o500 } else { meta.permissions().mode() & 0o500 };
-        if !meta.file_type().is_symlink() {
-            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode));
-        }
+        set_perms(config, dir, std::fs::Permissions::from_mode(mode)).map_err(fail)?;
     }
     #[cfg(not(unix))]
     if meta.is_file() {
         let mut p = meta.permissions();
         p.set_readonly(true);
-        let _ = std::fs::set_permissions(dir, p);
+        set_perms(config, dir, p).map_err(fail)?;
     }
+    Ok(())
 }
 
-/// Undo `seal` (so a snapshot can be removed), never following a link.
+/// Every file and folder in the snapshot is read-only (checked, not assumed).
+fn check_sealed(dir: &Path) -> Result<(), String> {
+    let refuse = || "its approved copy isn't read-only any more (it may have been changed), so it wasn't started".to_owned();
+    let meta = std::fs::symlink_metadata(dir).map_err(|_| refuse())?;
+    if meta.file_type().is_symlink() {
+        return Err(refuse());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o222 != 0 {
+            return Err(refuse());
+        }
+    }
+    #[cfg(not(unix))]
+    if meta.is_file() && !meta.permissions().readonly() {
+        return Err(refuse());
+    }
+    if meta.is_dir() {
+        for e in std::fs::read_dir(dir).map_err(|_| refuse())? {
+            check_sealed(&e.map_err(|_| refuse())?.path())?;
+        }
+    }
+    Ok(())
+}
+
+/// Undo `seal` by path (tests clean up with it), never following a link.
+#[cfg(test)]
 fn unseal(path: &Path) {
     let Ok(meta) = std::fs::symlink_metadata(path) else { return };
     if meta.file_type().is_symlink() {
@@ -513,13 +743,6 @@ fn unseal(path: &Path) {
         for e in std::fs::read_dir(path).into_iter().flatten().flatten() {
             unseal(&e.path());
         }
-    }
-}
-
-fn remove_sealed(dir: &Path) {
-    unseal(dir);
-    if std::fs::symlink_metadata(dir).is_ok() {
-        remove_tree(dir);
     }
 }
 
@@ -561,9 +784,30 @@ pub fn unseal_for_tests(dir: &Path) {
     unseal(dir);
 }
 
+/// Tests: sealing snapshots under `config` fails, as a refused
+/// `set_permissions` would.
+#[cfg(test)]
+pub fn fail_seal_for_tests(config: &Path) {
+    seal_fails().lock().unwrap_or_else(|e| e.into_inner()).push(config.to_path_buf());
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Run as a helper process: hold a shared lock on the file
+    /// `STRATA_TEST_LOCK_HELPER` names until stdin closes (another Strata
+    /// running a plugin from a snapshot).
+    #[test]
+    fn lock_helper() {
+        let Ok(path) = std::env::var("STRATA_TEST_LOCK_HELPER") else { return };
+        let f = std::fs::File::open(path).expect("the lock file");
+        f.lock_shared().expect("a shared lock");
+        println!("locked");
+        let mut s = String::new();
+        let _ = std::io::stdin().read_line(&mut s);
+        std::process::exit(0);
+    }
 
     pub(crate) fn temp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("strata-plugins-{tag}-{}", std::process::id()));

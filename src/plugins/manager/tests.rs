@@ -728,10 +728,11 @@ fn the_approved_snapshot_runs_not_files_changed_since() {
         _ => None,
     });
     let snap = config.join("Plugins/.snapshots").join(&sha);
-    assert!(snap.join("run.sh").is_file(), "it runs from its snapshot");
+    assert!(snap.join("package/run.sh").is_file(), "it runs from its snapshot");
+    assert!(snap.join(".strata-snapshot").is_file(), "marked as Strata's");
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(snap.join("run.sh")).unwrap().permissions().mode() & 0o222, 0, "read-only");
+        assert_eq!(std::fs::metadata(snap.join("package/run.sh")).unwrap().permissions().mode() & 0o222, 0, "read-only");
     }
     m.stop("script");
     // The changed install is another package: it asks again.
@@ -740,7 +741,9 @@ fn the_approved_snapshot_runs_not_files_changed_since() {
     assert_ne!(again, sha);
     m.answer(false);
     drop(m);
-    // Snapshots nothing was granted for go when Strata starts.
+    // Old snapshots nothing was granted for go when Strata starts.
+    age(&snap);
+    age(&config.join("Plugins/.snapshots").join(&again));
     let m = script_manager(&config);
     assert!(snap.exists(), "the granted one stays");
     assert!(!config.join("Plugins/.snapshots").join(&again).exists(), "the refused one is pruned");
@@ -761,7 +764,8 @@ fn a_tampered_snapshot_is_refused() {
     // Changed while the question is up: refused right before it would run.
     let snap = config.join("Plugins/.snapshots").join(&sha);
     std::fs::set_permissions(&snap, std::fs::Permissions::from_mode(0o700)).unwrap();
-    write_script(&snap.join("run.sh"), "refuse");
+    std::fs::set_permissions(snap.join("package"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    write_script(&snap.join("package/run.sh"), "refuse");
     m.answer(true);
     let why = until(&mut m, "the refusal", |m| if let State::Failed(w) = &m.plugins[0].state { Some(w.clone()) } else { None });
     assert!(why.contains("changed"), "{why}");
@@ -842,4 +846,157 @@ while True:
     drop(m);
     crate::plugins::package::unseal_for_tests(&config.join("Plugins"));
     std::fs::remove_dir_all(config).ok();
+}
+
+/// The snapshot folder of `sha` (its marker, lock and `package` copy).
+#[cfg(unix)]
+fn snap_of(config: &Path, sha: &str) -> PathBuf {
+    config.join("Plugins/.snapshots").join(sha)
+}
+
+/// Make a snapshot look a day and more old (prune leaves younger ones).
+#[cfg(unix)]
+fn age(dir: &Path) {
+    let old = std::time::SystemTime::now() - Duration::from_secs(3 * 86_400);
+    std::fs::File::open(dir).unwrap().set_modified(old).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn snapshots_live_only_in_a_real_private_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let config = temp("mgr-snaproot");
+    install_script(&config, "script", "");
+    // `.snapshots` is a link to somewhere else, holding a folder prune would like.
+    let outside = config.join("outside");
+    let bait = outside.join("a".repeat(64));
+    std::fs::create_dir_all(&bait).unwrap();
+    std::fs::write(bait.join(".strata-snapshot"), "strata plugin snapshot\n").unwrap();
+    std::fs::write(bait.join("precious"), "keep me").unwrap();
+    age(&bait);
+    std::os::unix::fs::symlink(&outside, config.join("Plugins/.snapshots")).unwrap();
+    let mut m = script_manager(&config);
+    assert!(bait.join("precious").exists(), "prune didn't follow the link");
+    m.start("script");
+    let why = until(&mut m, "the refusal", |m| if let State::Failed(w) = &m.plugins[0].state { Some(w.clone()) } else { None });
+    assert!(why.contains("isn't a plain folder"), "{why}");
+    drop(m);
+    assert!(bait.join("precious").exists());
+    // A real folder others may write to is refused too.
+    std::fs::remove_file(config.join("Plugins/.snapshots")).unwrap();
+    std::fs::create_dir(config.join("Plugins/.snapshots")).unwrap();
+    std::fs::set_permissions(config.join("Plugins/.snapshots"), std::fs::Permissions::from_mode(0o770)).unwrap();
+    let mut m = script_manager(&config);
+    m.start("script");
+    let why = until(&mut m, "the refusal", |m| if let State::Failed(w) = &m.plugins[0].state { Some(w.clone()) } else { None });
+    assert!(why.contains("other users"), "{why}");
+    drop(m);
+    std::fs::remove_dir_all(config).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn prune_removes_only_old_unused_marked_snapshot_folders() {
+    let config = temp("mgr-prune");
+    install_script(&config, "script", "");
+    let mut m = script_manager(&config);
+    start_granted(&mut m, "script");
+    drop(m);
+    let root = config.join("Plugins/.snapshots");
+    let mk = |name: &str, marker: bool| {
+        let d = root.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        if marker {
+            std::fs::write(d.join(".strata-snapshot"), "strata plugin snapshot\n").unwrap();
+        }
+        std::fs::write(d.join("data"), "x").unwrap();
+        age(&d);
+        d
+    };
+    let unmarked = mk(&"b".repeat(64), false);
+    let odd_name = mk("not-a-hash", true);
+    let young = root.join("c".repeat(64));
+    std::fs::create_dir_all(&young).unwrap();
+    std::fs::write(young.join(".strata-snapshot"), "strata plugin snapshot\n").unwrap();
+    let old_unused = mk(&"d".repeat(64), true);
+    let granted: Vec<PathBuf> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.join("package").exists()).collect();
+    assert_eq!(granted.len(), 1);
+    age(&granted[0]);
+    let m = script_manager(&config);
+    drop(m);
+    assert!(!old_unused.exists(), "old, unused, marked: removed");
+    for keep in [&unmarked, &odd_name, &young, &granted[0]] {
+        assert!(keep.exists(), "{} was kept", keep.display());
+    }
+    std::fs::remove_dir_all(config).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn prune_skips_a_snapshot_another_strata_is_running() {
+    use std::io::BufRead;
+    let config = temp("mgr-prune-lock");
+    install_script(&config, "script", "");
+    let mut m = script_manager(&config);
+    m.start("script");
+    let sha = until(&mut m, "the question", |m| m.question().map(|(_, s, _)| s.to_owned()));
+    m.answer(false);
+    drop(m);
+    let snap = snap_of(&config, &sha);
+    age(&snap);
+    // Another process (the test binary as a helper) runs that snapshot: it holds its lock.
+    let mut helper = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "plugins::package::tests::lock_helper", "--nocapture", "--test-threads=1", "-q"])
+        .env("STRATA_TEST_LOCK_HELPER", snap.join(".strata-lock"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut out = std::io::BufReader::new(helper.stdout.take().unwrap());
+    let mut line = String::new();
+    while line.trim() != "locked" {
+        line.clear();
+        assert!(out.read_line(&mut line).unwrap() > 0, "the helper didn't lock");
+    }
+    let m = script_manager(&config);
+    drop(m);
+    assert!(snap.exists(), "in use elsewhere: kept");
+    drop(helper.stdin.take());
+    helper.wait().unwrap();
+    let m = script_manager(&config);
+    drop(m);
+    assert!(!snap.exists(), "no longer in use, old and refused: removed");
+    std::fs::remove_dir_all(config).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_snapshot_that_cant_be_made_read_only_doesnt_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let config = temp("mgr-seal");
+    install_script(&config, "script", "");
+    crate::plugins::package::fail_seal_for_tests(&config);
+    let mut m = script_manager(&config);
+    m.start("script");
+    let why = until(&mut m, "the refusal", |m| if let State::Failed(w) = &m.plugins[0].state { Some(w.clone()) } else { None });
+    assert!(why.contains("read-only"), "{why}");
+    assert!(m.plugins[0].pid().is_none());
+    drop(m);
+    // Sealed, then one file made writable again (same bytes): refused before it runs.
+    let config2 = temp("mgr-seal2");
+    install_script(&config2, "script", "");
+    let mut m = script_manager(&config2);
+    start_granted(&mut m, "script");
+    m.stop("script");
+    let sha = std::fs::read_dir(config2.join("Plugins/.snapshots")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).find(|n| n.len() == 64).unwrap();
+    let script = snap_of(&config2, &sha).join("package/run.sh");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    m.start("script");
+    let why = until(&mut m, "the refusal", |m| if let State::Failed(w) = &m.plugins[0].state { Some(w.clone()) } else { None });
+    assert!(why.contains("changed"), "{why}");
+    drop(m);
+    for c in [config, config2] {
+        crate::plugins::package::unseal_for_tests(&c);
+        std::fs::remove_dir_all(c).ok();
+    }
 }
