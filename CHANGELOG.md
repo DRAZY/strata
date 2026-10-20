@@ -8,6 +8,68 @@ All notable changes to Strata are recorded here. The format follows
 
 ### Added
 
+- Notes: Obsidian-compatible notes on plain Markdown files. Open your notes
+  folder (an Obsidian vault or any folder of Markdown files) and
+  `[[wikilinks]]` work as in Obsidian, with headings, block references,
+  aliases and embeds, and ordinary Markdown links to notes too. Links are
+  underlined in the editor (dashed for a note that doesn't exist yet), and
+  ⌘-click (Ctrl+click) or **Notes: Follow Link** opens them, offering to
+  create a missing note where Obsidian would put it. Strata reads the vault's
+  `.obsidian` settings but never writes them, and notes never use the
+  network. See the new Notes page in the manual.
+- Notes: typing `[[` completes note names, aliases, headings and block ids,
+  and writes the link the way the vault's Obsidian settings ask.
+- Notes: a backlinks panel under each note lists the notes linking to it,
+  with the line that holds each link, and the note's tags. It's kept up to
+  date as Obsidian, a sync tool or Git changes files; `notes_backlinks`
+  chooses when it shows. `#tags` and frontmatter tags are tinted, and
+  **Notes: Find Tag…** lists every tag with its notes.
+- Notes: **Notes: Open Daily Note**, **Notes: New Note…** and **Notes: New
+  Note from Template…** follow Obsidian's Daily notes and Templates settings,
+  filling in `{{date}}`, `{{time}}` and `{{title}}`.
+- Notes: **Notes: Rename Note…** (also Rename… in the side bar) offers to
+  update every link to the note, showing each changed line first. **Notes:
+  Undo Rename** puts the links and the name back, all or nothing, and never
+  overwrites a file written meanwhile.
+- Notes: sync conflict copies (Syncthing, Dropbox, Nextcloud and ownCloud)
+  get a notice above the note with **Compare**, **Open Copy** and **Move Copy
+  to Trash…**; **Notes: Compare with Conflict Copy** does the same from the
+  keyboard.
+- Notes: the Markdown preview shows wikilinks you can click, tags,
+  frontmatter as a block of properties, and embedded images, notes, sections
+  and blocks (one level deep, images only from the vault).
+- Optional AI helpers with a model you choose (Tools ▸ AI and the command
+  palette): **Summarize Changes** (the whole review or one file), **Explain
+  Change**, **Flag Risks**, **Draft Commit Message** and **Explain
+  Selection**. Providers: any OpenAI-compatible server (Ollama and LM Studio
+  on your computer or network, OpenRouter, OpenAI…), the Anthropic API, or
+  the `claude` and `codex` command-line tools with your own login. Answers
+  stream into a panel as Markdown, can be cancelled, copied or opened in a new
+  tab, and never hold up the editor. See the new AI Helpers page in the
+  manual.
+- AI helpers are off until you turn them on in Settings ▸ AI Helpers
+  (`ai_enabled`). Local providers are used without asking. Before the first
+  request to any other provider, Strata shows exactly what it will send and
+  to which host, and asks (**Allow Once**, **Always for This Provider**,
+  **Cancel**); **AI: Forget Allowed Providers** asks again. **Test
+  Connection** checks a provider without sending any of your text.
+- AI helpers send only what they're about. Files that look like secrets
+  (`.env`, keys, anything in folders like `.ssh` or `secrets`), files Git
+  ignores, binary files and symbolic links are never sent, and a size limit
+  (`ai_max_prompt_kb`) says what was left out. API keys live in the macOS
+  Keychain or Windows Credential Manager, are only sent to the address they
+  were saved for, and never touch `settings.json` or the log.
+- Review Changes, for checking what a coding agent changed and keeping or
+  undoing each change (no AI involved). The **Changes** tab of the side bar
+  lists every file that differs from the last commit, or from a snapshot taken
+  with **Start Review**, with its status (modified, new, deleted, renamed) and
+  lines added and removed, and updates while the agent works. Clicking a file
+  opens its changes side by side with **Keep** and **Revert** for each change
+  or the whole file; reverting is an ordinary edit, so Undo brings the change
+  back and nothing is written until you save. Tick files off as reviewed; the
+  status bar counts the rest. F8 and Shift+F8 step through the changes across
+  files, and the Review commands are in Tools ▸ Review Changes and the command
+  palette. See the new Review Changes page in the manual.
 - Language servers. When a language's server is installed (rust-analyzer,
   typescript-language-server, pyright, gopls or clangd), Strata starts it in
   the background and shows its problems as wavy underlines with a dot in the
@@ -28,22 +90,6 @@ All notable changes to Strata are recorded here. The format follows
   `lsp_trust_all` skips the question. `lsp_servers` in settings.json changes
   the built-in servers or adds others, and `lsp_enabled` turns the feature
   off.
-- Optional AI helpers with a model you choose (Tools ▸ AI): **Summarize
-  Changes** (the whole review or one file), **Explain Change**, **Flag Risks**,
-  **Draft Commit Message** and **Explain Selection**. Providers: any
-  OpenAI-compatible server (Ollama and LM Studio on your computer or network,
-  OpenRouter, OpenAI…), the Anthropic API, or the `claude` and `codex`
-  command-line tools with your own login. Off until you turn them on in
-  Settings ▸ AI Helpers. Before the first request to a provider outside your
-  computer or local network, Strata shows exactly what it will send and to
-  which host, and asks (Allow Once, Always for This Provider, Cancel).
-  Answers stream into a panel as Markdown, can be cancelled, and never hold
-  up the editor. API keys live in the macOS Keychain or Windows Credential
-  Manager, are only sent to the address they were saved for, and never touch
-  `settings.json` or the log. Ignored, binary and secret-looking files (and
-  anything in folders like `.ssh` or `secrets`) are never sent, and a
-  size limit (`ai_max_prompt_kb`) says what was left out. See the manual's
-  AI Helpers page.
 - Terminal: ⌘-click (Ctrl+click on Windows and Linux) a file location in the
   output to open the file at that line and column. Hold the key and point to
   see the location underlined. Works with `path:line:col`, `path(line,col)`
@@ -55,44 +101,6 @@ All notable changes to Strata are recorded here. The format follows
   sends the selection, or the current line, to the terminal and presses
   Enter, starting a terminal if none is running. Multi-line text goes as one
   bracketed paste when the shell or REPL supports it.
-- Review Changes, for checking what a coding agent changed and keeping or
-  undoing each change (no AI involved). The **Changes** tab of the side bar
-  lists every file that differs from the last commit, or from a snapshot taken
-  with **Start Review**, with its status (modified, new, deleted, renamed) and
-  lines added and removed, and updates while the agent works. Clicking a file
-  opens its changes side by side with **Keep** and **Revert** for each change
-  or the whole file; reverting is an ordinary edit, so Undo brings the change
-  back and nothing is written until you save. Tick files off as reviewed; the
-  status bar counts the rest. F8 and Shift+F8 step through the changes across
-  files, and the Review commands are in Tools ▸ Review Changes and the command
-  palette. See the new Review Changes page in the manual.
-- Terminal: ⌘-click (Ctrl+click on Windows and Linux) a file location in the
-  output to open the file at that line and column. Hold the key and point to
-  see the location underlined. Works with `path:line:col`, `path(line,col)`
-  (MSVC, C#, TypeScript), Rust errors and panics, Python tracebacks and Node
-  stack traces, including locations that wrap onto the next row. Relative
-  paths are found in the shell's current folder, then the side bar folders;
-  only files that exist are links.
-- **Send to Terminal** (Tools menu; ⌃↩ on macOS, Ctrl+Alt+Enter elsewhere)
-  sends the selection, or the current line, to the terminal and presses
-  Enter, starting a terminal if none is running. Multi-line text goes as one
-  bracketed paste when the shell or REPL supports it.
-- **Notes**: Obsidian-compatible notes on plain Markdown files. Open your
-  vault folder and `[[wikilinks]]` work as in Obsidian (headings, block
-  references, aliases, embeds, Markdown links too): they're underlined in the
-  editor and ⌘-click (Ctrl+click) follows them, offering to create a note
-  that doesn't exist yet. Typing `[[` completes note names, aliases, headings
-  and block ids. A backlinks panel under each note lists the notes linking to
-  it, kept up to date as Obsidian or a sync tool changes files. `#tags` (and
-  frontmatter tags) are tinted and searchable with **Notes: Find Tag…**.
-  **Notes: Open Daily Note** and **Notes: New Note from Template…** follow
-  Obsidian's Daily notes and Templates settings. Renaming a note offers to
-  update every link to it, showing each change first; **Notes: Undo Rename**
-  puts the links and the name back, all or nothing. The Markdown preview shows wikilinks,
-  tags, frontmatter and embedded images and notes. Sync conflict copies
-  (Syncthing, Dropbox, Nextcloud) get a notice with a Compare button. Strata
-  reads the vault's `.obsidian` settings but never writes them. See
-  Help ▸ Documentation ▸ Notes.
 
 ### Changed
 
@@ -108,8 +116,7 @@ All notable changes to Strata are recorded here. The format follows
   links), also through links inside the replaced folders. An undo interrupted
   by a crash is listed in the Changes tab with **Put Back**. Its record is
   sealed with a private key only this installation has (an undo is refused
-  if the key file isn't private) and is flushed to disk at
-  every step; Put Back only acts on its own sealed records, never outside the
+  if the key file isn't private) and is flushed to disk at every step; Put Back only acts on its own sealed records, never outside the
   folder it was in, and only after checking the file is the one it set aside.
 
 ### Fixed

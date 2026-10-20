@@ -48,7 +48,7 @@ surrounding code instead of reformatting files.
   appear on the shortcuts page.
 - **Color schemes:** every scheme must meet the contrast requirements.
 
-### Language servers, Review Changes and the terminal
+### Language servers, Review Changes, the terminal, notes and AI helpers
 
 - **Language servers:** the tests use a small fake server in
   `src/lsp/fake.rs` (the test binary starts itself as the server; see
@@ -68,6 +68,20 @@ surrounding code instead of reformatting files.
   moment; use it for new race tests instead of sleeping.
 - **Terminal:** the link and Send to Terminal tests run a real `/bin/sh` (and
   `python3`, when it's installed).
+- **Notes:** the tests write small vaults to a temporary folder
+  (`src/app/notes_tests.rs`); add a `.obsidian` folder when a test needs
+  Obsidian's settings. Never point a test at a real vault. To check speed on
+  10,000 generated notes (indexing, typing while it indexes, the `[[` list),
+  run `cargo test --release notes_bench -- --ignored --nocapture`.
+- **AI helpers:** `cargo test` never touches the network or the keychain. The
+  tests talk to a fake OpenAI-compatible or Anthropic server on 127.0.0.1
+  (`ai::http::tests::FakeServer`) and a fake `claude` script, and keys go to
+  an in-memory store. `STRATA_TEST_KEYCHAIN=1 cargo test keychain` also tries
+  the real macOS Keychain or Windows Credential Manager (it saves and removes
+  one test item). `STRATA_AI_SHOTS=/tmp/ai cargo test --release ai_shots`
+  saves screenshots of the consent question, a streamed answer and Settings ▸
+  AI Helpers; add `STRATA_AI_LIVE_MODEL=llama3.2` to also ask a real Ollama on
+  `localhost:11434` for a summary.
 
 ## Coding conventions
 
@@ -97,6 +111,7 @@ the tests use for screenshots:
 ```sh
 scripts/readme-screenshots.sh                                  # README images → docs/screenshots/
 STRATA_HEADLESS_SHOTS=/tmp/shots cargo test --release headless_shots   # manual scenes
+STRATA_HEADLESS_SHOTS=/tmp/shots cargo test --release notes_shots      # notes mode
 STRATA_UI_SHOTS=/tmp/shots cargo test --release ui_shots               # window chrome at odd sizes
 STRATA_TERMINAL_SHOTS=/tmp/shots cargo test --release terminal_shots   # terminal rendering
 ```
@@ -105,7 +120,9 @@ Scenes are saved as PPM; convert with `sips -s format png` (macOS) or
 ImageMagick's `magick`. The README scenes live in
 `src/app/headless/readme_shots.rs` and use sample projects written to a
 temporary folder, so no personal paths appear; the language server scene uses
-the fake server, so it looks the same on every machine. Keep README images
+the fake server, the notes scene a made-up vault, and the AI scene the fake AI
+server (shown as a local Ollama), so they look the same on every machine and
+nothing goes over the network. Keep README images
 under 400 KB each. Look at every image after regenerating them, and if an
 unchanged scene differs only by noise, keep the old file.
 

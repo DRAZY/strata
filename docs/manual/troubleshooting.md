@@ -36,6 +36,8 @@ Strata creates most of these only when it needs them.
 | `Themes/` | Your `.tmTheme` and `.sublime-color-scheme` color schemes. See [Appearance](appearance.md) |
 | `build_systems/` | Your build systems, as `.json` files. See [Build Systems](build.md) |
 | `lsp_trusted_folders.json` | Folders you chose **Always for This Folder** for, so language servers start there without asking. See [Trusting a project](languages.md#trusting-a-project) |
+| `ai-consent.json` | Providers you chose **Always for This Provider** for, so the AI helpers send to them without asking. See [What's sent, and asking first](ai.md#whats-sent-and-asking-first) |
+| `claim.key` | A private key that seals the records Undo Replace in Files and Notes: Undo Rename keep, so **Put Back** only acts on folders this copy of Strata made. See [Undo Replace in Files](find.md#undo-replace-in-files) |
 
 If the folder's path is very long, the `strata.sock` file goes in a folder only you can open, `strata-<your user id>`, inside `$XDG_RUNTIME_DIR` (Linux) or your system's temporary folder. Strata answers a `strata` command only when it runs as the same user.
 
@@ -223,6 +225,28 @@ A server that keeps stopping is left off after five stops in a few minutes; fix 
 
 Hold ⌘ (Ctrl on Windows and Linux) while pointing. Only files that exist are links, and relative paths are looked for in the shell's current folder, the folder the terminal started in and the side bar folders. While a program uses the mouse, hold Shift as well. See [Opening files from the output](terminal.md#opening-files-from-the-output).
 
+## Notes don't update
+
+Links, backlinks and tags come from an index of the notes on disk, which Strata keeps up to date in the background. If something seems out of date:
+
+- **Save the note.** Backlinks and tags come from the notes as they are saved, so a link you've typed but not saved yet shows up once you save.
+- **Give it a moment.** Strata looks for notes changed by Obsidian, a sync tool or Git every few seconds, and whenever you come back to the window. A big vault takes a second or two to index the first time.
+- **Check the note is indexed.** Folders whose names start with a dot (`.obsidian`, `.trash`, `.git`) aren't indexed, as in Obsidian. In a folder that isn't an Obsidian vault, files your `.gitignore` ignores are left out too. Strata indexes up to 200,000 files in a folder.
+- **A vault inside a bigger folder** is only found by its `.obsidian` folder. If your notes don't have one, open the notes folder itself with **File ▸ Open Folder…**.
+- **No backlinks panel.** With `notes_backlinks` set to `"auto"`, the panel shows for notes in an Obsidian vault, or in a folder whose notes use wikilinks. Run **Notes: Toggle Backlinks**, or set `notes_backlinks` to `"always"`. See [Backlinks](notes.md#backlinks).
+- **A link opens the wrong note.** When several notes have the same name, Strata picks one the same way every time; write the folder in the link to choose another (`[[Projects/Plan]]`). See [How a link finds its note](notes.md#how-a-link-finds-its-note).
+- **Undo Rename does nothing.** It's all or nothing: if any file has changed since the rename, or the old name has been taken again, nothing changes and the status bar names the file in the way. See [Renaming notes](notes.md#renaming-notes).
+
+## AI helpers
+
+- **"AI helpers are off".** Turn them on in Settings ▸ AI Helpers (`ai_enabled`), then choose a provider. Until then, no AI command sends anything. See [AI Helpers](ai.md).
+- **Strata asks before every request.** For a provider outside your computer or local network, Strata shows what it will send and asks each time unless you choose **Always for This Provider**. It asks again when you point the setting at a different server or tool, and after **AI: Forget Allowed Providers**. Local providers are never asked about. See [What's sent, and asking first](ai.md#whats-sent-and-asking-first).
+- **A local server counts as remote.** Strata judges the address as you typed it. Type the server's IP address (such as `192.168.1.20`) or its `.local` name, rather than a name that only your network resolves. See [Local and remote providers](ai.md#local-and-remote-providers).
+- **"Couldn't connect".** Make sure Ollama or LM Studio is running with a model loaded, that the address ends in `/v1`, and that the model name is one **AI: Test Connection** lists. An address outside your computer or network must start with `https://`.
+- **401, 404 or 429 errors, or no answer.** The panel's message says which; the table in [When something goes wrong](ai.md#when-something-goes-wrong) says what to do.
+- **A file was left out.** Files that look like secrets, files Git ignores, binary files and symbolic links are never sent, and a review over `ai_max_prompt_kb` is cut short. The panel says what was left out. See [What's sent, and asking first](ai.md#whats-sent-and-asking-first).
+- **The key isn't saved.** Keys go in the macOS Keychain or Windows Credential Manager. On Linux there's no keychain Strata can rely on, so keys can't be saved; local servers and the command-line tools need none. See [API keys](ai.md#api-keys).
+
 ## The strata command is missing
 
 Install it first. On macOS and Linux, run **Strata: Install Shell Command** from the command palette. On Windows, add Strata's folder to your `PATH`. Details are in [Command Line](cli.md).
@@ -237,6 +261,12 @@ Yes. Put `.tmTheme` or `.sublime-color-scheme` files in `Themes/`, and `.sublime
 
 **Does Strata have plugins or packages?**
 Not yet. You can add snippets, syntaxes, color schemes and build systems as files, but there's no plugin system.
+
+**Can I use Strata with my Obsidian vault?**
+Yes. Open the vault folder and links, backlinks, tags, daily notes and templates work as in Obsidian. Strata reads the vault's `.obsidian` settings but never changes them, so you can keep the vault open in both. See [Notes](notes.md).
+
+**Does Strata use AI?**
+Only if you turn on the optional AI helpers and choose a provider, which can be a model on your own computer. Nothing else in Strata uses AI, Review Changes included. See [AI Helpers](ai.md).
 
 **Is there a Vim mode?**
 No.

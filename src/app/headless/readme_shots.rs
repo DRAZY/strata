@@ -325,6 +325,46 @@ fn csv_has_a_header_and_a_line_per_entry() {
 }
 "#;
 
+/// The AI scene's answer: what a local model might say about AGENT_EDITS.
+const AI_SUMMARY: &str = "## Summary\n\nAdds a `--csv` flag that prints one comma-separated line per entry instead of the table.\n\n- **src/main.rs**: the new `csv` option is checked before `--by-day`.\n- **src/report.rs**: `csv()` writes a header, then one line per entry, quoting the note.\n- **tests/csv.rs** checks the header and the line count; **README.md** documents the flag.\n\n**Worth a look:** project names aren't quoted, so a comma in one would shift the columns.\n";
+
+/// A small notes vault (Obsidian-style), for the notes scene.
+const GARDEN: &[(&str, &str)] = &[
+    (".obsidian/app.json", "{}\n"),
+    (
+        "Projects/Kitchen garden.md",
+        r#"---
+tags: [project, garden]
+status: growing
+started: 2026-03-14
+aliases: [Garden plan]
+---
+# Kitchen garden
+
+Two raised beds behind the shed, planned around [[Companion planting]] and the [[Frost dates]] for this area.
+
+## Beds
+- [x] Build the cedar beds, see [[Raised bed build#Materials|materials]]
+- [x] Order seeds from the [[Seed list]]
+- [ ] Set up a [[Watering schedule]] #todo
+
+## Next
+Garlic goes in this month; tomatoes after the last frost:
+
+![[Frost dates#Last frost]]
+
+#garden/vegetables
+"#,
+    ),
+    ("Companion planting.md", "# Companion planting\n\n## Tomatoes\nBasil and marigolds nearby; keep fennel away.\n"),
+    ("Frost dates.md", "---\ntags: [garden, reference]\n---\n# Frost dates\n\n## Last frost\nAround **April 20** here, so plant tomatoes out in early May.\n\n## First frost\nUsually late October.\n"),
+    ("Raised bed build.md", "# Raised bed build\n\n## Materials\n- 6 cedar boards, 2 m\n- 16 deck screws\n"),
+    ("Seed list.md", "# Seed list\n\nFor the [[Kitchen garden]]: tomatoes, basil, garlic, chard.\n"),
+    ("Journal/2026-10-12.md", "# Sunday\n\nPlanted garlic in bed 2 of the [[Kitchen garden]]. #log\n"),
+    ("Journal/2026-10-05.md", "# Sunday\n\nPulled the last tomatoes; saved seeds for next year's [[Kitchen garden|beds]]. #log\n"),
+    ("Reading/Square foot gardening.md", "# Square foot gardening\n\nA grid per bed. Worth trying in the [[Kitchen garden#Beds]]. #book\n"),
+];
+
 /// The language server's answers in the LSP scene, as rust-analyzer would
 /// give them for parse.rs with a `?` left out.
 fn lsp_answers() -> serde_json::Value {
@@ -541,6 +581,18 @@ fn settle(sh: &mut Shooter, ctx: &Context, app: &mut StrataApp, until: impl Fn(&
         std::thread::sleep(Duration::from_millis(20));
     }
     app.status.clear();
+}
+
+/// Drag with the mouse from `from` to `to` (a panel's edge, say), then take the pointer away.
+fn drag(sh: &mut Shooter, ctx: &Context, app: &mut StrataApp, from: egui::Pos2, to: egui::Pos2) {
+    let button = |pos, pressed| Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    sh.run(ctx, app, 1, vec![Event::PointerMoved(from)]);
+    sh.run(ctx, app, 1, vec![button(from, true)]);
+    for k in 1..=8 {
+        sh.run(ctx, app, 1, vec![Event::PointerMoved(from.lerp(to, k as f32 / 8.0))]);
+    }
+    sh.run(ctx, app, 1, vec![button(to, false)]);
+    sh.run(ctx, app, 2, vec![Event::PointerGone]);
 }
 
 /// Char ranges of each match of `word` in tab `i` within lines `lines` (1-based, inclusive).
@@ -801,6 +853,64 @@ fn readme_shots() {
         app.status.clear();
         sh.shoot(&ctx, &mut app, 3, vec![Event::PointerMoved(p)], &shot("terminal-links"));
         std::fs::write(&report, good).unwrap();
+    }
+
+    // Notes: a note with its live preview (wikilinks, tags, properties, an
+    // embed) and the notes that link to it in the backlinks panel.
+    {
+        let vault = std::env::temp_dir().join("strata-readme-shots/garden");
+        write_tree(&vault, GARDEN);
+        let note = vault.join("Projects/Kitchen garden.md");
+        let ctx = Context::default();
+        let mut app = window(&mut sh, &ctx, Some(&vault), "Everforest Dark");
+        app.settings.minimap = false;
+        open(&mut app, note.clone());
+        let _ = app.sidebar.reveal(&note);
+        sh.run(&ctx, &mut app, 3, vec![]);
+        app.settings.markdown_preview = true;
+        app.notes.index.wait();
+        settle(&mut sh, &ctx, &mut app, |_| true);
+        // A taller backlinks panel, so every linking note shows.
+        drag(&mut sh, &ctx, &mut app, egui::pos2(560.0, 851.0), egui::pos2(560.0, 750.0));
+        settle(&mut sh, &ctx, &mut app, |_| true);
+        sh.shoot(&ctx, &mut app, 6, vec![], &shot("notes"));
+    }
+
+    // AI helpers: a summary of what the agent changed, streamed into the
+    // panel by a fake server on 127.0.0.1 (no real model, nothing leaves the
+    // computer), shown as a local Ollama would be.
+    {
+        let repo = std::env::temp_dir().join("strata-readme-shots/ai/tally");
+        tally_repo(&repo);
+        edit(&repo, AGENT_EDITS);
+        std::fs::write(repo.join("tests/csv.rs"), AGENT_TEST).unwrap();
+        use crate::ai::http::tests::{FakeServer, openai_chunk, send_slowly, sse_headers};
+        let srv = FakeServer::start(|s, _| {
+            sse_headers(s);
+            let chunks: Vec<String> = AI_SUMMARY.split_inclusive(['\n', ' ']).collect::<Vec<_>>().chunks(4).map(|w| openai_chunk(&w.concat())).collect();
+            send_slowly(s, &chunks.iter().map(String::as_str).collect::<Vec<_>>());
+            send_slowly(s, &["data: [DONE]\n\n"]);
+        });
+        let ctx = Context::default();
+        let mut app = window(&mut sh, &ctx, Some(&repo), "Tokyo Night Storm");
+        app.settings.minimap = false;
+        app.settings.ai_enabled = true;
+        app.settings.ai_provider = "openai".into();
+        app.settings.ai_base_url = srv.url();
+        app.settings.ai_model = "llama3.2".into();
+        app.ai.shown_host_for_tests = Some("localhost:11434".into());
+        app.review_show();
+        settle(&mut sh, &ctx, &mut app, |a| a.review.scan.as_ref().is_some_and(|s| s.files.len() == 4));
+        app.open_review(&repo.join("src/report.rs"));
+        settle(&mut sh, &ctx, &mut app, |a| a.review.pending_open.is_none());
+        app.run(&ctx, Cmd::AiSummarizeChanges);
+        settle(&mut sh, &ctx, &mut app, |a| !a.ai.busy() && !a.ai.answer().0.is_empty());
+        assert_eq!(app.ai.answer(), (AI_SUMMARY, None, None));
+        assert_eq!(srv.hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // A taller panel, so the whole answer shows.
+        drag(&mut sh, &ctx, &mut app, egui::pos2(800.0, 757.0), egui::pos2(800.0, 650.0));
+        settle(&mut sh, &ctx, &mut app, |_| true);
+        sh.shoot(&ctx, &mut app, 3, vec![], &shot("ai"));
     }
 }
 
