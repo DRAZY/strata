@@ -88,7 +88,7 @@ All notable changes to Strata are recorded here. The format follows
   **Notes: Open Daily Note** and **Notes: New Note from Template…** follow
   Obsidian's Daily notes and Templates settings. Renaming a note offers to
   update every link to it, showing each change first; **Notes: Undo Rename**
-  puts the links and the name back. The Markdown preview shows wikilinks,
+  puts the links and the name back, all or nothing. The Markdown preview shows wikilinks,
   tags, frontmatter and embedded images and notes. Sync conflict copies
   (Syncthing, Dropbox, Nextcloud) get a notice with a Compare button. Strata
   reads the vault's `.obsidian` settings but never writes them. See

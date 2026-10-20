@@ -43,8 +43,8 @@ pub(super) enum Dialog {
     Name { root: PathBuf, naming: Naming, name: String, error: Option<String> },
     /// Update links after a rename (or look for them first).
     Links(LinkPlan),
-    /// Move a sync conflict copy to the Trash.
-    TrashCopy { root: PathBuf, path: PathBuf, original: PathBuf },
+    /// Move a sync conflict copy to the Trash: the copy as it was when asked.
+    TrashCopy { root: PathBuf, path: PathBuf, original: PathBuf, expected: crate::claim::Expected },
 }
 
 impl Dialog {
@@ -85,6 +85,8 @@ pub(super) struct LinkPlan {
     pub waiting: bool,
     /// The files being read and their links worked out, off the UI thread.
     pub reading: Option<Receiver<Planned>>,
+    /// Files whose old text is too large to keep for Undo Rename.
+    pub too_large: usize,
 }
 
 /// The files a link update changes, and those it can't (with why).
@@ -92,7 +94,7 @@ pub(super) type Planned = (Vec<PlanFile>, Vec<(PathBuf, String)>);
 
 impl LinkPlan {
     pub fn waiting(root: PathBuf, from_rel: String, to_rel: String) -> LinkPlan {
-        LinkPlan { root, from_rel, to_rel, rename: None, files: Vec::new(), skipped: Vec::new(), waiting: true, reading: None }
+        LinkPlan { root, from_rel, to_rel, rename: None, files: Vec::new(), skipped: Vec::new(), waiting: true, reading: None, too_large: 0 }
     }
 
     pub fn rename_from(&self) -> &str {
@@ -103,7 +105,18 @@ impl LinkPlan {
         &self.to_rel
     }
 
-    pub fn ready(&mut self, rename: Arc<Rename>, files: Vec<PlanFile>, skipped: Vec<(PathBuf, String)>) {
+    pub fn ready(&mut self, rename: Arc<Rename>, files: Vec<PlanFile>, skipped: Vec<(PathBuf, String)>, limit: usize) {
+        // As the disk job keeps them: originals in order, while they fit.
+        let mut kept = 0u64;
+        self.too_large = 0;
+        for f in files.iter().filter(|f| !f.in_tab) {
+            let len = f.stamp.map_or(0, |s| s.len);
+            if kept + len <= limit as u64 {
+                kept += len;
+            } else {
+                self.too_large += 1;
+            }
+        }
         self.rename = Some(rename);
         self.files = files;
         self.skipped = skipped;
@@ -267,6 +280,14 @@ fn section(blocks: &[TopBlock], text: &str, sub: &str) -> Option<Vec<TopBlock>> 
     Some(blocks[k..end].to_vec())
 }
 
+/// `path` as it is now, for trashing exactly this file later (see `claim`).
+fn expected_file(path: &Path) -> Option<crate::claim::Expected> {
+    let mut f = crate::claim::open_plain(path).ok()?;
+    let meta = f.metadata().ok()?;
+    let hash = crate::claim::fingerprint_file(&mut f)?;
+    Some(crate::claim::Expected { id: crate::claim::file_id(path), len: meta.len(), mtime: meta.modified().ok(), hash })
+}
+
 /// The notes index as the preview of one note sees it.
 pub(super) struct PreviewNotes<'a> {
     pub vault: Arc<Vault>,
@@ -347,7 +368,7 @@ impl StrataApp {
         let mut open: Option<(PathBuf, usize)> = None;
         let mut tag_clicked: Option<String> = None;
         let (mut hide, mut undo) = (false, false);
-        let can_undo = self.notes.last_rename.is_some() && !self.notes.disk.running();
+        let can_undo = self.notes.last_rename.as_ref().is_some_and(super::notes_ui::UndoRename::undoable) && !self.notes.disk.running();
         let size = self.ui_size();
         egui::Panel::bottom(self.link.id("notes-backlinks")).resizable(true).default_size((size * 9.0).max(120.0)).min_size(44.0).show(ui, |ui| {
             let links: &[(u32, u32)] = me.map_or(&[], |i| vault.backlinks(i));
@@ -480,9 +501,23 @@ impl StrataApp {
         match act {
             Some((0, other, _)) => self.compare_conflict(Some(other)),
             Some((1, other, _)) => self.open_path(other, false),
-            Some((_, copy, original)) => self.notes.dialog = Some(Dialog::TrashCopy { root: vault.root.clone(), path: copy, original }),
+            Some((_, copy, _)) => self.ask_trash_copy(&copy),
             None => {}
         }
+    }
+
+    /// Ask before moving conflict copy `copy` to the Trash.
+    pub(super) fn ask_trash_copy(&mut self, copy: &Path) {
+        let Some(vault) = self.notes.index.vault_for(copy).cloned() else { return };
+        let Some(i) = vault.find(copy) else { return };
+        let Some(original) = vault.original_of(i).or_else(|| vault.copies(i).first().copied()).map(|o| vault.path_of(o)) else { return };
+        let (copy, original) = if vault.original_of(i).is_some() { (copy.to_owned(), original) } else { (original, copy.to_owned()) };
+        // Exactly this file goes, or none: a copy replaced while the question is up stays.
+        let Some(expected) = expected_file(&copy) else {
+            self.status = format!("Couldn't read {}", copy.display());
+            return;
+        };
+        self.notes.dialog = Some(Dialog::TrashCopy { root: vault.root.clone(), path: copy, original, expected });
     }
 
     /// The `[[` completion list under the caret.
@@ -604,7 +639,7 @@ impl StrataApp {
                 }
             }
             Dialog::Links(plan) => self.links_dialog(ctx, plan, enter, esc),
-            Dialog::TrashCopy { root, path, original } => {
+            Dialog::TrashCopy { root, path, original, expected } => {
                 let (mut yes, mut no) = (false, false);
                 let trash = crate::trash::trash_name();
                 egui::Modal::new(egui::Id::new("notes-trash-copy")).show(ctx, |ui| {
@@ -622,17 +657,22 @@ impl StrataApp {
                     });
                 });
                 if yes {
-                    match crate::trash::move_to_trash(&path) {
+                    use crate::claim::Refused;
+                    match crate::claim::trash_listed(&root, &path, None, &expected) {
                         Ok(()) => {
                             self.follow_delete(&path);
                             self.link.requests.deleted.push(path.clone());
-                            self.notes.index.request(&root, Some(ctx));
                             self.status = format!("Moved {} to the {trash}", path.display());
                         }
-                        Err(e) => self.status = format!("Could not move {} to the {trash}: {e}", path.display()),
+                        Err(Refused::Changed) => self.status = format!("{} changed since you asked, so it wasn't moved to the {trash}", path.display()),
+                        Err(Refused::KeptAt(p)) => self.status = format!("{} changed since you asked; it's kept at {}", path.display(), p.display()),
+                        Err(Refused::Outside) => self.status = format!("{} isn't inside the vault, so it wasn't moved", path.display()),
+                        Err(Refused::OldBack) => self.status = format!("{} wasn't moved", path.display()),
+                        Err(Refused::Failed(e)) => self.status = format!("Could not move {} to the {trash}: {e}", path.display()),
                     }
+                    self.notes.index.request(&root, Some(ctx));
                 }
-                (!yes && !no).then_some(Dialog::TrashCopy { root, path, original })
+                (!yes && !no).then_some(Dialog::TrashCopy { root, path, original, expected })
             }
         };
         // A dialog may have opened another (rename → update links).
@@ -695,8 +735,13 @@ impl StrataApp {
             if in_tabs > 0 {
                 note += &format!("{in_tabs} open note{} will change in {}, unsaved. ", s(in_tabs), if in_tabs == 1 { "its tab" } else { "their tabs" });
             }
-            note += "Notes: Undo Rename puts everything back.";
-            ui.label(RichText::new(note).small().weak());
+            if plan.too_large > 0 {
+                let n = plan.too_large;
+                ui.colored_label(WARN, format!("{n} file{} too large to undo, so this rename can't be undone.", if n == 1 { " is" } else { "s are" }));
+            } else {
+                note += "Notes: Undo Rename puts everything back.";
+            }
+            ui.label(RichText::new(note.trim_end()).small().weak());
             ui.add_space(4.0);
             let mono = egui::FontId::monospace((size - 1.0).max(10.0));
             egui::ScrollArea::vertical().max_height((ctx.content_rect().height() * 0.5).max(160.0)).auto_shrink([false, true]).show(ui, |ui| {

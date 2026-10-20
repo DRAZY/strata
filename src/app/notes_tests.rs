@@ -335,6 +335,155 @@ fn undo_rename_changes_nothing_when_the_old_name_is_taken_again() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// Rename Old.md to New.md in `app` and accept the link update.
+fn rename_and_update(app: &mut StrataApp, ctx: &Context, dir: &Path) {
+    let old = dir.join("Old.md");
+    if app.tab_for_path(&old).is_none() {
+        app.open_path(old.clone(), false);
+    }
+    assert!(app.rename_note(&old, "New").is_ok());
+    for _ in 0..6 {
+        app.notes.index.wait();
+        frame(app, ctx, vec![]);
+    }
+    assert!(matches!(&app.notes.dialog, Some(super::notes_panel::Dialog::Links(p)) if !p.waiting), "the update is shown");
+    frame(app, ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+    app.notes.disk.wait_until_done();
+    frame(app, ctx, vec![]);
+}
+
+#[test]
+fn undo_rename_restores_a_tab_saved_and_closed_since() {
+    let dir = temp_dir("notes-undo-closed-tab");
+    write(&dir, "Old.md", "x\n");
+    write(&dir, "B.md", "see [[Old]]\r\n");
+    let ctx = Context::default();
+    let mut app = open_vault(&dir, "B.md", &ctx);
+    rename_and_update(&mut app, &ctx, &dir);
+    // B changed in its tab; it's saved and closed.
+    let b = app.tab_for_path(&dir.join("B.md")).unwrap();
+    assert!(app.save(b, false));
+    assert_eq!(std::fs::read(dir.join("B.md")).unwrap(), b"see [[New]]\r\n");
+    let b = app.tab_for_path(&dir.join("B.md")).unwrap();
+    assert!(app.close_tab(b));
+    app.run(&ctx, Cmd::NotesUndoRename);
+    app.notes.disk.wait_until_done();
+    frame(&mut app, &ctx, vec![]);
+    assert_eq!(std::fs::read(dir.join("B.md")).unwrap(), b"see [[Old]]\r\n", "the saved file comes back too");
+    assert!(dir.join("Old.md").exists() && !dir.join("New.md").exists());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn undo_rename_is_all_or_nothing_when_a_closed_tabs_file_changed() {
+    let dir = temp_dir("notes-undo-closed-changed");
+    write(&dir, "Old.md", "x\n");
+    write(&dir, "A.md", "[[Old]] on disk\n");
+    write(&dir, "B.md", "see [[Old]]\n");
+    let ctx = Context::default();
+    let mut app = open_vault(&dir, "B.md", &ctx);
+    rename_and_update(&mut app, &ctx, &dir);
+    let b = app.tab_for_path(&dir.join("B.md")).unwrap();
+    assert!(app.save(b, false));
+    let b = app.tab_for_path(&dir.join("B.md")).unwrap();
+    assert!(app.close_tab(b));
+    // Someone edits B after the rename.
+    write(&dir, "B.md", "see [[New]] and more\n");
+    app.run(&ctx, Cmd::NotesUndoRename);
+    app.notes.disk.wait_until_done();
+    frame(&mut app, &ctx, vec![]);
+    assert!(app.status.contains("Can't undo the rename") && app.status.contains("B.md"), "{}", app.status);
+    assert_eq!(std::fs::read_to_string(dir.join("A.md")).unwrap(), "[[New]] on disk\n", "nothing restored");
+    assert_eq!(std::fs::read_to_string(dir.join("B.md")).unwrap(), "see [[New]] and more\n");
+    assert!(dir.join("New.md").exists() && !dir.join("Old.md").exists(), "and no rename back");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn too_large_to_undo_is_said_first_and_never_half_undone() {
+    let dir = temp_dir("notes-undo-too-large");
+    write(&dir, "Old.md", "x\n");
+    write(&dir, "A.md", "[[Old]] in a file bigger than the undo limit\n");
+    let ctx = Context::default();
+    let mut app = open_vault(&dir, "Old.md", &ctx);
+    app.notes.undo_limit = Some(8);
+    assert!(app.rename_note(&dir.join("Old.md"), "New").is_ok());
+    for _ in 0..6 {
+        app.notes.index.wait();
+        frame(&mut app, &ctx, vec![]);
+    }
+    let out = frame(&mut app, &ctx, vec![]);
+    assert!(texts(&out).iter().any(|t| t.contains("1 file is too large to undo")), "{:?}", texts(&out));
+    frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+    app.notes.disk.wait_until_done();
+    frame(&mut app, &ctx, vec![]);
+    assert_eq!(std::fs::read_to_string(dir.join("A.md")).unwrap(), "[[New]] in a file bigger than the undo limit\n");
+    app.run(&ctx, Cmd::NotesUndoRename);
+    assert!(app.status.contains("can't be undone"), "{}", app.status);
+    assert!(dir.join("New.md").exists() && !dir.join("Old.md").exists(), "never renamed back alone");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn obsidian_paths_never_lead_outside_the_vault() {
+    let base = temp_dir("notes-confine");
+    let dir = base.join("vault");
+    write(&base, "secret.md", "SECRET {{title}}\n");
+    write(&dir, "Home.md", "");
+    let secret = base.join("secret.md");
+    for template in ["../secret", secret.to_str().unwrap()] {
+        let _ = std::fs::remove_dir_all(dir.join("Journal"));
+        write(&dir, ".obsidian/daily-notes.json", &serde_json::json!({ "folder": "Journal", "template": template }).to_string());
+        let ctx = Context::default();
+        let mut app = open_vault(&dir, "Home.md", &ctx);
+        app.run(&ctx, Cmd::NotesDailyNote);
+        assert!(app.status.contains("outside the vault"), "{template}: {}", app.status);
+        assert!(!dir.join("Journal").exists(), "{template}: no note made");
+    }
+    // A folder inside the vault that is a link to somewhere else counts as outside.
+    #[cfg(unix)]
+    {
+        let elsewhere = base.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.join("Linked")).unwrap();
+        write(&dir, ".obsidian/daily-notes.json", r#"{"folder": "Linked"}"#);
+        write(&dir, ".obsidian/app.json", r#"{"newFileLocation": "folder", "newFileFolderPath": "Linked"}"#);
+        let ctx = Context::default();
+        let mut app = open_vault(&dir, "Home.md", &ctx);
+        app.run(&ctx, Cmd::NotesDailyNote);
+        assert!(app.status.contains("outside the vault"), "{}", app.status);
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0, "nothing written through the link");
+        app.run(&ctx, Cmd::NotesNewNote);
+        match app.notes.dialog.as_mut() {
+            Some(super::notes_panel::Dialog::Name { name, .. }) => *name = "Escapee".into(),
+            _ => panic!("the name dialog is up"),
+        }
+        frame(&mut app, &ctx, vec![]);
+        frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+    }
+    std::fs::remove_dir_all(base).ok();
+}
+
+#[test]
+fn a_conflict_copy_replaced_while_asking_is_not_trashed() {
+    let dir = temp_dir("notes-trash-claim");
+    write(&dir, "Plan.md", "mine\n");
+    write(&dir, "Plan (conflict).md", "theirs\n");
+    write(&dir, "Other.md", "[[Plan]]\n");
+    let ctx = Context::default();
+    let mut app = open_vault(&dir, "Plan.md", &ctx);
+    app.ask_trash_copy(&dir.join("Plan (conflict).md"));
+    frame(&mut app, &ctx, vec![]);
+    // The sync tool writes a new copy while the question is up.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    write(&dir, "Plan (conflict).md", "a newer version, not the one shown\n");
+    frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+    assert_eq!(std::fs::read_to_string(dir.join("Plan (conflict).md")).unwrap(), "a newer version, not the one shown\n", "still there");
+    assert!(app.status.contains("changed"), "{}", app.status);
+    std::fs::remove_dir_all(dir).ok();
+}
+
 #[test]
 fn sidebar_rename_offers_the_same_link_update() {
     let dir = temp_dir("notes-sidebar-rename");

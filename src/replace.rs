@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 /// Originals kept for Undo Replace in Files, at most (bytes).
-const UNDO_BYTES: usize = 256 * 1024 * 1024;
+pub const UNDO_BYTES: usize = 256 * 1024 * 1024;
 
 /// Edits worked out some other way than a search (a note rename's link
 /// updates, see `notes::rename`): for a file and its text, the byte ranges
@@ -175,7 +175,7 @@ pub struct Job {
 
 /// What happened to one file.
 pub enum Outcome {
-    Replaced { path: PathBuf, count: usize, original: Vec<u8>, after: Option<Stamp> },
+    Replaced { path: PathBuf, count: usize, original: Vec<u8>, after: After },
     Restored,
     Skipped { path: PathBuf, reason: String },
 }
@@ -212,9 +212,29 @@ pub fn replace_file(job: &Job, r: &Replacer) -> Result<(usize, Vec<u8>), String>
     Ok((count, file.bytes))
 }
 
+/// What a file looked like right after the replace wrote it: its stamp and
+/// a fingerprint of every byte (a same-size edit within the same second
+/// doesn't change the stamp).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct After {
+    stamp: Option<Stamp>,
+    hash: Option<u64>,
+}
+
+impl After {
+    fn of(path: &Path) -> After {
+        After { stamp: Stamp::of(path).ok(), hash: std::fs::read(path).ok().map(|b| crate::claim::fingerprint(&b)) }
+    }
+
+    /// Is the file at `path` still exactly as the replace left it?
+    fn holds(&self, path: &Path) -> bool {
+        self.stamp.is_some() && self.hash.is_some() && Stamp::of(path).ok() == self.stamp && std::fs::read(path).ok().map(|b| crate::claim::fingerprint(&b)) == self.hash
+    }
+}
+
 /// Put back what Undo kept, unless the file changed since the replace.
-fn restore_file(path: &Path, original: &[u8], after: Option<Stamp>) -> Result<(), String> {
-    if after.is_none() || Stamp::of(path).ok() != after {
+fn restore_file(path: &Path, original: &[u8], after: &After) -> Result<(), String> {
+    if !after.holds(path) {
         return Err("changed since the replace".into());
     }
     crate::buffer::write_atomic(path, |out| std::io::Write::write_all(out, original)).map_err(|e| format!("couldn't write: {e}"))
@@ -223,7 +243,7 @@ fn restore_file(path: &Path, original: &[u8], after: Option<Stamp>) -> Result<()
 struct Kept {
     path: PathBuf,
     original: Vec<u8>,
-    after: Option<Stamp>,
+    after: After,
 }
 
 /// The background disk job (replace, or undo of the last replace) and its
@@ -245,6 +265,8 @@ pub struct DiskReplace {
     kept_bytes: usize,
     /// Files written whose originals were too big to keep for undo.
     pub not_undoable: usize,
+    /// Most bytes of originals kept for undo (None: `UNDO_BYTES`); kept across jobs.
+    pub limit: Option<usize>,
 }
 
 impl DiskReplace {
@@ -261,15 +283,21 @@ impl DiskReplace {
         self.kept.len()
     }
 
+    /// The files the last replace wrote that have changed since (and why),
+    /// so an undo can be refused as a whole before anything is restored.
+    pub fn undo_problems(&self) -> Vec<(PathBuf, String)> {
+        self.kept.iter().filter(|k| !k.after.holds(&k.path)).map(|k| (k.path.clone(), "changed since the update".to_owned())).collect()
+    }
+
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
     /// Rewrite `jobs` off the UI thread. Forgets the previous undo.
     pub fn start(&mut self, jobs: Vec<Job>, r: Replacer, ctx: Option<egui::Context>) {
-        *self = DiskReplace { total: jobs.len(), ..Default::default() };
+        *self = DiskReplace { total: jobs.len(), limit: self.limit, ..Default::default() };
         self.spawn(ctx, move |job: &Job| match replace_file(job, &r) {
-            Ok((count, original)) => Outcome::Replaced { path: job.path.clone(), count, original, after: Stamp::of(&job.path).ok() },
+            Ok((count, original)) => Outcome::Replaced { path: job.path.clone(), count, original, after: After::of(&job.path) },
             Err(reason) => Outcome::Skipped { path: job.path.clone(), reason },
         }, jobs);
     }
@@ -277,8 +305,8 @@ impl DiskReplace {
     /// Restore the files the last replace wrote.
     pub fn start_undo(&mut self, ctx: Option<egui::Context>) {
         let kept = std::mem::take(&mut self.kept);
-        *self = DiskReplace { total: kept.len(), undoing: true, ..Default::default() };
-        self.spawn(ctx, |k: &Kept| match restore_file(&k.path, &k.original, k.after) {
+        *self = DiskReplace { total: kept.len(), undoing: true, limit: self.limit, ..Default::default() };
+        self.spawn(ctx, |k: &Kept| match restore_file(&k.path, &k.original, &k.after) {
             Ok(()) => Outcome::Restored,
             Err(reason) => Outcome::Skipped { path: k.path.clone(), reason },
         }, kept);
@@ -318,7 +346,7 @@ impl DiskReplace {
                 Ok(Outcome::Replaced { path, count, original, after }) => {
                     self.replaced += count;
                     self.files += 1;
-                    if self.kept_bytes + original.len() <= UNDO_BYTES {
+                    if self.kept_bytes + original.len() <= self.limit.unwrap_or(UNDO_BYTES) {
                         self.kept_bytes += original.len();
                         self.kept.push(Kept { path, original, after });
                     } else {

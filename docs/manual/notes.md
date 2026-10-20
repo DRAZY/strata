@@ -108,7 +108,8 @@ Rename a note with **Notes: Rename Note…**, or with Rename… in the side bar'
 - Only real links change: `[[Old]]`, `[[Old#heading|alias]]`, `![[Old]]` and Markdown links to the note keep their heading, alias and style. Text that merely mentions the name, and links in code, are left alone.
 - A bare name stays a bare name when it still finds the note; otherwise the link gets the path it needs. If the new name makes another note's links ambiguous (two notes with the same name), those links get paths so they keep pointing where they did.
 - Notes open in a tab change in their tab, unsaved, like Find and Replace in Files. The others are rewritten on disk the same careful way: only if unchanged since Strata looked, keeping their encoding and line endings, through an atomic save.
-- **Notes: Undo Rename** puts everything back: the links byte for byte, and the old name. Files changed again since the rename are left alone, and the status bar says which. The backlinks panel has an Undo Rename button too.
+- **Notes: Undo Rename** puts everything back: the links byte for byte, including notes that were open in a tab and have been saved and closed since, and the old name. It's all or nothing: if any of those files has changed since the rename, or the old name has been taken again, nothing changes and the status bar says which file is in the way. The backlinks panel has an Undo Rename button too. Only the last rename can be undone.
+- Strata keeps the old text of the files it rewrites for the undo, up to 256 MB in all. If a rename would rewrite more than that, the preview says so before you choose Update Links, and that rename can't be undone.
 
 Renaming a folder doesn't update links yet.
 
@@ -118,13 +119,13 @@ With the [Markdown preview](markdown.md) open on a note, wikilinks are links you
 
 ## Sync conflicts
 
-When two devices change a note at the same time, sync tools keep both versions, the second as a copy next to the note. Strata recognizes the copies Syncthing (`Note.sync-conflict-20261019-143012-ABC1234.md`), Dropbox, Nextcloud and ownCloud (`Note (Andre's MacBook's conflicted copy 2026-10-19).md`) and other tools (`Note (conflict).md`) make, and shows a notice above the note: **Compare** opens the two side by side (see [Compare](compare.md)) so you can bring over what you want to keep, **Open Copy** opens the copy, and **Move Copy to Trash…** removes it once you're done. Opening the copy shows the same notice the other way round. **Notes: Compare with Conflict Copy** does the comparing from the keyboard.
+When two devices change a note at the same time, sync tools keep both versions, the second as a copy next to the note. Strata recognizes the copies Syncthing (`Note.sync-conflict-20261019-143012-ABC1234.md`), Dropbox, Nextcloud and ownCloud (`Note (Andre's MacBook's conflicted copy 2026-10-19).md`) and other tools (`Note (conflict).md`) make, and shows a notice above the note: **Compare** opens the two side by side (see [Compare](compare.md)) so you can bring over what you want to keep, **Open Copy** opens the copy, and **Move Copy to Trash…** removes it once you're done. Only the copy you were shown goes to the Trash: if the sync tool replaces it while Strata is asking, nothing is moved. Opening the copy shows the same notice the other way round. **Notes: Compare with Conflict Copy** does the comparing from the keyboard.
 
 iCloud's copies (`Note 2.md`) aren't recognized: they look like any note named that way.
 
 ## Obsidian settings Strata follows
 
-Strata reads these from the vault's `.obsidian` folder, and never writes them:
+Strata reads these from the vault's `.obsidian` folder, and never writes them. Every folder and file they name must be inside the vault: a path that leads out of it (with `..`, a full path, or through a folder that links elsewhere) is refused, and nothing is read or created there.
 
 | Obsidian setting | File | What Strata does with it |
 |---|---|---|

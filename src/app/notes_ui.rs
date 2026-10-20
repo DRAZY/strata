@@ -38,12 +38,81 @@ pub(super) enum NotesPick {
     TagUse(Vec<(PathBuf, usize)>),
 }
 
-/// What a rename changed, for Notes: Undo Rename.
+/// What a rename changed, for Notes: Undo Rename. Files rewritten on disk
+/// are kept by the disk job (`NotesState::disk`); the tabs are here.
 pub(super) struct UndoRename {
     from: PathBuf,
     to: PathBuf,
-    /// Tabs edited in their buffer: (view id, edit version right after).
-    tabs: Vec<(egui::Id, u64)>,
+    tabs: Vec<TabChange>,
+    /// Files too large to keep for undo: this rename can't be undone.
+    too_large: usize,
+}
+
+impl UndoRename {
+    /// Can it be undone at all (every file's old text kept)?
+    pub fn undoable(&self) -> bool {
+        self.too_large == 0
+    }
+}
+
+/// A note changed in its tab by a rename's link update.
+struct TabChange {
+    view: egui::Id,
+    /// The tab's edit version right after.
+    version: u64,
+    path: PathBuf,
+    /// The tab's text before and after the update.
+    before: Arc<String>,
+    after: Arc<String>,
+    /// The file on disk then (fingerprint), to tell whether it was saved since.
+    disk: Option<u64>,
+}
+
+/// How Undo Rename puts back a note that was changed in its tab.
+enum TabUndo {
+    /// The tab is still open, unchanged since: Undo in it.
+    InTab(egui::Id),
+    /// The tab was saved and closed: write its old text back, in this encoding.
+    OnDisk(PathBuf, Arc<String>, crate::encoding::Encoding),
+    /// Closed without saving: nothing changed on disk.
+    Nothing,
+}
+
+fn fingerprint_of(path: &Path) -> Option<u64> {
+    std::fs::read(path).ok().map(|b| crate::claim::fingerprint(&b))
+}
+
+/// `rel` (a path from Obsidian's settings) inside the vault at `root`; an
+/// absolute or network path, `..`, or a folder linking elsewhere is refused.
+pub(super) fn inside_vault(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let r = rel.trim();
+    let outside = || format!("“{r}” is outside the vault");
+    let drive = r.len() >= 2 && r.as_bytes()[1] == b':' && r.as_bytes()[0].is_ascii_alphabetic();
+    if Path::new(r).is_absolute() || Path::new(r).has_root() || r.starts_with(['/', '\\']) || drive {
+        return Err(outside());
+    }
+    let mut path = root.to_owned();
+    for part in r.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => return Err(outside()),
+            p => path.push(p),
+        }
+    }
+    confined(root, &path).map_err(|_| outside())?;
+    Ok(path)
+}
+
+/// The closest existing folder of `path` is really inside `root` (no link
+/// on the way leads out of the vault).
+pub(super) fn confined(root: &Path, path: &Path) -> Result<(), String> {
+    let real_root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let mut probe = path;
+    while std::fs::symlink_metadata(probe).is_err() {
+        probe = probe.parent().ok_or("no folder")?;
+    }
+    let real = std::fs::canonicalize(probe).map_err(|e| e.to_string())?;
+    if real.starts_with(&real_root) { Ok(()) } else { Err(format!("{} is outside the vault", path.display())) }
 }
 
 /// One `[[` completion.
@@ -92,6 +161,8 @@ pub(super) struct NotesState {
     pub embeds: EmbedCache,
     /// `[[` candidates of a vault, for the index generation they were listed at.
     candidates: Option<(PathBuf, u64, Arc<Candidates>)>,
+    /// Most bytes of originals a link update keeps for its undo (None: Replace in Files' limit).
+    pub undo_limit: Option<usize>,
     /// For lists opened from a palette pick (which has no context at hand).
     ctx: Option<egui::Context>,
 }
@@ -446,11 +517,17 @@ impl StrataApp {
         if !path.starts_with(root) {
             return Err("it would be outside the vault".into());
         }
+        // Not through a folder that links out of the vault either.
+        confined(root, &path).map_err(|_| "it would be outside the vault".to_owned())?;
         Ok(path)
     }
 
     /// Make the note (empty, or `text`) and open it.
     pub(super) fn create_and_open(&mut self, root: &Path, path: &Path, text: &str) {
+        if let Err(e) = confined(root, path) {
+            self.status = format!("Not created: {e}");
+            return;
+        }
         match create_note(path, text) {
             Ok(()) => {
                 self.notes.index.request(root, None);
@@ -637,7 +714,13 @@ impl StrataApp {
             return;
         }
         let rel = if config.daily.folder.is_empty() { name.clone() } else { format!("{}/{name}", config.daily.folder) };
-        let path = format!("{rel}.md").split('/').fold(root.clone(), |p, part| p.join(part));
+        let path = match inside_vault(&root, &format!("{rel}.md")) {
+            Ok(p) => p,
+            Err(e) => {
+                self.status = format!("Can't make the daily note: {e}");
+                return;
+            }
+        };
         if path.exists() {
             self.push_jump();
             return self.open_path(path, false);
@@ -656,25 +739,37 @@ impl StrataApp {
 
     /// A template's text (vault-relative, `.md` optional); empty for none.
     fn read_template(&mut self, root: &Path, template: &str) -> Result<String, String> {
-        let t = template.trim().trim_start_matches('/');
+        let written = template.trim();
+        // Obsidian may write `/Templates/Day` for a path from the vault folder;
+        // any other absolute path is outside the vault.
+        let t = written.strip_prefix('/').filter(|_| !cfg!(windows)).unwrap_or(written);
         if t.is_empty() {
             return Ok(String::new());
         }
         let rel = if is_note(t) { t.to_owned() } else { format!("{t}.md") };
-        let path = rel.split('/').fold(root.to_owned(), |p, part| p.join(part));
+        let path = inside_vault(root, &rel).map_err(|e| format!("Couldn't use the template: {e}"))?;
+        if t.len() != written.len() && !path.is_file() {
+            return Err(format!("Couldn't use the template: “{written}” is outside the vault"));
+        }
         crate::search::read_text(&path).map(|f| f.text).map_err(|e| format!("Couldn't read the template {}: {e}", path.display()))
     }
 
     /// The templates folder: Obsidian's setting, else `Templates`.
-    fn templates_dir(root: &Path, config: &Config) -> PathBuf {
+    fn templates_dir(root: &Path, config: &Config) -> Result<PathBuf, String> {
         let folder = config.templates.folder.clone().unwrap_or_else(|| "Templates".into());
-        folder.split('/').fold(root.to_owned(), |p, part| p.join(part))
+        inside_vault(root, &folder)
     }
 
     fn choose_template(&mut self, ctx: &egui::Context) {
         let Some(root) = self.command_root() else { return };
         let config = Config::read(&root);
-        let dir = Self::templates_dir(&root, &config);
+        let dir = match Self::templates_dir(&root, &config) {
+            Ok(d) => d,
+            Err(e) => {
+                self.status = format!("Can't use the templates folder: {e}");
+                return;
+            }
+        };
         let mut found = Vec::new();
         let mut stack = vec![(dir.clone(), 0)];
         while let Some((d, depth)) = stack.pop() {
@@ -842,11 +937,12 @@ impl StrataApp {
 
     /// Work out the link updates of a rename once its vault is indexed.
     fn plan_waiting_links(&mut self) {
+        let limit = self.notes.undo_limit.unwrap_or(crate::replace::UNDO_BYTES);
         let Some(Dialog::Links(plan)) = &mut self.notes.dialog else { return };
         if let Some(rx) = &plan.reading {
             let Ok((files, skipped)) = rx.try_recv() else { return };
             let rename = plan.rename.clone().expect("set when reading starts");
-            plan.ready(rename, files, skipped);
+            plan.ready(rename, files, skipped, limit);
             if plan.is_empty() {
                 let to = rename_path(&plan.root, plan.rename_to());
                 let skipped = plan_skipped_note(plan);
@@ -911,13 +1007,14 @@ impl StrataApp {
             return;
         }
         let rewriter = Arc::new(Rewriter { root: plan.root.clone(), rename: (*rename).clone() });
-        let mut tabs = Vec::new();
+        let mut tabs: Vec<TabChange> = Vec::new();
         let mut jobs = Vec::new();
         let (mut in_tabs, mut tab_files) = (0, 0);
         for f in &plan.files {
             let tab = self.docs.iter().position(|d| d.path.as_deref() == Some(f.path.as_path()) && d.compare.is_none());
             match tab {
                 Some(i) => {
+                    let disk = fingerprint_of(&f.path);
                     let d = &mut self.docs[i];
                     let text = d.editor.text_snapshot();
                     let edits = crate::replace::Rewrite::edits(rewriter.as_ref(), &f.path, &text);
@@ -930,13 +1027,15 @@ impl StrataApp {
                     tab_files += 1;
                     d.editor.replace_ranges(char_edits);
                     d.preview = false;
-                    tabs.push((d.view.id, d.editor.version()));
+                    let after = d.editor.text_snapshot();
+                    tabs.push(TabChange { view: d.view.id, version: d.editor.version(), path: f.path.clone(), before: text, after, disk });
                 }
                 None => jobs.push(crate::replace::Job { path: f.path.clone(), stamp: f.stamp, expected: f.count }),
             }
         }
         let root = plan.root.clone();
-        self.notes.last_rename = Some(UndoRename { from: rename_path(&root, &rename.from), to: rename_path(&root, &rename.to), tabs });
+        self.notes.last_rename = Some(UndoRename { from: rename_path(&root, &rename.from), to: rename_path(&root, &rename.to), tabs, too_large: plan.too_large });
+        self.notes.disk.limit = self.notes.undo_limit;
         self.notes.disk.start(jobs, crate::replace::Replacer::rewriting(rewriter), ctx);
         self.notes.disk_in_tabs = (in_tabs, tab_files);
     }
@@ -956,7 +1055,11 @@ impl StrataApp {
             if self.notes.disk_in_tabs.1 > 0 {
                 t += &format!(" ({} in open tabs, unsaved)", plural(self.notes.disk_in_tabs.1, "note"));
             }
-            t + ". Notes: Undo Rename puts them back"
+            if d.not_undoable > 0 {
+                t + &format!("; {} too large to keep, so this rename can't be undone", plural(d.not_undoable, "file"))
+            } else {
+                t + ". Notes: Undo Rename puts them back"
+            }
         };
         if !d.skipped.is_empty() {
             let list: Vec<String> = d.skipped.iter().take(3).map(|(p, why)| format!("{}: {why}", p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned()))).collect();
@@ -967,10 +1070,20 @@ impl StrataApp {
         for root in self.notes.index.roots().cloned().collect::<Vec<_>>() {
             self.notes.index.request(&root, Some(ctx));
         }
+        if !self.notes.disk.undoing && self.notes.disk.not_undoable > 0
+            && let Some(u) = self.notes.last_rename.as_mut()
+        {
+            u.too_large = u.too_large.max(self.notes.disk.not_undoable);
+        }
         if self.notes.disk.undoing
             && let Some((to, from)) = self.notes.rename_back.take()
         {
-            self.rename_back(&to, &from);
+            if self.notes.disk.skipped.is_empty() {
+                self.rename_back(&to, &from);
+            } else {
+                // Some links couldn't be put back: the name stays, so they still find the note.
+                self.status = format!("Undo Rename restored only some links ({} changed meanwhile), so {} keeps its new name", self.notes.disk.skipped.len(), to.display());
+            }
         }
     }
 
@@ -984,24 +1097,50 @@ impl StrataApp {
             self.status = "No rename to undo".into();
             return;
         };
-        // Check the name can go back before restoring any link: links to a
-        // name that's taken (or a file that moved on) would point elsewhere.
-        if !u.to.exists() || std::fs::symlink_metadata(&u.from).is_ok() {
-            self.status = format!("Can't undo the rename: {} is gone or {} exists again", u.to.display(), u.from.display());
+        if u.too_large > 0 || self.notes.disk.not_undoable > 0 {
+            self.status = "This rename can't be undone: some files were too large to keep their old text".into();
             return;
         }
-        let mut changed = 0;
-        for (id, version) in &u.tabs {
-            if let Some(d) = self.docs.iter_mut().find(|d| d.view.id == *id) {
-                if d.editor.version() == *version {
-                    d.editor.undo();
-                } else {
-                    changed += 1;
-                }
+        // All or nothing: every check first, so links never point at a name
+        // that's taken, and the name never goes back while links don't.
+        if !u.to.exists() || std::fs::symlink_metadata(&u.from).is_ok() {
+            self.status = format!("Can't undo the rename: {} is gone or {} exists again", u.to.display(), u.from.display());
+            self.notes.last_rename = Some(u);
+            return;
+        }
+        let mut problems: Vec<(PathBuf, String)> = self.notes.disk.undo_problems();
+        let mut steps = Vec::new();
+        for t in &u.tabs {
+            match self.tab_undo(t) {
+                Ok(step) => steps.push(step),
+                Err(why) => problems.push((t.path.clone(), why)),
             }
         }
-        if changed > 0 {
-            log::info!("undo rename: {changed} tabs changed since, left alone");
+        if !problems.is_empty() {
+            let list: Vec<String> = problems.iter().map(|(p, why)| format!("{} ({why})", p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned()))).collect();
+            log::warn!("undo rename refused: {} files changed since", problems.len());
+            self.status = format!("Can't undo the rename; changed since: {}", list.join(", "));
+            self.notes.last_rename = Some(u);
+            return;
+        }
+        let mut in_tabs = 0;
+        for step in steps {
+            match step {
+                TabUndo::InTab(id) => {
+                    if let Some(d) = self.docs.iter_mut().find(|d| d.view.id == id) {
+                        d.editor.undo();
+                        in_tabs += 1;
+                    }
+                }
+                TabUndo::OnDisk(path, before, encoding) => {
+                    if let Err(e) = crate::buffer::Buffer::from_str(&before).write_to(&path, encoding) {
+                        log::warn!("undo rename: couldn't write {}: {e}", path.display());
+                        self.status = format!("Undo Rename stopped: couldn't write {}: {e}; the name stays", path.display());
+                        return;
+                    }
+                }
+                TabUndo::Nothing => {}
+            }
         }
         if self.notes.disk.undoable() > 0 {
             // The files come back first, while they still have the new name's path.
@@ -1010,8 +1149,26 @@ impl StrataApp {
         } else {
             self.rename_back(&u.to, &u.from);
         }
-        if changed > 0 {
-            self.status = format!("{changed} open tab{} changed after the rename: use Undo there", if changed == 1 { "" } else { "s" });
+        if in_tabs > 0 {
+            log::info!("undo rename: {in_tabs} notes changed back in their tabs");
+        }
+    }
+
+    /// How to undo a rename's change to a note that was open in a tab, or why it can't be.
+    fn tab_undo(&self, t: &TabChange) -> Result<TabUndo, String> {
+        if let Some(d) = self.docs.iter().find(|d| d.view.id == t.view) {
+            return if d.editor.version() == t.version { Ok(TabUndo::InTab(t.view)) } else { Err("edited in its tab since".into()) };
+        }
+        // The tab is gone. Open again in another tab with edits: that's newer.
+        if self.docs.iter().any(|d| d.path.as_deref() == Some(t.path.as_path()) && d.is_dirty()) {
+            return Err("open with unsaved changes".into());
+        }
+        if fingerprint_of(&t.path) == t.disk && t.disk.is_some() {
+            return Ok(TabUndo::Nothing);
+        }
+        match crate::search::read_text(&t.path) {
+            Ok(f) if !f.lossy && f.text == *t.after => Ok(TabUndo::OnDisk(t.path.clone(), t.before.clone(), f.encoding)),
+            _ => Err("changed since the update".into()),
         }
     }
 
@@ -1046,7 +1203,7 @@ impl StrataApp {
                 Item::cmd("Backlinks", Cmd::NotesToggleBacklinks).checked(self.backlinks_shown()),
                 Item::Separator,
                 Item::cmd("Rename Note…", Cmd::NotesRename),
-                Item::cmd("Undo Rename", Cmd::NotesUndoRename).enabled(self.notes.last_rename.is_some()),
+                Item::cmd("Undo Rename", Cmd::NotesUndoRename).enabled(self.notes.last_rename.as_ref().is_some_and(UndoRename::undoable)),
                 Item::cmd("Compare with Conflict Copy", Cmd::NotesCompareConflict),
             ],
         )
@@ -1212,6 +1369,18 @@ mod tests {
         for bad in ["", "  ", "a/../b", "a//b", "x:y", "what?", "a|b", "trailing.", " lead", "tab\there"] {
             assert!(check_note_name(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn settings_paths_stay_inside_the_vault() {
+        let root = std::env::temp_dir().join(format!("strata-notes-inside-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Templates")).unwrap();
+        assert_eq!(inside_vault(&root, "Templates/Day.md").unwrap(), root.join("Templates").join("Day.md"));
+        assert_eq!(inside_vault(&root, "./Templates//Day.md").unwrap(), root.join("Templates").join("Day.md"));
+        for bad in ["../secret", "Templates/../../secret", "/etc/hosts", "\\\\server\\share\\x", "//server/share/x", "C:\\x", "c:/x", "\\x"] {
+            assert!(inside_vault(&root, bad).is_err(), "{bad}");
+        }
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
