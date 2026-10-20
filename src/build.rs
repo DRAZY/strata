@@ -112,6 +112,11 @@ const SHELL_REGEX: &str = r"^(?P<file>.+?): line (?P<line>\d+): (?P<message>.*)$
 /// tsc-style `src/a.ts(3,5): error TS…` or gcc style, for npm scripts.
 const NPM_REGEX: &str =
     r"^(?P<file>(?:[A-Za-z]:)?[^\s:(]+)(?:\((?P<line>\d+),(?P<col>\d+)\)|:(?P<line2>\d+):(?P<col2>\d+)):?\s*(?P<message>.*)$";
+/// Terminal output: `path:line[:col]` or MSVC's `path(line[,col])` anywhere in
+/// a line, such as a panic's `panicked at src/x.rs:3:5:`. Quotes, brackets and
+/// the like end a path, so `(a.rs:3)` or `'a.rs:3'` give `a.rs`; a `file://`
+/// prefix is skipped.
+const ANYWHERE_REGEX: &str = r#"(?:file://)?(?P<file>(?:[A-Za-z]:[\\/])?[^\s:()\[\]{}<>"'`|,;=]+)(?::(?P<line>\d+)(?::(?P<col>\d+))?|\((?P<line2>\d+)(?:, ?(?P<col2>\d+))?\))"#;
 
 // ---------------------------------------------------------------------------
 // Definitions
@@ -659,22 +664,82 @@ pub struct BuildResult {
 /// Parse one output line with `re`; relative paths resolve against `base`.
 /// Returns (path, 0-based line, 0-based col, message).
 pub fn parse_result(re: &Regex, line: &str, base: &Path) -> Option<(PathBuf, usize, usize, String)> {
-    let caps = re.captures(line)?;
+    let f = fields(re, &re.captures(line)?)?;
+    let path = normalize(&base.join(f.file.as_str().trim()));
+    Some((path, f.line, f.col, f.message.trim().to_owned()))
+}
+
+/// What a `file_regex` match says: the file as matched, 0-based line and
+/// column, the message, and where the location's text ends.
+struct Fields<'t> {
+    file: regex::Match<'t>,
+    line: usize,
+    col: usize,
+    message: &'t str,
+    /// Where the line number starts, and where the line or column ends.
+    line_start: usize,
+    end: usize,
+}
+
+/// Named groups `file`, `line`, `col`, `message` (or `line2`/`col2` in an
+/// alternative), else positional groups 1-4.
+fn fields<'t>(re: &Regex, caps: &regex::Captures<'t>) -> Option<Fields<'t>> {
     let named = re.capture_names().any(|n| n == Some("file"));
-    let get = |name: &str, alt: &str, pos: usize| -> Option<&str> {
+    let get = |name: &str, alt: &str, pos: usize| -> Option<regex::Match<'t>> {
         let m = if named { caps.name(name).or_else(|| caps.name(alt)) } else { caps.get(pos) };
-        m.map(|m| m.as_str()).filter(|s| !s.is_empty())
+        m.filter(|m| !m.as_str().is_empty())
     };
-    let file = get("file", "file", 1)?.trim();
-    let line_no: usize = get("line", "line2", 2)?.parse().ok()?;
-    let col: usize = get("col", "col2", 3).and_then(|c| c.parse().ok()).unwrap_or(1);
-    let message = get("message", "message", 4).unwrap_or("").trim().to_owned();
-    let path = normalize(&base.join(file));
-    Some((path, line_no.saturating_sub(1), col.saturating_sub(1), message))
+    let file = get("file", "file", 1)?;
+    let line = get("line", "line2", 2)?;
+    let col = get("col", "col2", 3);
+    let line_no: usize = line.as_str().parse().ok()?;
+    let col_no: usize = col.and_then(|c| c.as_str().parse().ok()).unwrap_or(1);
+    let message = get("message", "message", 4).map_or("", |m| m.as_str());
+    let end = col.map_or(line.end(), |c| c.end());
+    Some(Fields { file, line: line_no.saturating_sub(1), col: col_no.saturating_sub(1), message, line_start: line.start(), end })
+}
+
+/// A file location in a line of terminal output. `line` and `col` are
+/// 0-based; `span` is the byte range of the text naming it (path through
+/// line and column), for underlining.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextLocation {
+    pub file: String,
+    pub line: usize,
+    pub col: usize,
+    pub span: std::ops::Range<usize>,
+}
+
+/// The patterns the terminal looks for: the build systems' rustc, Python,
+/// Node and tsc ones (which know their stack-trace lines), then a location anywhere.
+static TEXT_PATTERNS: std::sync::LazyLock<Vec<Regex>> =
+    std::sync::LazyLock::new(|| [RUSTC_REGEX, PYTHON_REGEX, NODE_REGEX, NPM_REGEX, ANYWHERE_REGEX].iter().map(|r| Regex::new(r).expect("built-in regex")).collect());
+
+/// Every file location in `text`, in order, without checking that the files
+/// exist. Where patterns overlap the earlier one in `TEXT_PATTERNS` wins.
+pub fn find_locations(text: &str) -> Vec<TextLocation> {
+    let mut found: Vec<TextLocation> = Vec::new();
+    for re in TEXT_PATTERNS.iter() {
+        for caps in re.captures_iter(text) {
+            let Some(f) = fields(re, &caps) else { continue };
+            let raw = f.file.as_str();
+            let file = raw.trim();
+            let start = f.file.start() + raw.len() - raw.trim_start().len();
+            // `path(3,5)`: the closing parenthesis belongs to the location.
+            let end = if text[..f.line_start].ends_with('(') && text[f.end..].starts_with(')') { f.end + 1 } else { f.end };
+            let span = start..end;
+            if found.iter().any(|l| l.span.start < span.end && span.start < l.span.end) {
+                continue;
+            }
+            found.push(TextLocation { file: file.to_owned(), line: f.line, col: f.col, span });
+        }
+    }
+    found.sort_by_key(|l| l.span.start);
+    found
 }
 
 /// Drop `.` components and fold `..` lexically, so `./src/a.rs` matches open tabs.
-fn normalize(p: &Path) -> PathBuf {
+pub(crate) fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
         match c {
@@ -1683,6 +1748,52 @@ mod tests {
         );
         let node = Regex::new(NODE_REGEX).unwrap();
         assert_eq!(parse_result(&node, "    at f (/x/a.js:3:5)", base).map(|r| (r.0, r.1, r.2)), Some((PathBuf::from("/x/a.js"), 2, 4)));
+    }
+
+    /// (file, 1-based line, 1-based col, underlined text) for each location.
+    fn located(text: &str) -> Vec<(String, usize, usize, &str)> {
+        find_locations(text).into_iter().map(|l| (l.file, l.line + 1, l.col + 1, &text[l.span])).collect()
+    }
+
+    fn loc<'a>(file: &str, line: usize, col: usize, text: &'a str) -> (String, usize, usize, &'a str) {
+        (file.to_owned(), line, col, text)
+    }
+
+    #[test]
+    fn finds_unix_locations_anywhere_in_a_line() {
+        assert_eq!(located("src/main.rs:42:7"), [loc("src/main.rs", 42, 7, "src/main.rs:42:7")]);
+        assert_eq!(located("see ./lib/a.py:10 for details."), [loc("./lib/a.py", 10, 1, "./lib/a.py:10")]);
+        assert_eq!(located("/abs/x.go:3: undefined: y"), [loc("/abs/x.go", 3, 1, "/abs/x.go:3")]);
+        assert_eq!(
+            located("thread 'main' panicked at src/main.rs:3:5:"),
+            [loc("src/main.rs", 3, 5, "src/main.rs:3:5")],
+            "a Rust panic"
+        );
+        assert_eq!(located("  --> src/lib.rs:12:9"), [loc("src/lib.rs", 12, 9, "src/lib.rs:12:9")], "rustc");
+        assert_eq!(located("(a.rs:3) and 'b.rs:4:2'"), [loc("a.rs", 3, 1, "a.rs:3"), loc("b.rs", 4, 2, "b.rs:4:2")]);
+        assert_eq!(located("file:///p/a.mjs:2:3"), [loc("/p/a.mjs", 2, 3, "/p/a.mjs:2:3")]);
+        // Nothing that looks like a location without a line number.
+        assert_eq!(located("error: could not compile `x` (bin) due to 1 previous error"), []);
+        assert_eq!(located("src/main.rs and Cargo.toml"), []);
+    }
+
+    #[test]
+    fn finds_windows_locations() {
+        assert_eq!(located(r"C:\proj\x.cs(12,5): error CS1002: ; expected"), [loc(r"C:\proj\x.cs", 12, 5, r"C:\proj\x.cs(12,5)")]);
+        assert_eq!(located(r"main.cpp(7): warning C4101"), [loc("main.cpp", 7, 1, "main.cpp(7)")]);
+        assert_eq!(located(r"at D:\a\b.rs:3:1 here"), [loc(r"D:\a\b.rs", 3, 1, r"D:\a\b.rs:3:1")]);
+        assert_eq!(located("src/a.ts(3,5): error TS2322"), [loc("src/a.ts", 3, 5, "src/a.ts(3,5)")], "tsc");
+        assert_eq!(located(r"--> src\main.rs:2:4"), [loc(r"src\main.rs", 2, 4, r"src\main.rs:2:4")]);
+    }
+
+    #[test]
+    fn finds_stack_trace_locations() {
+        let py = r#"  File "/home/me/my proj/x.py", line 10, in <module>"#;
+        assert_eq!(located(py), [loc("/home/me/my proj/x.py", 10, 1, r#"/home/me/my proj/x.py", line 10"#)], "Python quotes paths with spaces");
+        assert_eq!(located(r#"  File "<frozen runpy>", line 88, in _run_code"#), []);
+        assert_eq!(located("    at main (/abs/x.js:3:7)"), [loc("/abs/x.js", 3, 7, "/abs/x.js:3:7")], "Node");
+        assert_eq!(located("    at /abs/y.ts:9:1"), [loc("/abs/y.ts", 9, 1, "/abs/y.ts:9:1")]);
+        assert_eq!(located("x.rb:3:in 'foo': boom"), [loc("x.rb", 3, 1, "x.rb:3")], "Ruby");
     }
 
     #[test]

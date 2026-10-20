@@ -652,6 +652,7 @@ impl StrataApp {
                 c("Save All on Build", Cmd::ToggleSaveAllOnBuild).checked(self.settings.save_all_on_build),
                 SEP(),
                 c("New Terminal", Cmd::NewTerminal),
+                c("Send to Terminal", Cmd::SendToTerminal),
                 SEP(),
                 c(if self.macro_recording.is_some() { "Stop Recording Macro" } else { "Record Macro" }, Cmd::RecordMacro),
                 c("Playback Macro", Cmd::PlaybackMacro).enabled(!self.macro_last.is_empty()),

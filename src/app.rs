@@ -1151,6 +1151,7 @@ impl StrataApp {
             Cmd::ToggleBuildResults => self.build.visible = !self.build.visible,
             Cmd::ToggleTerminal => self.toggle_terminal(ctx),
             Cmd::NewTerminal => self.new_terminal(ctx),
+            Cmd::SendToTerminal => self.send_to_terminal(ctx),
             Cmd::Snippets => self.show_snippets(ctx),
             Cmd::NewSnippet => self.new_snippet(),
             Cmd::ShowCompletions => {

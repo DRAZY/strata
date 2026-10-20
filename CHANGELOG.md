@@ -6,6 +6,20 @@ All notable changes to Strata are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Terminal: ⌘-click (Ctrl+click on Windows and Linux) a file location in the
+  output to open the file at that line and column. Hold the key and point to
+  see the location underlined. Works with `path:line:col`, `path(line,col)`
+  (MSVC, C#, TypeScript), Rust errors and panics, Python tracebacks and Node
+  stack traces, including locations that wrap onto the next row. Relative
+  paths are found in the shell's current folder, then the side bar folders;
+  only files that exist are links.
+- **Send to Terminal** (Tools menu; ⌃↩ on macOS, Ctrl+Alt+Enter elsewhere)
+  sends the selection, or the current line, to the terminal and presses
+  Enter, starting a terminal if none is running. Multi-line text goes as one
+  bracketed paste when the shell or REPL supports it.
+
 ## [1.0.2] - 2026-10-15
 
 ### Changed

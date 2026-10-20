@@ -351,6 +351,31 @@ pub struct Terminal {
     /// (left, middle, right), and the cell last reported, for drag/motion.
     mouse_down: [bool; 3],
     mouse_cell: Option<(usize, usize)>,
+    /// The folder the shell started in.
+    cwd: PathBuf,
+    started: std::time::Instant,
+    /// Send to Terminal text waiting for a shell that's still starting.
+    pending_send: Vec<String>,
+    /// The file location under the pointer while ⌘ (Ctrl) is held.
+    link: Option<Link>,
+    /// The last logical line searched for locations, and what they resolved to.
+    link_cache: Option<LineLinks>,
+}
+
+/// A logical line's text and the locations in it, with the files they name.
+type LineLinks = (String, Vec<(crate::build::TextLocation, Option<PathBuf>)>);
+
+/// Part of a link on one row: (grid line, first column, column after the last).
+type LinkRow = (Line, usize, usize);
+
+/// A clickable file location in the output.
+#[derive(Debug)]
+struct Link {
+    /// The cells it covers, a row at a time.
+    rows: Vec<LinkRow>,
+    path: PathBuf,
+    line: usize,
+    col: usize,
 }
 
 /// The user's shell: $SHELL, else zsh, else sh (PowerShell, else COMSPEC, on Windows).
@@ -414,7 +439,8 @@ impl Terminal {
             #[cfg(unix)]
             pid,
             title: None, shell_name, exited: false, size, cell: (8.0, 16.0), scroll_acc: 0.0, bell: f64::NEG_INFINITY, focused: false,
-            preedit: String::new(), mouse_down: [false; 3], mouse_cell: None })
+            preedit: String::new(), mouse_down: [false; 3], mouse_cell: None,
+            cwd: cwd.to_owned(), started: std::time::Instant::now(), pending_send: Vec::new(), link: None, link_cache: None })
     }
 
     pub fn title(&self) -> &str {
@@ -491,6 +517,58 @@ impl Terminal {
                 TermEvent::Wakeup | TermEvent::MouseCursorDirty | TermEvent::CursorBlinkingChange => {}
             }
         }
+        if !self.pending_send.is_empty() {
+            if self.ready_for_input() {
+                for text in std::mem::take(&mut self.pending_send) {
+                    self.send_now(&text);
+                }
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+
+    /// Shells that use bracketed paste turn it on when their prompt is ready;
+    /// text sent sooner is echoed by the PTY before the shell's line editor
+    /// starts, and its lines run one by one.
+    fn ready_for_input(&self) -> bool {
+        self.started.elapsed() > SHELL_START_WAIT || self.term.lock().mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
+    /// Send to Terminal: `text` as a paste, then Enter, so a multi-line
+    /// selection runs as one input in shells and REPLs that bracket pastes.
+    pub fn send(&mut self, text: &str) {
+        if !self.pending_send.is_empty() || !self.ready_for_input() {
+            self.pending_send.push(text.to_owned());
+        } else {
+            self.send_now(text);
+        }
+    }
+
+    fn send_now(&self, text: &str) {
+        let text = text.trim_end_matches(['\r', '\n']);
+        if !text.is_empty() {
+            self.paste(text);
+        }
+        self.type_bytes(b"\r".to_vec());
+    }
+
+    /// The shell's current folder (after any `cd`), else where it started.
+    /// The kernel gives it with symbolic links resolved (`/private/var` for
+    /// `/var` on macOS); inside where the shell started or one of `roots` it's
+    /// spelled their way, so opened files match the tabs and side bar.
+    fn shell_dir(&self, roots: &[PathBuf]) -> PathBuf {
+        #[cfg(unix)]
+        if let Some(dir) = process_dir(self.pid) {
+            for base in std::iter::once(&self.cwd).chain(roots) {
+                if let Some(rest) = base.canonicalize().ok().and_then(|c| dir.strip_prefix(c).ok().map(Path::to_path_buf)) {
+                    return if rest.as_os_str().is_empty() { base.clone() } else { base.join(rest) };
+                }
+            }
+            return dir;
+        }
+        let _ = roots;
+        self.cwd.clone()
     }
 
     /// The visible screen as text, one line per row.
@@ -555,6 +633,36 @@ impl Terminal {
     }
 }
 
+/// How long Send to Terminal waits for a new shell to turn on bracketed paste.
+const SHELL_START_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// A process's current folder, from the kernel: shells don't report `cd`
+/// unless configured to (OSC 7), and the emulator ignores that anyway.
+#[cfg(target_os = "macos")]
+fn process_dir(pid: u32) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    unsafe extern "C" {
+        fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut std::ffi::c_void, size: i32) -> i32;
+    }
+    const PROC_PIDVNODEPATHINFO: i32 = 9;
+    // struct proc_vnodepathinfo: the current and root folders, each a
+    // vnode_info (152 bytes) followed by a MAXPATHLEN (1024) path.
+    const VNODE_INFO: usize = 152;
+    let mut buf = vec![0u8; 2 * (VNODE_INFO + 1024)];
+    let n = unsafe { proc_pidinfo(pid as i32, PROC_PIDVNODEPATHINFO, 0, buf.as_mut_ptr().cast(), buf.len() as i32) };
+    if n as usize != buf.len() {
+        return None;
+    }
+    let path = &buf[VNODE_INFO..VNODE_INFO + 1024];
+    let end = path.iter().position(|&b| b == 0)?;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&path[..end]))).filter(|p| p.is_absolute())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn process_dir(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
 #[cfg(unix)]
 fn hang_up(pid: u32) {
     unsafe extern "C" {
@@ -594,6 +702,12 @@ impl Terminal {
 
     pub fn cell_size(&self) -> (f32, f32) {
         self.cell
+    }
+
+    /// The underlined location: its file, line, column, and the cells it covers.
+    #[cfg(test)]
+    pub fn hovered_link(&self) -> Option<(&Path, usize, usize, &[LinkRow])> {
+        self.link.as_ref().map(|l| (l.path.as_path(), l.line, l.col, l.rows.as_slice()))
     }
 }
 
@@ -635,6 +749,8 @@ pub enum PanelAction {
     Hide,
     /// The panel needs a new shell (the "+" button).
     NewTab,
+    /// Open a file at a 0-based line and column (a ⌘- or Ctrl-clicked location).
+    Open(PathBuf, usize, usize),
 }
 
 pub struct Panel {
@@ -655,6 +771,9 @@ pub struct Panel {
     pub clipboard: Clipboard,
     /// What they did or tried since the app last looked (it clears this).
     pub clipboard_use: ClipboardUse,
+    /// The side bar folders, where relative paths in the output are looked
+    /// for when they aren't in the shell's folder.
+    pub roots: Vec<PathBuf>,
 }
 
 /// OSC 52 permissions (`terminal_allow_clipboard_read` / `_write`).
@@ -706,6 +825,7 @@ impl Panel {
             clipboard: Clipboard { read: false, write: true },
             clipboard_use: ClipboardUse::default(),
             option_as_meta: !MAC,
+            roots: Vec::new(),
         }
     }
 
@@ -729,6 +849,10 @@ impl Panel {
 
     pub fn active_terminal(&self) -> Option<&Terminal> {
         self.tabs.get(self.active)
+    }
+
+    pub fn active_terminal_mut(&mut self) -> Option<&mut Terminal> {
+        self.tabs.get_mut(self.active)
     }
 
     /// The active terminal has selected text.
@@ -896,9 +1020,15 @@ impl Panel {
         } else {
             t.preedit.clear();
         }
+        if let Some(open) = links(ui, t, &resp, area.min, cell, &self.roots) {
+            action = Some(open);
+        }
         if mouse(ui, t, &resp, area.min, cell) {
             // The program took the right-click: no context menu this time.
             self.body = None;
+        }
+        if t.link.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         let cursor = paint(ui, t, theme, &font, area.min, cell, focused);
         if focused && let Some(cursor_rect) = cursor {
@@ -1007,6 +1137,127 @@ pub fn mouse_report(mode: TermMode, button: u8, action: MouseAction, m: Modifier
         }
     }
     Some(out)
+}
+
+/// The modifier that makes file locations clickable: ⌘ on macOS, Ctrl elsewhere.
+fn link_modifier(m: Modifiers) -> bool {
+    if MAC { m.mac_cmd } else { m.ctrl }
+}
+
+/// The cell under `p`, as a grid point (scrollback lines are negative).
+fn grid_point(t: &Terminal, p: egui::Pos2, origin: egui::Pos2, cell: (f32, f32), offset: usize) -> Option<Point> {
+    let (x, y) = ((p.x - origin.x) / cell.0, (p.y - origin.y) / cell.1);
+    if x < 0.0 || y < 0.0 || x >= t.size.cols as f32 || y >= t.size.rows as f32 {
+        return None;
+    }
+    Some(Point::new(Line(y as i32 - offset as i32), Column(x as usize)))
+}
+
+/// How many rows above and below the pointer a wrapped line is followed.
+const MAX_WRAPPED_ROWS: i32 = 40;
+
+/// The logical line through grid line `line`: the rows the program wrote as
+/// one line, joined where the terminal wrapped them, with the grid point of
+/// each character (by byte offset). Trailing blanks are left out.
+fn logical_line<L: EventListener>(term: &Term<L>, line: Line) -> (String, Vec<(usize, Point)>) {
+    let grid = term.grid();
+    let (top, bottom, last_col) = (grid.topmost_line(), grid.bottommost_line(), grid.last_column());
+    let wraps = |l: Line| grid[l][last_col].flags.contains(Flags::WRAPLINE);
+    let (mut first, mut last) = (line, line);
+    // A huge wrapped line (minified code, say) is only searched near the
+    // pointer, so holding the modifier over it stays cheap.
+    while first > top && wraps(first - 1) && line.0 - first.0 < MAX_WRAPPED_ROWS {
+        first -= 1;
+    }
+    while last < bottom && wraps(last) && last.0 - line.0 < MAX_WRAPPED_ROWS {
+        last += 1;
+    }
+    let mut text = String::new();
+    let mut at = Vec::new();
+    for l in first.0..=last.0 {
+        let row = &grid[Line(l)];
+        for c in 0..=last_col.0 {
+            let cell = &row[Column(c)];
+            if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                continue;
+            }
+            at.push((text.len(), Point::new(Line(l), Column(c))));
+            text.push(if cell.c == '\t' { ' ' } else { cell.c });
+        }
+    }
+    text.truncate(text.trim_end().len());
+    at.retain(|&(b, _)| b < text.len());
+    (text, at)
+}
+
+/// The file `file` (as printed) names: absolute, or the first of `bases`
+/// holding it. Folders and files that don't exist give `None`.
+pub fn resolve_file(file: &str, bases: &[PathBuf]) -> Option<PathBuf> {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+    let path = match (file.strip_prefix("~/").or_else(|| file.strip_prefix("~\\")), home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(file),
+    };
+    if path.is_absolute() {
+        return Some(crate::build::normalize(&path)).filter(|p| p.is_file());
+    }
+    bases.iter().map(|b| crate::build::normalize(&b.join(&path))).find(|p| p.is_file())
+}
+
+/// The clickable location at grid point `p`, if any: found in its logical
+/// line and resolved against the shell's folder, where it started, then the
+/// side bar folders. The last line's results are kept, so holding the
+/// modifier over the same line doesn't touch the disk every frame.
+fn link_at(t: &mut Terminal, p: Point, roots: &[PathBuf]) -> Option<Link> {
+    let (text, at, p) = {
+        let term = t.term.lock();
+        // The right half of a wide character belongs to the character.
+        let p = if term.grid()[p].flags.contains(Flags::WIDE_CHAR_SPACER) { Point::new(p.line, Column(p.column.0.saturating_sub(1))) } else { p };
+        let (text, at) = logical_line(&term, p.line);
+        (text, at, p)
+    };
+    let byte = at.iter().find(|(_, q)| *q == p)?.0;
+    if t.link_cache.as_ref().is_none_or(|(cached, _)| *cached != text) {
+        let mut bases = vec![t.shell_dir(roots), t.cwd.clone()];
+        bases.dedup();
+        bases.extend(roots.iter().cloned());
+        let found = crate::build::find_locations(&text).into_iter().map(|l| {
+            let path = resolve_file(&l.file, &bases);
+            (l, path)
+        });
+        t.link_cache = Some((text.clone(), found.collect()));
+    }
+    let (_, found) = t.link_cache.as_ref()?;
+    let (loc, path) = found.iter().find(|(l, _)| l.span.contains(&byte))?;
+    let mut rows: Vec<LinkRow> = Vec::new();
+    for &(_, q) in at.iter().filter(|(b, _)| loc.span.contains(b)) {
+        match rows.last_mut() {
+            Some(r) if r.0 == q.line => r.2 = q.column.0 + 1,
+            _ => rows.push((q.line, q.column.0, q.column.0 + 1)),
+        }
+    }
+    Some(Link { rows, path: path.clone()?, line: loc.line, col: loc.col })
+}
+
+/// ⌘-hover (Ctrl elsewhere) underlines a file location; clicking it opens
+/// the file. Not while a program is using the mouse (unless Shift is held,
+/// as for selecting), since the click is the program's then.
+fn links(ui: &egui::Ui, t: &mut Terminal, resp: &egui::Response, origin: egui::Pos2, cell: (f32, f32), roots: &[PathBuf]) -> Option<PanelAction> {
+    let mods = ui.input(|i| i.modifiers);
+    let (mode, offset) = {
+        let term = t.term.lock();
+        (*term.mode(), term.grid().display_offset())
+    };
+    let reporting = mode.intersects(TermMode::MOUSE_MODE) && !mods.shift;
+    let point = resp.hover_pos().filter(|_| link_modifier(mods) && !reporting).and_then(|p| grid_point(t, p, origin, cell, offset));
+    let Some(point) = point else {
+        t.link = None;
+        t.link_cache = None;
+        return None;
+    };
+    t.link = link_at(t, point, roots);
+    let link = t.link.as_ref()?;
+    resp.clicked().then(|| PanelAction::Open(link.path.clone(), link.line, link.col))
 }
 
 /// Selection, focus clicks, mouse reporting and the scroll wheel. Returns
@@ -1238,7 +1489,10 @@ fn text_runs(line: &[Cell]) -> Vec<Run> {
 /// the cursor and any text being composed. Returns the cursor's rect.
 fn paint(ui: &egui::Ui, t: &Terminal, theme: &Theme, font: &FontId, origin: egui::Pos2, cell: (f32, f32), focused: bool) -> Option<Rect> {
     let (cols, rows) = (t.size.cols, t.size.rows);
-    let (mut grid, cursor_cell, cursor_shape) = screen_cells(&t.term.lock(), theme, cols, rows);
+    let term = t.term.lock();
+    let (mut grid, cursor_cell, cursor_shape) = screen_cells(&term, theme, cols, rows);
+    let offset = term.grid().display_offset() as i32;
+    drop(term);
     let painter = ui.painter();
     let x_of = |col: usize| origin.x + col as f32 * cell.0;
     let y_of = |row: usize| origin.y + row as f32 * cell.1;
@@ -1286,6 +1540,14 @@ fn paint(ui: &egui::Ui, t: &Terminal, theme: &Theme, font: &FontId, origin: egui
                 painter.galley(pos + vec2(0.6, 0.0), galley.clone(), c.fg);
             }
             painter.galley(pos, galley, c.fg);
+        }
+    }
+    for &(line, from, to) in t.link.iter().flat_map(|l| &l.rows) {
+        let Ok(row) = usize::try_from(line.0 + offset) else { continue };
+        if row < rows {
+            let fg = grid[row * cols + from.min(cols - 1)].fg;
+            let y = y_of(row) + cell.1 - 1.0;
+            painter.line_segment([pos2(x_of(from), y), pos2(x_of(to.min(cols)), y)], Stroke::new(1.0, fg));
         }
     }
 
@@ -1679,5 +1941,82 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(closed && panel.tabs.is_empty() && !panel.visible);
+    }
+
+    /// An emulator `cols` wide that has been fed `bytes`.
+    fn term_with(bytes: &[u8], cols: usize, rows: usize) -> Term<alacritty_terminal::event::VoidListener> {
+        let mut term = Term::new(Config::default(), &Size { cols, rows }, alacritty_terminal::event::VoidListener);
+        let mut parser: alacritty_terminal::vte::ansi::Processor = alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut term, bytes);
+        term
+    }
+
+    #[test]
+    fn wrapped_lines_are_joined_for_locations() {
+        // 20 columns: the path wraps after "src/very/long/pa" and again.
+        let term = term_with(b"$ cargo test\r\nerror at src/very/long/path/name.rs:42:7 here\r\nnext line\r\n", 20, 6);
+        for row in 1..=3 {
+            let (text, at) = logical_line(&term, Line(row));
+            assert_eq!(text, "error at src/very/long/path/name.rs:42:7 here", "from row {row}");
+            assert_eq!(at.len(), text.chars().count());
+            assert_eq!(at[20].1, Point::new(Line(2), Column(0)), "the 21st character starts the second row");
+        }
+        assert_eq!(logical_line(&term, Line(0)).0, "$ cargo test");
+        assert_eq!(logical_line(&term, Line(4)).0, "next line");
+        let locs = crate::build::find_locations(&logical_line(&term, Line(2)).0);
+        assert_eq!(locs.len(), 1);
+        assert_eq!((locs[0].file.as_str(), locs[0].line, locs[0].col), ("src/very/long/path/name.rs", 41, 6));
+        // A line that merely fills the row exactly isn't joined to the next one.
+        let term = term_with(b"12345678901234567890\r\nsrc/a.rs:1\r\n", 20, 4);
+        assert_eq!(logical_line(&term, Line(0)).0, "12345678901234567890");
+        assert_eq!(logical_line(&term, Line(1)).0, "src/a.rs:1");
+    }
+
+    #[test]
+    fn wide_characters_map_to_their_cells() {
+        let term = term_with("中文 x.rs:3".as_bytes(), 20, 2);
+        let (text, at) = logical_line(&term, Line(0));
+        assert_eq!(text, "中文 x.rs:3");
+        // 中 and 文 take two cells each, so x is in column 5.
+        let x = text.find('x').unwrap();
+        assert_eq!(at.iter().find(|(b, _)| *b == x).unwrap().1.column, Column(5));
+    }
+
+    #[test]
+    fn only_files_that_exist_resolve() {
+        let dir = std::env::temp_dir().join(format!("strata-term-links-{}", std::process::id()));
+        let project = dir.join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(dir.join("top.py"), "x = 1\n").unwrap();
+        let bases = [dir.clone(), project.clone()];
+        assert_eq!(resolve_file("top.py", &bases), Some(dir.join("top.py")), "the shell's folder first");
+        assert_eq!(resolve_file("src/main.rs", &bases), Some(project.join("src/main.rs")), "then the project folders");
+        assert_eq!(resolve_file("./src/../src/main.rs", &bases), Some(project.join("src/main.rs")));
+        let abs = project.join("src/main.rs");
+        assert_eq!(resolve_file(abs.to_str().unwrap(), &[]), Some(abs.clone()));
+        assert_eq!(resolve_file("src/missing.rs", &bases), None, "files that don't exist aren't links");
+        assert_eq!(resolve_file("src", &bases), None, "nor are folders");
+        assert_eq!(resolve_file("12", &bases), None, "nor a time like 12:30:45");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_shells_folder_follows_cd() {
+        let dir = std::env::temp_dir().join(format!("strata-term-cd-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        // `exec` keeps the pid: the shell itself changes folder.
+        let shell = ("/bin/sh".to_owned(), vec!["-c".to_owned(), "cd sub && echo MOVED && exec sleep 10".to_owned()]);
+        let t = Terminal::spawn(None, &dir, Some(shell), 40, 5).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !t.screen_text().contains("MOVED") && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let canon = |p: PathBuf| p.canonicalize().unwrap();
+        assert_eq!(canon(t.shell_dir(&[])), canon(dir.join("sub")));
+        assert_eq!(t.shell_dir(&[]), dir.join("sub"), "spelled as the folder it started in");
+        drop(t);
+        std::fs::remove_dir_all(dir).ok();
     }
 }
