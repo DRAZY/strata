@@ -12,7 +12,7 @@ use crate::commands::Cmd;
 use crate::editor::Marker;
 use crate::lsp::edit::{self, FileEdit};
 use crate::lsp::position::{self, Encoding, Pos};
-use crate::lsp::server::{Diagnostic, Pending, Reply};
+use crate::lsp::server::{Diagnostic, Pending, Reply, RpcError};
 use crate::lsp::{Hub, State, Trust, uri};
 use egui::{Color32, Key, Pos2, Rect, vec2};
 use serde_json::{Value, json};
@@ -64,12 +64,18 @@ type LineTexts = Vec<(usize, String)>;
 struct Asked<T> {
     pending: Pending,
     what: T,
+    /// `Hub::handoffs` when asked: an answer from before a document passed
+    /// to another tab (maybe with other text) is void.
+    epoch: u64,
 }
 
 /// Take a request's answer once it has come.
-fn answered<T>(slot: &mut Option<Asked<T>>) -> Option<(T, Reply)> {
+fn answered<T>(slot: &mut Option<Asked<T>>, epoch: u64) -> Option<(T, Reply)> {
     let reply = slot.as_mut()?.pending.poll()?;
-    slot.take().map(|a| (a.what, reply))
+    slot.take().map(|a| {
+        let reply = if a.epoch == epoch { reply } else { Err(RpcError { code: -32801, message: "the file changed while the server worked; try again".into() }) };
+        (a.what, reply)
+    })
 }
 
 struct CompletionFor {
@@ -435,21 +441,22 @@ impl StrataApp {
 
     /// Answers that came in since last frame.
     fn lsp_answers(&mut self, ctx: &egui::Context) {
+        let epoch = self.lsp.hub.borrow().handoffs();
         // Before a new rename answer, so its files are read on a later frame.
         self.lsp_applied();
-        if let Some((what, reply)) = answered(&mut self.lsp.completion) {
+        if let Some((what, reply)) = answered(&mut self.lsp.completion, epoch) {
             self.lsp_completion_answer(what, reply);
         }
-        if let Some((i, reply)) = answered(&mut self.lsp.resolve) {
+        if let Some((i, reply)) = answered(&mut self.lsp.resolve, epoch) {
             match reply {
                 Ok(v) => self.completion.resolved(i, &v),
                 Err(_) => self.completion.mark_resolved(i),
             }
         }
-        if let Some((what, reply)) = answered(&mut self.lsp.goto) {
+        if let Some((what, reply)) = answered(&mut self.lsp.goto, epoch) {
             self.lsp_goto_answer(ctx, what, reply);
         }
-        if let Some((what, reply)) = answered(&mut self.lsp.rename) {
+        if let Some((what, reply)) = answered(&mut self.lsp.rename, epoch) {
             match reply.map_err(|e| e.message).and_then(|v| edit::workspace_edit(&v)).map(|files| self.client_files(files)) {
                 Ok(files) if files.iter().all(|f| f.edits.is_empty()) => self.status = "Nothing to rename here".into(),
                 Ok(files) => match self.lsp_apply_workspace_edit(files, what.enc, Some(&what.texts)) {
@@ -459,10 +466,10 @@ impl StrataApp {
                 Err(e) => self.status = format!("Couldn't rename: {e}"),
             }
         }
-        if let Some((what, reply)) = answered(&mut self.lsp.format) {
+        if let Some((what, reply)) = answered(&mut self.lsp.format, epoch) {
             self.lsp_format_answer(what, reply);
         }
-        if let Some((at, reply)) = answered(&mut self.lsp.hover.pending) {
+        if let Some((at, reply)) = answered(&mut self.lsp.hover.pending, epoch) {
             if let Ok(v) = reply
                 && let Some(text) = hover_markdown(&v)
             {
@@ -490,7 +497,7 @@ impl StrataApp {
             self.lsp.labels = None;
             self.palette.update_choices(labels);
         }
-        if let Some(((view, line), reply)) = answered(&mut self.lsp.signature) {
+        if let Some(((view, line), reply)) = answered(&mut self.lsp.signature, epoch) {
             self.lsp_signature_answer(view, line, reply);
         }
         // The highlighted completion's details, asked for once.
@@ -499,7 +506,7 @@ impl StrataApp {
         {
             let resolves = self.docs[self.active].path.as_ref().and_then(|p| self.lsp.hub.borrow().server_for(self.lsp.window, p).map(|(s, _)| s.caps().resolves_completions()));
             match resolves {
-                Some(true) => self.lsp.resolve = self.lsp_request(self.active, "completionItem/resolve", raw).map(|pending| Asked { pending, what: k }),
+                Some(true) => self.lsp.resolve = self.lsp_request(self.active, "completionItem/resolve", raw).map(|pending| Asked { epoch: self.lsp.hub.borrow().handoffs(), pending, what: k }),
                 _ => self.completion.mark_resolved(k),
             }
         }
@@ -553,7 +560,7 @@ impl StrataApp {
         params["context"] = context;
         let view = d.view.id;
         if let Some(pending) = self.lsp_request(i, "textDocument/completion", params) {
-            self.lsp.completion = Some(Asked { pending, what: CompletionFor { view, start } });
+            self.lsp.completion = Some(Asked { epoch: self.lsp.hub.borrow().handoffs(), pending, what: CompletionFor { view, start } });
         }
     }
 
@@ -680,7 +687,7 @@ impl StrataApp {
         let params = self.lsp_position(i, &path, head, enc);
         let view = d.view.id;
         if let Some(pending) = self.lsp_request(i, "textDocument/signatureHelp", params) {
-            self.lsp.signature = Some(Asked { pending, what: (view, line) });
+            self.lsp.signature = Some(Asked { epoch: self.lsp.hub.borrow().handoffs(), pending, what: (view, line) });
         }
     }
 
@@ -778,7 +785,7 @@ impl StrataApp {
         };
         let word = self.word_at_cursor().unwrap_or_default();
         let Some(pending) = self.lsp_request(i, method, params) else { return false };
-        self.lsp.goto = Some(Asked { pending, what: GotoFor { definition, enc, word } });
+        self.lsp.goto = Some(Asked { epoch: self.lsp.hub.borrow().handoffs(), pending, what: GotoFor { definition, enc, word } });
         true
     }
 
@@ -894,7 +901,7 @@ impl StrataApp {
         let params = self.lsp_position(i, &path, at.at, enc);
         match self.lsp_request(i, "textDocument/hover", params) {
             Some(pending) => {
-                self.lsp.hover.pending = Some(Asked { pending, what: at.clone() });
+                self.lsp.hover.pending = Some(Asked { epoch: self.lsp.hub.borrow().handoffs(), pending, what: at.clone() });
                 true
             }
             None => false,
@@ -931,7 +938,7 @@ impl StrataApp {
         // The text of every open file now: an answer is only good for that text.
         let texts = self.open_texts();
         if let Some(pending) = self.lsp_request(i, "textDocument/rename", params) {
-            self.lsp.rename = Some(Asked { pending, what: RenameFor { enc, texts } });
+            self.lsp.rename = Some(Asked { epoch: self.lsp.hub.borrow().handoffs(), pending, what: RenameFor { enc, texts } });
             self.status = format!("Renaming {} to {name}…", b.old);
         }
     }
@@ -1110,7 +1117,7 @@ impl StrataApp {
         let what = FormatFor { view: d.view.id, version: d.editor.version(), enc };
         let params = json!({"textDocument": {"uri": uri::from_path(&self.lsp.hub.borrow().server_path(&path))}, "options": options});
         if let Some(pending) = self.lsp_request(i, "textDocument/formatting", params) {
-            self.lsp.format = Some(Asked { pending, what });
+            self.lsp.format = Some(Asked { epoch: self.lsp.hub.borrow().handoffs(), pending, what });
         }
     }
 
@@ -2040,6 +2047,58 @@ mod tests {
         assert_eq!(b.editor.buffer.line_text(0), "use new;");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn an_answer_for_a_tab_that_closed_never_lands_on_the_tab_taking_over() {
+        let base = temp_dir("lsp-handoff");
+        let real = base.join("d");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("x.fake"), "old = 1;\n").unwrap();
+        std::os::unix::fs::symlink(&real, base.join("a1")).unwrap();
+        std::os::unix::fs::symlink(&real, base.join("a2")).unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(None, None);
+        app.lsp.hub.borrow_mut().use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        app.settings.lsp_trust_all = true;
+        app.open_path(base.join("a2/x.fake"), false);
+        app.open_path(base.join("a1/x.fake"), false);
+        // The two tabs differ: the second one has unsaved lines above.
+        let i2 = app.docs.iter().position(|d| d.path.as_deref() == Some(base.join("a2/x.fake").as_path())).unwrap();
+        // a2 opened first, so it speaks for the file; make it the one renaming.
+        app.activate(i2);
+        wait(&mut app, &ctx, "ready", |a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+        let i1 = app.docs.iter().position(|d| d.path.as_deref() == Some(base.join("a1/x.fake").as_path())).unwrap();
+        app.docs[i1].editor.insert_text("// a1 only\n// more\n");
+        rename(&mut app, &ctx, 1, "new");
+        // The tab that asked closes before the answer: a1 takes over.
+        let i2 = app.active;
+        app.close_tab(i2);
+        wait(&mut app, &ctx, "the answer", |a| a.lsp.rename.is_none() && a.lsp.applying.is_none());
+        let a1 = app.docs.iter().find(|d| d.path.as_deref() == Some(base.join("a1/x.fake").as_path())).unwrap();
+        assert_eq!(a1.editor.buffer.slice(0..a1.editor.buffer.len_chars()), "// a1 only\n// more\nold = 1;\n", "nothing applied: {}", app.status);
+        assert!(app.status.contains("changed"), "{}", app.status);
+    }
+
+    #[test]
+    fn saving_doesnt_lose_track_of_which_file_a_tab_is() {
+        let (mut app, ctx, dir) = app_with("rename-after-save", &[("a.fake", "old = 1;\n")], json!({"shout_paths": true}));
+        if !dir.join("A.FAKE").exists() {
+            return; // A case-sensitive file system: covered by the hub's hard-link test.
+        }
+        wait(&mut app, &ctx, "ready", |a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+        // A save renames a new file over the old one: a new identity.
+        app.doc().editor.insert_text("// saved\n");
+        app.save(0, false);
+        frame(&mut app, &ctx, vec![]);
+        put_cursor(&mut app, 0);
+        app.doc().editor.insert_text("// unsaved\n");
+        frame(&mut app, &ctx, vec![]);
+        rename(&mut app, &ctx, 21, "new");
+        wait(&mut app, &ctx, "the rename", |a| a.lsp.rename.is_none() && a.lsp.applying.is_none());
+        assert_eq!(app.docs.len(), 1, "no second tab: {}", app.status);
+        assert_eq!(text(&app), "// unsaved\n// saved\nnew = 1;\n");
+    }
+
     #[test]
     fn a_differently_cased_path_from_the_server_finds_the_open_tab() {
         let (mut app, ctx, dir) = app_with("rename-case", &[("a.fake", "old = 1;\n")], json!({"shout_paths": true}));
@@ -2251,6 +2310,30 @@ mod tests {
         app.run(&ctx, Cmd::LspFormat);
         wait_long(&mut app, &ctx, 60, "formatting", &|a| a.docs[i].editor.buffer.slice(0..a.docs[i].editor.buffer.len_chars()).contains("pub fn messy(x: i32) -> i32 {"));
         shoot(&mut app, &ctx, "8-formatted");
+
+        // Save (a new file renamed over the old), then rename again: the
+        // saved tab and the unsaved one are both still found.
+        #[cfg(unix)]
+        let inode = |p: &Path| std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(p).unwrap());
+        #[cfg(unix)]
+        let before = inode(&dir.join("src/util.rs"));
+        app.activate(i);
+        assert!(app.save(i, false), "{}", app.status);
+        #[cfg(unix)]
+        assert_ne!(inode(&dir.join("src/util.rs")), before, "the save replaced the file");
+        frame(&mut app, &ctx, vec![]);
+        let at = find(&app, "sum_numbers");
+        put_cursor(&mut app, at + 1);
+        frame(&mut app, &ctx, vec![]);
+        app.run(&ctx, Cmd::LspRename);
+        frame(&mut app, &ctx, vec![]);
+        frame(&mut app, &ctx, vec![Event::Text("total_of".into())]);
+        frame(&mut app, &ctx, vec![press(egui::Key::Enter, Modifiers::NONE)]);
+        let main = app.docs.iter().position(|d| d.path.as_ref().is_some_and(|p| p.ends_with("main.rs"))).unwrap();
+        wait_long(&mut app, &ctx, 60, "the rename after saving", &|a| a.docs[main].editor.buffer.line_text(3).contains("util::total_of") && a.docs[i].editor.buffer.line_text(1).contains("fn total_of"));
+        assert_eq!(app.docs.len(), 2, "no duplicate tabs: {}", app.status);
+        eprintln!("rename after save: {}", app.status);
+        shoot(&mut app, &ctx, "8b-renamed-after-save");
 
         // clangd, when installed: a C file with an error.
         if crate::lsp::config::find_executable("clangd", &crate::build::augmented_path().or_else(|| std::env::var_os("PATH")).unwrap_or_default()).is_some() {

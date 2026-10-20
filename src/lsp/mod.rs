@@ -338,7 +338,11 @@ mod tests {
         // The first tab speaks for the file; the second has no server of its own.
         assert!(hub.server_for(1, &t2).is_none());
         // Closing the first hands the document to the second; the server keeps it.
+        let before = hub.handoffs();
         hub.end_frame(1, std::slice::from_ref(&t2));
+        assert_eq!(hub.handoffs(), before + 1, "answers asked for by the first tab are void");
+        assert!(hub.server_for(1, &t2).is_none(), "nothing for the new tab until its text has gone out");
+        hub.sync(1, &t2, (2, 0), || Rope::from_str("thing\n"), None, &[]);
         assert!(hover_text(&hub, 1, &t2, 1).unwrap().contains("opens=1"), "not closed and opened again");
         hub.end_frame(1, &[]);
         assert!(hub.server_for(1, &t2).is_none());
@@ -364,8 +368,59 @@ mod tests {
         assert_eq!(hub.client_path(2, &std::fs::canonicalize(&t2).unwrap()), uri::normalize(&t2), "each window gets its own tab's name");
         assert_eq!(hub.client_path(1, &std::fs::canonicalize(&t2).unwrap()), uri::normalize(&t1));
         hub.forget_window(1);
+        hub.sync(2, &t2, (2, 0), || Rope::from_str("thing\n"), None, &[]);
         assert!(hover_text(&hub, 2, &t2, 1).unwrap().contains("opens=1"));
         std::fs::remove_dir_all(base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hard_links_to_one_file_are_one_document() {
+        let dir = scratch("hard-link");
+        std::fs::write(dir.join("a.fake"), "thing\n").unwrap();
+        std::fs::hard_link(dir.join("a.fake"), dir.join("b.fake")).unwrap();
+        let (a, b) = (dir.join("a.fake"), dir.join("b.fake"));
+        let mut hub = Hub::new(false);
+        hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        hub.sync(1, &a, (1, 0), || Rope::from_str("thing\n"), None, &[]);
+        hub.sync(1, &b, (2, 0), || Rope::from_str("thing\n"), None, &[]);
+        until("ready", || hub.server_for(1, &a).map(|_| ()));
+        assert!(hover_text(&hub, 1, &a, 1).unwrap().contains("opens=1"), "one document for both names");
+        assert!(hub.server_for(1, &b).is_none(), "the second name follows the first");
+        assert_eq!(hub.server_path(&b), hub.server_path(&a));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Replace `path` as an atomic save does (Strata's, for a file with one
+    /// name): a new file renamed over it, so a new inode.
+    fn save_atomically(path: &Path, text: &str) {
+        let tmp = path.with_extension("tmp-save");
+        std::fs::write(&tmp, text).unwrap();
+        std::fs::rename(&tmp, path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_is_checked_fresh_after_a_save_replaces_the_file() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = scratch("identity-fresh");
+        let x = dir.join("x.fake");
+        std::fs::write(&x, "thing\n").unwrap();
+        // Another name keeps the file's first inode alive after the save.
+        std::fs::hard_link(&x, dir.join("old-inode.fake")).unwrap();
+        let first = std::fs::metadata(&x).unwrap().ino();
+        let mut hub = Hub::new(false);
+        hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        hub.sync(1, &x, (1, 0), || Rope::from_str("thing\n"), None, &[]);
+        save_atomically(&x, "thing\n");
+        assert_ne!(std::fs::metadata(&x).unwrap().ino(), first, "the save made a new file");
+        // A path to the old inode is a different file now: it mustn't land on the tab.
+        let stale = std::fs::canonicalize(dir.join("old-inode.fake")).unwrap();
+        assert_eq!(hub.client_path(1, &stale), stale);
+        // And the tab's file is still found by identity under another name for it.
+        std::fs::hard_link(&x, dir.join("new-name.fake")).unwrap();
+        assert_eq!(hub.client_path(1, &dir.join("new-name.fake")), uri::normalize(&x));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
