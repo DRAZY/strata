@@ -134,6 +134,8 @@ struct HoverBox {
     problems: Problems,
     info: Option<String>,
     rect: Option<Rect>,
+    /// The contents grew since the box was last drawn.
+    grow: bool,
 }
 
 #[derive(Default)]
@@ -490,8 +492,11 @@ impl StrataApp {
                     self.status.clear();
                 }
                 match &mut self.lsp.hover.shown {
-                    Some(b) if b.at.view == at.view && b.at.at == at.at => b.info = Some(text),
-                    _ => self.lsp.hover.shown = Some(HoverBox { at, problems: Vec::new(), info: Some(text), rect: None }),
+                    Some(b) if b.at.view == at.view && b.at.at == at.at => {
+                        b.info = Some(text);
+                        b.grow = true;
+                    }
+                    _ => self.lsp.hover.shown = Some(HoverBox { at, problems: Vec::new(), info: Some(text), rect: None, grow: false }),
                 }
             } else if !at.by_mouse && self.lsp.hover.shown.is_none() {
                 self.status = NO_INFO.into();
@@ -915,7 +920,7 @@ impl StrataApp {
         let problems = self.problems_at(i, head);
         let asked = self.lsp_ask_hover(i, &at);
         if !problems.is_empty() {
-            self.lsp.hover.shown = Some(HoverBox { at, problems, info: None, rect: None });
+            self.lsp.hover.shown = Some(HoverBox { at, problems, info: None, rect: None, grow: false });
         } else if !asked {
             self.status = self.lsp_unavailable("Hover information");
         }
@@ -1278,7 +1283,7 @@ impl StrataApp {
         {
             let d = &self.docs[i];
             let at = HoverAt { view, at, word: word_around(&d.editor, at), anchor: caret.left_bottom(), by_mouse: false, key: (d.editor.version(), d.editor.primary().head) };
-            self.lsp.hover.shown = Some(HoverBox { at, problems, info: None, rect: None });
+            self.lsp.hover.shown = Some(HoverBox { at, problems, info: None, rect: None, grow: false });
         }
         self.lsp_trust_notice(ctx);
         self.lsp_mouse_hover(ctx, now);
@@ -1372,7 +1377,7 @@ impl StrataApp {
             self.lsp_ask_hover(i, &at_info);
         }
         if !problems.is_empty() {
-            self.lsp.hover.shown = Some(HoverBox { at: at_info, problems, info: None, rect: None });
+            self.lsp.hover.shown = Some(HoverBox { at: at_info, problems, info: None, rect: None, grow: false });
         }
     }
 
@@ -1388,7 +1393,9 @@ impl StrataApp {
         // Below the spot, or above it near the bottom of the window.
         let below = screen.bottom() - b.at.anchor.y > 220.0;
         let (pivot, at) = if below { (egui::Align2::LEFT_TOP, b.at.anchor + vec2(0.0, 4.0)) } else { (egui::Align2::LEFT_BOTTOM, b.at.anchor - vec2(0.0, size * 1.6 + 6.0)) };
-        let resp = egui::Area::new(egui::Id::new("lsp-hover")).order(egui::Order::Foreground).pivot(pivot).fixed_pos(at).constrain(true).show(ctx, |ui| {
+        // The information arriving under problems already shown: measure again, or the box keeps its old height.
+        let grow = std::mem::take(&mut b.grow);
+        let resp = egui::Area::new(egui::Id::new("lsp-hover")).order(egui::Order::Foreground).pivot(pivot).fixed_pos(at).constrain(true).sizing_pass(grow).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).inner_margin(8.0).show(ui, |ui| {
                 ui.set_max_width(560.0f32.min(screen.width() - 32.0));
                 egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {

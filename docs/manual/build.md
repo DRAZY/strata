@@ -88,6 +88,8 @@ To show or hide the panel, use Tools ▸ Build Results ▸ Show Build Results, V
 
 Output lines that the build system recognizes as a file location, such as `src/main.rs:12:5: error…`, are results. Hover over a result to underline it and see its message, and click it to open the file at that line and column. Relative paths are read from the folder the build ran in.
 
+File locations printed in the [terminal](terminal.md#opening-files-from-the-output) can be opened too, with a ⌘-click (Ctrl+click on Windows and Linux).
+
 To step through results from the keyboard, use Tools ▸ Build Results ▸ Next Result ({{key:next_result}}) and Previous Result ({{key:prev_result}}). Both wrap around, open the file at the result, and highlight the result in the panel.
 
 Each built-in build system recognizes its tools' messages: Rust compiler locations, the `file:line:column: message` style of C compilers, Go and Make, Python tracebacks, Node stack traces, Ruby and bash errors, and TypeScript compiler errors for npm.

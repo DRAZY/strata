@@ -35,6 +35,7 @@ Strata creates most of these only when it needs them.
 | `Syntaxes/` | Your `.sublime-syntax` grammars. See [Languages](languages.md) |
 | `Themes/` | Your `.tmTheme` and `.sublime-color-scheme` color schemes. See [Appearance](appearance.md) |
 | `build_systems/` | Your build systems, as `.json` files. See [Build Systems](build.md) |
+| `lsp_trusted_folders.json` | Folders you chose **Always for This Folder** for, so language servers start there without asking. See [Trusting a project](languages.md#trusting-a-project) |
 
 If the folder's path is very long, the `strata.sock` file goes in a folder only you can open, `strata-<your user id>`, inside `$XDG_RUNTIME_DIR` (Linux) or your system's temporary folder. Strata answers a `strata` command only when it runs as the same user.
 
@@ -207,6 +208,20 @@ Strata stays responsive on files of hundreds of megabytes and on minified files 
 - **The new version didn't start.** Strata puts the previous version back by itself and says so when it opens. What happened is in `update-helper.log` in the [log folder](#logs); please [report it](#report-a-problem).
 
 See [Updates](about.md#updates) for how updates work.
+
+## Language servers
+
+The status bar shows the server for the current file and what it's doing. If there's no server name there:
+
+- **Nothing is installed.** Built-in servers that aren't installed are skipped without a message. Install the server (the commands are in [Built-in servers](languages.md#built-in-servers)), then run **LSP: Restart Language Servers**.
+- **"not started"** means you chose **Not Now** when Strata asked about the folder. Click the status bar to be asked again. See [Trusting a project](languages.md#trusting-a-project).
+- **The feature is off.** Check that `lsp_enabled` isn't `false` and that the server isn't turned off in `lsp_servers`.
+
+A server that keeps stopping is left off after five stops in a few minutes; fix the cause (often the project doesn't build, or the server needs updating), then run **LSP: Restart Language Servers** or click the status bar. Messages about starting and stopping servers are in the [log](#logs).
+
+## Terminal locations aren't underlined
+
+Hold ⌘ (Ctrl on Windows and Linux) while pointing. Only files that exist are links, and relative paths are looked for in the shell's current folder, the folder the terminal started in and the side bar folders. While a program uses the mouse, hold Shift as well. See [Opening files from the output](terminal.md#opening-files-from-the-output).
 
 ## The strata command is missing
 

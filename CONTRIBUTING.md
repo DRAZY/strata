@@ -48,6 +48,27 @@ surrounding code instead of reformatting files.
   appear on the shortcuts page.
 - **Color schemes:** every scheme must meet the contrast requirements.
 
+### Language servers, Review Changes and the terminal
+
+- **Language servers:** the tests use a small fake server in
+  `src/lsp/fake.rs` (the test binary starts itself as the server; see
+  `fake::config`), so `cargo test` needs no real servers. If a test needs a
+  new answer, teach the fake server rather than relying on an installed one.
+  To try real servers, run
+  `STRATA_LSP_REAL=/tmp/lsp cargo test --release lsp_real_servers -- --nocapture`:
+  it drives rust-analyzer (and clangd, when installed) through the window and
+  saves a screenshot of each step in that folder. Add
+  `STRATA_LSP_REPO=<a file in a big Rust project>` to try hover and Go to
+  Definition there too, and `STRATA_LSP_SHOTS=/tmp/lsp` saves screenshots
+  from the popup tests.
+- **Review Changes:** the tests make throwaway Git repositories
+  (`review::tests::temp_repo`) and skip themselves when `git` isn't
+  installed. Moving files to the Trash (`src/claim.rs`) calls a hook between
+  its steps (`trash_listed_with`), so tests can swap a file at the worst
+  moment; use it for new race tests instead of sleeping.
+- **Terminal:** the link and Send to Terminal tests run a real `/bin/sh` (and
+  `python3`, when it's installed).
+
 ## Coding conventions
 
 - Keep changes focused; one topic per pull request.
@@ -82,8 +103,10 @@ STRATA_TERMINAL_SHOTS=/tmp/shots cargo test --release terminal_shots   # termina
 Scenes are saved as PPM; convert with `sips -s format png` (macOS) or
 ImageMagick's `magick`. The README scenes live in
 `src/app/headless/readme_shots.rs` and use sample projects written to a
-temporary folder, so no personal paths appear. Keep README images under
-400 KB each.
+temporary folder, so no personal paths appear; the language server scene uses
+the fake server, so it looks the same on every machine. Keep README images
+under 400 KB each. Look at every image after regenerating them, and if an
+unchanged scene differs only by noise, keep the old file.
 
 ## Pull request checklist
 

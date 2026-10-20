@@ -1,6 +1,6 @@
 # Welcome to Strata
 
-Strata is a fast, open-source editor for code and text. It opens instantly, handles everything from a quick note to a 500 MB log file, and puts every command a keystroke away: multiple cursors, Goto Anything, project-wide search, split panes, a built-in terminal, Markdown preview and more. Your work is saved as you go, so you can quit at any time and pick up exactly where you left off.
+Strata is a fast, open-source editor for code and text. It opens instantly, handles everything from a quick note to a 500 MB log file, and puts every command a keystroke away: multiple cursors, Goto Anything, project-wide search, split panes, a built-in terminal, Markdown preview, language servers and more. Your work is saved as you go, so you can quit at any time and pick up exactly where you left off.
 
 This page walks you through the window, opening and saving files, and the two shortcuts worth learning first. To find out more about Strata itself, see [About Strata](about.md).
 
@@ -123,12 +123,14 @@ See [Find and Replace](find.md) for search, symbols and Go to Definition.
 - [Projects and Side Bar](projects.md): the side bar, project files and recent projects.
 - [Panes, Windows and Tabs](panes.md): split layouts, groups, preview tabs and multiple windows.
 - [Comparing Files](compare.md) and [Printing and Exporting](printing.md).
-- [Terminal](terminal.md), [Build Systems](build.md) and [Git Integration](git.md).
+- [Terminal](terminal.md): shells in a panel, clickable file locations in their output, and Send to Terminal.
+- [Build Systems](build.md) and [Git Integration](git.md).
 - [Review Changes](review.md): review and keep or revert what a coding agent changed.
 - [Markdown Preview](markdown.md): live preview and HTML export.
 - [Appearance](appearance.md) and [Settings](settings.md): make Strata look and behave the way you like.
 - [Keyboard Shortcuts](shortcuts.md) and [Customizing Key Bindings](keybindings.md).
-- [Languages](languages.md) and [Encodings and Line Endings](encodings.md).
+- [Languages](languages.md): syntax highlighting, symbols, and language servers for problems, completions, hover information and rename.
+- [Encodings and Line Endings](encodings.md).
 - [Troubleshooting and FAQ](troubleshooting.md): where Strata keeps its files, crash reports, and common questions.
 - [About Strata](about.md): what Strata is, its license and credits.
 

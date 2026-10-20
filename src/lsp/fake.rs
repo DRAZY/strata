@@ -15,6 +15,12 @@
 //! columns, `"marker"` is the crash marker's path, `"fail_to_start": true`
 //! exits instead of answering `initialize`, `"refuse_init": true` answers
 //! it with an error and keeps running.
+//!
+//! For screenshots it can also say other things: `"problems": [{"find":
+//! text, "severity": n, "message": text, "source": text}]` reports every
+//! occurrence of each `find` instead of `bad` and `meh`, `"completions":
+//! [items]` replaces the usual list, and `"hover": {word: markdown}` answers
+//! hover on those words.
 
 use super::config::ServerConfig;
 use serde_json::{Value, json};
@@ -63,6 +69,10 @@ struct Fake {
     /// Name files in rename answers in upper case (as a server on a
     /// case-insensitive file system may spell them).
     shout: bool,
+    /// Scripted answers, for screenshots (see the module).
+    problems: Option<Vec<Value>>,
+    completions: Option<Vec<Value>>,
+    hover: Option<serde_json::Map<String, Value>>,
 }
 
 fn send(msg: &Value) {
@@ -119,6 +129,9 @@ impl Fake {
                 self.marker = o["marker"].as_str().map(PathBuf::from);
                 self.root = p["rootUri"].as_str().and_then(super::uri::to_path);
                 self.shout = o["shout_paths"].as_bool().unwrap_or(false);
+                self.problems = o["problems"].as_array().cloned();
+                self.completions = o["completions"].as_array().cloned();
+                self.hover = o["hover"].as_object().cloned();
                 reply(json!({"capabilities": {
                     "positionEncoding": if self.utf8 { "utf-8" } else { "utf-16" },
                     "textDocumentSync": {"openClose": true, "change": 2, "save": true},
@@ -160,6 +173,10 @@ impl Fake {
             "textDocument/completion" => reply(json!({"isIncomplete": false, "items": self.completions(p)})),
             "completionItem/resolve" => {
                 let mut item = p.clone();
+                if self.completions.is_some() {
+                    reply(item);
+                    return true;
+                }
                 item["documentation"] = json!({"kind": "markdown", "value": format!("Docs for `{}`", item["label"].as_str().unwrap_or_default())});
                 if item["label"] == "fake_alpha" {
                     item["additionalTextEdits"] = json!([{"range": range_json(0, 0, 0, 0), "newText": "use fake;\n"}]);
@@ -168,7 +185,9 @@ impl Fake {
             }
             "textDocument/hover" => {
                 let (uri, word) = self.word_at(p);
+                let scripted = word.as_ref().and_then(|(w, _)| self.hover.as_ref()?.get(w)).cloned();
                 let result = match word {
+                    _ if self.hover.is_some() => scripted.map_or(Value::Null, |v| json!({"contents": {"kind": "markdown", "value": v}})),
                     Some((w, _)) if !w.is_empty() => json!({"contents": {"kind": "markdown", "value": format!("```rust\nfn {w}()\n```\nHover for `{w}` in {} (opens={})", uri.rsplit('/').next().unwrap_or_default(), self.opens.get(&uri).copied().unwrap_or(0))}}),
                     _ => Value::Null,
                 };
@@ -275,6 +294,16 @@ impl Fake {
             std::process::exit(3);
         }
         let mut diags = Vec::new();
+        if let Some(problems) = &self.problems {
+            for p in problems {
+                let find = p["find"].as_str().unwrap_or_default();
+                for (at, _) in doc.match_indices(find).filter(|_| !find.is_empty()) {
+                    diags.push(json!({"range": self.range_of(&doc, at, at + find.len()), "severity": p["severity"], "message": p["message"], "source": p["source"]}));
+                }
+            }
+            send(&json!({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"uri": uri, "version": version, "diagnostics": diags}}));
+            return;
+        }
         for (word, severity, message) in [("bad", 1, "“bad” is not allowed"), ("meh", 2, "“meh” could be better")] {
             for at in find_words(&doc, word) {
                 diags.push(json!({"range": self.range_of(&doc, at, at + word.len()), "severity": severity, "message": message, "source": "fake"}));
@@ -284,6 +313,9 @@ impl Fake {
     }
 
     fn completions(&self, p: &Value) -> Vec<Value> {
+        if let Some(items) = &self.completions {
+            return items.clone();
+        }
         let (_, word) = self.word_at(p);
         let (start, end) = word.map(|(_, r)| r).unwrap_or((p["position"].clone(), p["position"].clone()));
         vec![

@@ -9,7 +9,7 @@
 use super::Shooter;
 use crate::app::StrataApp;
 use crate::commands::Cmd;
-use egui::Context;
+use egui::{Context, Event};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -280,6 +280,69 @@ const TALLY_EDITS: &[(&str, &str, &str)] = &[
     ("src/report.rs", "fn hours(minutes: u32) -> String {\n    format!(\"{}h{:02}\", minutes / 60, minutes % 60)", "fn hours(minutes: u32) -> String {\n    if minutes < 60 {\n        return format!(\"{minutes}m\");\n    }\n    format!(\"{}h{:02}\", minutes / 60, minutes % 60)"),
 ];
 
+/// What a coding agent changed in a clean copy of tally (CSV export), for
+/// Review Changes.
+const AGENT_EDITS: &[(&str, &str, &str)] = &[
+    (
+        "src/main.rs",
+        "    since: Option<chrono::NaiveDate>,\n}",
+        "    since: Option<chrono::NaiveDate>,\n    /// Print comma-separated values instead of a table.\n    #[arg(long)]\n    csv: bool,\n}",
+    ),
+    (
+        "src/main.rs",
+        "    let table = if args.by_day { report::by_day(&entries) } else { report::by_project(&entries) };\n",
+        "    let table = if args.csv {\n        report::csv(&entries)\n    } else if args.by_day {\n        report::by_day(&entries)\n    } else {\n        report::by_project(&entries)\n    };\n",
+    ),
+    (
+        "src/report.rs",
+        "fn table(heading: &str",
+        r#"/// One line per entry (date, minutes, project, note) under a header.
+pub fn csv(entries: &[Entry]) -> String {
+    let mut out = String::from("date,minutes,project,note\n");
+    for e in entries {
+        let note = e.note.as_deref().unwrap_or_default().replace('"', "\"\"");
+        let _ = writeln!(out, "{},{},{},\"{note}\"", e.date, e.minutes, e.project);
+    }
+    out
+}
+
+fn table(heading: &str"#,
+    ),
+    ("README.md", "- [ ] CSV export", "- [x] CSV export"),
+    ("README.md", "| `tally --since 2026-10-01` | Skip older entries |\n", "| `tally --since 2026-10-01` | Skip older entries |\n| `tally --csv week.log` | One CSV line per entry |\n"),
+];
+
+/// A new test file the agent added.
+const AGENT_TEST: &str = r#"use std::process::Command;
+
+#[test]
+fn csv_has_a_header_and_a_line_per_entry() {
+    let out = Command::new(env!("CARGO_BIN_EXE_tally")).args(["--csv", "examples/week.log"]).output().unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("date,minutes,project,note"));
+    assert_eq!(lines.count(), 4);
+}
+"#;
+
+/// The language server's answers in the LSP scene, as rust-analyzer would
+/// give them for parse.rs with a `?` left out.
+fn lsp_answers() -> serde_json::Value {
+    let method = |name: &str, sig: &str, doc: &str| serde_json::json!({"label": name, "kind": 2, "detail": sig, "documentation": {"kind": "markdown", "value": doc}});
+    serde_json::json!({
+        "problems": [{"find": "parse_duration(time),", "severity": 1, "source": "rustc", "message": "mismatched types\nexpected `u32`, found `Result<u32, Error>`"}],
+        "hover": {"parse_duration": "```rust\ntally::parse\n```\n\n```rust\npub fn parse_duration(text: &str) -> Result<u32>\n```\n\n---\n\n`1h30`, `45m`, `2h` or a plain number of minutes (`90`)."},
+        "completions": [
+            method("checked_mul", "const fn(self, rhs: u32) -> Option<u32>", "Checked integer multiplication. Computes `self * rhs`, returning `None` if overflow occurred."),
+            method("checked_add", "const fn(self, rhs: u32) -> Option<u32>", "Checked integer addition. Computes `self + rhs`, returning `None` if overflow occurred."),
+            method("checked_sub", "const fn(self, rhs: u32) -> Option<u32>", "Checked integer subtraction. Computes `self - rhs`, returning `None` if overflow occurred."),
+            method("checked_div", "const fn(self, rhs: u32) -> Option<u32>", "Checked integer division. Computes `self / rhs`, returning `None` if `rhs == 0`."),
+            method("checked_pow", "const fn(self, exp: u32) -> Option<u32>", "Checked exponentiation. Computes `self.pow(exp)`, returning `None` if overflow occurred."),
+            method("checked_rem", "const fn(self, rhs: u32) -> Option<u32>", "Checked integer remainder. Computes `self % rhs`, returning `None` if `rhs == 0`."),
+        ],
+    })
+}
+
 /// A small TypeScript web app with a Python script, for the light scheme.
 const ORBIT: &[(&str, &str)] = &[
     ("package.json", "{\n  \"name\": \"orbit\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"scripts\": { \"dev\": \"vite\", \"test\": \"vitest\" }\n}\n"),
@@ -414,20 +477,30 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(ok, "git {args:?}");
 }
 
-/// The sample projects, under a fresh temporary folder.
-fn projects() -> (PathBuf, PathBuf) {
-    let base = std::env::temp_dir().join("strata-readme-shots");
-    let tally = base.join("tally");
-    write_tree(&tally, TALLY);
-    git(&tally, &["init", "-q"]);
-    git(&tally, &["add", "-A"]);
-    git(&tally, &["commit", "-q", "-m", "Parse and total time logs"]);
-    for (file, from, to) in TALLY_EDITS {
-        let p = tally.join(file);
+/// Replace the first `from` with `to` in each file (which must contain it).
+fn edit(root: &Path, edits: &[(&str, &str, &str)]) {
+    for (file, from, to) in edits {
+        let p = root.join(file);
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains(from), "{file}: {from}");
         std::fs::write(&p, text.replacen(from, to, 1)).unwrap();
     }
+}
+
+/// The tally project at `dir`, committed.
+fn tally_repo(dir: &Path) {
+    write_tree(dir, TALLY);
+    git(dir, &["init", "-q"]);
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "Parse and total time logs"]);
+}
+
+/// The sample projects, under a fresh temporary folder.
+fn projects() -> (PathBuf, PathBuf) {
+    let base = std::env::temp_dir().join("strata-readme-shots");
+    let tally = base.join("tally");
+    tally_repo(&tally);
+    edit(&tally, TALLY_EDITS);
     let orbit = base.join("orbit");
     write_tree(&orbit, ORBIT);
     (tally, orbit)
@@ -610,7 +683,148 @@ fn readme_shots() {
         app.open_help(Some("find.md"), false);
         sh.shoot(&ctx, &mut app, 6, vec![], &shot("help"));
     }
+
+    // Review Changes: what an agent changed in a clean copy of tally, the
+    // Changes list and one file's changes side by side.
+    {
+        let repo = std::env::temp_dir().join("strata-readme-shots/review/tally");
+        tally_repo(&repo);
+        edit(&repo, AGENT_EDITS);
+        std::fs::write(repo.join("tests/csv.rs"), AGENT_TEST).unwrap();
+        let ctx = Context::default();
+        let mut app = window(&mut sh, &ctx, Some(&repo), "Nord");
+        app.settings.minimap = false;
+        app.review_show();
+        settle(&mut sh, &ctx, &mut app, |a| a.review.scan.as_ref().is_some_and(|s| s.files.len() == 4));
+        app.review_set_reviewed(&repo.join("README.md"), true);
+        app.open_review(&repo.join("src/main.rs"));
+        // The committed version is read in the background.
+        settle(&mut sh, &ctx, &mut app, |a| a.review.pending_open.is_none());
+        settle(&mut sh, &ctx, &mut app, |_| true);
+        sh.shoot(&ctx, &mut app, 4, vec![], &shot("review"));
+    }
+
+    // Language servers: a problem under the pointer with the server's hover
+    // information, and its completions while typing (the test server, so no
+    // real one is needed).
+    {
+        let ctx = Context::default();
+        let mut app = window(&mut sh, &ctx, None, "Dracula");
+        app.settings.minimap = false;
+        app.settings.auto_complete = true;
+        // Named like the real server, as the status bar shows the command's name.
+        let mut server = crate::lsp::fake::config("rust-analyzer", &["*.rs"], lsp_answers());
+        let named = std::env::temp_dir().join("strata-readme-shots/bin/rust-analyzer");
+        std::fs::create_dir_all(named.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&named);
+        std::os::unix::fs::symlink(&server.command, &named).unwrap();
+        server.command = named.display().to_string();
+        app.lsp.hub.borrow_mut().use_servers(vec![server]);
+        app.settings.lsp_trust_all = true;
+        app.open_folder(tally.clone());
+        let i = open(&mut app, tally.join("src/parse.rs"));
+        let _ = app.sidebar.reveal(&tally.join("src/parse.rs"));
+        // The `?` after parse_duration(time), left out.
+        let find = |app: &StrataApp, needle: &str| {
+            let b = &app.docs[i].editor.buffer;
+            b.byte_to_char(b.slice(0..b.len_chars()).find(needle).unwrap())
+        };
+        let at = find(&app, "parse_duration(time)?") + "parse_duration(time)".len();
+        app.docs[i].editor.select_ranges(&[at..at + 1], 0);
+        app.docs[i].editor.insert_text("");
+        let top = app.docs[i].view.top_line() as isize;
+        app.docs[i].view.scroll_lines(17 - top);
+        settle(&mut sh, &ctx, &mut app, |a| a.docs[i].editor.markers().iter().any(|m| m.style == 1));
+        // Where the pointer will rest: on parse_duration in that line.
+        let call = find(&app, "parse_duration(time),") + 4;
+        app.docs[i].editor.select_ranges(&[call..call], 0);
+        sh.run(&ctx, &mut app, 2, vec![]);
+        let pointer = app.docs[i].view.caret_rect().unwrap().center();
+        // Typing in parse_duration: the server's completions.
+        let body = find(&app, "    Ok(hours * 60 + minutes)");
+        app.docs[i].editor.select_ranges(&[body..body], 0);
+        app.docs[i].editor.insert_text("\n");
+        app.docs[i].editor.select_ranges(&[body..body], 0);
+        sh.run(&ctx, &mut app, 1, vec![Event::Text("    let total = hours.".into())]);
+        sh.run(&ctx, &mut app, 1, vec![Event::Text("ch".into())]);
+        settle(&mut sh, &ctx, &mut app, |a| a.completion.labels().iter().any(|l| l == "checked_add"));
+        // Then the pointer rests on the problem.
+        sh.run(&ctx, &mut app, 1, vec![Event::PointerMoved(pointer)]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline && ctx.memory(|m| m.area_rect(egui::Id::new("lsp-hover"))).is_none() {
+            sh.run(&ctx, &mut app, 1, vec![]);
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        // The server's information lands under the problem, and the box grows to fit.
+        for _ in 0..12 {
+            sh.run(&ctx, &mut app, 1, vec![]);
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        app.status.clear();
+        sh.shoot(&ctx, &mut app, 3, vec![], &shot("language-server"));
+    }
+
+    // Terminal links: ⌘ (Ctrl) held over a compiler error's location.
+    {
+        let report = tally.join("src/report.rs");
+        let good = std::fs::read_to_string(&report).unwrap();
+        let bad = good.replacen("return format!(\"{minutes}m\");", "return minutes;", 1);
+        std::fs::write(&report, &bad).unwrap();
+        let line_of = |needle: &str| bad.lines().position(|l| l.contains(needle)).unwrap() + 1;
+        let (sig, cond, ret) = (line_of("fn hours("), line_of("if minutes < 60"), line_of("return minutes;"));
+        let script = LINK_SCRIPT.replace("@SIG", &sig.to_string()).replace("@COND", &cond.to_string()).replace("@RET", &ret.to_string());
+        let ctx = Context::default();
+        let mut app = window(&mut sh, &ctx, Some(&tally), "Gruvbox Dark");
+        app.settings.terminal_height = 420.0;
+        open(&mut app, tally.join("src/main.rs"));
+        open(&mut app, report.clone());
+        app.goto_line(ret - 1);
+        let path = std::env::temp_dir().join("strata-readme-links.sh");
+        std::fs::write(&path, script).unwrap();
+        let shell = ("/bin/sh".to_owned(), vec![path.display().to_string()]);
+        app.terminal.tabs.push(crate::terminal::Terminal::spawn(Some(ctx.clone()), &tally, Some(shell), 100, 18).unwrap());
+        app.terminal.visible = true;
+        settle(&mut sh, &ctx, &mut app, |a| a.terminal.active_terminal().unwrap().screen_text().contains("could not compile"));
+        let location = format!("src/report.rs:{ret}:16");
+        let t = app.terminal.active_terminal().unwrap();
+        let (row, col) = t.screen_text().lines().enumerate().find_map(|(r, l)| l.find(&location).map(|c| (r, c))).unwrap();
+        let (cw, ch) = t.cell_size();
+        let body = app.terminal.body.as_ref().unwrap().rect;
+        let p = body.min + egui::vec2(6.0 + (col + 6) as f32 * cw, 4.0 + (row as f32 + 0.5) * ch);
+        let held = if crate::keys::MAC { egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND } else { egui::Modifiers::CTRL | egui::Modifiers::COMMAND };
+        sh.run(&ctx, &mut app, 1, vec![Event::ModifiersChanged(held), Event::PointerMoved(p)]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && app.terminal.active_terminal().unwrap().hovered_link().is_none() {
+            sh.run(&ctx, &mut app, 1, vec![Event::PointerMoved(p)]);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        app.status.clear();
+        sh.shoot(&ctx, &mut app, 3, vec![Event::PointerMoved(p)], &shot("terminal-links"));
+        std::fs::write(&report, good).unwrap();
+    }
 }
+
+/// What the terminal links scene runs: a build that fails with a rustc
+/// error (`@SIG`, `@COND` and `@RET` are line numbers in report.rs).
+const LINK_SCRIPT: &str = r#"
+G='\033[1;32m'; C='\033[36m'; B='\033[1;34m'; M='\033[35m'; E='\033[1;31m'; W='\033[1m'; R='\033[0m'
+printf "${C}tally${R} ${M}main${R} ${B}❯${R} cargo build\n"
+printf "${G}   Compiling${R} tally v0.4.0\n"
+printf "${E}error[E0308]${R}${W}: mismatched types${R}\n"
+printf "  ${B}-->${R} src/report.rs:@RET:16\n"
+printf "   ${B}|${R}\n"
+printf "${B}%-3s|${R} fn hours(minutes: u32) -> String {\n" @SIG
+printf "   ${B}|${R}                           ${B}------${R} ${B}expected \`String\` because of return type${R}\n"
+printf "${B}%-3s|${R}     if minutes < 60 {\n" @COND
+printf "${B}%-3s|${R}         return minutes;\n" @RET
+printf "   ${B}|${R}                ${E}^^^^^^^${R} ${E}expected \`String\`, found \`u32\`${R}\n"
+printf "   ${B}|${R}\n"
+printf "${B}help${R}: try using a conversion method: \`.to_string()\`\n\n"
+printf "${W}For more information about this error, try \`rustc --explain E0308\`.${R}\n"
+printf "${E}error${R}${W}: could not compile \`tally\` (bin \"tally\") due to 1 previous error${R}\n"
+printf "${C}tally${R} ${M}main${R} ${B}❯${R} "
+sleep 30
+"#;
 
 /// What the terminal scene runs: a prompt, a test run with cargo's colors,
 /// a colored listing, and a fresh prompt.

@@ -23,13 +23,14 @@
 Strata is a native editor for macOS and Windows, written in Rust. It opens
 instantly, stays smooth on files of hundreds of megabytes, and keeps every
 command a keystroke away. Multiple cursors, Goto Anything, project-wide search
-and replace, split panes, a built-in terminal and a live Markdown preview are
-all there out of the box, with no accounts, no telemetry and nothing to set up.
+and replace, split panes, a built-in terminal, a live Markdown preview and
+language server support are all there out of the box, with no accounts and no
+telemetry.
 
 > **Status: 1.0.** The first stable release. Please [report
 > problems](https://github.com/DRAZY/strata/issues) (Help ▸ Report a Problem…
 > fills in the details). See [CHANGELOG.md](CHANGELOG.md) and
-> [Not in 1.0](#not-in-10) for what's planned next.
+> [What's next](#whats-next) for what's planned.
 
 ## Features
 
@@ -46,6 +47,19 @@ all there out of the box, with no accounts, no telemetry and nothing to set up.
 - **Projects**: one or more folders in the side bar, saved as
   `.strata-project` files.
 - **Built-in terminal** with tabs, true color and your scheme's palette.
+  ⌘-click (Ctrl+click) a file location in its output, such as a compiler
+  error or a stack trace, to open the file at that line; **Send to Terminal**
+  runs the selection or the current line.
+- **Language servers**: when a language's server is installed
+  (rust-analyzer, typescript-language-server, pyright, gopls, clangd or any
+  other you configure), problems show as wavy underlines, and you get its
+  completions, hover information, Go to Definition and Reference, rename
+  across files and formatting. Servers start only in folders you trust, and
+  Strata never downloads them.
+- **Review Changes** for checking what a coding agent changed: the Changes
+  list shows every file that differs from the last commit (or from when you
+  started a review), and each file opens side by side with **Keep** and
+  **Revert** for every change. Reverting is an ordinary edit you can undo.
 - **Live Markdown preview** with GitHub-style tables, task lists, alerts,
   footnotes and highlighted code, plus HTML export.
 - **About 190 languages** highlighted, with symbols, smart indentation and
@@ -106,15 +120,21 @@ all there out of the box, with no accounts, no telemetry and nothing to set up.
     <td><img src="docs/screenshots/settings.png" alt="The Settings window on the Appearance category"><br><sub>Settings window</sub></td>
   </tr>
   <tr>
-    <td colspan="2" align="center"><img src="docs/screenshots/help.png" width="50%" alt="The built-in manual open at Find and Replace"><br><sub>The built-in manual</sub></td>
+    <td><img src="docs/screenshots/review.png" alt="Review Changes: the Changes list with three files to review, and main.rs side by side with its last commit, its two changes marked, and Keep and Revert buttons above"><br><sub>Review Changes</sub></td>
+    <td><img src="docs/screenshots/language-server.png" alt="A Rust file with a type error underlined, the language server's error and hover information in a box, and its completions listed under the cursor"><br><sub>Language server problems, hover and completions</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/terminal-links.png" alt="A failed cargo build in the terminal, with the error's file location underlined while the Command key is held"><br><sub>Clickable file locations in the terminal</sub></td>
+    <td><img src="docs/screenshots/help.png" alt="The built-in manual open at Find and Replace"><br><sub>The built-in manual</sub></td>
   </tr>
 </table>
 
-## Not in 1.0
+## What's next
 
-Planned for after 1.0 (details in [`docs/ROADMAP.md`](docs/ROADMAP.md)):
-language servers (LSP), plugins, a Vim mode, official Linux support and
-screen reader support in the editor.
+On `main` for the next release: clickable file locations and Send to Terminal
+in the terminal, Review Changes, and language servers. Planned after that
+(details in [`docs/ROADMAP.md`](docs/ROADMAP.md)): plugins, a Vim mode,
+official Linux support and screen reader support in the editor.
 
 ## Accessibility
 
@@ -188,8 +208,9 @@ scripts/package-macos.sh           # → dist/Strata.app and dist/Strata-<versio
 The user manual is built into the app: **Help ▸ Documentation** (F1, or
 "Help: Documentation" in the command palette). It covers editing, find and
 replace, snippets, projects, panes and windows, comparing files, printing, the
-terminal, Markdown preview, build systems, Git, appearance, every setting, key
-bindings, the command line and troubleshooting, with search across all pages.
+terminal, Markdown preview, build systems, Git, Review Changes, language
+servers, appearance, every setting, key bindings, the command line and
+troubleshooting, with search across all pages.
 It opens in its own window so you can read along while you work. **Help ▸
 Keyboard Shortcuts** lists every command and its keys, generated from the key
 bindings in effect (your `keybindings.json` included).
@@ -276,6 +297,9 @@ command palette, which shows its shortcut.
 | Find: regex / case sensitive | ⌥⌘R / ⌥⌘C | Alt+R / Alt+C |
 | Spell check / next, previous misspelling | F6 / ⌃F6, ⌃⇧F6 | F6 / Ctrl+F6, Ctrl+Shift+F6 |
 | Toggle terminal / new terminal | ⌃\` / ⌃⇧\` | Ctrl+\` / Ctrl+Shift+\` |
+| Send to Terminal | ⌃↩ | Ctrl+Alt+Enter |
+| Review: next / previous change | F8 / ⇧F8 | F8 / Shift+F8 |
+| Next / previous problem (language server) | ⌘K ⌘N / ⌘K ⌘P | Ctrl+K Ctrl+N / Ctrl+K Ctrl+P |
 
 In the find bar: Enter next, Shift+Enter previous, Alt+Enter Find All (a cursor
 per match); in the replace field Cmd/Ctrl+Enter replaces all (one undo step).
@@ -352,7 +376,9 @@ bindings, with comments and trailing commas allowed:
 - **Hot exit**: quitting never asks. Tabs, panes, cursors and unsaved text come
   back next launch; the session is also saved every few seconds.
 - **Navigation**: command palette, Goto Anything (`file:line`, `@symbol`), go to
-  line, go to symbol, go to definition (F12), jump back/forward, bookmarks.
+  line, go to symbol, go to definition (F12) and reference (from the language
+  server when one is running, otherwise from Strata's own symbol search), jump
+  back/forward, bookmarks.
 - **Editing**: multiple cursors and column selection, auto-closing brackets,
   word completions while typing (Ctrl+Space to ask), comments, indent/reindent,
   line moves, duplicate, join, transpose, case conversion, sort/shuffle/unique
@@ -416,7 +442,29 @@ bindings, with comments and trailing commas allowed:
   started in the project folder, with tabs, 256-color/truecolor output in the
   theme's palette, selection and scrollback. While it has the keyboard it keeps
   Ctrl and Alt keys (Alt/Option is Meta); ⌘C/⌘V/⌘K copy, paste and clear on
-  macOS, Ctrl+Shift+C/V (or Ctrl+C with a selection) elsewhere.
+  macOS, Ctrl+Shift+C/V (or Ctrl+C with a selection) elsewhere. Hold ⌘ (Ctrl)
+  and click a file location in the output (`path:line:col`, `path(line,col)`,
+  Rust errors and panics, Python tracebacks, Node stack traces) to open it;
+  relative paths are found in the shell's current folder, then the side bar
+  folders. Tools ▸ Send to Terminal (⌃↩ / Ctrl+Alt+Enter) sends the selection
+  or the current line and presses Enter, starting a terminal if needed.
+- **Language servers** (Tools ▸ Language Server): built-in entries for
+  rust-analyzer, typescript-language-server, pyright, gopls and clangd, used
+  when they're installed; `lsp_servers` in `settings.json` changes them or adds
+  others. Problems as wavy underlines with a gutter dot and counts in the
+  status bar (Next / Previous Problem, Show Problems…), server completions
+  first in the completion list, hover information under the mouse pointer,
+  parameter hints, Rename Symbol across files (one undo step per file) and
+  Format Document. A server starts only in a project folder you trust (Start,
+  Always for This Folder, Not Now; `lsp_trust_all` skips the question), is
+  restarted after a pause if it stops, and is never downloaded by Strata.
+- **Review Changes** (Tools ▸ Review Changes, or the side bar's Changes tab):
+  every file that differs from the last commit, or from a snapshot taken with
+  Start Review, with its status and lines added and removed, updated while an
+  agent works. A file opens side by side with Keep and Revert per change or
+  for the whole file; reverting is an ordinary edit (Undo brings it back,
+  nothing is written until you save). Tick files off as reviewed; F8 /
+  Shift+F8 step through the changes across files. No AI is involved.
 - **Right-click menus** everywhere: the editor (Show Unsaved
   Changes as a diff, Cut/Copy/Paste, Select All, Reveal in Finder, Copy File
   Path, Reveal in Side Bar, Goto Definition, Toggle Comment, Fold), the line
@@ -552,8 +600,9 @@ the Markdown preview, the manual, or Help ▸ Report a Problem…) opens in your
 browser; only `http`, `https` and `mailto` links leave Strata (other local
 files are shown in the file manager, other schemes are refused; see
 `src/links.rs`). The `strata` command talks to the running app over a local socket
-(a localhost-only port with a random token on Windows). The terminal and build
-systems run the programs you choose, and Git integration only reads your local
+(a localhost-only port with a random token on Windows). The terminal, build
+systems and language servers run the programs you choose (language servers
+only in folders you trust), and Git integration only reads your local
 repository.
 
 ## Development
