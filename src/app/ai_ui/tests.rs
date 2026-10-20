@@ -247,6 +247,44 @@ fn keys_come_from_the_keychain_and_stay_with_their_host() {
     assert_eq!(app.ai.keys().get(&account).unwrap(), None);
 }
 
+/// Security review, MEDIUM 4: Test Connection asks once before sending a
+/// saved key to a remote provider; nothing connects until then.
+#[test]
+fn test_connection_asks_before_sending_a_key_to_a_remote_provider() {
+    let srv = FakeServer::start(|s, _| {
+        let body = r#"{"data":[{"id":"test-model"}]}"#;
+        let _ = std::io::Write::write_all(s, format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes());
+    });
+    let mut app = app_with(&srv.url(), "testkey");
+    app.ai.remote_for_tests = true;
+    let ctx = egui::Context::default();
+    // Without a key there's nothing secret to send: no question.
+    app.ai_test(&ctx);
+    until(&mut app, &ctx, "the keyless test", |a| a.ai.test_result.is_some());
+    assert_eq!(srv.hits.load(Ordering::SeqCst), 1);
+    app.ai_save_key("sk-remote-xyz");
+    app.ai_test(&ctx);
+    assert!(app.ai.test_confirm.is_some(), "asked first");
+    for _ in 0..3 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(srv.hits.load(Ordering::SeqCst), 1, "no key sent before the answer");
+    app.ai_test_answer(&ctx, false);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(srv.hits.load(Ordering::SeqCst), 1, "nor after Cancel");
+    app.ai_test(&ctx);
+    app.ai_test_answer(&ctx, true);
+    until(&mut app, &ctx, "the test", |a| a.ai.test.is_none() && a.ai.test_result.is_some());
+    assert_eq!(srv.hits.load(Ordering::SeqCst), 2);
+    assert!(srv.requests.lock().unwrap()[1].contains("Authorization: Bearer sk-remote-xyz\r\n"));
+    // Remembered: no question the next time.
+    app.ai_test(&ctx);
+    assert!(app.ai.test_confirm.is_none());
+    until(&mut app, &ctx, "the third test", |a| a.ai.test.is_none());
+    assert_eq!(srv.hits.load(Ordering::SeqCst), 3);
+}
+
 #[test]
 fn the_settings_window_shows_the_ai_row() {
     let mut app = app_with("http://localhost:11434/v1", "settings");
@@ -338,7 +376,9 @@ fn ai_shots() {
     app.settings.minimap = false;
     app.apply_settings();
     app.open_folder(repo.clone());
+    // The fake server stands in for a remote provider: show it as one.
     app.ai.remote_for_tests = true;
+    app.ai.shown_host_for_tests = Some("api.example.com".into());
     shooter.run(&ctx, &mut app, 3, vec![]);
     let wait = |shooter: &mut Shooter, app: &mut StrataApp, secs: u64, done: &dyn Fn(&StrataApp) -> bool| {
         let deadline = Instant::now() + Duration::from_secs(secs);

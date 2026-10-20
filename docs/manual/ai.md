@@ -4,7 +4,7 @@ Strata can ask a language model you choose to summarize a review, explain a chan
 
 ## Turning them on
 
-Open Settings ({{key:settings}}) and choose **AI Helpers**, or choose Tools ▸ AI ▸ Provider Settings…. Turn on **Turn on AI helpers**, pick a provider, and fill in its details. **Test Connection** checks that the provider answers (and lists its models) without sending any of your text.
+Open Settings ({{key:settings}}) and choose **AI Helpers**, or choose Tools ▸ AI ▸ Provider Settings…. Turn on **Turn on AI helpers**, pick a provider, and fill in its details. **Test Connection** checks that the provider answers (and lists its models) without sending any of your text. For a remote provider with a saved key, it first says that it will send the key to that host, and asks; it doesn't ask again for that provider (or once you've allowed the provider's requests).
 
 ## Providers
 
@@ -62,9 +62,24 @@ Each helper sends only what it's about:
 
 The changes go as diffs. Unsaved edits in a tab of a changed file count. Strata never sends:
 
-- files Git ignores (`.gitignore`): they aren't in the Changes list, and Explain Selection refuses to send text from an ignored file;
-- binary files, or files Review Changes can't compare (symbolic links, files Git converts with filters). The panel says how many were left out; not even their names are sent;
+- files that look like they hold secrets, wherever they are and whatever Git says about them (see the list below). The panel lists them by name, "left out (looks like a secret)", so you know; their names aren't sent;
+- files Git ignores (`.gitignore`), even ones Git still tracks (a committed `config.yml` later added to `.gitignore`);
+- binary files, symbolic links (or files reached through a linked folder), and files Git converts with a filter (Git LFS, encryption filters, `working-tree-encoding`). The panel says how many were left out; their names aren't sent;
+- a file that changed between Review Changes listing it and Strata reading it (for example, replaced by a link to a file elsewhere): Strata reads each file from the repository's top folder without following links, checks it's still exactly the file that was listed, and otherwise leaves it out and says so;
 - anything that isn't part of the helper you chose.
+
+Explain Selection and the review-tab helpers check the file the same way: no secrets, no links, nothing ignored, filtered or binary.
+
+These file names count as secrets (letter case doesn't matter):
+
+| Pattern | For example |
+|---|---|
+| `.env`, `.env.*` | `.env`, `.env.local`, `.env.production` |
+| `*.pem`, `*.key` | `server.pem`, `tls.key` |
+| `id_rsa*`, `id_ed25519*` | `id_rsa`, `id_ed25519.pub` |
+| `*.p12`, `*.pfx`, `*.keystore` | `cert.p12`, `release.keystore` |
+| `.npmrc`, `.pypirc` | package registry logins |
+| `credentials*` | `credentials`, `credentials.json` |
 
 ### The size limit
 

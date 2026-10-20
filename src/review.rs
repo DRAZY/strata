@@ -754,6 +754,17 @@ fn change(path: PathBuf, rel: &str, status: Status) -> FileChange {
     FileChange { path, rel: rel.to_owned(), old: None, status, lines: None, binary: false, blocked: None, filtered: false, crlf: false, alias: false, hash: 1, kept: false, stat: None, id: None }
 }
 
+/// The top folder of the repository holding `folder` (see `top_of`).
+pub fn repo_top(folder: &Path) -> Option<PathBuf> {
+    top_of(folder)
+}
+
+/// The filter or working-tree encoding Git applies to `rel`, if any
+/// ("filter=lfs"): such a file on disk isn't what Git stores.
+pub fn filter_of(top: &Path, rel: &str) -> Option<String> {
+    attributes(top, &[rel], None).remove(rel).and_then(|a| a.filter)
+}
+
 /// One scan with nothing remembered, for work off the UI thread that needs
 /// the list now (the AI helpers' diffs). Runs git.
 pub fn scan_once(folder: &Path, base: &Base) -> Result<Scan, String> {

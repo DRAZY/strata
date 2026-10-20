@@ -203,6 +203,9 @@ pub struct Provider {
     /// Tests: the program a command-line provider runs.
     #[cfg(test)]
     pub program_for_tests: Option<std::path::PathBuf>,
+    /// Tests (screenshots): the host to show in place of the test server's.
+    #[cfg(test)]
+    pub shown_host_for_tests: Option<String>,
 }
 
 impl Provider {
@@ -241,6 +244,8 @@ impl Provider {
             remote_for_tests: false,
             #[cfg(test)]
             program_for_tests: None,
+            #[cfg(test)]
+            shown_host_for_tests: None,
         })
     }
 
@@ -252,6 +257,15 @@ impl Provider {
             return false;
         }
         !self.kind.is_cli() && self.kind != Kind::Anthropic && self.endpoint.is_local()
+    }
+
+    /// The host, for people to read.
+    pub fn shown_host(&self) -> String {
+        #[cfg(test)]
+        if let Some(h) = &self.shown_host_for_tests {
+            return h.clone();
+        }
+        self.endpoint.host_label()
     }
 
     /// What consent is remembered under: a different host or tool asks again.
@@ -276,7 +290,7 @@ impl Provider {
     /// Where the text goes, for the consent question and the panel.
     pub fn destination(&self) -> String {
         match self.kind {
-            Kind::OpenAi | Kind::Anthropic => self.endpoint.host_label(),
+            Kind::OpenAi | Kind::Anthropic => self.shown_host(),
             Kind::ClaudeCli => "the claude command (it sends to Anthropic with your Claude login)".into(),
             Kind::CodexCli => "the codex command (it sends to OpenAI with your Codex login)".into(),
         }
@@ -285,7 +299,7 @@ impl Provider {
     /// A short name for the panel: "localhost:11434 · llama3.2 · local".
     pub fn label(&self) -> String {
         let place = match self.kind {
-            Kind::OpenAi | Kind::Anthropic => self.endpoint.host_label(),
+            Kind::OpenAi | Kind::Anthropic => self.shown_host(),
             k => k.program().to_owned(),
         };
         let model = if self.model.is_empty() { String::new() } else { format!(" · {}", self.model) };

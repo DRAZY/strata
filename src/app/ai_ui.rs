@@ -53,11 +53,15 @@ pub(super) struct AiState {
     pub test_result: Option<TestResult>,
     /// Whether a key is saved for this keychain account (looked up when it changes).
     key_cache: Option<(String, Result<bool, String>)>,
+    /// Test Connection is asking before it sends a key to a remote provider.
+    test_confirm: Option<Provider>,
     /// Tests: treat the (local) test server as remote, and run this program as the command-line tool.
     #[cfg(test)]
     pub remote_for_tests: bool,
     #[cfg(test)]
     pub program_for_tests: Option<PathBuf>,
+    #[cfg(test)]
+    pub shown_host_for_tests: Option<String>,
 }
 
 impl Default for AiState {
@@ -85,10 +89,13 @@ impl Default for AiState {
             test: None,
             test_result: None,
             key_cache: None,
+            test_confirm: None,
             #[cfg(test)]
             remote_for_tests: false,
             #[cfg(test)]
             program_for_tests: None,
+            #[cfg(test)]
+            shown_host_for_tests: None,
         }
     }
 }
@@ -230,6 +237,7 @@ impl StrataApp {
         {
             p.remote_for_tests = self.ai.remote_for_tests;
             p.program_for_tests = self.ai.program_for_tests.clone();
+            p.shown_host_for_tests = self.ai.shown_host_for_tests.clone();
         }
         Ok(p)
     }
@@ -288,7 +296,7 @@ impl StrataApp {
     }
 
     fn ai_file(&mut self, ctx: &egui::Context) {
-        let Some((_, rel)) = self.ai_review_tab() else {
+        let Some((path, rel)) = self.ai_review_tab() else {
             self.status = "Open a file's changes in Review Changes first (Review: Next Change), or use AI: Summarize Changes for all of them".into();
             return;
         };
@@ -296,11 +304,11 @@ impl StrataApp {
         let d = &mut self.docs[self.active];
         let base = d.compare.as_ref().expect("review tab").base_text().to_owned();
         let current = d.editor.text_snapshot().to_string();
-        self.ai_prepare(ctx, provider, Task::File { ask: Ask::Summarize, rel, base, current });
+        self.ai_prepare(ctx, provider, Task::File { ask: Ask::Summarize, path, rel, base, current });
     }
 
     fn ai_hunk(&mut self, ctx: &egui::Context) {
-        let Some((_, rel)) = self.ai_review_tab() else {
+        let Some((path, rel)) = self.ai_review_tab() else {
             self.status = "Open a file's changes in Review Changes first (Review: Next Change)".into();
             return;
         };
@@ -315,7 +323,7 @@ impl StrataApp {
         let base = c.base_text().to_owned();
         let current = d.editor.text_snapshot().to_string();
         let Some(provider) = self.ai_provider() else { return };
-        self.ai_prepare(ctx, provider, Task::Hunk { rel, base, current, hunk });
+        self.ai_prepare(ctx, provider, Task::Hunk { path, rel, base, current, hunk });
     }
 
     fn ai_selection(&mut self, ctx: &egui::Context) {
@@ -407,6 +415,7 @@ impl StrataApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         self.ai_consent_ui(ctx);
+        self.ai_test_confirm_ui(ctx);
     }
 
     /// Take finished preparations and streamed text. True if something arrived.
@@ -553,8 +562,55 @@ impl StrataApp {
             }
         };
         self.ai.test_result = None;
+        // Testing a remote provider sends the saved key there: say so first,
+        // once per provider (or not at all once its prompts are allowed).
+        let consent = crate::ai::consent::Consent::new(self.config.as_deref());
+        let key_saved = provider.key_account().is_some_and(|a| self.ai.keys.exists(&a).unwrap_or(true));
+        if key_saved && !provider.is_local() && !consent.allowed(&provider.consent_id()) && !consent.allowed(&key_test_id(&provider)) {
+            self.ai.test_confirm = Some(provider);
+            return;
+        }
+        self.ai_start_test(ctx, provider);
+    }
+
+    fn ai_start_test(&mut self, ctx: &egui::Context, provider: Provider) {
         self.ai.test = Some(crate::ai::test_connection(provider, self.ai.keys.clone(), Some(ctx.clone())));
         self.status = "Testing the connection…".into();
+    }
+
+    /// The Test Connection question was answered.
+    pub(super) fn ai_test_answer(&mut self, ctx: &egui::Context, send: bool) {
+        let Some(provider) = self.ai.test_confirm.take() else { return };
+        if !send {
+            self.status = "Test cancelled: nothing was sent".into();
+            return;
+        }
+        if let Err(e) = crate::ai::consent::Consent::new(self.config.as_deref()).allow(&key_test_id(&provider)) {
+            self.status = e;
+        }
+        self.ai_start_test(ctx, provider);
+    }
+
+    fn ai_test_confirm_ui(&mut self, ctx: &egui::Context) {
+        let Some(provider) = &self.ai.test_confirm else { return };
+        let (mut send, mut cancel) = (false, false);
+        let host = provider.shown_host();
+        egui::Modal::new(egui::Id::new("ai-test-confirm")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.label(RichText::new(format!("Test Connection sends your API key to {host} to check it.")).strong());
+            ui.add_space(4.0);
+            ui.label(RichText::new("None of your text is sent. Strata won't ask again for this provider.").small().weak());
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                send = ui.button("Send Key and Test").clicked();
+                cancel = ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape));
+            });
+        });
+        if send {
+            self.ai_test_answer(ctx, true);
+        } else if cancel {
+            self.ai_test_answer(ctx, false);
+        }
     }
 
     /// The keychain account the current settings use, and where it's for.
@@ -680,6 +736,11 @@ fn panel_ui(a: &mut AiState, ui: &mut egui::Ui, hl: &crate::highlight::Highlight
         }
     });
     act
+}
+
+/// What the Test Connection answer is remembered under.
+fn key_test_id(p: &Provider) -> String {
+    format!("key-test {}", p.consent_id())
 }
 
 enum PanelAct {

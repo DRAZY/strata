@@ -54,6 +54,7 @@ impl FakeServer {
             stall: Duration::from_secs(2),
             remote_for_tests: false,
             program_for_tests: None,
+            shown_host_for_tests: None,
         }
     }
 }
