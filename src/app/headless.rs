@@ -299,6 +299,11 @@ mod tests {
                     }
                     app.open_review(&repo.join("src/main.rs"));
                     narrow.shoot(&ctx, &mut app, 4, vec![], &dir.join("review_narrow.ppm"));
+                    // Larger interface text: the heading and Start Review no longer
+                    // share a row, so the button moves to a row of its own.
+                    app.settings.ui_font_size = 18.0;
+                    app.apply_settings();
+                    narrow.shoot(&ctx, &mut app, 6, vec![], &dir.join("review_narrow_larger.ppm"));
                 }
                 // Put things back for the next scheme.
                 crate::review::tests::run(&repo, &["checkout", "-q", "--", "."]);

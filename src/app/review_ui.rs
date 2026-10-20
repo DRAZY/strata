@@ -707,30 +707,44 @@ impl StrataApp {
         let mut action = None;
         let weak = ui.visuals().weak_text_color();
         let small = crate::fonts::secondary_size(egui::TextStyle::Body.resolve(ui.style()).size);
-        ui.horizontal(|ui| {
-            let what = if self.review.reviewing() { "Since Start Review" } else { "Since the last commit" };
-            let hint = if self.review.reviewing() {
-                "Changes made after you chose Start Review. End Review goes back to the changes since the last commit."
+        let (reviewing, starting) = (self.review.reviewing(), self.review.starting);
+        let what = if reviewing { "Since Start Review" } else { "Since last commit" };
+        let hint = if reviewing {
+            "Changes made after you chose Start Review. End Review goes back to the changes since the last commit."
+        } else {
+            "Files that differ from the last commit (HEAD). Start Review shows only the changes made from then on."
+        };
+        let review_button = |ui: &mut egui::Ui| -> Option<ListAction> {
+            if reviewing {
+                ui.small_button("End Review").on_hover_text("Go back to the changes since the last commit").clicked().then_some(ListAction::End)
             } else {
-                "Files that differ from the last commit (HEAD). Start Review shows only the changes made from then on."
-            };
+                let start = ui.add_enabled(!starting, egui::Button::new("Start Review").small());
+                start.on_hover_text("From now on, show only the changes made after this moment (for example by a coding agent)").clicked().then_some(ListAction::Start)
+            }
+        };
+        // Heading, Start Review and ⟳ share a row when they fit; in a narrow
+        // side bar the button gets a row of its own.
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let text_w = |s: &str| ui.painter().layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE).size().x;
+        let pad = 2.0 * ui.spacing().button_padding.x + ui.spacing().item_spacing.x;
+        let one_row = text_w(what) + text_w(if reviewing { "End Review" } else { "Start Review" }) + text_w("⟳") + 2.0 * pad <= ui.available_width();
+        ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("⟳").on_hover_text("Look for changes now").clicked() {
                     action = Some(ListAction::Rescan);
                 }
-                if self.review.reviewing() {
-                    if ui.small_button("End Review").on_hover_text("Go back to the changes since the last commit").clicked() {
-                        action = Some(ListAction::End);
-                    }
-                } else if ui.add_enabled(!self.review.starting, egui::Button::new("Start Review").small()).on_hover_text("From now on, show only the changes made after this moment (for example by a coding agent)").clicked() {
-                    action = Some(ListAction::Start);
+                if one_row && let Some(a) = review_button(ui) {
+                    action = Some(a);
                 }
-                // The heading takes what's left, cut short with … in a narrow side bar.
+                // The heading takes what's left (cut short with … if it must).
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add(egui::Label::new(RichText::new(what).strong()).truncate()).on_hover_text(hint);
                 });
             });
         });
+        if !one_row && let Some(a) = ui.horizontal(review_button).inner {
+            action = Some(a);
+        }
         let Some(scan) = self.review.scan.as_ref() else {
             let text = match (&self.review.error, self.review.starting) {
                 (_, true) => "Starting the review…".to_owned(),
