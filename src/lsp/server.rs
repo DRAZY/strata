@@ -920,7 +920,7 @@ fn notification_from_server(method: &str, params: &Value, io: &Io) {
 /// A Windows job object that kills every process in it when closed or
 /// terminated, so a server and the processes it started end together.
 #[cfg(windows)]
-mod job {
+pub(crate) mod job {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{

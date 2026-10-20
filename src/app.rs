@@ -160,6 +160,8 @@ pub struct StrataApp {
     ai: ai_ui::AiState,
     /// Notes mode: the vault index, link completion, dialogs (see `notes_ui`).
     notes: notes_ui::NotesState,
+    /// Running Markdown code blocks (see `runblock_ui`).
+    code_run: runblock_ui::CodeRunState,
 }
 
 mod ai_ui;
@@ -198,6 +200,7 @@ mod terminal_ui;
 mod preview;
 mod printing;
 mod replace_files;
+mod runblock_ui;
 mod review_ui;
 #[cfg(test)]
 mod save_safety;
@@ -339,6 +342,7 @@ impl StrataApp {
             lsp,
             ai: Default::default(),
             notes: Default::default(),
+            code_run: Default::default(),
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -635,6 +639,7 @@ impl StrataApp {
             return false;
         }
         self.before_save(i, &path);
+        self.code_run_before_save(&path);
         match self.docs[i].write_to(path.clone()) {
             Ok(()) => {
                 self.doc_cfg.cache.saved(&path);
@@ -648,6 +653,7 @@ impl StrataApp {
                 self.snippet_saved(&path);
                 self.review_saved(&path);
                 self.notes_saved(&path);
+                self.code_run_saved(&path);
                 true
             }
             Err(e) => {
@@ -1325,6 +1331,7 @@ impl StrataApp {
             | Cmd::NotesFollowLink
             | Cmd::NotesUndoRename
             | Cmd::NotesCompareConflict => self.notes_command(ctx, cmd),
+            Cmd::NotesRunCodeBlock | Cmd::NotesRunCodeBlockCapture | Cmd::NotesForgetCodeBlockFiles => self.code_run_command(ctx, cmd),
         }
     }
 
@@ -1332,7 +1339,7 @@ impl StrataApp {
     /// Files' question, Print), or a menu: window and editor commands wait,
     /// and the dialog alone sees Esc and Enter.
     fn modal_open(&self, ctx: &egui::Context) -> bool {
-        self.sidebar.modal_open() || self.print.is_open() || self.review.confirming() || self.lsp.renaming() || self.notes.dialog.is_some() || egui::Popup::is_any_open(ctx)
+        self.sidebar.modal_open() || self.print.is_open() || self.review.confirming() || self.lsp.renaming() || self.notes.dialog.is_some() || self.code_run.asking() || egui::Popup::is_any_open(ctx)
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -2684,6 +2691,7 @@ impl eframe::App for StrataApp {
         self.update_git(ctx, now);
         self.review_frame(ctx, now);
         self.ai_frame(ctx);
+        self.code_run_frame(ctx);
         self.notes_frame(ctx);
         // Save on focus lost (a setting, off by default like Sublime's).
         let focused = ctx.input(|i| i.focused);

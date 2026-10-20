@@ -40,6 +40,12 @@ fn note_options() -> Options {
     options() | Options::ENABLE_WIKILINKS | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
 }
 
+/// The parser options the preview uses, as a note (`notes`) or not, so
+/// other readers of the source (running code blocks) see the same blocks.
+pub(crate) fn parser_options(notes: bool) -> Options {
+    if notes { note_options() } else { options() }
+}
+
 /// Link targets that aren't URLs: a wikilink (`[[target]]`) and a tag. The
 /// control character can't come from a Markdown link.
 pub const NOTE_LINK: &str = "\u{1}note:";
@@ -131,7 +137,9 @@ pub struct Item {
 pub enum Block {
     Heading { level: u8, text: Inline, slug: String },
     Paragraph(Inline),
-    Code { lang: String, code: String },
+    /// `run`: where a closed fenced block starts in the source (its opening
+    /// fence), which is how the preview's Run button names it.
+    Code { lang: String, code: String, run: Option<usize> },
     /// `kind` is a GitHub alert label ("Note", "Warning", …).
     Quote { kind: Option<&'static str>, blocks: Vec<Block> },
     List { start: Option<u64>, items: Vec<Item> },
@@ -167,12 +175,12 @@ pub fn parse_note(src: &str) -> Vec<TopBlock> {
 
 fn parse_as(src: &str, notes: bool) -> Vec<TopBlock> {
     let opts = if notes { note_options() } else { options() };
-    let mut b = Builder { it: pulldown_cmark::Parser::new_ext(src, opts).into_offset_iter(), tasks: Vec::new(), paragraphs: false, notes };
+    let mut b = Builder { src, it: pulldown_cmark::Parser::new_ext(src, opts).into_offset_iter(), tasks: Vec::new(), paragraphs: false, notes };
     let mut out = Vec::new();
     let (mut line, mut counted) = (0, 0);
     while let Some((ev, range)) = b.it.next() {
         let block = match ev {
-            Event::Start(tag) => b.block(tag),
+            Event::Start(tag) => b.block(tag, range.clone()),
             Event::Rule => Some(Block::Rule),
             Event::Html(s) | Event::Text(s) => html_block(s.to_string()),
             _ => None,
@@ -213,6 +221,7 @@ pub fn slug(text: &str) -> String {
 }
 
 struct Builder<'a> {
+    src: &'a str,
     it: pulldown_cmark::OffsetIter<'a, pulldown_cmark::DefaultBrokenLinkCallback>,
     /// Task marker of each open list item, innermost last.
     tasks: Vec<Option<bool>>,
@@ -415,7 +424,7 @@ impl Builder<'_> {
                 out.push(paragraph_block(st));
             }
         };
-        while let Some(ev) = self.it.next().map(|(e, _)| e) {
+        while let Some((ev, range)) = self.it.next() {
             match ev {
                 Event::TaskListMarker(done) => self.set_task(done),
                 Event::Rule => {
@@ -429,7 +438,7 @@ impl Builder<'_> {
                 Event::Start(tag) if is_block(&tag) => {
                     flush(&mut loose, &mut out);
                     paragraphs |= matches!(tag, Tag::Paragraph);
-                    out.extend(self.block(tag));
+                    out.extend(self.block(tag, range));
                 }
                 Event::End(e) if !is_inline_end(&e) => break,
                 ev => {
@@ -442,7 +451,7 @@ impl Builder<'_> {
         out
     }
 
-    fn block(&mut self, tag: Tag) -> Option<Block> {
+    fn block(&mut self, tag: Tag, range: std::ops::Range<usize>) -> Option<Block> {
         Some(match tag {
             Tag::Paragraph => paragraph_block(self.inline_state(TagEnd::Paragraph)),
             // A note's frontmatter: its properties, as written.
@@ -455,7 +464,7 @@ impl Builder<'_> {
                         _ => {}
                     }
                 }
-                Block::Code { lang: "yaml".into(), code: code.trim_end().to_owned() }
+                Block::Code { lang: "yaml".into(), code: code.trim_end().to_owned(), run: None }
             }
             Tag::Heading { level, .. } => {
                 let text = self.inline(TagEnd::Heading(level));
@@ -464,6 +473,7 @@ impl Builder<'_> {
             }
             Tag::BlockQuote(kind) => Block::Quote { kind: kind.map(alert_label), blocks: self.blocks() },
             Tag::CodeBlock(kind) => {
+                let fenced = matches!(kind, CodeBlockKind::Fenced(_));
                 let lang = match kind {
                     CodeBlockKind::Fenced(info) => info.split(|c: char| c.is_whitespace() || c == ',' || c == '{').next().unwrap_or("").to_owned(),
                     CodeBlockKind::Indented => String::new(),
@@ -476,10 +486,11 @@ impl Builder<'_> {
                         _ => {}
                     }
                 }
+                let run = (fenced && crate::runblock::closed(self.src.get(range.clone()).unwrap_or(""), &code)).then_some(range.start);
                 if code.ends_with('\n') {
                     code.pop();
                 }
-                Block::Code { lang, code }
+                Block::Code { lang, code, run }
             }
             Tag::HtmlBlock => {
                 let mut html = String::new();
@@ -675,6 +686,9 @@ pub enum Action {
     Note { link: String, markdown: bool },
     /// A note's `#tag` was clicked.
     Tag(String),
+    /// A code block's Run button was clicked: the block starting at byte
+    /// `at` of the source, showing `code` (to check the preview wasn't stale).
+    RunCode { at: usize, code: String },
 }
 
 /// Colors taken from the syntect theme.
@@ -736,6 +750,11 @@ struct Draw<'a> {
     notes: Option<&'a dyn Notes>,
     /// How many embeds deep this is drawn.
     depth: usize,
+    /// Code blocks get a Run button (the live preview of a document; never
+    /// help pages, AI answers or embedded notes).
+    run: bool,
+    /// The Run button clicked: (block start, its code).
+    run_clicked: Option<(usize, String)>,
 }
 
 impl Draw<'_> {
@@ -925,7 +944,7 @@ fn block(ui: &mut Ui, d: &mut Draw, b: &Block, depth: usize, dim: bool, index: u
                 ui.add_space(4.0);
             }
         }
-        Block::Code { lang, code } => code_block(ui, d, lang, code),
+        Block::Code { lang, code, run } => code_block(ui, d, lang, code, *run),
         Block::Quote { kind, blocks: kids } => {
             let bar = match *kind {
                 Some("Note") => Color32::from_rgb(0x44, 0x93, 0xf8),
@@ -981,8 +1000,10 @@ fn block(ui: &mut Ui, d: &mut Draw, b: &Block, depth: usize, dim: bool, index: u
     }
 }
 
-fn code_block(ui: &mut Ui, d: &mut Draw, lang: &str, code: &str) {
+fn code_block(ui: &mut Ui, d: &mut Draw, lang: &str, code: &str, run: Option<usize>) {
     let pal = d.pal.clone();
+    // Only on a click: nothing runs when the preview draws.
+    let runnable = run.filter(|_| d.run && d.depth == 0 && crate::runblock::lang(lang).is_some());
     let size = d.size * 0.88;
     let key = {
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1020,6 +1041,22 @@ fn code_block(ui: &mut Ui, d: &mut Draw, lang: &str, code: &str) {
                 None => job.append(code, 0.0, fmt(pal.fg, false)),
             }
             let galley = ui.painter().layout_job(job);
+            if let Some(at) = runnable {
+                // A row of its own above the code: the language, and Run at the right.
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(lang).size(d.small * 0.9).color(pal.dim));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let b = egui::Button::new(egui::RichText::new("▶ Run").size(d.small * 0.9)).small();
+                        if ui.add(b).on_hover_text("Run this block in the terminal (Strata shows it and asks first)").clicked() {
+                            d.run_clicked = Some((at, code.to_owned()));
+                        }
+                    });
+                });
+                ui.add_space(2.0);
+                let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
+                ui.painter().galley(rect.min, galley, pal.fg);
+                return;
+            }
             // The language sits in the top-right corner. When the first line
             // reaches under it, the label gets a row of its own above the code.
             let label = (!lang.is_empty()).then(|| ui.painter().layout_no_wrap(lang.to_owned(), FontId::proportional(d.small * 0.9), pal.dim));
@@ -1377,6 +1414,7 @@ impl Preview {
             area = area.vertical_scroll_offset(y.max(0.0));
         }
         let mut clicked = None;
+        let mut run_clicked = None;
         area.show_viewport(ui, |ui, viewport| {
             let full = ui.available_width();
             let width = (full - 2.0 * MARGIN).clamp(60.0, MAX_WIDTH);
@@ -1412,6 +1450,8 @@ impl Preview {
                 small: self.font_size * 0.9,
                 notes,
                 depth: 0,
+                run: true,
+                run_clicked: None,
             };
             let mut changed = false;
             for i in first..blocks.len() {
@@ -1431,11 +1471,15 @@ impl Preview {
                 }
             }
             clicked = d.clicked.take();
+            run_clicked = d.run_clicked.take();
             ui.set_min_size(vec2(full, total));
             if changed {
                 ui.ctx().request_repaint();
             }
         });
+        if let Some((at, code)) = run_clicked {
+            return Some(Action::RunCode { at, code });
+        }
         let url = clicked?;
         self.follow(&ctx, &url, doc.path.as_deref())
     }
@@ -1534,7 +1578,7 @@ impl DocRender {
         let origin = ui.max_rect().min;
         let rect = Rect::from_min_size(origin + vec2(((full - width) / 2.0).max(8.0), MARGIN * 0.75), vec2(width, 1e7));
         let mut child = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)).id_salt("doc-blocks"));
-        let mut d = Draw { pal: &pal, family, variable, size, theme: hl.theme_name(), code: &mut self.code, clicked: None, small: size * 0.9, notes: None, depth: 0 };
+        let mut d = Draw { pal: &pal, family, variable, size, theme: hl.theme_name(), code: &mut self.code, clicked: None, small: size * 0.9, notes: None, depth: 0, run: false, run_clicked: None };
         let mut headings = Vec::new();
         for (i, b) in blocks.iter().enumerate() {
             if i > 0 {
@@ -1595,7 +1639,7 @@ mod tests {
     #[test]
     fn code_tables_rules_images_footnotes() {
         let blocks = top(SAMPLE);
-        assert!(matches!(&blocks[6], Block::Code { lang, code } if lang == "rust" && code == "fn main() {}"));
+        assert!(matches!(&blocks[6], Block::Code { lang, code, run: Some(_) } if lang == "rust" && code == "fn main() {}"));
         let Block::Table { aligns, head, rows } = &blocks[7] else { panic!("{:?}", blocks[7]) };
         assert_eq!(aligns, &[Align::Min, Align::Max]);
         assert_eq!(head.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["A", "B"]);
@@ -1690,11 +1734,57 @@ mod tests {
         }
     }
 
+    /// Every text drawn into `shapes`.
+    fn drawn(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        shapes.iter().for_each(|c| walk(&c.shape, &mut out));
+        out
+    }
+
+    #[test]
+    fn run_buttons_only_in_the_live_preview_of_runnable_closed_blocks() {
+        let src = "```bash\necho a\n```\n\n```rust\nfn main() {}\n```\n\n    indented\n\n```python\nprint(1)\n```\n\n```sh\nnever closed\n";
+        let blocks = parse(src);
+        let runs: Vec<Option<usize>> = blocks.iter().filter_map(|b| if let Block::Code { run, .. } = &b.block { Some(*run) } else { None }).collect();
+        assert_eq!(runs, vec![Some(0), src.find("```rust"), None, src.find("```python"), None], "fenced and closed blocks know where they start");
+        let ctx = egui::Context::default();
+        let run_ui = |f: &mut dyn FnMut(&mut Ui)| {
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(600.0, 900.0))), ..Default::default() };
+                let mut out = ctx.run_ui(raw, |ui| f(ui));
+                out.textures_delta.clear();
+                shapes = out.shapes;
+            }
+            drawn(&shapes).into_iter().filter(|t| t == "▶ Run").count()
+        };
+        // The live preview: bash and python (closed) get one; rust, indented and unclosed don't.
+        let mut doc = Document::from_buffer(Some(PathBuf::from("/tmp/run.md")), crate::buffer::Buffer::from_str(src));
+        doc.highlighter.set_syntax("Markdown");
+        let mut preview = Preview::default();
+        assert_eq!(run_ui(&mut |ui| {
+            preview.show(ui, &mut doc);
+        }), 2);
+        // The same Markdown as a help page or an AI answer: none.
+        let mut render = DocRender::default();
+        let hl = Highlighter::new();
+        assert_eq!(run_ui(&mut |ui| {
+            render.show(ui, &hl, 14.0, &blocks);
+        }), 0);
+    }
+
     #[test]
     fn notes_parse_wikilinks_tags_embeds_and_frontmatter() {
         let src = "---\ntags: [a]\n---\nSee [[Other#Part|shown]], #tag_with_under/sub and `#code` or a#b.\n\n![[pic.png]]\n\nText ![[inline.png]] here\n";
         let blocks = top_note(src);
-        assert!(matches!(&blocks[0], Block::Code { lang, code } if lang == "yaml" && code == "tags: [a]"), "{:?}", blocks[0]);
+        assert!(matches!(&blocks[0], Block::Code { lang, code, run: None } if lang == "yaml" && code == "tags: [a]"), "{:?}", blocks[0]);
         let Block::Paragraph(p) = &blocks[1] else { panic!("{:?}", blocks[1]) };
         assert_eq!(p.link_at(p.text.find("shown").unwrap()), Some(format!("{NOTE_LINK}Other#Part").as_str()));
         let tags: Vec<&str> = p.runs.iter().filter(|r| r.style.tag).map(|r| &p.text[r.range.clone()]).collect();

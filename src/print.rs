@@ -445,7 +445,7 @@ impl Flow {
                 self.paragraph(&pieces, left, line_h, bars);
                 self.y += space;
             }
-            Block::Code { lang, code } => self.code_block(lang, code, left, bars),
+            Block::Code { lang, code, .. } => self.code_block(lang, code, left, bars),
             // Printed as its target (only notes parse into embeds).
             Block::Embed { target, .. } => {
                 let text = format!("↪ {target}");

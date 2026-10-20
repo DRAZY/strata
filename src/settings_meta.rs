@@ -153,6 +153,7 @@ pub static SETTINGS: &[Meta] = &[
     m("terminal_option_as_meta", Terminal, if cfg!(target_os = "macos") { "Option key as Meta" } else { "Alt key as Meta" }, Toggle),
     m("terminal_allow_clipboard_write", Terminal, "Programs may set the clipboard", Toggle),
     m("terminal_allow_clipboard_read", Terminal, "Programs may read the clipboard", Toggle),
+    m("code_block_timeout_seconds", Terminal, "Stop captured code blocks after (seconds)", whole(1.0, 3600.0)),
     // Side Bar
     m("sidebar_respect_gitignore", SideBar, "Hide ignored files", Toggle),
     m("file_exclude_patterns", SideBar, "Hidden names", Words),

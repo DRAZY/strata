@@ -17,7 +17,7 @@ const DATA_DIRS: &[&str] = &["backups", "Logs", "Crashes", "Print"];
 /// owner-only, the files in it are left as they are.
 const USER_DIRS: &[&str] = &["Snippets", "build_systems", "Syntaxes", "Themes"];
 /// Files Strata keeps at the top of the config folder.
-const FILES: &[&str] = &["settings.json", "keybindings.json", "session.json", "session.json.tmp", "session.lock", "strata.port", crate::swap::KEY_FILE];
+const FILES: &[&str] = &["settings.json", "keybindings.json", "session.json", "session.json.tmp", "session.lock", "strata.port", crate::swap::KEY_FILE, crate::runblock::ALLOWED_FILE];
 
 /// `create_dir_all`, with every folder it creates owner-only (folders that
 /// already exist are left to `harden`).
