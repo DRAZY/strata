@@ -132,15 +132,15 @@ Strata recognizes these forms:
 
 A location that a long line wrapped onto the next row still works, wherever you point at it.
 
-Relative paths are looked for in the shell's current folder (it follows `cd` on macOS and Linux; on Windows, the folder the terminal started in), then in the folder the terminal started in, then in the side bar folders. Only files that exist are links, so times like `12:30:45` and files that were deleted aren't underlined. Paths with spaces are recognized only in Python tracebacks, which put them in quotes.
+Relative paths are looked for in the shell's current folder (it follows `cd` on macOS and Linux; on Windows, the folder the terminal started in), then in the folder the terminal started in, then in the side bar folders. Strata checks this in the background, so a slow network folder or a disconnected drive never holds up the editor; the underline appears once the check is done. Only files that exist are links, so times like `12:30:45` and files that were deleted aren't underlined. Paths with spaces are recognized only in Python tracebacks, which put them in quotes.
 
 While a program is using the mouse (see [Programs that use the mouse](#programs-that-use-the-mouse)), clicks go to the program; hold Shift as well to open a location.
 
 ## Sending text to the terminal
 
-Send to Terminal ({{key:send_to_terminal}}, Tools ▸ Send to Terminal, or "Terminal: Send to Terminal" in the palette) sends the selected text to the current terminal tab and presses Enter, which is handy for trying code in a REPL such as `python3` or `node`, or for running a command written in a file. With nothing selected, it sends the line the cursor is on, then you can move down and send the next one. If no terminal is running, it starts one first.
+Send to Terminal ({{key:send_to_terminal}}, Tools ▸ Send to Terminal, or "Terminal: Send to Terminal" in the palette) sends the selected text to the current terminal tab and presses Enter, which is handy for trying code in a REPL such as `python3` or `node`, or for running a command written in a file. With nothing selected, it sends the line the cursor is on, then you can move down and send the next one. If no terminal is running, it starts one first and sends the text once the shell's prompt is ready (at most 10 seconds later), so slow startup files don't swallow it.
 
-The editor keeps the keyboard, so you can go on editing and sending. Selected text that spans several lines is sent as one paste: shells and REPLs that support bracketed paste (zsh, recent bash, fish, Python 3.13 and others) receive the whole block before running it, while others run it one line at a time. With several selections, their text is sent one after another, each on its own line. When the last line sent is indented, such as the body of a Python `for` loop, Strata presses Enter a second time so the REPL runs the block instead of waiting at `...`; a shell just shows another prompt.
+The editor keeps the keyboard, so you can go on editing and sending. Selected text that spans several lines is sent as one paste: shells and REPLs that support bracketed paste (zsh, recent bash, fish, Python 3.13 and others) receive the whole block before running it, while others run it one line at a time. With several selections, their text is sent one after another, each on its own line. When the last line sent is indented, such as the body of a Python `for` loop, and Python is then waiting at its `...` prompt, Strata presses Enter a second time so the block runs. It does this only for Python (on macOS and Linux), so an extra Enter never answers a password or confirmation prompt from another program.
 
 ## Right-click menu
 
