@@ -378,6 +378,11 @@ pub struct Terminal {
     /// Which press of the modifier lookups belong to (answers to an earlier
     /// one are dropped).
     generation: u64,
+    /// The shell's folder as the kernel last gave it, and when.
+    shell_dir: Option<(std::time::Instant, Option<PathBuf>)>,
+    /// The side bar folders lookups last used, and a number that changes with them.
+    roots_seen: Vec<PathBuf>,
+    roots_generation: u64,
 }
 
 /// What finding links remembers on the UI thread while the modifier is held;
@@ -386,18 +391,23 @@ pub struct Terminal {
 struct LinkLookup {
     /// The last logical line searched, and the locations in it.
     line: Option<(String, Vec<crate::build::TextLocation>)>,
-    /// Files as printed, and what the resolver said they are.
-    answers: HashMap<String, Option<PathBuf>>,
-    /// Files the resolver has been asked about.
-    asked: std::collections::HashSet<String>,
+    /// What the resolver said files are, and when it said so (answers older
+    /// than `FILE_CHECK_TTL` are asked again, as files come and go).
+    answers: HashMap<AnswerKey, (std::time::Instant, Option<PathBuf>)>,
+    /// What the resolver has been asked, and when.
+    asked: HashMap<AnswerKey, std::time::Instant>,
 }
+
+/// What an answer depends on: the shell's folder as the kernel gave it
+/// (after a `cd` the same printed path names another file), the side bar
+/// folders (by `Terminal::roots_generation`), and the path as printed.
+type AnswerKey = (Option<PathBuf>, u64, String);
 
 /// A link candidate for the resolver.
 struct Resolve {
     generation: u64,
-    file: String,
-    /// The shell (whose folder is the first place to look), where it started, and the side bar folders.
-    pid: Option<u32>,
+    key: AnswerKey,
+    /// Where the shell started, and the side bar folders.
     cwd: PathBuf,
     roots: Vec<PathBuf>,
 }
@@ -407,7 +417,7 @@ struct Resolve {
 /// appears when the answer does.
 struct Resolver {
     ask: std::sync::mpsc::Sender<Resolve>,
-    answers: std::sync::mpsc::Receiver<(u64, String, Option<PathBuf>)>,
+    answers: std::sync::mpsc::Receiver<(u64, AnswerKey, Option<PathBuf>)>,
 }
 
 impl Resolver {
@@ -416,13 +426,16 @@ impl Resolver {
         let (tell, answers) = std::sync::mpsc::channel();
         let run = move || {
             let mut disk = DiskLookup::default();
-            // Ends when the terminal (and so `ask`) goes away.
+            // Ends when the terminal (and so `ask`) goes away. A check stuck
+            // on a dead network mount keeps the thread (only) until the
+            // system gives up on it; the terminal doesn't wait for it.
             while let Ok(r) = questions.recv() {
-                let mut bases = vec![disk.shell_dir(r.pid, &r.cwd, &r.roots), r.cwd.clone()];
+                let (shell_dir, _, file) = &r.key;
+                let mut bases = vec![disk.spell_dir(shell_dir.as_deref(), &r.cwd, &r.roots), r.cwd.clone()];
                 bases.dedup();
                 bases.extend(r.roots);
-                let path = resolve_file(&r.file, &bases, |p| disk.is_file(p));
-                if tell.send((r.generation, r.file, path)).is_err() {
+                let path = resolve_file(file, &bases, |p| disk.is_file(p));
+                if tell.send((r.generation, r.key, path)).is_err() {
                     break;
                 }
                 ctx.request_repaint();
@@ -434,15 +447,11 @@ impl Resolver {
 }
 
 /// What the resolver remembers, so holding ⌘ (Ctrl) over output that keeps
-/// changing (`cargo watch`, `tail -f`) doesn't ask the kernel or stat files
-/// for every new line.
+/// changing (`cargo watch`, `tail -f`) doesn't stat files for every new line.
 #[derive(Default)]
 struct DiskLookup {
-    /// The shell's folder, and when the kernel was asked.
-    dir: Option<(std::time::Instant, PathBuf)>,
     /// Where the shell started and the side bar folders, each with its
     /// canonical path (for spelling the shell's folder their way).
-    #[cfg_attr(not(unix), allow(dead_code))] // only Unix asks for the shell's folder
     canon: Vec<(PathBuf, Option<PathBuf>)>,
     /// Whether paths are files, and when that was checked.
     files: HashMap<PathBuf, (std::time::Instant, bool)>,
@@ -474,26 +483,13 @@ impl DiskLookup {
         yes
     }
 
-    /// The shell's current folder (after any `cd`), else where it started
-    /// (`cwd`); the kernel is asked at most every `SHELL_DIR_TTL`.
-    fn shell_dir(&mut self, pid: Option<u32>, cwd: &Path, roots: &[PathBuf]) -> PathBuf {
-        if let Some((at, dir)) = &self.dir
-            && at.elapsed() < SHELL_DIR_TTL
-        {
-            return dir.clone();
-        }
-        let dir = self.ask_shell_dir(pid, cwd, roots);
-        self.dir = Some((std::time::Instant::now(), dir.clone()));
-        dir
-    }
-
-    /// The kernel gives the folder with symbolic links resolved
-    /// (`/private/var` for `/var` on macOS); inside where the shell started
-    /// or one of `roots` it's spelled their way, so opened files match the
-    /// tabs and side bar. Their canonical paths are kept until they change.
-    fn ask_shell_dir(&mut self, pid: Option<u32>, cwd: &Path, roots: &[PathBuf]) -> PathBuf {
-        #[cfg(unix)]
-        if let Some(dir) = pid.and_then(process_dir) {
+    /// The shell's folder `dir` as the kernel gave it (else where it
+    /// started, `cwd`). The kernel resolves symbolic links (`/private/var`
+    /// for `/var` on macOS); inside where the shell started or one of
+    /// `roots` it's spelled their way, so opened files match the tabs and
+    /// side bar. Their canonical paths are kept until they change.
+    fn spell_dir(&mut self, dir: Option<&Path>, cwd: &Path, roots: &[PathBuf]) -> PathBuf {
+        if let Some(dir) = dir {
             let bases: Vec<&Path> = std::iter::once(cwd).chain(roots.iter().map(PathBuf::as_path)).collect();
             if self.canon.iter().map(|(b, _)| b.as_path()).ne(bases.iter().copied()) {
                 self.canon = bases
@@ -510,9 +506,8 @@ impl DiskLookup {
                     return if rest.as_os_str().is_empty() { base.clone() } else { base.join(rest) };
                 }
             }
-            return dir;
+            return dir.to_owned();
         }
-        let _ = (pid, roots);
         cwd.to_owned()
     }
 }
@@ -608,7 +603,7 @@ impl Terminal {
             #[cfg(unix)]
             tty,
             cwd: cwd.to_owned(), started: std::time::Instant::now(), last_output, pending_send: Vec::new(), enter_after: None, link: None,
-            lookup: LinkLookup::default(), resolver: None, generation: 0 })
+            lookup: LinkLookup::default(), resolver: None, generation: 0, shell_dir: None, roots_seen: Vec::new(), roots_generation: 0 })
     }
 
     pub fn title(&self) -> &str {
@@ -707,6 +702,23 @@ impl Terminal {
         if !self.pending_send.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
+    }
+
+    /// The shell's current folder as the kernel gives it (after any `cd`),
+    /// asked at most every `SHELL_DIR_TTL`. This asks the kernel about the
+    /// process, not the disk. `None` on Windows.
+    fn raw_shell_dir(&mut self) -> Option<PathBuf> {
+        if let Some((at, dir)) = &self.shell_dir
+            && at.elapsed() < SHELL_DIR_TTL
+        {
+            return dir.clone();
+        }
+        #[cfg(unix)]
+        let dir = process_dir(self.pid);
+        #[cfg(not(unix))]
+        let dir = None;
+        self.shell_dir = Some((std::time::Instant::now(), dir.clone()));
+        dir
     }
 
     /// A new shell is ready for sent text when its line editor turns on
@@ -857,12 +869,15 @@ const SHELL_QUIET: std::time::Duration = std::time::Duration::from_millis(300);
 /// The longest Send to Terminal waits for a new shell.
 const SHELL_START_CAP: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// A Python interpreter's process name: python, python3.12, Python (the
-/// macOS framework build), pypy3.
+/// A Python interpreter's process name: python or pypy, with an optional
+/// version (python3, python3.14, pypy3). Helpers such as python-agent don't
+/// count. On macOS, where the framework build runs as "Python", case is
+/// ignored.
 #[cfg(unix)]
 fn is_python(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    name.starts_with("python") || name.starts_with("pypy")
+    let name = if MAC { name.to_ascii_lowercase() } else { name.to_owned() };
+    let Some(version) = name.strip_prefix("python").or_else(|| name.strip_prefix("pypy")) else { return false };
+    version.is_empty() || version.split('.').all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 #[cfg(target_os = "macos")]
@@ -1490,22 +1505,40 @@ fn link_at(ctx: &egui::Context, t: &mut Terminal, p: Point, roots: &[PathBuf]) -
         t.resolver = Resolver::start(ctx.clone());
     }
     let resolver = t.resolver.as_ref()?;
-    while let Ok((generation, file, path)) = resolver.answers.try_recv() {
+    let now = std::time::Instant::now();
+    while let Ok((generation, key, path)) = resolver.answers.try_recv() {
         if generation == t.generation {
-            t.lookup.answers.insert(file, path);
+            t.lookup.answers.insert(key, (now, path));
         }
     }
-    let Some(answer) = t.lookup.answers.get(&loc.file) else {
-        if t.lookup.asked.insert(loc.file.clone()) {
-            #[cfg(unix)]
-            let pid = Some(t.pid);
-            #[cfg(not(unix))]
-            let pid = None;
-            let _ = resolver.ask.send(Resolve { generation: t.generation, file: loc.file.clone(), pid, cwd: t.cwd.clone(), roots: roots.to_vec() });
+    if t.roots_seen != roots {
+        t.roots_seen = roots.to_vec();
+        t.roots_generation += 1;
+    }
+    let generation = t.generation;
+    let key: AnswerKey = (t.raw_shell_dir(), t.roots_generation, loc.file.clone());
+    let lookup = &mut t.lookup;
+    let fresh = |at: &std::time::Instant| now.duration_since(*at) < FILE_CHECK_TTL;
+    match lookup.answers.get(&key) {
+        Some((asked_at, answer)) if fresh(asked_at) => {
+            let path = answer.clone()?;
+            return Some(Link { rows: link_rows(&at, &loc), path, line: loc.line, col: loc.col });
         }
-        return None;
-    };
-    let path = answer.clone()?;
+        Some(_) => {
+            lookup.answers.remove(&key);
+        }
+        None => {}
+    }
+    if lookup.asked.get(&key).is_none_or(|at| !fresh(at)) {
+        lookup.asked.insert(key.clone(), now);
+        let resolver = t.resolver.as_ref()?;
+        let _ = resolver.ask.send(Resolve { generation, key, cwd: t.cwd.clone(), roots: roots.to_vec() });
+    }
+    None
+}
+
+/// The cells `loc` covers, a row at a time.
+fn link_rows(at: &[(usize, Point)], loc: &crate::build::TextLocation) -> Vec<LinkRow> {
     let mut rows: Vec<LinkRow> = Vec::new();
     for &(_, q) in at.iter().filter(|(b, _)| loc.span.contains(b)) {
         match rows.last_mut() {
@@ -1513,7 +1546,7 @@ fn link_at(ctx: &egui::Context, t: &mut Terminal, p: Point, roots: &[PathBuf]) -
             _ => rows.push((q.line, q.column.0, q.column.0 + 1)),
         }
     }
-    Some(Link { rows, path, line: loc.line, col: loc.col })
+    rows
 }
 
 /// ⌘-hover (Ctrl elsewhere) underlines a file location; clicking it opens
@@ -2032,12 +2065,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn python_process_names() {
-        for name in ["python", "python3", "python3.12", "Python", "pypy3"] {
+        for name in ["python", "python3", "python3.14", "python3.12.1", "pypy", "pypy3", "pypy3.10"] {
             assert!(is_python(name), "{name}");
         }
-        for name in ["sudo", "ssh", "zsh", "lldb", "node", "less"] {
+        for name in ["sudo", "ssh", "zsh", "node", "python-agent", "pypy-helper", "python3-config", "pythonw.", "python3.", "py", "mypython"] {
             assert!(!is_python(name), "{name}");
         }
+        // The macOS framework build runs as "Python"; names there ignore case.
+        assert_eq!(is_python("Python"), MAC);
+        assert_eq!(is_python("PyPy3.10"), MAC);
     }
 
     #[test]
@@ -2322,21 +2358,23 @@ mod tests {
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         // `exec` keeps the pid: the shell itself changes folder.
         let shell = ("/bin/sh".to_owned(), vec!["-c".to_owned(), "cd sub && echo MOVED && exec sleep 10".to_owned()]);
-        let t = Terminal::spawn(None, &dir, Some(shell), 40, 5).unwrap();
+        let mut t = Terminal::spawn(None, &dir, Some(shell), 40, 5).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !t.screen_text().contains("MOVED") && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let canon = |p: PathBuf| p.canonicalize().unwrap();
+        let raw = t.raw_shell_dir();
+        assert_eq!(raw.clone().map(canon), Some(canon(dir.join("sub"))));
         let mut disk = DiskLookup::default();
-        assert_eq!(canon(disk.shell_dir(Some(t.pid), &dir, &[])), canon(dir.join("sub")));
-        assert_eq!(disk.shell_dir(Some(t.pid), &dir, &[]), dir.join("sub"), "spelled as the folder it started in");
+        assert_eq!(disk.spell_dir(raw.as_deref(), &dir, &[]), dir.join("sub"), "spelled as the folder it started in");
+        assert_eq!(disk.spell_dir(None, &dir, &[]), dir, "unknown: where it started");
         // Asked again within SHELL_DIR_TTL, the remembered answer is used.
-        let elsewhere = PathBuf::from("/elsewhere");
-        disk.dir = Some((std::time::Instant::now(), elsewhere.clone()));
-        assert_eq!(disk.shell_dir(Some(t.pid), &dir, &[]), elsewhere);
-        disk.dir = Some((std::time::Instant::now() - SHELL_DIR_TTL, elsewhere));
-        assert_eq!(disk.shell_dir(Some(t.pid), &dir, &[]), dir.join("sub"), "and after it the kernel again");
+        let elsewhere = Some(PathBuf::from("/elsewhere"));
+        t.shell_dir = Some((std::time::Instant::now(), elsewhere.clone()));
+        assert_eq!(t.raw_shell_dir(), elsewhere);
+        t.shell_dir = Some((std::time::Instant::now() - SHELL_DIR_TTL, elsewhere));
+        assert_eq!(t.raw_shell_dir(), raw, "and after it the kernel again");
         drop(t);
         std::fs::remove_dir_all(dir).ok();
     }

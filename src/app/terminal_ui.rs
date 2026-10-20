@@ -437,6 +437,76 @@ mod tests {
     }
 
     #[test]
+    fn links_follow_cd_while_the_modifier_stays_held() {
+        // The same printed path names another file once the shell has moved.
+        let dir = std::env::temp_dir().join(format!("strata-term-cdlink-{}", std::process::id()));
+        for sub in ["a", "b"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+            std::fs::write(dir.join(sub).join("foo.rs"), "// one\n// two\n").unwrap();
+        }
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(None, None);
+        frame(&mut app, &ctx, vec![]);
+        let script = "cd a; echo 'first foo.rs:1:1'; read -r go; cd ../b; echo 'second foo.rs:2:1'; sleep 30";
+        let shell = ("/bin/sh".to_owned(), vec!["-c".to_owned(), script.to_owned()]);
+        app.terminal.tabs.push(crate::terminal::Terminal::spawn(Some(ctx.clone()), &dir, Some(shell), 80, 12).unwrap());
+        app.terminal.visible = true;
+        wait_for(&mut app, &ctx, "first foo.rs");
+        // Hover until the underlined link names `want` (or give up after 5 s).
+        let hover_until = |app: &mut StrataApp, p: Pos2, want: &std::path::Path| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                frame_held(app, &ctx, vec![Event::PointerMoved(p)], link_mods());
+                let got = app.terminal.active_terminal().unwrap().hovered_link().map(|l| l.0.to_owned());
+                if got.as_deref() == Some(want) || std::time::Instant::now() > deadline {
+                    return got;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        let first = screen_pos(&app, "foo.rs:1:1", 1);
+        assert_eq!(hover_until(&mut app, first, &dir.join("a/foo.rs")), Some(dir.join("a/foo.rs")));
+        // Let the shell go on to `cd ../b`, the modifier held all along.
+        app.terminal.active_terminal().unwrap().write("\r");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !app.terminal.active_terminal().unwrap().screen_text().contains("second foo.rs") && std::time::Instant::now() < deadline {
+            frame_held(&mut app, &ctx, vec![Event::PointerMoved(first)], link_mods());
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let second = screen_pos(&app, "foo.rs:2:1", 1);
+        assert_eq!(hover_until(&mut app, second, &dir.join("b/foo.rs")), Some(dir.join("b/foo.rs")), "the shell's new folder");
+        link_click(&mut app, &ctx, second);
+        assert_eq!(app.doc().path.clone(), Some(dir.join("b/foo.rs")));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn answers_expire_so_new_files_become_links() {
+        let dir = std::env::temp_dir().join(format!("strata-term-later-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(None, None);
+        frame(&mut app, &ctx, vec![]);
+        let shell = ("/bin/sh".to_owned(), vec!["-c".to_owned(), "echo 'see later.rs:1:1'; sleep 30".to_owned()]);
+        app.terminal.tabs.push(crate::terminal::Terminal::spawn(Some(ctx.clone()), &dir, Some(shell), 80, 12).unwrap());
+        app.terminal.visible = true;
+        wait_for(&mut app, &ctx, "later.rs");
+        let p = screen_pos(&app, "later.rs:1:1", 1);
+        hover(&mut app, &ctx, p);
+        assert!(app.terminal.active_terminal().unwrap().hovered_link().is_none(), "not a file yet");
+        std::fs::write(dir.join("later.rs"), "// now\n").unwrap();
+        // The modifier stays held: the old answer (and the resolver's own file
+        // check) expire after 2 s each.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        while app.terminal.active_terminal().unwrap().hovered_link().is_none() && std::time::Instant::now() < deadline {
+            frame_held(&mut app, &ctx, vec![Event::PointerMoved(p)], link_mods());
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(app.terminal.active_terminal().unwrap().hovered_link().is_some_and(|l| l.0 == dir.join("later.rs")));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn link_lookups_never_touch_the_disk_on_the_ui_thread() {
         // A slow network folder or a removed drive mustn't freeze the editor:
         // the underline appears when a background check answers.
