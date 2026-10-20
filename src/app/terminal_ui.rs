@@ -380,6 +380,7 @@ mod tests {
         let p = screen_pos(&app, "src/main.rs:10:3", 2);
         frame(&mut app, &ctx, vec![Event::PointerMoved(p)]);
         assert!(app.terminal.active_terminal().unwrap().hovered_link().is_none());
+        assert!(app.terminal.active_terminal().unwrap().link_lookup_is_empty(), "no disk work without the modifier");
         // With it, the whole location is underlined.
         frame_held(&mut app, &ctx, vec![Event::PointerMoved(p)], link_mods());
         let (path, line, col, rows) = app.terminal.active_terminal().unwrap().hovered_link().expect("a link under the pointer");
@@ -464,6 +465,75 @@ mod tests {
         let screen = wait_for(&mut app, &ctx, "two-2");
         assert!(row(&screen, "one-1").is_some() && row(&screen, "two-2").is_some(), "{screen}");
         assert!(!app.terminal.has_focus(&ctx), "the editor keeps the keyboard");
+        std::fs::remove_file(file).ok();
+    }
+
+    /// Whether `python3` can be run.
+    fn have_python() -> bool {
+        std::process::Command::new("python3").args(["-c", ""]).status().is_ok_and(|s| s.success())
+    }
+
+    #[test]
+    fn send_to_terminal_closes_an_open_python_block() {
+        if !have_python() {
+            return;
+        }
+        let file = std::env::temp_dir().join(format!("strata-send-py-{}.py", std::process::id()));
+        std::fs::write(&file, "for i in range(2):\n    print(i * 7)\n").unwrap();
+        // The new REPL (bracketed paste) and the basic one (lines typed one by one).
+        for basic in [false, true] {
+            let env = if basic { "PYTHON_BASIC_REPL=1 " } else { "" };
+            let shell = ("/bin/sh".to_owned(), vec!["-c".to_owned(), format!("{env}exec python3 -q")]);
+            let ctx = egui::Context::default();
+            let mut app = StrataApp::new(None, None);
+            frame(&mut app, &ctx, vec![]);
+            app.open_path(file.clone(), false);
+            app.terminal.tabs.push(crate::terminal::Terminal::spawn(Some(ctx.clone()), &std::env::temp_dir(), Some(shell), 80, 20).unwrap());
+            app.terminal.visible = true;
+            wait_for(&mut app, &ctx, ">>>");
+            app.doc().editor.select_all();
+            app.run(&ctx, Cmd::SendToTerminal);
+            let screen = wait_for(&mut app, &ctx, "\n7\n");
+            let lines: Vec<&str> = screen.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+            assert!(lines.contains(&"0") && lines.contains(&"7"), "the loop ran (basic: {basic}): {screen}");
+            // Back at the main prompt, not stuck at "...".
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut last = String::new();
+            while std::time::Instant::now() < deadline {
+                let screen = wait_for(&mut app, &ctx, ">>>");
+                last = screen.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or_default().to_owned();
+                if last == ">>>" {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            assert_eq!(last, ">>>", "basic: {basic}");
+        }
+        std::fs::remove_file(file).ok();
+    }
+
+    #[test]
+    fn an_indented_line_runs_once_in_a_shell() {
+        // The extra Enter after an indented line is only an empty prompt to a
+        // shell, and text sent right after it still runs, in order.
+        let shell = if std::path::Path::new("/bin/zsh").exists() { ("/bin/zsh".to_owned(), vec!["-f".to_owned()]) } else { ("/bin/sh".to_owned(), vec![]) };
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(None, None);
+        frame(&mut app, &ctx, vec![]);
+        let file = std::env::temp_dir().join(format!("strata-send-indent-{}.sh", std::process::id()));
+        std::fs::write(&file, "if true; then\n  echo in-$((3*3))\nfi\necho after-$((2*2))\n").unwrap();
+        app.open_path(file.clone(), false);
+        app.terminal.tabs.push(crate::terminal::Terminal::spawn(Some(ctx.clone()), &std::env::temp_dir(), Some(shell), 80, 20).unwrap());
+        app.terminal.visible = true;
+        app.doc().editor.select_ranges(&[16..16], 0);
+        app.run(&ctx, Cmd::SendToTerminal);
+        app.doc().editor.select_ranges(&[38..38], 0);
+        app.run(&ctx, Cmd::SendToTerminal);
+        let screen = wait_for(&mut app, &ctx, "after-4");
+        let row = |text: &str| screen.lines().position(|l| l.trim() == text);
+        assert!(row("in-9").is_some() && row("in-9") < row("after-4"), "{screen}");
+        assert_eq!(screen.matches("in-9").count(), 1, "ran once: {screen}");
+        assert!(!screen.contains("not found") && !screen.contains("error"), "{screen}");
         std::fs::remove_file(file).ok();
     }
 

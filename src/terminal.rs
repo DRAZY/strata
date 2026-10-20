@@ -354,16 +354,59 @@ pub struct Terminal {
     /// The folder the shell started in.
     cwd: PathBuf,
     started: std::time::Instant,
-    /// Send to Terminal text waiting for a shell that's still starting.
+    /// Send to Terminal text waiting for a shell that's still starting (or
+    /// for the Enter that closes the previous text's block).
     pending_send: Vec<String>,
+    /// When to press the Enter that closes a sent Python block.
+    enter_after: Option<std::time::Instant>,
     /// The file location under the pointer while ⌘ (Ctrl) is held.
     link: Option<Link>,
-    /// The last logical line searched for locations, and what they resolved to.
-    link_cache: Option<LineLinks>,
+    /// What link lookups remember while the modifier is held.
+    lookup: LinkLookup,
 }
 
-/// A logical line's text and the locations in it, with the files they name.
-type LineLinks = (String, Vec<(crate::build::TextLocation, Option<PathBuf>)>);
+/// What finding links remembers, so holding ⌘ (Ctrl) over output that keeps
+/// changing (`cargo watch`, `tail -f`) doesn't ask the kernel or stat files
+/// every frame, which stutters on network folders. Emptied when the modifier
+/// is released, so the next lookup sees the disk as it is.
+#[derive(Default)]
+struct LinkLookup {
+    /// The last logical line searched, and the locations in it.
+    line: Option<(String, Vec<crate::build::TextLocation>)>,
+    /// The shell's folder, and when the kernel was asked.
+    dir: Option<(std::time::Instant, PathBuf)>,
+    /// Where the shell started and the side bar folders, each with its
+    /// canonical path (for spelling the shell's folder their way).
+    #[cfg_attr(not(unix), allow(dead_code))] // only Unix asks for the shell's folder
+    canon: Vec<(PathBuf, Option<PathBuf>)>,
+    /// Whether paths are files, and when that was checked.
+    files: HashMap<PathBuf, (std::time::Instant, bool)>,
+}
+
+/// How long the shell's folder and a file check are trusted while the modifier is held.
+const SHELL_DIR_TTL: std::time::Duration = std::time::Duration::from_millis(500);
+const FILE_CHECK_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+/// Locations looked at per logical line (a huge line can hold thousands of `a:1`).
+const MAX_LOCATIONS_PER_LINE: usize = 64;
+/// File checks remembered before starting over.
+const MAX_FILE_CHECKS: usize = 512;
+
+impl LinkLookup {
+    /// `p.is_file()`, remembered for `FILE_CHECK_TTL`.
+    fn is_file(&mut self, p: &Path) -> bool {
+        if let Some(&(at, yes)) = self.files.get(p)
+            && at.elapsed() < FILE_CHECK_TTL
+        {
+            return yes;
+        }
+        if self.files.len() >= MAX_FILE_CHECKS {
+            self.files.clear();
+        }
+        let yes = p.is_file();
+        self.files.insert(p.to_owned(), (std::time::Instant::now(), yes));
+        yes
+    }
+}
 
 /// Part of a link on one row: (grid line, first column, column after the last).
 type LinkRow = (Line, usize, usize);
@@ -440,7 +483,7 @@ impl Terminal {
             pid,
             title: None, shell_name, exited: false, size, cell: (8.0, 16.0), scroll_acc: 0.0, bell: f64::NEG_INFINITY, focused: false,
             preedit: String::new(), mouse_down: [false; 3], mouse_cell: None,
-            cwd: cwd.to_owned(), started: std::time::Instant::now(), pending_send: Vec::new(), link: None, link_cache: None })
+            cwd: cwd.to_owned(), started: std::time::Instant::now(), pending_send: Vec::new(), enter_after: None, link: None, lookup: LinkLookup::default() })
     }
 
     pub fn title(&self) -> &str {
@@ -517,14 +560,21 @@ impl Terminal {
                 TermEvent::Wakeup | TermEvent::MouseCursorDirty | TermEvent::CursorBlinkingChange => {}
             }
         }
-        if !self.pending_send.is_empty() {
-            if self.ready_for_input() {
-                for text in std::mem::take(&mut self.pending_send) {
-                    self.send_now(&text);
-                }
+        if let Some(at) = self.enter_after {
+            let now = std::time::Instant::now();
+            if now >= at {
+                self.enter_after = None;
+                self.type_bytes(b"\r".to_vec());
             } else {
-                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+                ctx.request_repaint_after(at - now);
             }
+        }
+        while self.enter_after.is_none() && !self.pending_send.is_empty() && self.ready_for_input() {
+            let text = self.pending_send.remove(0);
+            self.send_now(&text);
+        }
+        if !self.pending_send.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
     }
 
@@ -538,30 +588,55 @@ impl Terminal {
     /// Send to Terminal: `text` as a paste, then Enter, so a multi-line
     /// selection runs as one input in shells and REPLs that bracket pastes.
     pub fn send(&mut self, text: &str) {
-        if !self.pending_send.is_empty() || !self.ready_for_input() {
+        if !self.pending_send.is_empty() || self.enter_after.is_some() || !self.ready_for_input() {
             self.pending_send.push(text.to_owned());
         } else {
             self.send_now(text);
         }
     }
 
-    fn send_now(&self, text: &str) {
+    fn send_now(&mut self, text: &str) {
         let text = text.trim_end_matches(['\r', '\n']);
         if !text.is_empty() {
             self.paste(text);
         }
         self.type_bytes(b"\r".to_vec());
+        // A Python block whose last line is indented (a `for` loop's body)
+        // stays open at "..." until an empty line ends it; shells just show
+        // another prompt for the extra Enter. It goes a moment later: Python's
+        // own REPL takes keys that arrive together as a paste, where Enter
+        // only starts a new line.
+        if open_block(text) {
+            self.enter_after = Some(std::time::Instant::now() + BLOCK_ENTER_DELAY);
+        }
     }
 
-    /// The shell's current folder (after any `cd`), else where it started.
-    /// The kernel gives it with symbolic links resolved (`/private/var` for
-    /// `/var` on macOS); inside where the shell started or one of `roots` it's
-    /// spelled their way, so opened files match the tabs and side bar.
-    fn shell_dir(&self, roots: &[PathBuf]) -> PathBuf {
+    /// The shell's current folder (after any `cd`), else where it started;
+    /// the kernel is asked at most every `SHELL_DIR_TTL`.
+    fn shell_dir(&mut self, roots: &[PathBuf]) -> PathBuf {
+        if let Some((at, dir)) = &self.lookup.dir
+            && at.elapsed() < SHELL_DIR_TTL
+        {
+            return dir.clone();
+        }
+        let dir = self.ask_shell_dir(roots);
+        self.lookup.dir = Some((std::time::Instant::now(), dir.clone()));
+        dir
+    }
+
+    /// The kernel gives the folder with symbolic links resolved
+    /// (`/private/var` for `/var` on macOS); inside where the shell started
+    /// or one of `roots` it's spelled their way, so opened files match the
+    /// tabs and side bar. Their canonical paths are kept until they change.
+    fn ask_shell_dir(&mut self, roots: &[PathBuf]) -> PathBuf {
         #[cfg(unix)]
         if let Some(dir) = process_dir(self.pid) {
-            for base in std::iter::once(&self.cwd).chain(roots) {
-                if let Some(rest) = base.canonicalize().ok().and_then(|c| dir.strip_prefix(c).ok().map(Path::to_path_buf)) {
+            let bases: Vec<&PathBuf> = std::iter::once(&self.cwd).chain(roots).collect();
+            if self.lookup.canon.iter().map(|(b, _)| b).ne(bases.iter().copied()) {
+                self.lookup.canon = bases.into_iter().map(|b| (b.clone(), b.canonicalize().ok())).collect();
+            }
+            for (base, canon) in &self.lookup.canon {
+                if let Some(rest) = canon.as_ref().and_then(|c| dir.strip_prefix(c).ok()) {
                     return if rest.as_os_str().is_empty() { base.clone() } else { base.join(rest) };
                 }
             }
@@ -632,6 +707,14 @@ impl Terminal {
         self.write(vec![0x0c]);
     }
 }
+
+/// The last non-blank line is indented: a Python block is still open.
+fn open_block(text: &str) -> bool {
+    text.lines().rev().find(|l| !l.trim().is_empty()).is_some_and(|l| l.starts_with([' ', '\t']))
+}
+
+/// How long after sending an open block its closing Enter follows.
+const BLOCK_ENTER_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// How long Send to Terminal waits for a new shell to turn on bracketed paste.
 const SHELL_START_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
@@ -708,6 +791,13 @@ impl Terminal {
     #[cfg(test)]
     pub fn hovered_link(&self) -> Option<(&Path, usize, usize, &[LinkRow])> {
         self.link.as_ref().map(|l| (l.path.as_path(), l.line, l.col, l.rows.as_slice()))
+    }
+
+    /// Link lookups have remembered nothing (so done no disk work).
+    #[cfg(test)]
+    pub fn link_lookup_is_empty(&self) -> bool {
+        let l = &self.lookup;
+        l.line.is_none() && l.dir.is_none() && l.canon.is_empty() && l.files.is_empty()
     }
 }
 
@@ -1191,23 +1281,23 @@ fn logical_line<L: EventListener>(term: &Term<L>, line: Line) -> (String, Vec<(u
 }
 
 /// The file `file` (as printed) names: absolute, or the first of `bases`
-/// holding it. Folders and files that don't exist give `None`.
-pub fn resolve_file(file: &str, bases: &[PathBuf]) -> Option<PathBuf> {
+/// holding it. Folders and files that don't exist (by `is_file`) give `None`.
+fn resolve_file(file: &str, bases: &[PathBuf], mut is_file: impl FnMut(&Path) -> bool) -> Option<PathBuf> {
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
     let path = match (file.strip_prefix("~/").or_else(|| file.strip_prefix("~\\")), home) {
         (Some(rest), Some(home)) => home.join(rest),
         _ => PathBuf::from(file),
     };
     if path.is_absolute() {
-        return Some(crate::build::normalize(&path)).filter(|p| p.is_file());
+        return Some(crate::build::normalize(&path)).filter(|p| is_file(p));
     }
-    bases.iter().map(|b| crate::build::normalize(&b.join(&path))).find(|p| p.is_file())
+    bases.iter().map(|b| crate::build::normalize(&b.join(&path))).find(|p| is_file(p))
 }
 
 /// The clickable location at grid point `p`, if any: found in its logical
 /// line and resolved against the shell's folder, where it started, then the
-/// side bar folders. The last line's results are kept, so holding the
-/// modifier over the same line doesn't touch the disk every frame.
+/// side bar folders. Only the location under the pointer is looked up on
+/// disk, through `LinkLookup`'s caches.
 fn link_at(t: &mut Terminal, p: Point, roots: &[PathBuf]) -> Option<Link> {
     let (text, at, p) = {
         let term = t.term.lock();
@@ -1217,18 +1307,16 @@ fn link_at(t: &mut Terminal, p: Point, roots: &[PathBuf]) -> Option<Link> {
         (text, at, p)
     };
     let byte = at.iter().find(|(_, q)| *q == p)?.0;
-    if t.link_cache.as_ref().is_none_or(|(cached, _)| *cached != text) {
-        let mut bases = vec![t.shell_dir(roots), t.cwd.clone()];
-        bases.dedup();
-        bases.extend(roots.iter().cloned());
-        let found = crate::build::find_locations(&text).into_iter().map(|l| {
-            let path = resolve_file(&l.file, &bases);
-            (l, path)
-        });
-        t.link_cache = Some((text.clone(), found.collect()));
+    if t.lookup.line.as_ref().is_none_or(|(cached, _)| *cached != text) {
+        let mut found = crate::build::find_locations(&text);
+        found.truncate(MAX_LOCATIONS_PER_LINE);
+        t.lookup.line = Some((text, found));
     }
-    let (_, found) = t.link_cache.as_ref()?;
-    let (loc, path) = found.iter().find(|(l, _)| l.span.contains(&byte))?;
+    let loc = t.lookup.line.as_ref()?.1.iter().find(|l| l.span.contains(&byte))?.clone();
+    let mut bases = vec![t.shell_dir(roots), t.cwd.clone()];
+    bases.dedup();
+    bases.extend(roots.iter().cloned());
+    let path = resolve_file(&loc.file, &bases, |p| t.lookup.is_file(p))?;
     let mut rows: Vec<LinkRow> = Vec::new();
     for &(_, q) in at.iter().filter(|(b, _)| loc.span.contains(b)) {
         match rows.last_mut() {
@@ -1236,7 +1324,7 @@ fn link_at(t: &mut Terminal, p: Point, roots: &[PathBuf]) -> Option<Link> {
             _ => rows.push((q.line, q.column.0, q.column.0 + 1)),
         }
     }
-    Some(Link { rows, path: path.clone()?, line: loc.line, col: loc.col })
+    Some(Link { rows, path, line: loc.line, col: loc.col })
 }
 
 /// ⌘-hover (Ctrl elsewhere) underlines a file location; clicking it opens
@@ -1252,7 +1340,7 @@ fn links(ui: &egui::Ui, t: &mut Terminal, resp: &egui::Response, origin: egui::P
     let point = resp.hover_pos().filter(|_| link_modifier(mods) && !reporting).and_then(|p| grid_point(t, p, origin, cell, offset));
     let Some(point) = point else {
         t.link = None;
-        t.link_cache = None;
+        t.lookup = LinkLookup::default();
         return None;
     };
     t.link = link_at(t, point, roots);
@@ -1750,6 +1838,15 @@ mod tests {
     }
 
     #[test]
+    fn indented_last_lines_leave_a_block_open() {
+        assert!(open_block("for i in range(2):\n    print(i)"));
+        assert!(open_block("if x:\n\tpass\n\n  \n"), "blank lines after it don't count");
+        assert!(!open_block("for i in 1 2; do\n  echo $i\ndone"));
+        assert!(!open_block("echo hi"));
+        assert!(!open_block(""));
+    }
+
+    #[test]
     fn paste_is_bracketed_on_request() {
         assert_eq!(paste_bytes("a\nb", false), b"a\rb");
         assert_eq!(paste_bytes("a\r\nb", false), b"a\rb");
@@ -1990,14 +2087,28 @@ mod tests {
         std::fs::write(project.join("src/main.rs"), "fn main() {}\n").unwrap();
         std::fs::write(dir.join("top.py"), "x = 1\n").unwrap();
         let bases = [dir.clone(), project.clone()];
-        assert_eq!(resolve_file("top.py", &bases), Some(dir.join("top.py")), "the shell's folder first");
-        assert_eq!(resolve_file("src/main.rs", &bases), Some(project.join("src/main.rs")), "then the project folders");
-        assert_eq!(resolve_file("./src/../src/main.rs", &bases), Some(project.join("src/main.rs")));
+        assert_eq!(resolve_file("top.py", &bases, Path::is_file), Some(dir.join("top.py")), "the shell's folder first");
+        assert_eq!(resolve_file("src/main.rs", &bases, Path::is_file), Some(project.join("src/main.rs")), "then the project folders");
+        assert_eq!(resolve_file("./src/../src/main.rs", &bases, Path::is_file), Some(project.join("src/main.rs")));
         let abs = project.join("src/main.rs");
-        assert_eq!(resolve_file(abs.to_str().unwrap(), &[]), Some(abs.clone()));
-        assert_eq!(resolve_file("src/missing.rs", &bases), None, "files that don't exist aren't links");
-        assert_eq!(resolve_file("src", &bases), None, "nor are folders");
-        assert_eq!(resolve_file("12", &bases), None, "nor a time like 12:30:45");
+        assert_eq!(resolve_file(abs.to_str().unwrap(), &[], Path::is_file), Some(abs.clone()));
+        assert_eq!(resolve_file("src/missing.rs", &bases, Path::is_file), None, "files that don't exist aren't links");
+        assert_eq!(resolve_file("src", &bases, Path::is_file), None, "nor are folders");
+        assert_eq!(resolve_file("12", &bases, Path::is_file), None, "nor a time like 12:30:45");
+        // File checks are remembered for a while, then made again.
+        let mut lookup = LinkLookup::default();
+        let top = dir.join("top.py");
+        assert!(lookup.is_file(&top));
+        std::fs::remove_file(&top).unwrap();
+        assert!(lookup.is_file(&top), "remembered");
+        lookup.files.get_mut(&top).unwrap().0 -= FILE_CHECK_TTL;
+        assert!(!lookup.is_file(&top), "checked again once stale");
+        let mut checks = 0;
+        let found = resolve_file("src/main.rs", &bases, |p| {
+            checks += 1;
+            lookup.is_file(p)
+        });
+        assert_eq!((found, checks), (Some(project.join("src/main.rs")), 2), "stops at the first folder holding it");
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -2008,7 +2119,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         // `exec` keeps the pid: the shell itself changes folder.
         let shell = ("/bin/sh".to_owned(), vec!["-c".to_owned(), "cd sub && echo MOVED && exec sleep 10".to_owned()]);
-        let t = Terminal::spawn(None, &dir, Some(shell), 40, 5).unwrap();
+        let mut t = Terminal::spawn(None, &dir, Some(shell), 40, 5).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !t.screen_text().contains("MOVED") && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2016,6 +2127,12 @@ mod tests {
         let canon = |p: PathBuf| p.canonicalize().unwrap();
         assert_eq!(canon(t.shell_dir(&[])), canon(dir.join("sub")));
         assert_eq!(t.shell_dir(&[]), dir.join("sub"), "spelled as the folder it started in");
+        // Asked again within SHELL_DIR_TTL, the remembered answer is used.
+        let elsewhere = PathBuf::from("/elsewhere");
+        t.lookup.dir = Some((std::time::Instant::now(), elsewhere.clone()));
+        assert_eq!(t.shell_dir(&[]), elsewhere);
+        t.lookup.dir = Some((std::time::Instant::now() - SHELL_DIR_TTL, elsewhere));
+        assert_eq!(t.shell_dir(&[]), dir.join("sub"), "and after it the kernel again");
         drop(t);
         std::fs::remove_dir_all(dir).ok();
     }

@@ -140,7 +140,7 @@ While a program is using the mouse (see [Programs that use the mouse](#programs-
 
 Send to Terminal ({{key:send_to_terminal}}, Tools ▸ Send to Terminal, or "Terminal: Send to Terminal" in the palette) sends the selected text to the current terminal tab and presses Enter, which is handy for trying code in a REPL such as `python3` or `node`, or for running a command written in a file. With nothing selected, it sends the line the cursor is on, then you can move down and send the next one. If no terminal is running, it starts one first.
 
-The editor keeps the keyboard, so you can go on editing and sending. Selected text that spans several lines is sent as one paste: shells and REPLs that support bracketed paste (zsh, recent bash, fish, Python 3.13 and others) receive the whole block before running it, while others run it one line at a time. With several selections, their text is sent one after another, each on its own line.
+The editor keeps the keyboard, so you can go on editing and sending. Selected text that spans several lines is sent as one paste: shells and REPLs that support bracketed paste (zsh, recent bash, fish, Python 3.13 and others) receive the whole block before running it, while others run it one line at a time. With several selections, their text is sent one after another, each on its own line. When the last line sent is indented, such as the body of a Python `for` loop, Strata presses Enter a second time so the REPL runs the block instead of waiting at `...`; a shell just shows another prompt.
 
 ## Right-click menu
 
