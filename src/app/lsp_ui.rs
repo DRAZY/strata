@@ -2318,6 +2318,9 @@ mod tests {
             .collect();
         took.sort();
         assert!(took[15] < Duration::from_millis(5), "a typical sync took {:?} (all: {took:?})", took[15]);
+        // And none stalls: a pause of the test thread stays well under this,
+        // copying or diffing the whole file on some keystrokes doesn't.
+        assert!(took[30] < Duration::from_millis(50), "the slowest sync took {:?} (all: {took:?})", took[30]);
         // And the server got every keystroke (it reports on the text it has).
         app.doc().editor.insert_text(" bad ");
         wait(&mut app, &ctx, "diagnostics on the big file", |a| markers(a).len() == 1);
