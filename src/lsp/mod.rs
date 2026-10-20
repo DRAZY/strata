@@ -199,7 +199,7 @@ mod tests {
         sync(&mut hub);
         assert!(hub.pid_for(&file).is_some());
         let saved: Vec<PathBuf> = serde_json::from_str(&std::fs::read_to_string(config.join(hub::TRUST_FILE)).unwrap()).unwrap();
-        assert_eq!(saved, std::slice::from_ref(&dir));
+        assert_eq!(saved, [std::fs::canonicalize(&dir).unwrap()], "stored as the real path");
         drop(hub);
         // Next time (another Strata): no question.
         let mut hub = Hub::new(false);
@@ -219,6 +219,41 @@ mod tests {
         for d in [dir, config, other] {
             std::fs::remove_dir_all(d).ok();
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_inside_a_trusted_folder_doesnt_make_its_target_trusted() {
+        let base = scratch("trust-link");
+        let (safe, repo) = (base.join("safe"), base.join("repo"));
+        std::fs::create_dir_all(&safe).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("Cargo.toml"), "").unwrap();
+        std::os::unix::fs::symlink(&repo, safe.join("link")).unwrap();
+        let config = scratch("trust-link-config");
+        let mut hub = Hub::new(false);
+        let mut c = fake::config("fake", &["*.fake"], json!({}));
+        c.root_markers = vec!["Cargo.toml".into()];
+        hub.use_servers(vec![c]);
+        hub.require_trust();
+        hub.set_config_dir(&config);
+        hub.answer_trust(&safe, Trust::Always);
+        // The file through the link: its project is really `repo`, not under `safe`.
+        let file = safe.join("link").join("main.fake");
+        hub.sync(1, &file, (1, 0), || Rope::from_str(""), None, &[]);
+        assert_eq!(hub.pid_for(&file), None, "no server for the untrusted repo");
+        assert!(hub.trust_question(1).is_some(), "asked instead");
+        // Remembered folders are stored as real paths.
+        let saved: Vec<PathBuf> = serde_json::from_str(&std::fs::read_to_string(config.join(hub::TRUST_FILE)).unwrap()).unwrap();
+        assert_eq!(saved, [std::fs::canonicalize(&safe).unwrap()]);
+        // A file really inside `safe` is trusted, even named through a link to it.
+        std::fs::create_dir_all(safe.join("own")).unwrap();
+        std::os::unix::fs::symlink(&safe, base.join("alias")).unwrap();
+        let own = base.join("alias").join("own").join("x.fake");
+        hub.sync(1, &own, (1, 0), || Rope::from_str(""), None, &[]);
+        assert!(hub.pid_for(&own).is_some());
+        std::fs::remove_dir_all(base).ok();
+        std::fs::remove_dir_all(config).ok();
     }
 
     #[test]

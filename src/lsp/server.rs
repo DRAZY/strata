@@ -307,17 +307,27 @@ impl Server {
         let (tx, rx) = channel();
         let name = config.display_name();
 
-        if let Some(err) = stderr {
-            let io = io.clone();
-            spawn(&format!("lsp-stderr-{name}"), move || read_stderr(err, io));
+        // Without any one of its threads the server would sit in Starting
+        // forever: that's a failure to start, and the process is ended.
+        let started = (|| {
+            if let Some(err) = stderr {
+                let io = io.clone();
+                spawn(&format!("lsp-stderr-{name}"), move || read_stderr(err, io))?;
+            }
+            let out = stdout.ok_or("no output pipe")?;
+            let (io2, child2, settings, root2) = (io.clone(), child.clone(), config.settings.clone(), root.to_owned());
+            spawn(&format!("lsp-read-{name}"), move || read_loop(out, io2, child2, settings, root2))?;
+            let params = initialize_params(config, root);
+            let io2 = io.clone();
+            spawn(&format!("lsp-write-{name}"), move || write_loop(rx, io2, params))
+        })();
+        if let Err(e) = started {
+            #[cfg(test)]
+            tests::FAILED_PID.with(|p| p.set(child.lock().as_ref().map(Child::id)));
+            io.lock().stopping = true;
+            kill(&child);
+            return Err(format!("couldn't start {}: {e}", config.command));
         }
-        if let Some(out) = stdout {
-            let (io, child, settings, root) = (io.clone(), child.clone(), config.settings.clone(), root.to_owned());
-            spawn(&format!("lsp-read-{name}"), move || read_loop(out, io, child, settings, root));
-        }
-        let params = initialize_params(config, root);
-        let io2 = io.clone();
-        spawn(&format!("lsp-write-{name}"), move || write_loop(rx, io2, params));
         Ok(Server { io, tx, child })
     }
 
@@ -432,7 +442,7 @@ impl Drop for Server {
         }
         self.stop();
         let proc = self.child.clone();
-        spawn("lsp-reap", move || {
+        let _ = spawn("lsp-reap", move || {
             let deadline = Instant::now() + Duration::from_millis(1500);
             while proc.running() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
@@ -461,10 +471,15 @@ fn kill(proc: &Proc) {
     }
 }
 
-fn spawn(name: &str, f: impl FnOnce() + Send + 'static) {
-    if let Err(e) = std::thread::Builder::new().name(name.to_owned()).spawn(f) {
-        log::warn!("couldn't start thread {name}: {e}");
+fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
+    #[cfg(test)]
+    if tests::FAIL_THREAD.with(|t| t.get().is_some_and(|prefix| name.starts_with(prefix))) {
+        return Err(format!("couldn't start thread {name}: refused by the test"));
     }
+    std::thread::Builder::new().name(name.to_owned()).spawn(f).map(drop).map_err(|e| {
+        log::warn!("couldn't start thread {name}: {e}");
+        format!("couldn't start thread {name}: {e}")
+    })
 }
 
 /// A request in flight. Dropping it before the answer cancels it.
@@ -961,6 +976,29 @@ mod job {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Threads whose name starts with this fail to start (this test thread only).
+        pub(super) static FAIL_THREAD: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+        /// The process of the last server whose threads failed to start.
+        pub(super) static FAILED_PID: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+    }
+
+    #[test]
+    fn a_server_whose_threads_cant_start_is_ended() {
+        let config = super::super::fake::config("fake", &["*.fake"], json!({}));
+        let dir = std::env::temp_dir();
+        FAIL_THREAD.with(|t| t.set(Some("lsp-write")));
+        let result = Server::start(&config, Path::new(&config.command), &dir, None, None);
+        FAIL_THREAD.with(|t| t.set(None));
+        let err = result.err().expect("a failure to start");
+        assert!(err.contains("couldn't start thread"), "{err}");
+        let pid = FAILED_PID.with(|p| p.get()).expect("it had started a process");
+        #[cfg(unix)]
+        // SAFETY: signal 0 only checks whether the process exists.
+        assert_ne!(unsafe { libc::kill(pid as libc::pid_t, 0) }, 0, "the process is gone");
+        let _ = pid;
+    }
 
     fn span(a: &str, b: &str) -> Option<(usize, usize, usize)> {
         changed_span(&Rope::from_str(a), &Rope::from_str(b))

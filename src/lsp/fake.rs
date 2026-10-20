@@ -277,6 +277,7 @@ impl Fake {
             json!({"label": "fake_alpha", "kind": 3, "detail": "fn fake_alpha(first: i32, second: &str, third: Vec<String>) -> Result<(), Error>", "sortText": "a"}),
             json!({"label": "fake_beta", "kind": 6, "insertText": "fake_beta", "sortText": "b"}),
             json!({"label": "fake_snippet", "kind": 15, "sortText": "c", "insertTextFormat": 2, "textEdit": {"range": {"start": start, "end": end}, "newText": "fake_snippet(${1:arg})$0"}}),
+            json!({"label": "println!", "kind": 15, "sortText": "d", "insertTextFormat": 2, "insertText": "println!(\"${1:text}\", ${2:value});$0"}),
         ]
     }
 

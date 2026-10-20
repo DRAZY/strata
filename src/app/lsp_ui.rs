@@ -497,7 +497,7 @@ impl StrataApp {
         let key = (d.view.id, d.editor.version(), d.editor.primary().head);
         let edited = key != self.lsp.last_edit;
         self.lsp.last_edit = key;
-        if !explicit && (!edited || typed.is_empty() || d.editor.selections().len() > 1) {
+        if !explicit && (!edited || typed.is_empty() || d.editor.selections().len() >= 50) {
             return;
         }
         let Some(path) = d.path.clone() else { return };
@@ -566,8 +566,17 @@ impl StrataApp {
         let enc = self.docs[i].path.as_ref().and_then(|p| self.lsp.hub.borrow().server_for(self.lsp.window, p).map(|(s, _)| s.caps().encoding)).unwrap_or_default();
         let d = &mut self.docs[i];
         if d.editor.selections().len() > 1 {
-            // Several cursors: the plain text at each.
-            d.editor.complete(if item.snippet { &item.label } else { &item.insert });
+            // Several cursors: the same text at each, in place of the word
+            // typed there (the server's ranges are for the primary cursor
+            // only, and its extra edits would apply once, so they're left out).
+            let insert = edit::normalize_breaks(&item.insert, d.editor.buffer.line_ending().as_str());
+            if item.snippet {
+                let prefix = d.editor.word_prefix_at_cursor().map(|(_, p)| p).unwrap_or_default();
+                let snippet = crate::snippets::Snippet { trigger: prefix.clone(), description: String::new(), scope: String::new(), content: insert, path: None };
+                self.insert_snippet(&snippet, &prefix);
+            } else {
+                d.editor.complete(&insert);
+            }
             return;
         }
         let rope = d.editor.buffer.snapshot();
@@ -1598,6 +1607,24 @@ mod tests {
         wait(&mut app, &ctx, "completions after a dot", |a| a.completion.is_open() && a.completion.labels().contains(&"fake_beta".to_owned()));
         frame(&mut app, &ctx, vec![press(egui::Key::Escape, Modifiers::NONE)]);
         assert!(!app.completion.is_open());
+    }
+
+    #[test]
+    fn a_snippet_completion_expands_at_every_cursor() {
+        let (mut app, ctx, _) = app_with("snippet-multi", &[("a.fake", "pri\npri\npri\n")], json!({}));
+        app.settings.auto_complete = true;
+        app.doc().editor.select_ranges(&[3..3, 7..7, 11..11], 0);
+        frame(&mut app, &ctx, vec![Event::Text("n".into())]);
+        wait(&mut app, &ctx, "the println! item", |a| a.completion.labels().contains(&"println!".to_owned()));
+        let k = app.completion.labels().iter().position(|l| l == "println!").unwrap();
+        app.completion.choose(&mut app.docs[0], k);
+        app.lsp_insert_completion();
+        frame(&mut app, &ctx, vec![]);
+        let line = "println!(\"text\", value);";
+        assert_eq!(text(&app), format!("{line}\n{line}\n{line}\n"));
+        // The first field (`text`) is selected at each cursor.
+        let sels: Vec<String> = app.docs[0].editor.selections().iter().map(|s| app.docs[0].editor.buffer.slice(s.range())).collect();
+        assert_eq!(sels, ["text", "text", "text"]);
     }
 
     #[test]

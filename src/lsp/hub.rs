@@ -139,15 +139,20 @@ impl Hub {
         let file = dir.join(TRUST_FILE);
         if let Ok(text) = std::fs::read_to_string(&file) {
             match serde_json::from_str::<Vec<PathBuf>>(&text) {
-                Ok(list) => self.trusted = list,
+                Ok(list) => self.trusted = list.iter().map(|p| real_path(p)).collect(),
                 Err(e) => self.note(format!("{TRUST_FILE}: {e}")),
             }
         }
         self.trust_file = Some(file);
     }
 
+    /// Compared as real paths (links resolved), component by component: a
+    /// link inside a trusted folder to a project elsewhere isn't trusted.
     fn may_run(&self, root: &Path) -> bool {
-        self.trust_all || self.trusted.iter().any(|t| root.starts_with(t))
+        self.trust_all || {
+            let root = real_path(root);
+            self.trusted.iter().any(|t| root.starts_with(t))
+        }
     }
 
     /// The folder this window should ask about, and the servers waiting on it.
@@ -160,10 +165,11 @@ impl Hub {
         self.asking.retain(|a| a.0 != root);
         match answer {
             Trust::Once | Trust::Always => {
-                self.trusted.push(root.to_owned());
+                let real = real_path(root);
                 if answer == Trust::Always {
-                    self.save_trusted(root);
+                    self.save_trusted(&real);
                 }
+                self.trusted.push(real);
             }
             Trust::NotNow => self.declined.push(root.to_owned()),
         }
@@ -564,6 +570,11 @@ impl Hub {
         let i = (*self.assigned.get(&uri::normalize(path))?)?;
         self.slots[i].server.as_ref()?.pid()
     }
+}
+
+/// `path` with links resolved, or as it is if it can't be (it's gone).
+fn real_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned())
 }
 
 /// A server that waits for its folder to be trusted.
