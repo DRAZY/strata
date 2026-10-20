@@ -124,6 +124,17 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// `msg` sealed with this installation's key (hex HMAC-SHA256); None
+/// without a key that can be trusted. Git sync seals its markers with it.
+pub(crate) fn seal(msg: &[u8]) -> Option<String> {
+    key().map(|k| hex(&hmac(k, msg)))
+}
+
+/// 128 random bits, in hex.
+pub(crate) fn nonce() -> String {
+    hex(&random_bytes()[..16])
+}
+
 /// A marker's text: the claim line, the journal, and their seal.
 fn marker_text(stamp: &str, journal: &serde_json::Value) -> Vec<u8> {
     let body = format!("strata-claim {stamp}\n{journal}\n");

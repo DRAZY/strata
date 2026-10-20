@@ -358,6 +358,8 @@ impl eframe::App for Shell {
 
     fn on_exit(&mut self) {
         self.guarded(|s| s.windows.root().on_exit());
+        // No Git sync starts rewriting files now; one that is gets to finish or undo.
+        notes::sync::shutdown();
         // Quitting to finish an update: start the helper that relaunches.
         update::Updater::global().on_exit();
     }

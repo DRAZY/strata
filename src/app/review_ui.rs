@@ -98,6 +98,12 @@ impl ReviewState {
         matches!(self.base, Base::Snapshot(_))
     }
 
+    /// A review, its snapshot, or a file on its way to the Trash is under
+    /// way (Git sync waits: it would mix the remote's changes into them).
+    pub fn busy(&self) -> bool {
+        self.reviewing() || self.starting || self.confirm.is_some() || self.pending_trash.is_some()
+    }
+
     /// Ticked off, or every change kept.
     pub fn is_done(&self, f: &FileChange) -> bool {
         f.kept || self.reviewed.contains_key(&f.path)

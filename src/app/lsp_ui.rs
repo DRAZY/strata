@@ -2289,8 +2289,12 @@ mod tests {
         wait(&mut app, &ctx, "diagnostics", |a| !markers(a).is_empty());
         put_cursor(&mut app, 0);
         frame(&mut app, &ctx, vec![Event::Text("CRASH_NOW ".into())]);
-        wait(&mut app, &ctx, "the restart notice", |a| a.lsp_status().is_some_and(|s| s.0.contains("restarting")));
-        assert!(app.docs[0].editor.markers().is_empty(), "a stopped server's problems go");
+        // The reader thread can see the exit between the hub's tick and this
+        // check, so "restarting" may show one frame before the next tick
+        // clears the stopped server's problems: wait for both.
+        wait(&mut app, &ctx, "the restart notice, with the stopped server's problems gone", |a| {
+            a.lsp_status().is_some_and(|s| s.0.contains("restarting")) && a.docs[0].editor.markers().is_empty()
+        });
         wait(&mut app, &ctx, "the server back with its diagnostics", |a| !markers(a).is_empty() && a.lsp_status().is_some_and(|s| !s.0.contains("restarting")));
     }
 

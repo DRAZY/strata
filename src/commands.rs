@@ -211,6 +211,11 @@ pub enum Cmd {
     PluginsManage,
     PluginsInstallFolder,
     PluginsInstallZip,
+    // Git sync for notes (see `app/notes_sync_ui.rs`).
+    NotesSync,
+    NotesSyncEnable,
+    NotesSyncDisable,
+    NotesShowSyncBackups,
 }
 
 impl Cmd {
@@ -411,6 +416,10 @@ impl Cmd {
         Cmd::PluginsManage,
         Cmd::PluginsInstallFolder,
         Cmd::PluginsInstallZip,
+        Cmd::NotesSync,
+        Cmd::NotesSyncEnable,
+        Cmd::NotesSyncDisable,
+        Cmd::NotesShowSyncBackups,
     ];
 
     pub fn name(self) -> &'static str {
@@ -611,6 +620,10 @@ impl Cmd {
             Cmd::PluginsManage => "Plugins: Manage Plugins…",
             Cmd::PluginsInstallFolder => "Plugins: Install from Folder…",
             Cmd::PluginsInstallZip => "Plugins: Install from Zip…",
+            Cmd::NotesSync => "Notes: Sync Notes",
+            Cmd::NotesSyncEnable => "Notes: Enable Git Sync for This Vault…",
+            Cmd::NotesSyncDisable => "Notes: Disable Git Sync for This Vault",
+            Cmd::NotesShowSyncBackups => "Notes: Show Sync Backups",
         }
     }
 
@@ -800,6 +813,7 @@ impl Cmd {
             // Running code takes a deliberate choice; bind them in keybindings.json if you like.
             Cmd::NotesRunCodeBlock | Cmd::NotesRunCodeBlockCapture | Cmd::NotesForgetCodeBlockFiles => &[],
             Cmd::PluginsManage | Cmd::PluginsInstallFolder | Cmd::PluginsInstallZip => &[],
+            Cmd::NotesSync | Cmd::NotesSyncEnable | Cmd::NotesSyncDisable | Cmd::NotesShowSyncBackups => &[],
         }
     }
 
@@ -1008,6 +1022,10 @@ impl Cmd {
             Cmd::PluginsManage => "manage_plugins",
             Cmd::PluginsInstallFolder => "install_plugin_from_folder",
             Cmd::PluginsInstallZip => "install_plugin_from_zip",
+            Cmd::NotesSync => "sync_notes",
+            Cmd::NotesSyncEnable => "enable_notes_sync",
+            Cmd::NotesSyncDisable => "disable_notes_sync",
+            Cmd::NotesShowSyncBackups => "show_sync_backups",
         }
     }
 }

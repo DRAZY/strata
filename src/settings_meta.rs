@@ -133,6 +133,7 @@ pub static SETTINGS: &[Meta] = &[
     m("lsp_enabled", Editor, "Language servers", Toggle),
     m("lsp_trust_all", Editor, "Start language servers without asking", Toggle),
     m("notes_backlinks", Editor, "Backlinks under notes", Choice(&[("auto", "In notes folders"), ("always", "Always"), ("never", "Never")])),
+    m("notes_sync_message", Editor, "Notes sync commit message", Text),
     // Files & Saving
     m("hot_exit", Files, "Hot exit", Toggle),
     m("trim_trailing_white_space_on_save", Files, "Trim trailing whitespace on save", Toggle),
@@ -177,6 +178,7 @@ pub static SETTINGS: &[Meta] = &[
     m("syntax_settings", Advanced, "Settings per language", Json),
     m("lsp_servers", Advanced, "Language server setup", Json),
     m("plugins", Advanced, "Plugin settings", Json),
+    m("notes_git_sync", Advanced, "Git sync for notes vaults", Json),
     m("theme_overrides", Advanced, "Color overrides", Json),
     m("theme_overrides_by_theme", Advanced, "Color overrides per scheme", Json),
 ];

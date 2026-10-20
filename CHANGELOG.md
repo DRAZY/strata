@@ -15,8 +15,9 @@ All notable changes to Strata are recorded here. The format follows
   underlined in the editor (dashed for a note that doesn't exist yet), and
   ⌘-click (Ctrl+click) or **Notes: Follow Link** opens them, offering to
   create a missing note where Obsidian would put it. Strata reads the vault's
-  `.obsidian` settings but never writes them, and notes never use the
-  network. See the new Notes page in the manual.
+  `.obsidian` settings but never writes them, and notes use the network
+  only through Git sync, which you turn on per vault. See the new Notes page
+  in the manual.
 - Notes: typing `[[` completes note names, aliases, headings and block ids,
   and writes the link the way the vault's Obsidian settings ask.
 - Notes: a backlinks panel under each note lists the notes linking to it,
@@ -53,6 +54,25 @@ All notable changes to Strata are recorded here. The format follows
   and a different file at the same path, or a change made outside Strata,
   asks again. Files outside the open folders ask every time, and a block
   with invisible or text-reordering characters never runs. See Notes ▸ Running code blocks in the manual.
+- Notes: optional Git sync, off until you turn it on for a vault with
+  **Notes: Enable Git Sync for This Vault** (which says first that the
+  repository's hooks, filters and credential helpers will run). **Notes: Sync
+  Notes** saves the vault's notes, commits what changed in the vault
+  (respecting `.gitignore`, with a message from `notes_sync_message`),
+  rebases onto the remote and pushes, never forced; an optional timer does the
+  same every few minutes and skips a vault with unsaved notes. Strata never
+  asks for a password: Git uses your credential helper or SSH agent. When a
+  note changed on both sides, nothing is pulled or pushed and your files stay
+  as they were; the notes in conflict are listed with **Compare with
+  origin/main** and **Keep My Versions and Sync**. No upstream, offline, a
+  refused sign-in or a replaced remote history change nothing and say so in
+  the status bar, which also shows the last sync. Turning sync on is tied to
+  that repository: a different one later at the same path is asked about
+  again before anything runs. Before Strata ever undoes a rebase Git
+  started, it backs up every file it touched (on disk and staged) to
+  `sync-backups` in its settings folder, kept 30 days (**Notes: Show Sync
+  Backups**); a sync interrupted by quitting is only undone when you say so.
+  See Notes ▸ Git sync in the manual.
 - Optional AI helpers with a model you choose (Tools ▸ AI and the command
   palette): **Summarize Changes** (the whole review or one file), **Explain
   Change**, **Flag Risks**, **Draft Commit Message** and **Explain

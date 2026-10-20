@@ -655,11 +655,14 @@ impl StrataApp {
             st.selected = m.plugins.first().map(|p| p.name.clone());
         }
         let screen = ctx.content_rect();
+        let size = egui::vec2((screen.width() - 80.0).clamp(360.0, 760.0), (screen.height() - 120.0).clamp(240.0, 520.0));
         egui::Window::new("Plugins")
             .id(self.link.id("plugins-window"))
             .open(&mut open)
             .collapsible(false)
-            .default_size([(screen.width() - 80.0).clamp(360.0, 760.0), (screen.height() - 120.0).clamp(240.0, 520.0)])
+            .default_size(size)
+            .default_pos(screen.center() - size / 2.0)
+            .constrain(true)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui.add_enabled(config.is_some(), egui::Button::new("Install from Folder…")).clicked() {

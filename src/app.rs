@@ -196,6 +196,7 @@ mod macro_files;
 pub(crate) mod menu_model;
 mod more;
 mod notes_panel;
+mod notes_sync_ui;
 #[cfg(test)]
 mod notes_tests;
 mod notes_ui;
@@ -641,6 +642,10 @@ impl StrataApp {
             _ => self.save_dialog(i).save_file(),
         };
         let Some(path) = target else { return false };
+        if self.notes_sync_holds(&path) {
+            self.status = format!("Git sync is updating files here: save {} again in a moment (your text stays in the tab)", self.docs[i].name());
+            return false;
+        }
         if !self.confirm_overwrite(i, &path) {
             return false;
         }
@@ -1341,6 +1346,7 @@ impl StrataApp {
             | Cmd::NotesCompareConflict => self.notes_command(ctx, cmd),
             Cmd::NotesRunCodeBlock | Cmd::NotesRunCodeBlockCapture | Cmd::NotesForgetCodeBlockFiles => self.code_run_command(ctx, cmd),
             Cmd::PluginsManage | Cmd::PluginsInstallFolder | Cmd::PluginsInstallZip => self.plugins_command(ctx, cmd),
+            Cmd::NotesSync | Cmd::NotesSyncEnable | Cmd::NotesSyncDisable | Cmd::NotesShowSyncBackups => self.notes_sync_command(ctx, cmd),
         }
     }
 
@@ -2446,6 +2452,12 @@ impl StrataApp {
         let words = self.word_count();
         let hidden = self.hidden_count(ui.ctx()).map(hidden_ui::notice);
         let branch = self.docs[self.active].path.as_deref().and_then(|p| self.git.repo(p)).map(|r| r.branch);
+        let sync = self.notes_sync_status();
+        let branch_fit = match (&branch, &sync) {
+            (Some(b), Some(s)) => Some(format!("{b}  {}", s.0)),
+            (None, Some(s)) => Some(s.0.clone()),
+            (b, None) => b.clone(),
+        };
         let d = &self.docs[self.active];
         let (line, col) = d.editor.cursor_line_col();
         let cursors = d.editor.selections().len();
@@ -2463,7 +2475,7 @@ impl StrataApp {
         let review = self.review_remaining().map(|n| if n == 0 { "All reviewed".to_owned() } else { format!("{n} to review") });
         let mut find_hidden = false;
         let plugins = self.plugin_status_text();
-        let fit = status_fit(ui, &pos, d.conflict, d.deleted, d.editor.buffer.lossy, hidden.as_ref().map(|h| h.0.as_str()), lsp.as_ref().map(|l| l.0.as_str()), (branch.as_deref(), review.as_deref()), (words.as_deref(), plugins.as_deref()));
+        let fit = status_fit(ui, &pos, d.conflict, d.deleted, d.editor.buffer.lossy, hidden.as_ref().map(|h| h.0.as_str()), lsp.as_ref().map(|l| l.0.as_str()), (branch_fit.as_deref(), review.as_deref()), (words.as_deref(), plugins.as_deref()));
         ui.horizontal(|ui| {
             let d = &mut self.docs[self.active];
             ui.label(if fit.short_pos && binary.is_none() { format!("{line}:{col}") } else { pos });
@@ -2498,9 +2510,20 @@ impl StrataApp {
                     self.lsp_status_clicked(ui.ctx(), restart);
                 }
             }
-            if let Some(branch) = branch.filter(|_| fit.left[StatusLeft::Branch as usize]) {
+            if fit.left[StatusLeft::Branch as usize] && (branch.is_some() || sync.is_some()) {
                 ui.separator();
-                ui.label(format!("⎇ {branch}"));
+                if let Some(branch) = branch {
+                    ui.label(format!("⎇ {branch}"));
+                }
+                if let Some((text, color, tip)) = sync {
+                    let label = match color {
+                        Some(c) => egui::RichText::new(text).color(c),
+                        None => egui::RichText::new(text),
+                    };
+                    if ui.add(egui::Button::new(label).frame(false)).on_hover_text(tip).clicked() {
+                        self.notes_sync_clicked(ui.ctx());
+                    }
+                }
             }
             if let Some(review) = review.filter(|_| fit.left[StatusLeft::Review as usize]) {
                 ui.separator();
