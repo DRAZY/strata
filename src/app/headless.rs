@@ -171,6 +171,17 @@ mod tests {
         app.step_difference(true);
         shooter.shoot(&ctx, &mut app, 6, vec![], &dir.join("compare.ppm"));
 
+        // Compare with Japanese text on both sides (the CJK fonts load for it).
+        let (old, new) = (std::env::temp_dir().join("strata-shot-cjk-old.txt"), std::env::temp_dir().join("strata-shot-cjk-new.txt"));
+        std::fs::write(&old, "# メモ\n\n日本語のテキストファイルです。\nこれは文字コードの判定のためのテストです。\n同じ行です。\n").unwrap();
+        std::fs::write(&new, "# メモ\n\n日本語の文章ファイルです。\nこれは文字コードの判定のためのテストです。\n同じ行です。\n新しい行を追加しました。\n").unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(Some(new), None);
+        shooter.run(&ctx, &mut app, 3, vec![]);
+        app.compare_with_file(0, &old);
+        app.step_difference(true);
+        shooter.shoot(&ctx, &mut app, 6, vec![], &dir.join("compare_cjk.ppm"));
+
         // Spell check: prose and comments are checked, code isn't.
         let tmp = std::env::temp_dir().join("strata-shot-spell.md");
         std::fs::write(&tmp, "# Notes\n\nThis paragraph has a mispelled word and anothr one.\n\n```rust\n// a coment in code\nlet varible = 1;\n```\n").unwrap();

@@ -599,6 +599,7 @@ impl StrataApp {
         let Some(c) = &self.review.confirm else { return };
         let (mut yes, mut no) = (false, false);
         let name = Self::review_name(&c.path);
+        crate::fonts::ensure_cjk(ctx, &format!("{name}{}", c.restore.as_ref().map_or(String::new(), |(old, _, _)| Self::review_name(old))));
         egui::Modal::new(egui::Id::new("review-revert-confirm")).show(ctx, |ui| {
             ui.set_width(360.0);
             let trash = crate::trash::trash_name();

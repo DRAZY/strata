@@ -438,6 +438,7 @@ impl Compare {
                 }
                 let (buf, high) = if fixed { (&self.base, &self.base_hl) } else { (&ed.buffer, &*hl) };
                 let text = buf.line_text(line);
+                crate::fonts::ensure_cjk(ui.ctx(), &text);
                 let words = self.inline.get(&r).map(|(a, b)| if fixed { a.as_slice() } else { b.as_slice() }).unwrap_or(&[]);
                 let spans = high.line(line);
                 let (job, cols) = line_job(&text, spans.as_deref().map(|v| v.as_slice()), &geo, fg, words, colors.word_bg(side.removed_side()));
@@ -511,6 +512,7 @@ impl Compare {
         ui.painter().rect_filled(names, 0.0, blend(bg, fg, 0.025));
         ui.painter().hline(rect.x_range(), names.top() + 0.5, Stroke::new(1.0, blend(bg, fg, 0.08)));
         let label = |ui: &Ui, r: Rect, text: &str, color: Color32| {
+            crate::fonts::ensure_cjk(ui.ctx(), text);
             let mut job = LayoutJob::simple_singleline(text.to_owned(), small.clone(), color);
             job.wrap.max_width = (r.width() - 16.0).max(10.0);
             job.wrap.max_rows = 1;

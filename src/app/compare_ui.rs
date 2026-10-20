@@ -342,6 +342,27 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// Japanese (or any CJK) text on either side loads the CJK fonts, like
+    /// the editor does, even when nothing else on screen has any.
+    #[test]
+    fn cjk_text_in_a_comparison_loads_the_cjk_fonts() {
+        let dir = temp_dir("cjk");
+        let (a, b) = (dir.join("old.txt"), dir.join("new.txt"));
+        std::fs::write(&a, "plain\n日本語のテキスト\n").unwrap();
+        std::fs::write(&b, "plain\n日本語の文章\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(Some(b.clone()), None);
+        app.compare_with_file(0, &a);
+        assert!(app.docs[app.active].compare.is_some());
+        let loaded = || ctx.data(|d| d.get_temp::<bool>(egui::Id::new("strata-cjk-fonts")).is_some());
+        assert!(!loaded());
+        for _ in 0..3 {
+            super::super::ui_tests::frame(&mut app, &ctx, vec![]);
+        }
+        assert!(loaded(), "the comparison's CJK text didn't load the CJK fonts");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     #[test]
     fn untracked_files_have_no_head() {
         let dir = temp_dir("head");
