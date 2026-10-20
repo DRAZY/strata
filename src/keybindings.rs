@@ -725,6 +725,8 @@ impl Keymap {
         add(k_then(Key::R), Target::Cmd(Cmd::LspRename));
         add(k_then(Key::F), Target::Cmd(Cmd::LspFormat));
         add(k_then(Key::M), Target::Cmd(Cmd::LspProblems));
+        add(k_then(Key::N), Target::Cmd(Cmd::LspNextProblem));
+        add(k_then(Key::P), Target::Cmd(Cmd::LspPrevProblem));
         add(k_then(Key::Num1), Target::View("fold_all"));
         add(k_then(Key::J), Target::View("unfold_all"));
         add(k_then(Key::Num0), Target::View("unfold_all"));

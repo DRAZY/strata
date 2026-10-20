@@ -691,12 +691,10 @@ impl Cmd {
             // Ctrl+Alt+F8 switches to a text console on Linux.
             Cmd::ReviewMarkReviewed => if MAC || cfg!(windows) { &[(CMD_ALT, Key::F8)] } else { &[] },
             Cmd::ReviewStart | Cmd::ReviewEnd | Cmd::ReviewShowChanges | Cmd::ReviewKeepFile | Cmd::ReviewRevertFile => &[],
-            // F8 is free in Strata on both systems. Hover, rename, format and
-            // the problem list are ⌘K / Ctrl+K chords (see `Keymap::defaults`).
-            Cmd::LspNextProblem => &[(NONE, Key::F8)],
-            Cmd::LspPrevProblem => &[(SHIFT, Key::F8)],
+            // Hover, rename, format and the problems are ⌘K / Ctrl+K chords
+            // (see `Keymap::defaults`); F8 and its variants are Review Changes'.
             Cmd::LspSignatureHelp => &[(CMD_SHIFT, Key::Space)],
-            Cmd::LspHover | Cmd::LspRename | Cmd::LspFormat | Cmd::LspProblems | Cmd::LspRestart => &[],
+            Cmd::LspHover | Cmd::LspRename | Cmd::LspFormat | Cmd::LspProblems | Cmd::LspNextProblem | Cmd::LspPrevProblem | Cmd::LspRestart => &[],
         }
     }
 

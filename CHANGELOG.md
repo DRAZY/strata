@@ -38,13 +38,14 @@ All notable changes to Strata are recorded here. The format follows
   Definition and Go to Reference. New commands: **LSP: Rename Symbol…**
   (across files, one Undo step per file), **LSP: Format Document**, **LSP:
   Show Hover Info**, **LSP: Show Parameter Hints**, **LSP: Show Problems…**,
-  **LSP: Next Problem** / **Previous Problem** (F8 / Shift+F8) and **LSP:
-  Restart Language Servers**, also in Tools ▸ Language Server. The status bar
-  shows the server for the current file and its error and warning counts. A
-  server that stops is restarted after a pause. Strata never downloads or
-  installs servers. `lsp_servers` in settings.json changes the built-in
-  servers or adds others, and `lsp_enabled` turns the feature off. See
-  Languages and Syntaxes ▸ Language servers in the manual.
+  **LSP: Next Problem** / **Previous Problem** (⌘K ⌘N / ⌘K ⌘P; Ctrl+K Ctrl+N
+  / Ctrl+K Ctrl+P elsewhere) and **LSP: Restart Language Servers**, also in
+  Tools ▸ Language Server. The status bar shows the server for the current
+  file and its error and warning counts. A server that stops is restarted
+  after a pause. Strata never downloads or installs servers. `lsp_servers` in
+  settings.json changes the built-in servers or adds others, and
+  `lsp_enabled` turns the feature off. See Languages and Syntaxes ▸ Language
+  servers in the manual.
 
 ## [1.0.2] - 2026-10-15
 

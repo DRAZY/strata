@@ -935,7 +935,7 @@ impl StrataApp {
         self.choose(ctx, Choosing::Locations(spots), &hint, labels);
     }
 
-    /// F8 / Shift+F8: select the next (previous) problem in this file and
+    /// Next / Previous Problem: select the next (previous) problem in this file and
     /// show what it is.
     fn lsp_step_problem(&mut self, forward: bool) {
         let i = self.active;
@@ -1373,7 +1373,7 @@ mod tests {
         app.doc().editor.select_ranges(std::slice::from_ref(&r), 0);
         frame(&mut app, &ctx, vec![Event::Text("good".into())]);
         wait(&mut app, &ctx, "the error to go", |a| markers(a).iter().all(|(_, s)| *s != 1));
-        // F8 goes to the warning and says what it is.
+        // Next Problem goes to the warning and says what it is.
         put_cursor(&mut app, 0);
         app.run(&ctx, Cmd::LspNextProblem);
         frame(&mut app, &ctx, vec![]);
@@ -1756,6 +1756,24 @@ mod tests {
             wait_long(&mut app, &ctx, 120, "definition in the big project", &|a| a.docs[a.active].path.as_ref() != Some(&file));
             eprintln!("definition of LspState: {:?} line {}", app.docs[app.active].path, app.docs[app.active].editor.cursor_line_col().0);
             shoot(&mut app, &ctx, "10-repo-definition");
+        }
+    }
+
+    #[test]
+    fn language_server_keys_leave_f8_to_review_changes() {
+        use crate::keybindings::{Keymap, Target};
+        let keymap = Keymap::defaults();
+        for b in keymap.bindings() {
+            if let Some(Target::Cmd(c)) = b.action
+                && c.id().starts_with("lsp_")
+            {
+                assert!(b.keys.iter().all(|s| s.key != egui::Key::F8), "{} uses F8", c.id());
+            }
+        }
+        // Next and previous problem are ⌘K / Ctrl+K chords.
+        for c in [Cmd::LspNextProblem, Cmd::LspPrevProblem] {
+            let strokes: Vec<_> = keymap.bindings().iter().filter(|b| b.action == Some(Target::Cmd(c))).map(|b| b.keys.clone()).collect();
+            assert!(strokes.len() == 1 && strokes[0].len() == 2 && strokes[0][0].key == egui::Key::K, "{strokes:?}");
         }
     }
 
