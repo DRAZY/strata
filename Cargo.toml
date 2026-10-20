@@ -74,4 +74,4 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 # objects that end a language server together with the processes it starts,
 # and the AI helpers' keys in Credential Manager (src/ai/keychain.rs)
 # (the version already in the build, through winit).
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_Security", "Win32_Security_Credentials", "Win32_System_SystemInformation", "Win32_Security_Authorization"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_Security", "Win32_Security_Credentials", "Win32_System_SystemInformation", "Win32_Security_Authorization"] }

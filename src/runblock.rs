@@ -351,6 +351,15 @@ fn run_script(program: &Path, name: &str, args: &[&str], ext: &str, code: &str, 
         cmd.process_group(0);
     }
     crate::update::fetch::no_window(&mut cmd);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Started suspended and resumed only once it's in the job (below), so
+        // nothing it starts can get out first. Replaces no_window's flags.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+    }
     let started = Instant::now();
     let spawned = cmd.spawn();
     // Our copies of the write end must go, or the reader never sees the end.
@@ -379,7 +388,16 @@ fn run_script(program: &Path, name: &str, args: &[&str], ext: &str, code: &str, 
         });
     }
     #[cfg(windows)]
-    let job = crate::lsp::server::job::Job::holding(&child);
+    let job = match crate::lsp::server::job::Job::holding(&child) {
+        Some(job) if tree::resume(&child) => job,
+        // Not contained, so not run: it's still suspended and hasn't done anything.
+        other => {
+            drop(other);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("Couldn't run {name}: Windows wouldn't let Strata keep track of the processes it starts, so the block didn't run"));
+        }
+    };
     let mut timed_out = false;
     // Wait for the interpreter to end without reaping it: until it's reaped
     // its process id, which is also its process group's, can't be reused, so
@@ -400,9 +418,7 @@ fn run_script(program: &Path, name: &str, args: &[&str], ext: &str, code: &str, 
     // find them by.
     tree::stop(&child, timed_out);
     #[cfg(windows)]
-    if let Some(job) = &job {
-        job.terminate();
-    }
+    job.terminate();
     if timed_out {
         crate::build::kill_tree(&mut child, true);
     }
@@ -479,34 +495,123 @@ mod tree {
         unsafe {
             libc::kill(-pgid, libc::SIGSTOP);
         }
-        let mut found = Vec::new();
+        let mut found: Vec<Seen> = Vec::new();
         if descendants {
-            // Freezing each as it's found, so none starts another meanwhile.
+            // Each is recorded with its parent and start time as it's found,
+            // and checked again right before each signal, so a process id
+            // that was reused for someone else in between is left alone.
+            // Freezing each as it's found keeps it from starting others.
             let mut queue = vec![pgid];
             while let Some(p) = queue.pop() {
                 for c in children(p) {
-                    if c > 1 && !found.contains(&c) {
-                        // SAFETY: a process the kernel just listed as a child of the tree.
-                        unsafe {
-                            libc::kill(c, libc::SIGSTOP);
-                        }
-                        found.push(c);
+                    if c <= 1 || found.iter().any(|f| f.pid == c) {
+                        continue;
+                    }
+                    let Some(s) = seen(c).filter(|s| s.ppid == p) else { continue };
+                    // SAFETY: a process just verified to be this child of the tree.
+                    if still(&s) && unsafe { libc::kill(c, libc::SIGSTOP) } == 0 {
+                        found.push(s);
                         queue.push(c);
                     }
                 }
             }
         }
-        // SAFETY: as above; the listed descendants are frozen, so still there.
-        unsafe {
-            libc::kill(-pgid, libc::SIGKILL);
-            for &c in &found {
-                libc::kill(c, libc::SIGKILL);
+        // The descendants go before the group: once their parents die they
+        // would be handed to init and no longer match what was recorded.
+        for s in &found {
+            if still(s) {
+                // SAFETY: verified just now; it's frozen, so it can't exit and
+                // free its id between the check and the signal.
+                if unsafe { libc::kill(s.pid, libc::SIGKILL) } != 0 {
+                    log::warn!("couldn't stop process {} started by a code block: {}", s.pid, std::io::Error::last_os_error());
+                }
+            }
+        }
+        // SAFETY: as above.
+        if unsafe { libc::kill(-pgid, libc::SIGKILL) } != 0 {
+            let e = std::io::Error::last_os_error();
+            // No such group: everything in it has already ended.
+            if e.raw_os_error() != Some(libc::ESRCH) {
+                log::warn!("couldn't stop a code block's processes: {e}");
             }
         }
     }
 
+    /// A process as it was when found: its id, its parent's, and when it
+    /// started (which a reused id doesn't share).
+    #[cfg(unix)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub(super) struct Seen {
+        pub pid: i32,
+        pub ppid: i32,
+        pub start: u64,
+    }
+
+    /// `s`'s process is still the one that was found: same parent, same start.
+    #[cfg(unix)]
+    pub(super) fn still(s: &Seen) -> bool {
+        seen(s.pid).as_ref() == Some(s)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn seen(pid: i32) -> Option<Seen> {
+        // SAFETY: proc_pidinfo fills `info` up to the size given; zeroed is a valid value.
+        unsafe {
+            let mut info: libc::proc_bsdinfo = std::mem::zeroed();
+            let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+            let n = libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size);
+            (n == size && info.pbi_pid as i32 == pid).then(|| Seen { pid, ppid: info.pbi_ppid as i32, start: info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec })
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub(super) fn seen(pid: i32) -> Option<Seen> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // After the name in parentheses: state, parent (field 4), …, start time (field 22).
+        let rest: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+        Some(Seen { pid, ppid: rest.get(1)?.parse().ok()?, start: rest.get(19)?.parse().ok()? })
+    }
+
     #[cfg(not(unix))]
     pub fn stop(_child: &Child, _descendants: bool) {}
+
+    /// Resume the threads of `child`, started suspended. False if there
+    /// were none to resume or one couldn't be.
+    #[cfg(windows)]
+    pub fn resume(child: &Child) -> bool {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next};
+        use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+        let pid = child.id();
+        let mut resumed = 0;
+        // SAFETY: plain Win32 calls on handles we open and close here; `entry` outlives them.
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if snap == INVALID_HANDLE_VALUE {
+                return false;
+            }
+            let mut entry: THREADENTRY32 = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+            let mut more = Thread32First(snap, &mut entry) != 0;
+            while more {
+                if entry.th32OwnerProcessID == pid {
+                    let t = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                    if t.is_null() || ResumeThread(t) == u32::MAX {
+                        if !t.is_null() {
+                            CloseHandle(t);
+                        }
+                        CloseHandle(snap);
+                        return false;
+                    }
+                    CloseHandle(t);
+                    resumed += 1;
+                }
+                more = Thread32Next(snap, &mut entry) != 0;
+            }
+            CloseHandle(snap);
+        }
+        resumed > 0
+    }
 
     /// The processes whose parent is `pid`.
     #[cfg(target_os = "macos")]
@@ -529,8 +634,7 @@ mod tree {
         dir.flatten()
             .filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok())
             .filter(|p| {
-                // The parent is the second field after the name in parentheses.
-                std::fs::read_to_string(format!("/proc/{p}/stat")).ok().and_then(|st| st.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(1)?.parse::<i32>().ok())) == Some(pid)
+                seen(*p).is_some_and(|s| s.ppid == pid)
             })
             .collect()
     }
@@ -1101,6 +1205,23 @@ mod tests {
         let pid = read_pid(&dir.join("own.pid"));
         assert!(gone(pid), "the job in its own group ({pid}) was found and stopped");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reused_process_id_is_never_signalled() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id() as i32;
+        let s = tree::seen(pid).expect("a running child");
+        assert_eq!((s.pid, s.ppid), (pid, std::process::id() as i32));
+        assert!(tree::still(&s), "the same process");
+        // The same id with another start time or parent is someone else.
+        assert!(!tree::still(&tree::Seen { start: s.start + 1, ..s }), "started at another time");
+        assert!(!tree::still(&tree::Seen { ppid: s.ppid + 1, ..s }), "another parent");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!tree::still(&s), "gone");
+        assert!(tree::seen(pid).is_none_or(|now| now != s));
     }
 
     #[cfg(unix)]
