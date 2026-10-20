@@ -117,6 +117,21 @@ Renaming a folder doesn't update links yet.
 
 With the [Markdown preview](markdown.md) open on a note, wikilinks are links you can click (a note that doesn't exist yet is fainter), tags are tinted and clickable, and the frontmatter shows as a small block of its properties. Embeds appear in place: `![[photo.png]]` (and `![](photo.png)`) shows the image, and `![[Note]]`, `![[Note#Heading]]` or `![[Note#^block]]` shows that note, that section or that block. Embedded notes show one level deep: an embed inside an embedded note, or a note embedding itself, shows as a link. Images come only from files in the vault, never from the web.
 
+## Running code blocks
+
+A runbook can be a document you click through. In the [Markdown preview](markdown.md), fenced code blocks in `bash`, `sh`, `zsh`, `fish`, `pwsh`, `powershell`, `cmd`, `python`, `node` (or `js`) and `ruby` have a **▶ Run** button. Blocks in other languages, blocks without a language, indented blocks and blocks missing their closing fence have none. This works in any Markdown file, not only in a vault, and only when you click: opening a file or showing its preview never runs anything, and AI answers and help pages have no Run buttons.
+
+- A shell block goes to the terminal tab you're using, as if you had typed it and pressed Enter (one paste where the shell supports it, as with [Send to Terminal](terminal.md)). With no terminal open, Strata starts one and sends the block once its prompt is ready. If the current tab is a REPL that Run started, the block goes to the last shell tab instead, so it can't end up typed into Python.
+- A `python`, `node` or `ruby` block starts that language's REPL (`python3`, `node` or `irb`) in a new terminal tab, through your login shell so it's the same one your own terminal finds. Later blocks in that language go to the same tab, so they share variables.
+
+**Notes: Run Code Block** does the same for the block the cursor is in. **Notes: Run Code Block and Capture Output** runs it in a separate process instead of your terminal: the language's own program (`sh`, `bash`, `python3`, `node`…) runs the block in the file's folder, with no input. Standard output and errors go together, in the order they were printed, into an `output` block right under the code, replacing the one already there. Colors and other terminal codes are left out, at most 256 KB is kept, and a note at the end says when the block failed (`[exit status 1]`), was cut short or was stopped. After `code_block_timeout_seconds` (60 by default) Strata stops it and everything it started. Inserting the output is one edit, so Undo takes it out again; nothing is saved until you save. Output only goes under a block whose fence starts its own line (not one written right after a list marker or in a quote). Both commands are also in Tools ▸ Notes; neither has a shortcut, so bind `run_code_block` or `run_code_block_and_capture` in [Key Bindings](keybindings.md) if you use them often.
+
+### Asking first
+
+Before the first block from a file runs, Strata shows exactly the text it will run and where it goes (the terminal tab, a new REPL tab, or the program and folder for a capture), with **Run** and **Cancel**. Once you choose Run, the file's other blocks run without asking until you quit Strata. Tick **Don't ask again for this file** to skip the question from then on; Strata remembers that in `code-blocks-allowed.json` in its settings folder, never in the file. The file is recognized by its real path and by its identity on disk, so another file put at the same path (by a download, a sync tool or a checkout) asks again, while your own saves from Strata don't. **Notes: Forget Files Allowed to Run Code Blocks** makes every file ask again.
+
+Files outside the folders open in the side bar, and tabs that aren't saved files (such as an AI answer opened in a tab), ask every time, and can't be remembered.
+
 ## Sync conflicts
 
 When two devices change a note at the same time, sync tools keep both versions, the second as a copy next to the note. Strata recognizes the copies Syncthing (`Note.sync-conflict-20261019-143012-ABC1234.md`), Dropbox, Nextcloud and ownCloud (`Note (Andre's MacBook's conflicted copy 2026-10-19).md`) and other tools (`Note (conflict).md`) make, and shows a notice above the note: **Compare** opens the two side by side (see [Compare](compare.md)) so you can bring over what you want to keep, **Open Copy** opens the copy, and **Move Copy to Trash…** removes it once you're done. Only the copy you were shown goes to the Trash: if the sync tool replaces it while Strata is asking, nothing is moved. Opening the copy shows the same notice the other way round. **Notes: Compare with Conflict Copy** does the comparing from the keyboard.
@@ -152,12 +167,16 @@ Every notes command is in Tools ▸ Notes and the command palette. None has a ke
 | Notes: Undo Rename | `undo_note_rename` |
 | Notes: Toggle Backlinks | `toggle_backlinks` |
 | Notes: Compare with Conflict Copy | `compare_conflict_copy` |
+| Notes: Run Code Block | `run_code_block` |
+| Notes: Run Code Block and Capture Output | `run_code_block_and_capture` |
+| Notes: Forget Files Allowed to Run Code Blocks | `forget_code_block_files` |
 
 ## Settings
 
 | Setting | Default | What it does |
 |---|---|---|
 | `notes_backlinks` | `"auto"` | When the backlinks panel shows: `"auto"` (notes in an Obsidian vault, or in a folder whose notes use wikilinks), `"always"` (every note in an open folder) or `"never"`. |
+| `code_block_timeout_seconds` | `60` | How long Notes: Run Code Block and Capture Output lets a block run before stopping it. |
 
 ## What isn't here yet
 

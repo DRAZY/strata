@@ -55,6 +55,7 @@ mod permalink;
 mod print;
 mod private;
 mod replace;
+mod runblock;
 mod safe_html;
 mod search;
 mod session;

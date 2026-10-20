@@ -828,16 +828,32 @@ mod tests {
         let ctx = Context::default();
         let mut app = StrataApp::new(None, None);
         frame(&mut app, &ctx, vec![]);
-        app.run(&ctx, Cmd::ToggleTerminal);
-        app.run(&ctx, Cmd::NewTerminal);
-        assert_eq!(app.terminal.tabs.len(), 2);
-        app.terminal.active_terminal().unwrap().write("echo strata-ctx-$((6*7))\r");
+        // Quiet programs rather than the login shell. A shell redraws its
+        // prompt when it likes (after the panel's resize reaches it as
+        // SIGWINCH, or from its startup files), and redrawing clears the
+        // cursor's line, which drops a selection covering it: under load that
+        // landed between Select All and the next right-click.
+        for _ in 0..2 {
+            let quiet = ("/bin/sh".to_owned(), vec!["-c".to_owned(), "stty -echo; echo strata-ctx-$((6*7)); exec cat".to_owned()]);
+            app.terminal.tabs.push(crate::terminal::Terminal::spawn(Some(ctx.clone()), &std::env::temp_dir(), Some(quiet), 80, 12).unwrap());
+        }
+        app.terminal.active = 1;
+        app.terminal.visible = true;
+        // Until the text is there and the grid has its final size (a column
+        // change drops the selection too).
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        while std::time::Instant::now() < deadline && !app.terminal.active_terminal().unwrap().screen_text().contains("strata-ctx-42") {
+        let mut last = None;
+        loop {
             frame(&mut app, &ctx, vec![]);
+            let t = app.terminal.active_terminal().unwrap();
+            let settled = t.screen_text().contains("strata-ctx-42") && last == Some(t.grid_size());
+            last = Some(t.grid_size());
+            if settled {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "{}", t.screen_text());
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
-        frame(&mut app, &ctx, vec![]);
         let body = app.terminal.body.as_ref().unwrap().rect;
         let menu = open_menu(&mut app, &ctx, body.center());
         assert!(!item(&menu, "Copy").2, "nothing selected");

@@ -201,6 +201,10 @@ pub enum Cmd {
     NotesFollowLink,
     NotesUndoRename,
     NotesCompareConflict,
+    // Running Markdown code blocks (see `app/runblock_ui.rs`).
+    NotesRunCodeBlock,
+    NotesRunCodeBlockCapture,
+    NotesForgetCodeBlockFiles,
 }
 
 impl Cmd {
@@ -394,6 +398,9 @@ impl Cmd {
         Cmd::NotesFollowLink,
         Cmd::NotesUndoRename,
         Cmd::NotesCompareConflict,
+        Cmd::NotesRunCodeBlock,
+        Cmd::NotesRunCodeBlockCapture,
+        Cmd::NotesForgetCodeBlockFiles,
     ];
 
     pub fn name(self) -> &'static str {
@@ -587,6 +594,9 @@ impl Cmd {
             Cmd::NotesFollowLink => "Notes: Follow Link",
             Cmd::NotesUndoRename => "Notes: Undo Rename",
             Cmd::NotesCompareConflict => "Notes: Compare with Conflict Copy",
+            Cmd::NotesRunCodeBlock => "Notes: Run Code Block",
+            Cmd::NotesRunCodeBlockCapture => "Notes: Run Code Block and Capture Output",
+            Cmd::NotesForgetCodeBlockFiles => "Notes: Forget Files Allowed to Run Code Blocks",
         }
     }
 
@@ -772,6 +782,8 @@ impl Cmd {
             // ⌘/Ctrl-click follows a link; the rest are in the palette and Tools ▸ Notes.
             Cmd::NotesDailyNote | Cmd::NotesNewNote | Cmd::NotesNewFromTemplate | Cmd::NotesFindTag | Cmd::NotesRename => &[],
             Cmd::NotesToggleBacklinks | Cmd::NotesFollowLink | Cmd::NotesUndoRename | Cmd::NotesCompareConflict => &[],
+            // Running code takes a deliberate choice; bind them in keybindings.json if you like.
+            Cmd::NotesRunCodeBlock | Cmd::NotesRunCodeBlockCapture | Cmd::NotesForgetCodeBlockFiles => &[],
         }
     }
 
@@ -973,6 +985,9 @@ impl Cmd {
             Cmd::NotesFollowLink => "follow_link",
             Cmd::NotesUndoRename => "undo_note_rename",
             Cmd::NotesCompareConflict => "compare_conflict_copy",
+            Cmd::NotesRunCodeBlock => "run_code_block",
+            Cmd::NotesRunCodeBlockCapture => "run_code_block_and_capture",
+            Cmd::NotesForgetCodeBlockFiles => "forget_code_block_files",
         }
     }
 }

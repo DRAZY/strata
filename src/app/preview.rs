@@ -35,6 +35,7 @@ impl StrataApp {
             Some(Action::Status(s)) => self.status = s,
             Some(Action::Note { link, markdown }) => self.preview_note_link(&link, markdown),
             Some(Action::Tag(tag)) => self.choose_tag(&ui.ctx().clone(), Some(&tag)),
+            Some(Action::RunCode { at, code }) => self.run_block_from_preview(&ui.ctx().clone(), at, &code),
             None => {}
         }
     }

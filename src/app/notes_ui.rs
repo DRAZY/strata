@@ -1277,6 +1277,10 @@ impl StrataApp {
                 Item::cmd("Rename Note…", Cmd::NotesRename),
                 Item::cmd("Undo Rename", Cmd::NotesUndoRename).enabled(self.notes.last_rename.as_ref().is_some_and(UndoRename::undoable)),
                 Item::cmd("Compare with Conflict Copy", Cmd::NotesCompareConflict),
+                Item::Separator,
+                Item::cmd("Run Code Block", Cmd::NotesRunCodeBlock),
+                Item::cmd("Run Code Block and Capture Output", Cmd::NotesRunCodeBlockCapture),
+                Item::cmd("Forget Files Allowed to Run Code Blocks", Cmd::NotesForgetCodeBlockFiles),
             ],
         )
     }

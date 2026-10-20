@@ -383,6 +383,11 @@ pub struct Terminal {
     /// The side bar folders lookups last used, and a number that changes with them.
     roots_seen: Vec<PathBuf>,
     roots_generation: u64,
+    /// Distinct for every terminal started, so a destination chosen earlier
+    /// (Run Code Block's confirmation) can't land in a different tab.
+    id: u64,
+    /// The REPL this tab was started for by Run Code Block (`python3`, …).
+    repl: Option<String>,
 }
 
 /// What finding links remembers on the UI thread while the modifier is held;
@@ -535,6 +540,18 @@ struct Link {
     col: usize,
 }
 
+/// How a terminal tab runs a REPL: through the user's login shell (as a new
+/// tab's shell starts), so it finds the same `python3` or `node` the user's
+/// own terminal would. On Windows, the program itself.
+pub fn repl_command(program: &str) -> (String, Vec<String>) {
+    if cfg!(windows) {
+        return (program.to_owned(), Vec::new());
+    }
+    let (shell, mut args) = default_shell();
+    args.extend(["-c".to_owned(), format!("exec {program}")]);
+    (shell, args)
+}
+
 /// The user's shell: $SHELL, else zsh, else sh (PowerShell, else COMSPEC, on Windows).
 fn default_shell() -> (String, Vec<String>) {
     if cfg!(windows) {
@@ -595,6 +612,8 @@ impl Terminal {
         let sender = event_loop.channel();
         let thread = Some(event_loop.spawn());
         let shell_name = Path::new(&program).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or(program);
+        static IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(Self { term, sender, queue, thread,
             #[cfg(unix)]
             pid,
@@ -603,11 +622,21 @@ impl Terminal {
             #[cfg(unix)]
             tty,
             cwd: cwd.to_owned(), started: std::time::Instant::now(), last_output, pending_send: Vec::new(), enter_after: None, link: None,
-            lookup: LinkLookup::default(), resolver: None, generation: 0, shell_dir: None, roots_seen: Vec::new(), roots_generation: 0 })
+            lookup: LinkLookup::default(), resolver: None, generation: 0, shell_dir: None, roots_seen: Vec::new(), roots_generation: 0, id, repl: None })
     }
 
     pub fn title(&self) -> &str {
-        self.title.as_deref().filter(|t| !t.trim().is_empty()).unwrap_or(&self.shell_name)
+        // A REPL tab runs through the login shell, so its shell's name would mislead.
+        self.title.as_deref().filter(|t| !t.trim().is_empty()).or(self.repl.as_deref()).unwrap_or(&self.shell_name)
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The REPL Run Code Block started this tab for, if it did.
+    pub fn repl(&self) -> Option<&str> {
+        self.repl.as_deref()
     }
 
     pub fn write(&self, bytes: impl Into<Vec<u8>>) {
@@ -963,6 +992,11 @@ impl Terminal {
         self.cell
     }
 
+    /// Columns and rows of the grid.
+    pub fn grid_size(&self) -> (usize, usize) {
+        (self.size.cols, self.size.rows)
+    }
+
     /// The underlined location: its file, line, column, and the cells it covers.
     #[cfg(test)]
     pub fn hovered_link(&self) -> Option<(&Path, usize, usize, &[LinkRow])> {
@@ -1052,6 +1086,9 @@ pub struct Panel {
     /// The side bar folders, where relative paths in the output are looked
     /// for when they aren't in the shell's folder.
     pub roots: Vec<PathBuf>,
+    /// A REPL tab that ended before its text was sent (the program isn't
+    /// installed, say), for the app to report; it takes it.
+    pub repl_failed: Option<String>,
 }
 
 /// OSC 52 permissions (`terminal_allow_clipboard_read` / `_write`).
@@ -1104,6 +1141,7 @@ impl Panel {
             clipboard_use: ClipboardUse::default(),
             option_as_meta: !MAC,
             roots: Vec::new(),
+            repl_failed: None,
         }
     }
 
@@ -1123,6 +1161,22 @@ impl Panel {
         self.active = self.tabs.len() - 1;
         self.visible = true;
         Ok(())
+    }
+
+    /// A new tab running `program`'s REPL (see `repl_command`), made active.
+    pub fn open_repl(&mut self, ctx: &egui::Context, cwd: &Path, program: &str) -> Result<(), String> {
+        let (cols, rows) = self.tabs.get(self.active).map(|t| (t.size.cols, t.size.rows)).unwrap_or((80, 12));
+        let mut t = Terminal::spawn(Some(ctx.clone()), cwd, Some(repl_command(program)), cols, rows).map_err(|e| format!("Terminal: {e}"))?;
+        t.repl = Some(program.to_owned());
+        self.tabs.push(t);
+        self.active = self.tabs.len() - 1;
+        self.visible = true;
+        Ok(())
+    }
+
+    /// The tab of the terminal with this `Terminal::id`, if it's still open.
+    pub fn index_of(&self, id: u64) -> Option<usize> {
+        self.tabs.iter().position(|t| t.id == id)
     }
 
     pub fn active_terminal(&self) -> Option<&Terminal> {
@@ -1198,7 +1252,10 @@ impl Panel {
         while i > 0 {
             i -= 1;
             if self.tabs[i].exited {
-                self.tabs.remove(i);
+                let t = self.tabs.remove(i);
+                if let Some(repl) = t.repl.clone().filter(|_| !t.pending_send.is_empty()) {
+                    self.repl_failed = Some(repl);
+                }
                 if self.active > i {
                     self.active -= 1;
                 }

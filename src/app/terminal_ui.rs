@@ -22,14 +22,14 @@ pub(super) fn send_text(e: &Editor) -> String {
 }
 
 impl StrataApp {
-    fn terminal_dir(&self) -> std::path::PathBuf {
+    pub(super) fn terminal_dir(&self) -> std::path::PathBuf {
         // The folder holding the current file, else the first folder.
         let file = self.docs[self.active].path.as_deref();
         let folder = file.and_then(|f| self.sidebar.root_of(f)).or(self.sidebar.root());
         terminal::start_dir(folder, file)
     }
 
-    fn set_terminal_visible(&mut self, on: bool) {
+    pub(super) fn set_terminal_visible(&mut self, on: bool) {
         self.terminal.visible = on;
         if self.settings.terminal_visible != on {
             self.settings.terminal_visible = on;

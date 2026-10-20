@@ -115,6 +115,8 @@ pub struct Settings {
     /// keyboard layout gives. Off on macOS (Option types @, [, ], é… on many
     /// layouts), on elsewhere.
     pub terminal_option_as_meta: bool,
+    /// Notes: Run Code Block and Capture Output stops a block after this many seconds.
+    pub code_block_timeout_seconds: u32,
     /// Opening the find bar with a multi-line selection turns on In Selection.
     pub auto_find_in_selection: bool,
     /// Underline misspelled words in prose: comments, strings, Markdown, plain text.
@@ -223,6 +225,7 @@ impl Default for Settings {
             terminal_allow_clipboard_read: false,
             terminal_allow_clipboard_write: true,
             terminal_option_as_meta: !cfg!(target_os = "macos"),
+            code_block_timeout_seconds: 60,
             auto_find_in_selection: false,
             spell_check: false,
             dictionary: crate::spell::DEFAULT_DICTIONARY.into(),

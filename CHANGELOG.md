@@ -38,6 +38,20 @@ All notable changes to Strata are recorded here. The format follows
 - Notes: the Markdown preview shows wikilinks you can click, tags,
   frontmatter as a block of properties, and embedded images, notes, sections
   and blocks (one level deep, images only from the vault).
+- Notes: runbooks you can click through. In the Markdown preview, fenced
+  `bash`, `sh`, `zsh`, `fish`, `pwsh`, `powershell`, `cmd`, `python`, `node`
+  (`js`) and `ruby` blocks have a **▶ Run** button. Shell blocks go to the
+  current terminal tab the way Send to Terminal sends text; language blocks
+  start their REPL in a terminal tab of their own. **Notes: Run Code Block**
+  does the same for the block at the cursor, and **Notes: Run Code Block and
+  Capture Output** runs it in a separate process and puts what it prints in
+  an `output` block under the code, as one edit Undo takes back (stopped
+  after `code_block_timeout_seconds`, 60 by default). Nothing runs when a
+  file opens or the preview draws. Before a file's first block runs, Strata
+  shows exactly what will run and where, and asks; **Don't ask again for
+  this file** is remembered in Strata's settings folder, never in the file,
+  and a different file at the same path asks again. Files outside the open
+  folders ask every time. See Notes ▸ Running code blocks in the manual.
 - Optional AI helpers with a model you choose (Tools ▸ AI and the command
   palette): **Summarize Changes** (the whole review or one file), **Explain
   Change**, **Flag Risks**, **Draft Commit Message** and **Explain
