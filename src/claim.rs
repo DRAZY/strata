@@ -17,6 +17,27 @@ use std::time::SystemTime;
 
 /// Staging folders start with this; a scan reports any left over.
 pub const STAGING: &str = ".strata-trash-";
+/// The marker file in each staging folder, and how its contents start:
+/// only folders with it are Strata's (a user's own `.strata-trash-x` isn't).
+pub const MARKER: &str = ".strata-claim";
+const MARKER_TAG: &str = "strata-claim";
+
+/// `dir` is a staging folder Strata made (it has a valid marker).
+pub fn is_staging(dir: &Path) -> bool {
+    std::fs::read(dir.join(MARKER)).is_ok_and(|b| b.starts_with(MARKER_TAG.as_bytes()))
+}
+
+/// How a no-replace move went.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Moved {
+    Done,
+    /// Nothing moved (the new name was taken, or the old one gone).
+    Not,
+    /// The file now has both names: linked to the new one, but the old one
+    /// couldn't be removed.
+    #[cfg_attr(windows, allow(dead_code))]
+    Both,
+}
 
 /// The file as it was listed.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -117,13 +138,18 @@ pub fn trash_listed_with(top: &Path, path: &Path, old: Option<&Path>, expected: 
         _ => None,
     }).collect::<Option<_>>().ok_or(Refused::Outside)?;
     let Some((name, dirs)) = parts.split_last() else { return Err(Refused::Outside) };
+    if *name == MARKER {
+        return Err(Refused::Failed(format!("Strata keeps files named {MARKER} for itself")));
+    }
     if old.is_some_and(|o| std::fs::symlink_metadata(o).is_ok()) {
         return Err(Refused::OldBack);
     }
     hook(Step::BeforeClaim);
-    // The folder, reached from the top without following any link.
+    // The folder, reached from the top without following any link (and,
+    // on Windows, held so it can't be swapped until this is done).
     let parent = imp::open_parent(top, dirs).map_err(|_| Refused::Outside)?;
-    let stage_name = format!("{STAGING}{}-{}", std::process::id(), SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+    let stamp = format!("{}-{}", std::process::id(), SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+    let stage_name = format!("{STAGING}{stamp}");
     imp::make_dir(&parent, &stage_name).map_err(|e| Refused::Failed(e.to_string()))?;
     let stage = match imp::open_dir(&parent, &stage_name) {
         Ok(s) => s,
@@ -132,20 +158,45 @@ pub fn trash_listed_with(top: &Path, path: &Path, old: Option<&Path>, expected: 
             return Err(Refused::Failed(e.to_string()));
         }
     };
-    let staged_path = path.parent().unwrap_or(top).join(&stage_name).join(name);
-    if imp::move_noreplace(&parent, name, &stage, name).is_err() {
+    // The marker says this folder is Strata's (a scan reports it if left over).
+    if let Err(e) = imp::write_new(&stage, MARKER, format!("{MARKER_TAG} {stamp}\n").as_bytes()) {
         let _ = imp::remove_empty_dir(&parent, &stage_name);
-        return Err(Refused::Changed);
+        return Err(Refused::Failed(e.to_string()));
+    }
+    let done_with_stage = || {
+        let _ = imp::remove_file_at(&stage, MARKER);
+        let _ = imp::remove_empty_dir(&parent, &stage_name);
+    };
+    let staged_path = path.parent().unwrap_or(top).join(&stage_name).join(name);
+    match imp::move_noreplace(&parent, name, &stage, name) {
+        Moved::Done => {}
+        Moved::Not => {
+            done_with_stage();
+            return Err(Refused::Changed);
+        }
+        // Linked into the staging folder but still at its name: the extra
+        // link goes (only if it's really the same file), else say where.
+        Moved::Both => {
+            if imp::drop_extra_link(&stage, name, &parent, name) {
+                done_with_stage();
+                return Err(Refused::Failed("it couldn't be set aside".into()));
+            }
+            return Err(Refused::KeptAt(staged_path));
+        }
     }
     hook(Step::Claimed);
     // Not the listed file: put it back, or say where it is.
     let put_back = |why: Refused| -> Refused {
         match imp::move_noreplace(&stage, name, &parent, name) {
-            Ok(()) => {
-                let _ = imp::remove_empty_dir(&parent, &stage_name);
+            Moved::Done => {
+                done_with_stage();
                 why
             }
-            Err(_) => Refused::KeptAt(staged_path.clone()),
+            Moved::Both if imp::drop_extra_link(&parent, name, &stage, name) => {
+                done_with_stage();
+                why
+            }
+            Moved::Not | Moved::Both => Refused::KeptAt(staged_path.clone()),
         }
     };
     let checked = match imp::open_file_at(&stage, name) {
@@ -163,7 +214,7 @@ pub fn trash_listed_with(top: &Path, path: &Path, old: Option<&Path>, expected: 
     if let Err(e) = crate::trash::move_to_trash(&real.join(name)) {
         return Err(put_back(Refused::Failed(e.to_string())));
     }
-    let _ = imp::remove_empty_dir(&parent, &stage_name);
+    done_with_stage();
     Ok(())
 }
 
@@ -174,6 +225,8 @@ mod imp {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
+
+    use super::Moved;
 
     pub type Dir = OwnedFd;
 
@@ -227,23 +280,76 @@ mod imp {
         ok(unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) })
     }
 
-    /// Rename, failing if the new name is taken (never replacing anything).
-    pub fn move_noreplace(from: &Dir, a: &str, to: &Dir, b: &str) -> io::Result<()> {
-        let (a, b) = (c(a)?, c(b)?);
+    /// Rename, never replacing anything: `Not` if the new name is taken.
+    pub fn move_noreplace(from: &Dir, a: &str, to: &Dir, b: &str) -> Moved {
+        let (Ok(ca), Ok(cb)) = (c(a), c(b)) else { return Moved::Not };
         #[cfg(target_os = "macos")]
         // SAFETY: as above.
-        return ok(unsafe { libc::renameatx_np(from.as_raw_fd(), a.as_ptr(), to.as_raw_fd(), b.as_ptr(), libc::RENAME_EXCL) });
+        return if unsafe { libc::renameatx_np(from.as_raw_fd(), ca.as_ptr(), to.as_raw_fd(), cb.as_ptr(), libc::RENAME_EXCL) } == 0 { Moved::Done } else { Moved::Not };
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        // SAFETY: as above.
-        return ok(unsafe { libc::renameat2(from.as_raw_fd(), a.as_ptr(), to.as_raw_fd(), b.as_ptr(), libc::RENAME_NOREPLACE) });
-        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
         {
-            // No exclusive rename here: a hard link fails if the name is
-            // taken; then the old name goes (the file stays, under the new one).
             // SAFETY: as above.
-            ok(unsafe { libc::linkat(from.as_raw_fd(), a.as_ptr(), to.as_raw_fd(), b.as_ptr(), 0) })?;
-            ok(unsafe { libc::unlinkat(from.as_raw_fd(), a.as_ptr(), 0) })
+            if unsafe { libc::renameat2(from.as_raw_fd(), ca.as_ptr(), to.as_raw_fd(), cb.as_ptr(), libc::RENAME_NOREPLACE) } == 0 {
+                return Moved::Done;
+            }
+            // An old kernel or a file system without it: links instead.
+            match io::Error::last_os_error().raw_os_error() {
+                Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP) => move_by_link(from, a, to, b),
+                _ => Moved::Not,
+            }
         }
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        move_by_link(from, a, to, b)
+    }
+
+    /// A no-replace move with links: a hard link fails if the new name is
+    /// taken; then the old name goes. If it can't, the file has both names.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub fn move_by_link(from: &Dir, a: &str, to: &Dir, b: &str) -> Moved {
+        let (Ok(ca), Ok(cb)) = (c(a), c(b)) else { return Moved::Not };
+        // SAFETY: as above.
+        if unsafe { libc::linkat(from.as_raw_fd(), ca.as_ptr(), to.as_raw_fd(), cb.as_ptr(), 0) } != 0 {
+            return Moved::Not;
+        }
+        // SAFETY: as above.
+        if unsafe { libc::unlinkat(from.as_raw_fd(), ca.as_ptr(), 0) } != 0 {
+            return Moved::Both;
+        }
+        Moved::Done
+    }
+
+    /// `dir/name` and `other/other_name` are the same file (not following links).
+    pub fn same_file_at(dir: &Dir, name: &str, other: &Dir, other_name: &str) -> bool {
+        let id = |d: &Dir, n: &str| -> Option<(u64, u64)> {
+            let n = c(n).ok()?;
+            // SAFETY: zeroed plain data, filled in by the call.
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            // SAFETY: a valid descriptor, C string and out pointer.
+            (unsafe { libc::fstatat(d.as_raw_fd(), n.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } == 0).then_some((st.st_dev as u64, st.st_ino as u64))
+        };
+        matches!((id(dir, name), id(other, other_name)), (Some(x), Some(y)) if x == y)
+    }
+
+    /// `extra_dir/extra` is a second name of the file at `kept_dir/kept`:
+    /// remove that name only (the file stays). True if done.
+    pub fn drop_extra_link(extra_dir: &Dir, extra: &str, kept_dir: &Dir, kept: &str) -> bool {
+        same_file_at(extra_dir, extra, kept_dir, kept) && remove_file_at(extra_dir, extra).is_ok()
+    }
+
+    /// Remove a name (one link of a file Strata made or holds elsewhere).
+    pub fn remove_file_at(dir: &Dir, name: &str) -> io::Result<()> {
+        let name = c(name)?;
+        // SAFETY: as above.
+        ok(unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) })
+    }
+
+    /// A new file with `bytes`, failing if the name exists.
+    pub fn write_new(dir: &Dir, name: &str, bytes: &[u8]) -> io::Result<()> {
+        use std::io::Write;
+        let name = c(name)?;
+        // SAFETY: as above.
+        let f = fd(unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC, 0o600 as libc::c_uint) })?;
+        std::fs::File::from(f).write_all(bytes)
     }
 
     pub fn open_file_at(dir: &Dir, name: &str) -> io::Result<std::fs::File> {
@@ -280,22 +386,61 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
+    use super::Moved;
     use std::io;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use std::path::{Path, PathBuf};
-    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle, MoveFileExW};
+    use std::sync::Arc;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FileAttributeTagInfo, GetFileInformationByHandle, GetFileInformationByHandleEx, MoveFileExW,
+    };
 
-    /// A folder, by its path (checked to have no link or junction on the way).
-    pub type Dir = PathBuf;
+    /// A folder by its path, with open handles on it and every folder above
+    /// it up to the top. The handles don't share delete access, and Windows
+    /// won't rename, move or replace a folder while such a handle is open: so
+    /// none of these folders can be swapped for a junction or link while the
+    /// operation runs, and the path-based calls below stay on them.
+    pub struct Dir {
+        path: PathBuf,
+        _held: Vec<Arc<std::fs::File>>,
+    }
 
     fn wide(p: &Path) -> Vec<u16> {
         p.as_os_str().encode_wide().chain([0]).collect()
     }
 
+    /// Open a folder without following a reparse point, holding it against
+    /// renames; Err unless it's a plain folder.
+    fn pin(path: &Path, check: bool) -> io::Result<std::fs::File> {
+        const FILE_READ_ATTRIBUTES: u32 = 0x80;
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        let f = std::fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES | SYNCHRONIZE)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        if check {
+            // SAFETY: plain data, filled in by the call.
+            let mut tag: FILE_ATTRIBUTE_TAG_INFO = unsafe { std::mem::zeroed() };
+            // SAFETY: a valid handle and an out buffer of the stated size.
+            let got = unsafe { GetFileInformationByHandleEx(f.as_raw_handle() as _, FileAttributeTagInfo, (&mut tag as *mut FILE_ATTRIBUTE_TAG_INFO).cast(), std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32) };
+            if got == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 || tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+                return Err(io::Error::other("not a plain folder"));
+            }
+        }
+        Ok(f)
+    }
+
+    /// The top folder (trusted as given, but held too), then each folder
+    /// below it, none of which may be a junction or link.
     pub fn open_parent(top: &Path, dirs: &[&str]) -> io::Result<Dir> {
-        let mut dir = top.to_path_buf();
+        let mut dir = Dir { path: top.to_path_buf(), _held: vec![Arc::new(pin(top, false)?)] };
         for d in dirs {
             dir = open_dir(&dir, d)?;
         }
@@ -303,34 +448,43 @@ mod imp {
     }
 
     pub fn open_dir(dir: &Dir, name: &str) -> io::Result<Dir> {
-        let p = dir.join(name);
-        // A link or junction (a reparse point) is never entered.
-        let m = std::fs::symlink_metadata(&p)?;
-        use std::os::windows::fs::MetadataExt;
-        const REPARSE: u32 = 0x400;
-        if !m.is_dir() || m.file_attributes() & REPARSE != 0 {
-            return Err(io::Error::other("not a plain folder"));
-        }
-        Ok(p)
+        let path = dir.path.join(name);
+        let mut held = dir._held.clone();
+        held.push(Arc::new(pin(&path, true)?));
+        Ok(Dir { path, _held: held })
     }
 
     pub fn make_dir(dir: &Dir, name: &str) -> io::Result<()> {
-        std::fs::create_dir(dir.join(name))
+        std::fs::create_dir(dir.path.join(name))
     }
 
     pub fn remove_empty_dir(dir: &Dir, name: &str) -> io::Result<()> {
-        std::fs::remove_dir(dir.join(name))
+        std::fs::remove_dir(dir.path.join(name))
     }
 
-    /// MoveFileExW without MOVEFILE_REPLACE_EXISTING: fails if the name is taken.
-    pub fn move_noreplace(from: &Dir, a: &str, to: &Dir, b: &str) -> io::Result<()> {
-        let (a, b) = (wide(&from.join(a)), wide(&to.join(b)));
+    /// MoveFileExW without MOVEFILE_REPLACE_EXISTING: `Not` if the name is taken.
+    pub fn move_noreplace(from: &Dir, a: &str, to: &Dir, b: &str) -> Moved {
+        let (a, b) = (wide(&from.path.join(a)), wide(&to.path.join(b)));
         // SAFETY: NUL-terminated wide strings that outlive the call.
-        if unsafe { MoveFileExW(a.as_ptr(), b.as_ptr(), 0) } == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+        if unsafe { MoveFileExW(a.as_ptr(), b.as_ptr(), 0) } == 0 { Moved::Not } else { Moved::Done }
+    }
+
+    pub fn drop_extra_link(extra_dir: &Dir, extra: &str, kept_dir: &Dir, kept: &str) -> bool {
+        let id = |d: &Dir, n: &str| open_file(&d.path.join(n)).ok().and_then(|f| id_of(&f));
+        matches!((id(extra_dir, extra), id(kept_dir, kept)), (Some(x), Some(y)) if x == y) && std::fs::remove_file(extra_dir.path.join(extra)).is_ok()
+    }
+
+    pub fn remove_file_at(dir: &Dir, name: &str) -> io::Result<()> {
+        std::fs::remove_file(dir.path.join(name))
+    }
+
+    pub fn write_new(dir: &Dir, name: &str, bytes: &[u8]) -> io::Result<()> {
+        use std::io::Write;
+        std::fs::OpenOptions::new().write(true).create_new(true).open(dir.path.join(name))?.write_all(bytes)
     }
 
     pub fn open_file_at(dir: &Dir, name: &str) -> io::Result<std::fs::File> {
-        open_file(&dir.join(name))
+        open_file(&dir.path.join(name))
     }
 
     /// Opened without following a link at the end.
@@ -350,12 +504,13 @@ mod imp {
     }
 
     pub fn real_path(dir: &Dir) -> io::Result<PathBuf> {
-        dir.canonicalize()
+        dir.path.canonicalize()
     }
 }
 
 #[cfg(not(any(unix, windows)))]
 mod imp {
+    use super::Moved;
     use std::io;
     use std::path::{Path, PathBuf};
     pub type Dir = PathBuf;
@@ -374,7 +529,16 @@ mod imp {
     pub fn remove_empty_dir(_: &Dir, _: &str) -> io::Result<()> {
         no()
     }
-    pub fn move_noreplace(_: &Dir, _: &str, _: &Dir, _: &str) -> io::Result<()> {
+    pub fn move_noreplace(_: &Dir, _: &str, _: &Dir, _: &str) -> Moved {
+        Moved::Not
+    }
+    pub fn drop_extra_link(_: &Dir, _: &str, _: &Dir, _: &str) -> bool {
+        false
+    }
+    pub fn remove_file_at(_: &Dir, _: &str) -> io::Result<()> {
+        no()
+    }
+    pub fn write_new(_: &Dir, _: &str, _: &[u8]) -> io::Result<()> {
         no()
     }
     pub fn open_file_at(_: &Dir, _: &str) -> io::Result<std::fs::File> {
@@ -505,6 +669,42 @@ mod tests {
         let Err(Refused::KeptAt(at)) = r else { panic!("{r:?}") };
         assert_eq!(std::fs::read_to_string(&at).unwrap(), "replacement\n");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "yet another\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The link-based move (old Linux kernels, other systems) never replaces
+    /// a name, and when the old name can't be removed the file keeps both:
+    /// the extra name goes only after checking it's the same file.
+    #[cfg(unix)]
+    #[test]
+    fn moving_by_links_never_replaces_and_never_loses() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("links");
+        std::fs::create_dir_all(dir.join("to")).unwrap();
+        std::fs::write(dir.join("sub/a.txt"), "a\n").unwrap();
+        std::fs::write(dir.join("to/a.txt"), "taken\n").unwrap();
+        let (from, to) = (imp::open_parent(&dir, &["sub"]).unwrap(), imp::open_parent(&dir, &["to"]).unwrap());
+        assert_eq!(imp::move_by_link(&from, "a.txt", &to, "a.txt"), Moved::Not);
+        assert_eq!(std::fs::read_to_string(dir.join("to/a.txt")).unwrap(), "taken\n");
+        assert_eq!(imp::move_by_link(&from, "a.txt", &to, "b.txt"), Moved::Done);
+        assert!(!dir.join("sub/a.txt").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("to/b.txt")).unwrap(), "a\n");
+        // The old name can't go (its folder is read-only): both names stay.
+        std::fs::write(dir.join("sub/c.txt"), "c\n").unwrap();
+        std::fs::set_permissions(dir.join("sub"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let moved = imp::move_by_link(&from, "c.txt", &to, "c.txt");
+        std::fs::set_permissions(dir.join("sub"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        // (Root may remove it anyway.)
+        // SAFETY: no arguments, no side effects.
+        assert!(moved == Moved::Both || unsafe { libc::geteuid() } == 0, "{moved:?}");
+        if moved == Moved::Both {
+            assert!(dir.join("sub/c.txt").exists() && dir.join("to/c.txt").exists());
+            // A different file under the extra name is never removed.
+            assert!(!imp::drop_extra_link(&to, "b.txt", &from, "c.txt"));
+            assert!(imp::drop_extra_link(&to, "c.txt", &from, "c.txt"));
+            assert!(!dir.join("to/c.txt").exists());
+            assert_eq!(std::fs::read_to_string(dir.join("sub/c.txt")).unwrap(), "c\n");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

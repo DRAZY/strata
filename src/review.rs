@@ -633,7 +633,7 @@ fn walk(top: &Path, bad: &mut Vec<PathBuf>, staged: &mut Vec<PathBuf>) -> Result
         .require_git(false)
         .filter_entry(move |e| {
             let dir = e.file_type().is_some_and(|t| t.is_dir());
-            if dir && e.file_name().to_string_lossy().starts_with(crate::claim::STAGING) {
+            if dir && e.file_name().to_string_lossy().starts_with(crate::claim::STAGING) && crate::claim::is_staging(e.path()) {
                 found.lock().unwrap_or_else(|e| e.into_inner()).push(e.path().to_path_buf());
                 return false;
             }
@@ -851,7 +851,7 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
         .collect();
     // An interrupted Trash: say what's in its staging folder, never lose it.
     for dir in staged {
-        let inside: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let inside: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n != crate::claim::MARKER).collect();
         let rel = dir.strip_prefix(&top).unwrap_or(&dir).to_string_lossy().replace('\\', "/");
         let mut f = change(dir, &rel, Status::Added);
         f.blocked = Some(format!(
@@ -1814,10 +1814,17 @@ pub(crate) mod tests {
         let stage = dir.join(format!("src/{}123-456", crate::claim::STAGING));
         std::fs::create_dir_all(&stage).unwrap();
         std::fs::write(stage.join("work.rs"), "the agent's work\n").unwrap();
+        std::fs::write(stage.join(crate::claim::MARKER), "strata-claim 123-456\n").unwrap();
+        // A folder of the user's own that merely starts the same way is just a folder.
+        let mine = dir.join(format!("{}mine", crate::claim::STAGING));
+        std::fs::create_dir_all(&mine).unwrap();
+        std::fs::write(mine.join("notes.txt"), "mine\n").unwrap();
         let s = scan(&dir, &Base::Head, &HashMap::new(), &mut Cache::default()).unwrap();
-        assert_eq!(s.files.len(), 1, "{:?}", s.files);
-        assert_eq!(s.files[0].path, stage);
-        assert!(s.files[0].blocked.as_deref().is_some_and(|w| w.contains("work.rs") && w.contains("Nothing was deleted")), "{:?}", s.files[0].blocked);
+        assert_eq!(s.files.len(), 2, "{:?}", s.files);
+        let left = s.files.iter().find(|f| f.path == stage).expect("the leftover is reported");
+        assert!(left.blocked.as_deref().is_some_and(|w| w.contains("work.rs") && !w.contains(crate::claim::MARKER) && w.contains("Nothing was deleted")), "{:?}", left.blocked);
+        let notes = s.files.iter().find(|f| f.path == mine.join("notes.txt")).expect("the user's folder is scanned");
+        assert_eq!((notes.status, notes.blocked.is_none()), (Status::Added, true));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
