@@ -1159,9 +1159,25 @@ impl Panel {
         self.focus_next && self.visible
     }
 
-    /// Forget a `focus` the panel won't be drawn to take.
-    pub fn cancel_focus(&mut self) {
+    /// The panel isn't drawn this frame: forget a `focus` it can't take, and
+    /// if a shell had the keyboard, it loses it (reported to programs that
+    /// asked). Returns whether one had it, so the keyboard can go elsewhere.
+    pub fn not_drawn(&mut self) -> bool {
         self.focus_next = false;
+        let mut had = false;
+        for t in &mut self.tabs {
+            if std::mem::take(&mut t.focused) {
+                had = true;
+                let mut term = t.term.lock();
+                term.is_focused = false;
+                let report = term.mode().contains(TermMode::FOCUS_IN_OUT);
+                drop(term);
+                if report {
+                    t.write(b"\x1b[O".to_vec());
+                }
+            }
+        }
+        had
     }
 
     pub fn open(&mut self, ctx: &egui::Context, cwd: &Path) -> Result<(), String> {

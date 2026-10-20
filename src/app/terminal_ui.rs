@@ -126,8 +126,11 @@ impl StrataApp {
             self.doc().view.focus();
         }
         if !self.terminal.visible || self.distraction.is_some() {
-            // Hidden: it can't take the keyboard now, nor later out of the blue.
-            self.terminal.cancel_focus();
+            // Hidden: it can't take the keyboard now, nor later out of the
+            // blue; if it had the keyboard, the file gets it.
+            if self.terminal.not_drawn() {
+                self.doc().view.focus();
+            }
             return;
         }
         let theme = terminal::Theme::from_highlighter(&self.docs[self.active].highlighter);
@@ -742,6 +745,51 @@ mod tests {
         frame(&mut app, &ctx, vec![]);
         frame(&mut app, &ctx, vec![]);
         assert!(!app.terminal.has_focus(&ctx), "the shown terminal didn't take the keyboard late");
+    }
+
+    /// When the terminal has the keyboard and its panel stops being drawn
+    /// (distraction-free mode, or the panel hidden), the file gets the
+    /// keyboard: typing never goes nowhere.
+    #[test]
+    fn hiding_a_focused_terminal_gives_the_editor_the_keyboard() {
+        let ctx = egui::Context::default();
+        let mut app = StrataApp::new(None, None);
+        app.docs[0].editor.insert_text("file");
+        frame(&mut app, &ctx, vec![]);
+        let focus_terminal = |app: &mut StrataApp| {
+            if app.terminal.tabs.is_empty() {
+                app.new_terminal(&ctx);
+            }
+            app.set_terminal_visible(true);
+            app.terminal.focus();
+            frame(app, &ctx, vec![]);
+            frame(app, &ctx, vec![]);
+            assert!(app.terminal.has_focus(&ctx));
+        };
+        let typed = |app: &mut StrataApp, text: &str| {
+            frame(app, &ctx, vec![]);
+            frame(app, &ctx, vec![]);
+            frame(app, &ctx, vec![Event::Text(text.into())]);
+            app.docs[app.active].editor.buffer.line_text(0)
+        };
+
+        focus_terminal(&mut app);
+        if crate::keys::MAC {
+            // Its shortcut uses Cmd, so it reaches Strata from the terminal.
+            let (mods, k) = Cmd::DistractionFree.default_keys()[0];
+            frame(&mut app, &ctx, vec![key(k, mods)]);
+        } else {
+            app.run(&ctx, Cmd::DistractionFree);
+        }
+        assert!(app.distraction.is_some());
+        assert_eq!(typed(&mut app, "!"), "file!", "distraction-free: typing goes to the file");
+        app.run(&ctx, Cmd::DistractionFree);
+
+        // The panel hidden some other way than Toggle Terminal (which
+        // focuses the editor itself).
+        focus_terminal(&mut app);
+        app.set_terminal_visible(false);
+        assert_eq!(typed(&mut app, "?"), "file!?", "hidden panel: typing goes to the file");
     }
 
     #[test]
