@@ -1,7 +1,6 @@
 # Roadmap
 
-What Strata 1.0 is, what's on `main` for the next release, and what comes
-after that. The user manual (Help ▸ Documentation, sources in
+What Strata 1.0 and 2.0 are, and what comes after that. The user manual (Help ▸ Documentation, sources in
 [`manual/`](manual/)) describes everything that's in the app today.
 
 ## In 1.0
@@ -29,10 +28,9 @@ after that. The user manual (Help ▸ Documentation, sources in
   Windows on x64.
 - **Updates**: opt-in, signed in-app updates from GitHub Releases.
 
-## Next release (on `main`)
+## In 2.0
 
-These are finished and merged, and will ship together in the next release.
-They aren't in 1.0.x.
+These shipped together in Strata 2.0. They aren't in 1.0.x.
 
 - **Terminal links**: ⌘-click (Ctrl+click) a file location in the terminal's
   output, such as a compiler error, a panic or a stack trace, to open the

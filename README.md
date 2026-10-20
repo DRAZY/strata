@@ -185,10 +185,10 @@ commands and panels with only the permissions you give them.
 
 ## What's next
 
-On `main` for the next release: clickable file locations and Send to Terminal
-in the terminal, Review Changes, language servers, notes with runnable code
-blocks and Git sync, the optional AI helpers, plugins, and markers for hidden
-and direction-changing characters. Planned after that (details in
+Strata 2.0 added clickable file locations and Send to Terminal in the
+terminal, Review Changes, language servers, notes with runnable code blocks
+and Git sync, the optional AI helpers, plugins, and markers for hidden and
+direction-changing characters. Planned next (details in
 [`docs/ROADMAP.md`](docs/ROADMAP.md)): a Vim mode, official Linux support and
 screen reader support in the editor.
 

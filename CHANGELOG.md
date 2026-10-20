@@ -6,7 +6,9 @@ All notable changes to Strata are recorded here. The format follows
 
 ## [Unreleased]
 
-The next release adds Obsidian-compatible notes (with runnable code blocks
+## [2.0.0] - 2026-10-20
+
+This release adds Obsidian-compatible notes (with runnable code blocks
 and optional Git sync), Review Changes, language servers, clickable file
 locations and Send to Terminal in the terminal, optional AI helpers, plugins,
 and markers for hidden and direction-changing characters. Everything that
@@ -433,7 +435,8 @@ The first public release candidate. Everything below is new.
   Indic and other shaped scripts) and right-to-left text are not fully laid
   out.
 
-[Unreleased]: https://github.com/DRAZY/strata/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/DRAZY/strata/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/DRAZY/strata/compare/v1.0.2...v2.0.0
 [1.0.2]: https://github.com/DRAZY/strata/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/DRAZY/strata/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/DRAZY/strata/compare/v1.0.0-rc.1...v1.0.0
