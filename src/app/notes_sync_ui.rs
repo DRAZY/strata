@@ -549,22 +549,22 @@ impl StrataApp {
             .show(ctx, |ui| {
                 let size = egui::TextStyle::Body.resolve(ui.style()).size;
                 ui.set_max_width((size * 34.0).max(440.0));
-                ui.strong(format!("Enable Git sync for “{}”?", e.name));
+                ui.strong(crate::hidden::plain(&format!("Enable Git sync for “{}”?", e.name)));
                 if e.again {
                     ui.colored_label(AMBER, "This isn't the repository Git sync was turned on for here (it was replaced, its remote changed, or sync was added to settings.json by hand), so sync is off until you say again.");
                 }
-                ui.label(egui::RichText::new(e.vault.display().to_string()).weak());
+                ui.label(egui::RichText::new(crate::hidden::plain(&e.vault.display().to_string())).weak());
                 ui.add_space(4.0);
                 match &e.remote {
                     None => {
                         ui.label("Looking at the repository…");
                     }
                     Some(Err(f)) => {
-                        ui.label(&f.message);
+                        ui.label(crate::hidden::plain(&f.message));
                     }
                     Some(Ok(r)) => {
                         let scope = if r.prefix.is_empty() { "the changed files in this folder".to_owned() } else { format!("the changed files in this folder (only {}, not the rest of the repository)", r.prefix.trim_end_matches('/')) };
-                        ui.label(format!("Strata will commit {scope}, bring in new commits from {} with a rebase, and push to {} on branch {}.", r.upstream, r.url, r.branch));
+                        ui.label(crate::hidden::plain(&format!("Strata will commit {scope}, bring in new commits from {} with a rebase, and push to {} on branch {}.", r.upstream, r.url, r.branch)));
                         ui.label("Git runs here with this repository's own settings, as it does in a terminal: its hooks, filters (such as Git LFS) and credential helpers will run. Turn sync on only for a repository you set up yourself.");
                         ui.label("Strata connects to the remote only when you choose Notes: Sync Notes, or on the timer below. It never asks for a password: Git uses your credential helper or SSH agent.");
                         ui.add_space(4.0);
@@ -641,12 +641,12 @@ impl StrataApp {
             .show(ctx, |ui| {
                 let size = egui::TextStyle::Body.resolve(ui.style()).size;
                 ui.set_max_width((size * 34.0).max(440.0));
-                ui.strong(format!("Strata's sync was interrupted in “{}”. Undo it?", folder_name(&vault)));
-                ui.label(&question);
+                ui.strong(crate::hidden::plain(&format!("Strata's sync was interrupted in “{}”. Undo it?", folder_name(&vault))));
+                ui.label(crate::hidden::plain(&question));
                 ui.label("Undoing puts the repository back the way it was before that sync's rebase. Every file below is backed up first (Notes: Show Sync Backups), as on disk and as staged. Anything you changed during the rebase is in that backup.");
                 egui::ScrollArea::vertical().max_height(size * 10.0).show(ui, |ui| {
                     for f in files.lines() {
-                        ui.label(egui::RichText::new(f).monospace());
+                        ui.label(egui::RichText::new(crate::hidden::plain(f)).monospace());
                     }
                 });
                 ui.add_space(6.0);
@@ -708,23 +708,23 @@ impl StrataApp {
                 let size = egui::TextStyle::Body.resolve(ui.style()).size;
                 ui.set_max_width((size * 34.0).max(440.0));
                 ui.strong("Notes didn't sync");
-                ui.label(format!("{} changed here and on {} since the last sync, so nothing was pulled or pushed. Your files are as they were.", if c.paths.len() == 1 { "This note".to_owned() } else { format!("These {} notes", c.paths.len()) }, c.upstream));
+                ui.label(crate::hidden::plain(&format!("{} changed here and on {} since the last sync, so nothing was pulled or pushed. Your files are as they were.", if c.paths.len() == 1 { "This note".to_owned() } else { format!("These {} notes", c.paths.len()) }, c.upstream)));
                 if c.moved {
-                    ui.colored_label(AMBER, format!("{} has changed them again since you compared: compare again before keeping your versions.", c.upstream));
+                    ui.colored_label(AMBER, crate::hidden::plain(&format!("{} has changed them again since you compared: compare again before keeping your versions.", c.upstream)).into_owned());
                 }
                 ui.add_space(4.0);
                 egui::ScrollArea::vertical().max_height(size * 12.0).show(ui, |ui| {
                     for rel in &c.paths {
                         ui.horizontal(|ui| {
-                            ui.label(vault_rel(rel));
-                            if ui.small_button(format!("Compare with {}", c.upstream)).clicked() {
+                            ui.label(crate::hidden::plain(&vault_rel(rel)).into_owned());
+                            if ui.small_button(crate::hidden::plain(&format!("Compare with {}", c.upstream)).into_owned()).clicked() {
                                 compare = Some(rel.clone());
                             }
                         });
                     }
                 });
                 if let Some(b) = &c.backup {
-                    ui.label(format!("Git began a rebase and stopped; Strata undid it after backing up every file it touched, in {} (Notes: Show Sync Backups).", b.display()));
+                    ui.label(crate::hidden::plain(&format!("Git began a rebase and stopped; Strata undid it after backing up every file it touched, in {} (Notes: Show Sync Backups).", b.display())));
                 }
                 ui.add_space(4.0);
                 ui.label("To finish: in each comparison, bring over what you want to keep from the remote's side, and save. Then choose Keep My Versions and Sync: Strata records a merge that keeps these notes exactly as they are on your disk (the remote's versions stay in the history) and pushes it.");
@@ -757,9 +757,9 @@ impl StrataApp {
         let (text, label) = match remote {
             Some(bytes) => {
                 let b = crate::buffer::Buffer::decode(&bytes).0;
-                (b.slice(0..b.len_chars()), format!("{name} ({upstream})"))
+                (b.slice(0..b.len_chars()), crate::hidden::plain(&format!("{name} ({upstream})")).into_owned())
             }
-            None => (String::new(), format!("{name} (deleted on {upstream})")),
+            None => (String::new(), crate::hidden::plain(&format!("{name} (deleted on {upstream})")).into_owned()),
         };
         let r = match self.tab_for_path(&path) {
             Some(r) => r,
@@ -1160,5 +1160,28 @@ mod tests {
         assert!(app.notes.sync.conflict.is_none() && !shows(&out, "Notes didn't sync"));
         assert_eq!(f.remote_text("vault/Plan.md"), merged.trim_end());
         assert_eq!(read(&f.vault(), "Plan.md"), merged);
+    }
+
+    #[test]
+    fn names_from_git_show_their_hidden_characters_in_the_sync_windows() {
+        let dir = crate::app::ui_tests::temp_dir("sync-hidden");
+        let ctx = Context::default();
+        let mut app = StrataApp::new(None, None);
+        app.open_folder(dir.clone());
+        // A conflicting note whose name reads "Plandm.txt" when shaped raw.
+        let name = "vault/Plan\u{202E}txt.md";
+        let conflict = sync::Conflict { top: dir.clone(), upstream: "origin/m\u{2066}ain".into(), commit: "0".repeat(40), paths: vec![name.into()], moved: true, backup: Some(dir.join("b\u{200B}ackup")) };
+        app.notes.sync.conflict = Some(ConflictView { vault: dir.join("vault"), conflict });
+        app.notes.sync.show_conflict = true;
+        app.notes.sync.interrupted = Some((dir.join("v\u{202E}ault"), "Strata's sync was interrupted in v\u{202E}ault".into(), name.into()));
+        let mut out = frame(&mut app, &ctx, vec![]);
+        for _ in 0..2 {
+            out = frame(&mut app, &ctx, vec![]);
+        }
+        let t = texts(&out);
+        assert!(t.iter().all(|t| !crate::hidden::any(t)), "raw hidden characters drawn: {t:?}");
+        assert!(t.iter().any(|t| t.contains("Plan[RLO]txt.md")), "the conflict list marks the name: {t:?}");
+        assert!(t.iter().any(|t| t.contains("Compare with origin/m[LRI]ain")), "{t:?}");
+        assert!(t.iter().any(|t| t.contains("v[RLO]ault")), "the interrupted-sync question: {t:?}");
     }
 }

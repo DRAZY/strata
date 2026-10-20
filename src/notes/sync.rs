@@ -1030,7 +1030,9 @@ impl Repo<'_> {
         crate::private::create_dir_all(&dir).map_err(made)?;
         let note = format!("Strata backed up these files before undoing a stopped Git rebase or merge in {}.\nworktree/ holds them as they were on disk, staged/ as they were staged (\".stageN\" for a file in conflict), worktree.2/ and on what changed while it worked.\nStrata removes backups after 30 days.\n", self.vault.display());
         write_synced(&dir.join("README.txt"), note.as_bytes()).map_err(made)?;
-        // Staged versions: every index entry of every touched path.
+        // Staged versions: every index entry of every touched path. What's
+        // staged is looked at again with the files, below.
+        let staged_before = self.staged_state(&paths).ok_or_else(|| "the files (Git couldn't read what's staged)".to_owned())?;
         for rel in &paths {
             let entries = ask(self.top(), &["ls-files", "-s", "-z", "--", &format!(":(literal){rel}")]).ok_or_else(|| format!("{rel} (Git couldn't read what's staged)"))?;
             for e in entries.split('\0').filter(|e| !e.is_empty()) {
@@ -1086,9 +1088,21 @@ impl Repo<'_> {
                 f(round);
             }
         }
+        if self.staged_state(&paths).filter(|_| !fault("staged")).as_ref() != Some(&staged_before) {
+            return Err("the files (what's staged changed while Strata backed it up)".to_owned());
+        }
         sync_dir(&dir);
         log::info!("notes sync: backed up {} before undoing", plural(paths.len(), "file"));
         Ok(dir)
+    }
+
+    /// Every index entry (mode, object, stage) of `paths`, to notice staging
+    /// while a backup is made.
+    fn staged_state(&self, paths: &[String]) -> Option<String> {
+        let specs: Vec<String> = paths.iter().map(|p| format!(":(literal){p}")).collect();
+        let mut args = vec!["ls-files", "-s", "-z", "--"];
+        args.extend(specs.iter().map(String::as_str));
+        ask(self.top(), &args)
     }
 
     /// Write `bytes` to `path` in a backup, flushed to disk.
@@ -1189,13 +1203,19 @@ impl Repo<'_> {
             return Err(Failure { kind: Kind::Interrupted, message: format!("Strata's sync was interrupted in {} and left a {op} stopped. Undo it? Every file it touched is backed up first", folder(&self.vault)), detail: Some(files) });
         }
         let backup = self.back_up(&back_to).map_err(|why| self.stopped(op, &why))?;
+        // The record is used up before anything is undone, so a copy of it
+        // can never be honored again; if that can't be written, nothing is.
+        let spent = match (Marker::read(&marker), &self.opts.backup_root) {
+            (Some(m), Some(root)) => use_nonce(root, &m.nonce).is_ok(),
+            _ => false,
+        };
+        if !spent {
+            return Err(self.stopped(op, "the record of the interrupted sync (it couldn't be marked as used)"));
+        }
         let abort: &[&str] = if op == "merge" { &["merge", "--abort"] } else { &["rebase", "--abort"] };
         let undone = self.run(self.top(), abort, LOCAL_TIMEOUT).is_ok_and(|o| o.ok()) && !self.in_progress();
         if !undone {
             return Err(fail(Kind::Stuck, format!("Git couldn't undo the {op} the interrupted sync left; look at the repository in Git (git status). Every file it touched was backed up in {}", backup.display())));
-        }
-        if let (Some(m), Some(root)) = (Marker::read(&marker), &self.opts.backup_root) {
-            let _ = use_nonce(root, &m.nonce);
         }
         let _ = std::fs::remove_file(&marker);
         Err(fail(Kind::Git, format!("The interrupted sync has been undone; your files are as they were before it. Every file it touched was backed up first, in {}. Sync again", backup.display())))
@@ -1362,8 +1382,13 @@ fn prune_backups(root: &Path) {
 
 /// The nonces of markers already acted on (`<backup root>/used-markers`):
 /// a record copied back can't be honored twice.
+/// A record that can't be read counts as used.
 fn nonce_used(root: Option<&Path>, nonce: &str) -> bool {
-    root.and_then(|r| std::fs::read_to_string(r.join("used-markers")).ok()).is_some_and(|t| t.lines().any(|l| l == nonce))
+    let Some(root) = root else { return true };
+    match std::fs::read_to_string(root.join("used-markers")) {
+        Ok(t) => t.lines().any(|l| l == nonce),
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
 }
 
 fn use_nonce(root: &Path, nonce: &str) -> std::io::Result<()> {

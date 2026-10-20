@@ -973,3 +973,67 @@ fn backups_older_than_30_days_are_removed() {
     assert!(!old.exists(), "the old backup went");
     assert!(recent.exists(), "a recent one stays");
 }
+
+#[test]
+fn staging_while_the_backup_is_made_stops_the_sync_with_nothing_undone() {
+    let Some(f) = fixture("backup-staging") else { return };
+    midway(&f);
+    let (here, config) = (f.here.clone(), f.config.clone());
+    // Another Git client stages a resolution after the staged copies are made.
+    let stage: Arc<dyn Fn(u32) + Send + Sync> = Arc::new(move |round| {
+        if round != 1 {
+            return;
+        }
+        let git = |args: &[&str], input: Option<&str>| {
+            let mut c = Command::new("git");
+            c.args(args).current_dir(&here).env("GIT_CONFIG_GLOBAL", &config).env("GIT_CONFIG_NOSYSTEM", "1").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped());
+            let mut child = c.spawn().unwrap();
+            if let Some(text) = input {
+                std::io::Write::write_all(child.stdin.as_mut().unwrap(), text.as_bytes()).unwrap();
+            }
+            drop(child.stdin.take());
+            let out = child.wait_with_output().unwrap();
+            assert!(out.status.success());
+            String::from_utf8(out.stdout).unwrap().trim().to_owned()
+        };
+        let blob = git(&["hash-object", "-w", "--stdin"], Some("staged elsewhere\n"));
+        git(&["update-index", "--cacheinfo", &format!("100644,{blob},vault/Plan.md")], None);
+    });
+    let o = run(&f.vault(), &Options { after_backup: Some(stage), ..f.opts() }, &|_| {});
+    let e = failed(&o);
+    assert_eq!(e.kind, Kind::Stuck, "{e:?}");
+    assert!(e.message.contains("nothing was undone") && e.message.contains("staged"), "{}", e.message);
+    assert!(f.here.join(".git/rebase-merge").exists(), "the staged resolution is still there");
+}
+
+#[test]
+fn an_interrupted_sync_is_not_undone_when_its_record_cant_be_used_up() {
+    let Some(f) = fixture("leftover-unwritable") else { return };
+    midway(&f);
+    g(&f, &f.here, &["fetch", "-q"]);
+    let (head, onto) = (f.head(), g(&f, &f.here, &["rev-parse", "origin/main"]));
+    write_marker(&f.vault(), "rebase", gone_pid(), 1, &head, "main", &onto, true);
+    let out = g_out(&f, &f.here, &["rebase", "-q", "origin/main"]);
+    assert!(!out.status.success() && f.here.join(".git/rebase-merge").exists());
+    // The list of used records can be read but not written.
+    std::fs::create_dir_all(f.backups()).unwrap();
+    let used = f.backups().join("used-markers");
+    std::fs::write(&used, "").unwrap();
+    let mut perms = std::fs::metadata(&used).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&used, perms).unwrap();
+    let e = failed(&run(&f.vault(), &Options { undo_interrupted: true, ..f.opts() }, &|_| {})).clone();
+    assert_eq!(e.kind, Kind::Stuck, "{e:?}");
+    assert!(e.message.contains("nothing was undone"), "{}", e.message);
+    assert!(f.here.join(".git/rebase-merge").exists(), "left as Git left it");
+    // A list that can't be read at all counts every record as used.
+    let mut perms = std::fs::metadata(&used).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&used, perms).unwrap();
+    std::fs::remove_file(&used).unwrap();
+    std::fs::create_dir(&used).unwrap();
+    let e = failed(&run(&f.vault(), &Options { undo_interrupted: true, ..f.opts() }, &|_| {})).clone();
+    assert_eq!(e.kind, Kind::Busy, "{e:?}");
+    assert!(f.here.join(".git/rebase-merge").exists());
+}

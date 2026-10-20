@@ -621,7 +621,7 @@ impl Cmd {
             Cmd::PluginsInstallFolder => "Plugins: Install from Folder…",
             Cmd::PluginsInstallZip => "Plugins: Install from Zip…",
             Cmd::NotesSync => "Notes: Sync Notes",
-            Cmd::NotesSyncEnable => "Notes: Enable Git Sync for This Vault",
+            Cmd::NotesSyncEnable => "Notes: Enable Git Sync for This Vault…",
             Cmd::NotesSyncDisable => "Notes: Disable Git Sync for This Vault",
             Cmd::NotesShowSyncBackups => "Notes: Show Sync Backups",
         }
