@@ -191,6 +191,16 @@ pub enum Cmd {
     AiTestConnection,
     AiSettings,
     AiForgetAllowed,
+    // Notes mode (see `app/notes_ui.rs`).
+    NotesDailyNote,
+    NotesNewNote,
+    NotesNewFromTemplate,
+    NotesFindTag,
+    NotesRename,
+    NotesToggleBacklinks,
+    NotesFollowLink,
+    NotesUndoRename,
+    NotesCompareConflict,
 }
 
 impl Cmd {
@@ -375,6 +385,15 @@ impl Cmd {
         Cmd::AiTestConnection,
         Cmd::AiSettings,
         Cmd::AiForgetAllowed,
+        Cmd::NotesDailyNote,
+        Cmd::NotesNewNote,
+        Cmd::NotesNewFromTemplate,
+        Cmd::NotesFindTag,
+        Cmd::NotesRename,
+        Cmd::NotesToggleBacklinks,
+        Cmd::NotesFollowLink,
+        Cmd::NotesUndoRename,
+        Cmd::NotesCompareConflict,
     ];
 
     pub fn name(self) -> &'static str {
@@ -559,6 +578,15 @@ impl Cmd {
             Cmd::AiTestConnection => "AI: Test Connection",
             Cmd::AiSettings => "AI: Provider Settings…",
             Cmd::AiForgetAllowed => "AI: Forget Allowed Providers",
+            Cmd::NotesDailyNote => "Notes: Open Daily Note",
+            Cmd::NotesNewNote => "Notes: New Note…",
+            Cmd::NotesNewFromTemplate => "Notes: New Note from Template…",
+            Cmd::NotesFindTag => "Notes: Find Tag…",
+            Cmd::NotesRename => "Notes: Rename Note…",
+            Cmd::NotesToggleBacklinks => "Notes: Toggle Backlinks",
+            Cmd::NotesFollowLink => "Notes: Follow Link",
+            Cmd::NotesUndoRename => "Notes: Undo Rename",
+            Cmd::NotesCompareConflict => "Notes: Compare with Conflict Copy",
         }
     }
 
@@ -741,6 +769,9 @@ impl Cmd {
             | Cmd::AiTestConnection
             | Cmd::AiSettings
             | Cmd::AiForgetAllowed => &[],
+            // ⌘/Ctrl-click follows a link; the rest are in the palette and Tools ▸ Notes.
+            Cmd::NotesDailyNote | Cmd::NotesNewNote | Cmd::NotesNewFromTemplate | Cmd::NotesFindTag | Cmd::NotesRename => &[],
+            Cmd::NotesToggleBacklinks | Cmd::NotesFollowLink | Cmd::NotesUndoRename | Cmd::NotesCompareConflict => &[],
         }
     }
 
@@ -933,6 +964,15 @@ impl Cmd {
             Cmd::AiTestConnection => "ai_test_connection",
             Cmd::AiSettings => "ai_settings",
             Cmd::AiForgetAllowed => "ai_forget_allowed",
+            Cmd::NotesDailyNote => "open_daily_note",
+            Cmd::NotesNewNote => "new_note",
+            Cmd::NotesNewFromTemplate => "new_note_from_template",
+            Cmd::NotesFindTag => "find_tag",
+            Cmd::NotesRename => "rename_note",
+            Cmd::NotesToggleBacklinks => "toggle_backlinks",
+            Cmd::NotesFollowLink => "follow_link",
+            Cmd::NotesUndoRename => "undo_note_rename",
+            Cmd::NotesCompareConflict => "compare_conflict_copy",
         }
     }
 }

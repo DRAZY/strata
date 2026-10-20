@@ -273,7 +273,7 @@ fn finish_stage(parent: &imp::Dir, stage: imp::Dir, stage_name: &str, marker: &[
 }
 
 #[cfg(unix)]
-mod imp {
+pub(crate) mod imp {
     use std::ffi::{CString, OsStr};
     use std::io;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -322,9 +322,14 @@ mod imp {
     }
 
     pub fn make_dir(dir: &Dir, name: &str) -> io::Result<()> {
+        make_dir_mode(dir, name, 0o700)
+    }
+
+    /// `make_dir` with these permissions (less the umask).
+    pub fn make_dir_mode(dir: &Dir, name: &str, mode: u32) -> io::Result<()> {
         let name = c(name)?;
         // SAFETY: as above.
-        ok(unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o700) })
+        ok(unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), mode as libc::mode_t) })
     }
 
     /// Removes the folder only if it's empty (never anything in it).
@@ -410,11 +415,18 @@ mod imp {
 
     /// A new file with `bytes`, failing if the name exists.
     pub fn write_new(dir: &Dir, name: &str, bytes: &[u8]) -> io::Result<()> {
+        write_new_mode(dir, name, bytes, 0o600)
+    }
+
+    /// `write_new` with these permissions (less the umask), flushed to disk.
+    pub fn write_new_mode(dir: &Dir, name: &str, bytes: &[u8], mode: u32) -> io::Result<()> {
         use std::io::Write;
         let name = c(name)?;
         // SAFETY: as above.
-        let f = fd(unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC, 0o600 as libc::c_uint) })?;
-        std::fs::File::from(f).write_all(bytes)
+        let f = fd(unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC, mode as libc::c_uint) })?;
+        let mut f = std::fs::File::from(f);
+        f.write_all(bytes)?;
+        f.sync_all()
     }
 
     pub fn open_file_at(dir: &Dir, name: &str) -> io::Result<std::fs::File> {
@@ -422,6 +434,32 @@ mod imp {
         // SAFETY: as above.
         let f = fd(unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC) })?;
         Ok(std::fs::File::from(f))
+    }
+
+    /// Open an existing file for writing (not following a link, not creating it).
+    pub fn open_write_at(dir: &Dir, name: &str) -> io::Result<std::fs::File> {
+        let name = c(name)?;
+        // SAFETY: as above.
+        let f = fd(unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC) })?;
+        Ok(std::fs::File::from(f))
+    }
+
+    /// Rename within a folder, replacing `b` (only for Strata's own files).
+    pub fn rename_replace(dir: &Dir, a: &str, b: &str) -> io::Result<()> {
+        let (a, b) = (c(a)?, c(b)?);
+        // SAFETY: as above.
+        ok(unsafe { libc::renameat(dir.as_raw_fd(), a.as_ptr(), dir.as_raw_fd(), b.as_ptr()) })
+    }
+
+    /// Flush a folder's entries (names made, renamed or removed) to disk.
+    pub fn sync_dir(dir: &Dir) -> io::Result<()> {
+        // SAFETY: a valid descriptor.
+        ok(unsafe { libc::fsync(dir.as_raw_fd()) })
+    }
+
+    /// Which file `name` is (device and inode), not following a link.
+    pub fn id_at(dir: &Dir, name: &str) -> Option<(u64, u64)> {
+        id_of(&open_file_at(dir, name).ok()?)
     }
 
     pub fn open_file(path: &Path) -> io::Result<std::fs::File> {
@@ -450,7 +488,7 @@ mod imp {
 }
 
 #[cfg(windows)]
-mod imp {
+pub(crate) mod imp {
     use super::Moved;
     use std::io;
     use std::os::windows::ffi::OsStrExt;
@@ -523,6 +561,10 @@ mod imp {
         std::fs::create_dir(dir.path.join(name))
     }
 
+    pub fn make_dir_mode(dir: &Dir, name: &str, _mode: u32) -> io::Result<()> {
+        make_dir(dir, name)
+    }
+
     pub fn remove_empty_dir(dir: &Dir, name: &str) -> io::Result<()> {
         std::fs::remove_dir(dir.path.join(name))
     }
@@ -544,6 +586,18 @@ mod imp {
         std::fs::OpenOptions::new().write(true).create_new(true).open(dir.path.join(name))?.write_all(bytes)
     }
 
+    pub fn write_new_mode(dir: &Dir, name: &str, bytes: &[u8], _mode: u32) -> io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(dir.path.join(name))?;
+        f.write_all(bytes)?;
+        f.sync_all()
+    }
+
+    /// Remove a name in a held folder (a file Strata made or holds elsewhere).
+    pub fn remove_file_at(dir: &Dir, name: &str) -> io::Result<()> {
+        std::fs::remove_file(dir.path.join(name))
+    }
+
     /// By path: a handle on the staging folder would hold it against
     /// deletion (its parent stays held, so it can't be swapped).
     pub fn remove_in(parent: &Dir, dir_name: &str, file: &str) -> io::Result<()> {
@@ -557,6 +611,28 @@ mod imp {
 
     pub fn open_file_at(dir: &Dir, name: &str) -> io::Result<std::fs::File> {
         open_file(&dir.path.join(name))
+    }
+
+    pub fn open_write_at(dir: &Dir, name: &str) -> io::Result<std::fs::File> {
+        std::fs::OpenOptions::new().write(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(dir.path.join(name))
+    }
+
+    pub fn rename_replace(dir: &Dir, a: &str, b: &str) -> io::Result<()> {
+        std::fs::rename(dir.path.join(a), dir.path.join(b))
+    }
+
+    /// Flush a folder's entries to disk (FlushFileBuffers on the folder,
+    /// opened for writing with backup semantics). Some file systems don't
+    /// allow it on folders; NTFS journals its folder changes anyway.
+    pub fn sync_dir(dir: &Dir) -> io::Result<()> {
+        match std::fs::OpenOptions::new().write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(&dir.path).and_then(|f| f.sync_all()) {
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(1) => Ok(()),
+            r => r,
+        }
+    }
+
+    pub fn id_at(dir: &Dir, name: &str) -> Option<(u64, u64)> {
+        id_of(&open_file_at(dir, name).ok()?)
     }
 
     /// Opened without following a link at the end.
@@ -581,7 +657,7 @@ mod imp {
 }
 
 #[cfg(not(any(unix, windows)))]
-mod imp {
+pub(crate) mod imp {
     use super::Moved;
     use std::io;
     use std::path::{Path, PathBuf};
@@ -598,6 +674,9 @@ mod imp {
     pub fn make_dir(_: &Dir, _: &str) -> io::Result<()> {
         no()
     }
+    pub fn make_dir_mode(_: &Dir, _: &str, _: u32) -> io::Result<()> {
+        no()
+    }
     pub fn remove_empty_dir(_: &Dir, _: &str) -> io::Result<()> {
         no()
     }
@@ -610,7 +689,13 @@ mod imp {
     pub fn write_new(_: &Dir, _: &str, _: &[u8]) -> io::Result<()> {
         no()
     }
+    pub fn write_new_mode(_: &Dir, _: &str, _: &[u8], _: u32) -> io::Result<()> {
+        no()
+    }
     pub fn remove_in(_: &Dir, _: &str, _: &str) -> io::Result<()> {
+        no()
+    }
+    pub fn remove_file_at(_: &Dir, _: &str) -> io::Result<()> {
         no()
     }
     pub fn write_in(_: &Dir, _: &str, _: &str, _: &[u8]) -> io::Result<()> {
@@ -618,6 +703,18 @@ mod imp {
     }
     pub fn open_file_at(_: &Dir, _: &str) -> io::Result<std::fs::File> {
         no()
+    }
+    pub fn open_write_at(_: &Dir, _: &str) -> io::Result<std::fs::File> {
+        no()
+    }
+    pub fn rename_replace(_: &Dir, _: &str, _: &str) -> io::Result<()> {
+        no()
+    }
+    pub fn sync_dir(_: &Dir) -> io::Result<()> {
+        no()
+    }
+    pub fn id_at(_: &Dir, _: &str) -> Option<(u64, u64)> {
+        None
     }
     pub fn open_file(_: &Path) -> io::Result<std::fs::File> {
         no()

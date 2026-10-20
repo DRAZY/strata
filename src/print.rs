@@ -446,6 +446,12 @@ impl Flow {
                 self.y += space;
             }
             Block::Code { lang, code } => self.code_block(lang, code, left, bars),
+            // Printed as its target (only notes parse into embeds).
+            Block::Embed { target, .. } => {
+                let text = format!("↪ {target}");
+                let run = crate::markdown::Run { range: 0..text.len(), style: Default::default(), link: None };
+                self.block(&Block::Paragraph(crate::markdown::Inline { text, runs: vec![run], links: Vec::new() }), left, bars);
+            }
             Block::Quote { kind, blocks } => {
                 self.gap(4.0);
                 let mut bars = bars.to_vec();

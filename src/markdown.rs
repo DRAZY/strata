@@ -35,6 +35,35 @@ fn options() -> Options {
     Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_FOOTNOTES | Options::ENABLE_GFM
 }
 
+/// Notes in a vault also have `[[wikilinks]]` and YAML frontmatter.
+fn note_options() -> Options {
+    options() | Options::ENABLE_WIKILINKS | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+}
+
+/// Link targets that aren't URLs: a wikilink (`[[target]]`) and a tag. The
+/// control character can't come from a Markdown link.
+pub const NOTE_LINK: &str = "\u{1}note:";
+pub const TAG_LINK: &str = "\u{1}tag:";
+
+/// What `![[target]]` shows (see `Notes::embed`).
+pub enum Embed {
+    Image(egui::load::SizedTexture),
+    /// A note (or one heading's section of it), already parsed.
+    Note { title: String, blocks: Arc<Vec<TopBlock>> },
+    /// Still being read; ask again next frame.
+    Loading,
+    /// Shown as a link: the target is missing, too deep, or embeds itself.
+    Link(String),
+}
+
+/// What the preview of a note asks the notes index (see `app/notes_ui.rs`).
+pub trait Notes {
+    /// Does wikilink `target` (as written, `#subpath` included) find a file?
+    fn resolves(&self, target: &str) -> bool;
+    /// What to show for `![[target]]` (`wiki`) or `![](target)`, `depth` embeds deep.
+    fn embed(&self, ctx: &egui::Context, target: &str, wiki: bool, depth: usize) -> Embed;
+}
+
 // ---- block model ------------------------------------------------------------------
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -49,6 +78,8 @@ pub struct Style {
     pub note: bool,
     /// Raw inline HTML, drawn dimmed.
     pub html: bool,
+    /// A note's `#tag`.
+    pub tag: bool,
 }
 
 /// A styled stretch of `Inline::text` (byte range), maybe a link (index into `links`).
@@ -108,6 +139,8 @@ pub enum Block {
     Rule,
     Html(String),
     Footnote { label: String, blocks: Vec<Block> },
+    /// A paragraph that is only `![[target]]` (`wiki`) or `![](target)`, in a note.
+    Embed { target: String, wiki: bool },
 }
 
 /// A top-level block with where it starts in the source (for scroll sync)
@@ -124,7 +157,17 @@ pub struct TopBlock {
 
 /// Parse Markdown into top-level blocks.
 pub fn parse(src: &str) -> Vec<TopBlock> {
-    let mut b = Builder { it: pulldown_cmark::Parser::new_ext(src, options()).into_offset_iter(), tasks: Vec::new(), paragraphs: false };
+    parse_as(src, false)
+}
+
+/// Parse a note: wikilinks, embeds, tags and frontmatter too.
+pub fn parse_note(src: &str) -> Vec<TopBlock> {
+    parse_as(src, true)
+}
+
+fn parse_as(src: &str, notes: bool) -> Vec<TopBlock> {
+    let opts = if notes { note_options() } else { options() };
+    let mut b = Builder { it: pulldown_cmark::Parser::new_ext(src, opts).into_offset_iter(), tasks: Vec::new(), paragraphs: false, notes };
     let mut out = Vec::new();
     let (mut line, mut counted) = (0, 0);
     while let Some((ev, range)) = b.it.next() {
@@ -175,6 +218,8 @@ struct Builder<'a> {
     tasks: Vec<Option<bool>>,
     /// The last `blocks` call saw explicit paragraphs.
     paragraphs: bool,
+    /// A note: wikilinks, embeds, tags.
+    notes: bool,
 }
 
 /// Inline styling state while reading a paragraph.
@@ -187,9 +232,22 @@ struct InlineState {
     links: Vec<Option<usize>>,
     /// Text length when the current image started (to fill in a missing alt).
     image: Vec<(usize, String)>,
+    /// A note: tags are styled, wikilinks get `NOTE_LINK` targets.
+    notes: bool,
+    /// Images seen (target, wikilink?), and whether there was anything else,
+    /// to tell a paragraph that is only an embed.
+    images: Vec<(String, bool)>,
+    other: bool,
+    /// Text not yet added: the parser may split a run (at `_`, say), and a
+    /// note's tags are found in whole runs.
+    pending: String,
 }
 
 impl InlineState {
+    fn new(notes: bool) -> Self {
+        InlineState { notes, ..Default::default() }
+    }
+
     fn style(&self) -> Style {
         Style { bold: self.bold > 0, italic: self.italic > 0, strike: self.strike > 0, image: !self.image.is_empty(), ..Default::default() }
     }
@@ -202,13 +260,69 @@ impl InlineState {
         let mut style = self.style();
         extra(&mut style);
         let link = self.link();
+        if self.image.is_empty() && !s.trim().is_empty() {
+            self.other = true;
+        }
         self.inline.push(s, style, link);
+    }
+
+    /// Plain text, with a note's `#tags` (Obsidian's rules) styled and clickable.
+    fn prose(&mut self, s: &str) {
+        if !self.notes || !s.contains('#') || self.link().is_some() || !self.image.is_empty() {
+            return self.text(s, |_| {});
+        }
+        let mut at = 0;
+        let mut prev = self.inline.text.chars().last();
+        let mut chars = s.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            let starts = c == '#' && prev.is_none_or(char::is_whitespace);
+            prev = Some(c);
+            if !starts {
+                continue;
+            }
+            let body = &s[i + 1..];
+            let len: usize = body.chars().take_while(|&c| crate::notes::parse::tag_char(c)).map(char::len_utf8).sum();
+            let name = body[..len].trim_end_matches('/');
+            if !crate::notes::parse::valid_tag(name) {
+                continue;
+            }
+            self.text(&s[at..i], |_| {});
+            self.inline.links.push(format!("{TAG_LINK}{name}"));
+            let link = Some(self.inline.links.len() - 1);
+            let style = Style { tag: true, ..self.style() };
+            self.other = true;
+            self.inline.push(&s[i..i + 1 + name.len()], style, link);
+            at = i + 1 + name.len();
+            while chars.peek().is_some_and(|&(k, _)| k < at) {
+                chars.next();
+            }
+            prev = s[..at].chars().last();
+        }
+        self.text(&s[at..], |_| {});
+    }
+
+    /// Add text held back by `event`.
+    fn flush(&mut self) {
+        if !self.pending.is_empty() {
+            let text = std::mem::take(&mut self.pending);
+            self.prose(&text);
+        }
+    }
+
+    /// The inline content so far, every piece of text added.
+    fn finish(mut self) -> Self {
+        self.flush();
+        self
     }
 
     /// Feed one inline event; false if it isn't one.
     fn event(&mut self, ev: Event) -> bool {
+        if let Event::Text(t) = &ev {
+            self.pending.push_str(t);
+            return true;
+        }
+        self.flush();
         match ev {
-            Event::Text(t) => self.text(&t, |_| {}),
             Event::Code(t) => self.text(&t, |s| s.code = true),
             Event::InlineMath(t) | Event::DisplayMath(t) => self.text(&t, |s| s.code = true),
             Event::SoftBreak => self.text(" ", |_| {}),
@@ -226,11 +340,13 @@ impl InlineState {
             Event::Start(Tag::Strong) => self.bold += 1,
             Event::Start(Tag::Strikethrough) => self.strike += 1,
             Event::Start(Tag::Superscript | Tag::Subscript) => {}
-            Event::Start(Tag::Link { dest_url, .. }) => {
-                self.inline.links.push(dest_url.to_string());
+            Event::Start(Tag::Link { dest_url, link_type, .. }) => {
+                let url = if matches!(link_type, pulldown_cmark::LinkType::WikiLink { .. }) { format!("{NOTE_LINK}{dest_url}") } else { dest_url.to_string() };
+                self.inline.links.push(url);
                 self.links.push(Some(self.inline.links.len() - 1));
             }
-            Event::Start(Tag::Image { dest_url, .. }) => {
+            Event::Start(Tag::Image { dest_url, link_type, .. }) => {
+                self.images.push((dest_url.to_string(), matches!(link_type, pulldown_cmark::LinkType::WikiLink { .. })));
                 self.image.push((self.inline.text.len(), dest_url.to_string()));
                 self.text("🖼 ", |_| {});
             }
@@ -263,7 +379,11 @@ impl Builder<'_> {
 
     /// Read inline content up to `end`.
     fn inline(&mut self, end: TagEnd) -> Inline {
-        let mut st = InlineState::default();
+        self.inline_state(end).inline
+    }
+
+    fn inline_state(&mut self, end: TagEnd) -> InlineState {
+        let mut st = InlineState::new(self.notes);
         while let Some(ev) = self.next() {
             match ev {
                 Event::End(e) if e == end => break,
@@ -273,7 +393,7 @@ impl Builder<'_> {
                 }
             }
         }
-        st.inline
+        st.finish()
     }
 
     fn set_task(&mut self, done: bool) {
@@ -286,12 +406,13 @@ impl Builder<'_> {
     /// items) becomes a paragraph.
     fn blocks(&mut self) -> Vec<Block> {
         let mut out = Vec::new();
-        let mut loose = InlineState::default();
+        let notes = self.notes;
+        let mut loose = InlineState::new(notes);
         let mut paragraphs = false;
         let flush = |loose: &mut InlineState, out: &mut Vec<Block>| {
-            let st = std::mem::take(loose);
+            let st = std::mem::replace(loose, InlineState::new(notes)).finish();
             if !st.inline.text.is_empty() {
-                out.push(Block::Paragraph(st.inline));
+                out.push(paragraph_block(st));
             }
         };
         while let Some(ev) = self.it.next().map(|(e, _)| e) {
@@ -323,7 +444,19 @@ impl Builder<'_> {
 
     fn block(&mut self, tag: Tag) -> Option<Block> {
         Some(match tag {
-            Tag::Paragraph => Block::Paragraph(self.inline(TagEnd::Paragraph)),
+            Tag::Paragraph => paragraph_block(self.inline_state(TagEnd::Paragraph)),
+            // A note's frontmatter: its properties, as written.
+            Tag::MetadataBlock(_) => {
+                let mut code = String::new();
+                while let Some(ev) = self.next() {
+                    match ev {
+                        Event::Text(t) => code.push_str(&t),
+                        Event::End(_) => break,
+                        _ => {}
+                    }
+                }
+                Block::Code { lang: "yaml".into(), code: code.trim_end().to_owned() }
+            }
             Tag::Heading { level, .. } => {
                 let text = self.inline(TagEnd::Heading(level));
                 let slug = slug(&text.text);
@@ -425,6 +558,14 @@ impl Builder<'_> {
             }
         }
         cells
+    }
+}
+
+/// A paragraph, or an embed when it's a note's paragraph holding one image alone.
+fn paragraph_block(st: InlineState) -> Block {
+    match &st.images[..] {
+        [(target, wiki)] if st.notes && !st.other => Block::Embed { target: target.clone(), wiki: *wiki },
+        _ => Block::Paragraph(st.inline),
     }
 }
 
@@ -530,6 +671,10 @@ pub enum Action {
     /// A link to some other local file: show it in the file manager.
     Reveal(PathBuf),
     Status(String),
+    /// A note's link (`markdown`: a Markdown link, still percent-encoded): the notes index resolves it.
+    Note { link: String, markdown: bool },
+    /// A note's `#tag` was clicked.
+    Tag(String),
 }
 
 /// Colors taken from the syntect theme.
@@ -587,6 +732,10 @@ struct Draw<'a> {
     clicked: Option<String>,
     /// Footnote and table sizes.
     small: f32,
+    /// The notes index, for a note in a vault.
+    notes: Option<&'a dyn Notes>,
+    /// How many embeds deep this is drawn.
+    depth: usize,
 }
 
 impl Draw<'_> {
@@ -633,12 +782,27 @@ impl Draw<'_> {
         job.wrap.max_width = width;
         for run in &inline.runs {
             let mut f = self.format(run.style, size, color, bold);
-            if run.link.is_some() && !run.style.note {
-                f.color = self.pal.link;
+            if run.style.tag {
+                f.color = self.pal.accent;
+                f.background = self.pal.accent.gamma_multiply(0.14);
+                f.expand_bg = 1.5;
+            } else if let Some(url) = run.link.map(|i| inline.links[i].as_str()).filter(|_| !run.style.note) {
+                // A wikilink to a note that doesn't exist yet is fainter, as in Obsidian.
+                let missing = url.strip_prefix(NOTE_LINK).is_some_and(|t| self.notes.is_some_and(|n| !n.resolves(t)));
+                f.color = if missing { mix(self.pal.link, self.pal.bg, 0.35) } else { self.pal.link };
             }
             job.append(&inline.text[run.range.clone()], 0.0, f);
         }
         job
+    }
+}
+
+/// What a link's tooltip says: the target, without the markers of wikilinks and tags.
+fn link_tip(url: &str) -> String {
+    match (url.strip_prefix(NOTE_LINK), url.strip_prefix(TAG_LINK)) {
+        (Some(t), _) => t.to_owned(),
+        (_, Some(t)) => format!("#{t}"),
+        _ => url.to_owned(),
     }
 }
 
@@ -674,10 +838,61 @@ fn paragraph(ui: &mut Ui, d: &mut Draw, inline: &Inline, size: f32, color: Color
         if resp.clicked() {
             d.clicked = Some(url.to_owned());
         }
-        resp.on_hover_text_at_pointer(url.to_owned());
+        resp.on_hover_text_at_pointer(link_tip(url));
     }
     ui.painter().galley(rect.min, galley, color);
     rect
+}
+
+/// `![[target]]` in a note: the image, or the note (one level deep), in place.
+fn embed_block(ui: &mut Ui, d: &mut Draw, target: &str, wiki: bool) {
+    let pal = d.pal.clone();
+    let embed = match d.notes {
+        Some(n) => n.embed(ui.ctx(), target, wiki, d.depth),
+        None => Embed::Link(target.to_owned()),
+    };
+    let link_line = |ui: &mut Ui, d: &mut Draw, label: String| {
+        let mut inline = Inline::default();
+        inline.links.push(if wiki { format!("{NOTE_LINK}{target}") } else { target.to_owned() });
+        inline.push(&label, Style::default(), Some(0));
+        paragraph(ui, d, &inline, d.size, pal.dim, false);
+    };
+    match embed {
+        Embed::Image(tex) => {
+            let w = ui.available_width();
+            let scale = (w / tex.size.x).min(1.0);
+            let resp = ui.add(egui::Image::from_texture(tex).fit_to_exact_size(tex.size * scale).sense(Sense::click()));
+            resp.on_hover_text_at_pointer(target.to_owned());
+        }
+        Embed::Note { title, blocks: inner } => {
+            let top = ui.cursor().top();
+            let left = ui.max_rect().left();
+            let rect = Rect::from_min_max(pos2(left + 14.0, top), pos2(ui.max_rect().right(), top + 1e6));
+            let r = ui
+                .scope_builder(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)), |ui| {
+                    ui.add_space(4.0);
+                    link_line(ui, d, format!("↪ {title}"));
+                    ui.add_space(4.0);
+                    d.depth += 1;
+                    for (i, b) in inner.iter().enumerate() {
+                        if i > 0 {
+                            ui.add_space(d.size * 0.6);
+                        }
+                        block(ui, d, &b.block, 0, false, i);
+                    }
+                    d.depth -= 1;
+                    ui.add_space(4.0);
+                })
+                .response
+                .rect;
+            ui.painter().rect_filled(Rect::from_x_y_ranges(left + 2.0..=left + 5.0, r.top()..=r.bottom()), 1.5, mix(pal.link, pal.bg, 0.4));
+        }
+        Embed::Loading => {
+            ui.label(egui::RichText::new(format!("Loading {target}…")).color(pal.dim).italics());
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        Embed::Link(label) => link_line(ui, d, format!("↪ {label}")),
+    }
 }
 
 fn blocks(ui: &mut Ui, d: &mut Draw, blocks: &[Block], depth: usize, dim: bool, tight: bool) {
@@ -751,6 +966,7 @@ fn block(ui: &mut Ui, d: &mut Draw, b: &Block, depth: usize, dim: bool, index: u
             job.wrap.max_width = ui.available_width();
             ui.label(job);
         }
+        Block::Embed { target, wiki } => embed_block(ui, d, target, *wiki),
         Block::Footnote { label, blocks: kids } => {
             let top = ui.cursor().top();
             let left = ui.max_rect().left();
@@ -974,7 +1190,7 @@ fn table(ui: &mut Ui, d: &mut Draw, aligns: &[Align], head: &[Inline], rows: &[V
     p.rect_stroke(rect, 4.0, stroke, egui::StrokeKind::Inside);
     // The real destination, whatever the link text says.
     if let Some(url) = hover_url {
-        resp.on_hover_text_at_pointer(url);
+        resp.on_hover_text_at_pointer(link_tip(&url));
     }
 }
 
@@ -1031,8 +1247,10 @@ fn body_font(ctx: &egui::Context, attempted: &mut u64) -> (FontFamily, bool) {
 pub struct Preview {
     /// Base text size (follows the editor font size).
     pub font_size: f32,
-    /// (view, edit version, length) of what `blocks` was parsed from.
-    key: Option<(egui::Id, u64, usize)>,
+    /// (view, edit version, length, as a note) of what `blocks` was parsed from.
+    key: Option<(egui::Id, u64, usize, bool)>,
+    /// The document shown is a note in a vault (set by `show_with`).
+    notes_mode: bool,
     blocks: Arc<Vec<TopBlock>>,
     parsed_at: f64,
     /// Measured height per block source hash, for `heights_key`.
@@ -1053,6 +1271,7 @@ impl Default for Preview {
         Self {
             font_size: 14.0,
             key: None,
+            notes_mode: false,
             blocks: Arc::default(),
             parsed_at: f64::NEG_INFINITY,
             heights: HashMap::new(),
@@ -1081,7 +1300,7 @@ impl Preview {
 
     /// Re-parse if `doc` changed since last time (rate-limited for big files).
     pub fn refresh(&mut self, doc: &mut Document, now: f64) -> bool {
-        let key = (doc.view.id, doc.editor.version(), doc.editor.buffer.len_chars());
+        let key = (doc.view.id, doc.editor.version(), doc.editor.buffer.len_chars(), self.notes_mode);
         if self.key == Some(key) {
             return true;
         }
@@ -1095,7 +1314,7 @@ impl Preview {
         self.key = Some(key);
         self.parsed_at = now;
         let text = doc.editor.text_snapshot();
-        self.blocks = Arc::new(parse(&text));
+        self.blocks = Arc::new(parse_as(&text, self.notes_mode));
         true
     }
 
@@ -1109,12 +1328,20 @@ impl Preview {
             Block::Code { .. } | Block::Table { .. } => b.lines as f32 * line + 22.0,
             Block::Heading { level, .. } => line * if *level <= 2 { 1.9 } else { 1.3 },
             Block::Rule => self.font_size,
+            Block::Embed { .. } => line * 4.0,
             _ => (b.chars as f32 / per_line).ceil().max(b.lines as f32) * line,
         }
     }
 
     /// Draw the preview of `doc` (or a hint when it isn't Markdown).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn show(&mut self, ui: &mut Ui, doc: &mut Document) -> Option<Action> {
+        self.show_with(ui, doc, None)
+    }
+
+    /// Draw the preview of `doc`; `notes` is the vault's index when it's a note.
+    pub fn show_with(&mut self, ui: &mut Ui, doc: &mut Document, notes: Option<&dyn Notes>) -> Option<Action> {
+        self.notes_mode = notes.is_some();
         let ctx = ui.ctx().clone();
         let pal = Palette::new(&doc.highlighter);
         if !is_markdown(doc.path.as_deref(), doc.highlighter.syntax_name()) {
@@ -1183,6 +1410,8 @@ impl Preview {
                 code: &mut self.code,
                 clicked: None,
                 small: self.font_size * 0.9,
+                notes,
+                depth: 0,
             };
             let mut changed = false;
             for i in first..blocks.len() {
@@ -1227,9 +1456,17 @@ impl Preview {
     }
 
     fn follow(&mut self, ctx: &egui::Context, url: &str, base: Option<&Path>) -> Option<Action> {
+        if let Some(target) = url.strip_prefix(NOTE_LINK) {
+            return Some(Action::Note { link: target.to_owned(), markdown: false });
+        }
+        if let Some(tag) = url.strip_prefix(TAG_LINK) {
+            return Some(Action::Tag(tag.to_owned()));
+        }
         match crate::links::classify(url, base.and_then(Path::parent)) {
             Target::Anchor(anchor) => {
-                let i = self.blocks.iter().position(|b| matches!(&b.block, Block::Heading { slug, .. } if *slug == anchor))?;
+                // Obsidian's `[x](#Heading%20Text)` names the heading's text, not a slug.
+                let key = crate::notes::parse::heading_key(&crate::notes::parse::percent_decode(&anchor));
+                let i = self.blocks.iter().position(|b| matches!(&b.block, Block::Heading { slug, text, .. } if *slug == anchor || (self.notes_mode && crate::notes::parse::heading_key(&text.text) == key)))?;
                 self.scroll_to = self.tops.get(i).map(|y| y - MARGIN * 0.5);
                 ctx.request_repaint();
                 None
@@ -1239,6 +1476,8 @@ impl Preview {
                 None
             }
             Target::Refused(msg) => Some(Action::Status(msg)),
+            // In a vault, Markdown links find notes the way Obsidian does.
+            Target::Local(_) if self.notes_mode => Some(Action::Note { link: url.to_owned(), markdown: true }),
             Target::Local(target) => Some(local_link(&target)),
         }
     }
@@ -1295,7 +1534,7 @@ impl DocRender {
         let origin = ui.max_rect().min;
         let rect = Rect::from_min_size(origin + vec2(((full - width) / 2.0).max(8.0), MARGIN * 0.75), vec2(width, 1e7));
         let mut child = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)).id_salt("doc-blocks"));
-        let mut d = Draw { pal: &pal, family, variable, size, theme: hl.theme_name(), code: &mut self.code, clicked: None, small: size * 0.9 };
+        let mut d = Draw { pal: &pal, family, variable, size, theme: hl.theme_name(), code: &mut self.code, clicked: None, small: size * 0.9, notes: None, depth: 0 };
         let mut headings = Vec::new();
         for (i, b) in blocks.iter().enumerate() {
             if i > 0 {
@@ -1449,6 +1688,27 @@ mod tests {
             let rows = &found.iter().find(|(t, _)| t.starts_with(&code[..5])).unwrap().1;
             assert!(!rows[0].intersects(label.shrink(0.5)), "label {label:?} overlaps {code:.12}… at {:?}", rows[0]);
         }
+    }
+
+    #[test]
+    fn notes_parse_wikilinks_tags_embeds_and_frontmatter() {
+        let src = "---\ntags: [a]\n---\nSee [[Other#Part|shown]], #tag_with_under/sub and `#code` or a#b.\n\n![[pic.png]]\n\nText ![[inline.png]] here\n";
+        let blocks = top_note(src);
+        assert!(matches!(&blocks[0], Block::Code { lang, code } if lang == "yaml" && code == "tags: [a]"), "{:?}", blocks[0]);
+        let Block::Paragraph(p) = &blocks[1] else { panic!("{:?}", blocks[1]) };
+        assert_eq!(p.link_at(p.text.find("shown").unwrap()), Some(format!("{NOTE_LINK}Other#Part").as_str()));
+        let tags: Vec<&str> = p.runs.iter().filter(|r| r.style.tag).map(|r| &p.text[r.range.clone()]).collect();
+        assert_eq!(tags, ["#tag_with_under/sub"], "whole runs, not in code or words");
+        assert_eq!(p.link_at(p.text.find("#tag").unwrap()), Some(format!("{TAG_LINK}tag_with_under/sub").as_str()));
+        assert_eq!(blocks[2], Block::Embed { target: "pic.png".into(), wiki: true }, "an embed alone is a block");
+        assert!(matches!(&blocks[3], Block::Paragraph(_)), "one inside text stays inline");
+        // Other Markdown is read as before: no wikilinks, frontmatter as text.
+        assert!(!matches!(top("[[x]]\n").first(), Some(Block::Embed { .. })));
+        assert!(matches!(&top("---\ntags: [a]\n---\n")[0], Block::Rule));
+    }
+
+    fn top_note(src: &str) -> Vec<Block> {
+        parse_note(src).into_iter().map(|b| b.block).collect()
     }
 
     #[test]

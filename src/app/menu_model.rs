@@ -745,6 +745,11 @@ impl StrataApp {
             ],
         ));
 
+        // Notes go at the end of Tools (see `notes_ui`).
+        if let Some((_, tools)) = m.last_mut() {
+            tools.extend([SEP(), self.notes_menu()]);
+        }
+
         // ---- Project
         let mut recent_projects: Vec<Item> = self.recent_projects.iter().map(|p| Item::new(p.display().to_string(), Act::Named(format!("project:{}", p.display())))).collect();
         recent_projects.extend(self.recent_folders.iter().map(|p| Item::new(format!("{}/", p.display()), Act::OpenRecentFolder(p.clone()))));

@@ -77,6 +77,22 @@ All notable changes to Strata are recorded here. The format follows
   sends the selection, or the current line, to the terminal and presses
   Enter, starting a terminal if none is running. Multi-line text goes as one
   bracketed paste when the shell or REPL supports it.
+- **Notes**: Obsidian-compatible notes on plain Markdown files. Open your
+  vault folder and `[[wikilinks]]` work as in Obsidian (headings, block
+  references, aliases, embeds, Markdown links too): they're underlined in the
+  editor and ⌘-click (Ctrl+click) follows them, offering to create a note
+  that doesn't exist yet. Typing `[[` completes note names, aliases, headings
+  and block ids. A backlinks panel under each note lists the notes linking to
+  it, kept up to date as Obsidian or a sync tool changes files. `#tags` (and
+  frontmatter tags) are tinted and searchable with **Notes: Find Tag…**.
+  **Notes: Open Daily Note** and **Notes: New Note from Template…** follow
+  Obsidian's Daily notes and Templates settings. Renaming a note offers to
+  update every link to it, showing each change first; **Notes: Undo Rename**
+  puts the links and the name back, all or nothing. The Markdown preview shows wikilinks,
+  tags, frontmatter and embedded images and notes. Sync conflict copies
+  (Syncthing, Dropbox, Nextcloud) get a notice with a Compare button. Strata
+  reads the vault's `.obsidian` settings but never writes them. See
+  Help ▸ Documentation ▸ Notes.
 
 ### Changed
 
@@ -84,6 +100,17 @@ All notable changes to Strata are recorded here. The format follows
   across the whole project, and fall back to Strata's own symbol search when
   there's no server or it has no answer.
 - The completion list stays inside the window; long details are cut with "…".
+- Undo Replace in Files is all or nothing: if any rewritten file changed
+  since the replace, nothing is restored and those files are listed. It never
+  overwrites a file written while it runs (by a sync tool, say): what it
+  couldn't put back stays in a marked folder next to the file. Files are
+  restored in place (keeping permissions, owner, extended attributes and hard
+  links), also through links inside the replaced folders. An undo interrupted
+  by a crash is listed in the Changes tab with **Put Back**. Its record is
+  sealed with a private key only this installation has (an undo is refused
+  if the key file isn't private) and is flushed to disk at
+  every step; Put Back only acts on its own sealed records, never outside the
+  folder it was in, and only after checking the file is the one it set aside.
 
 ### Fixed
 

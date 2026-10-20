@@ -37,7 +37,7 @@ The preview understands GitHub-flavored Markdown:
 | Alerts | GitHub alerts (`> [!NOTE]`, `> [!TIP]`, `> [!IMPORTANT]`, `> [!WARNING]`, `> [!CAUTION]`) show their label and a bar in their own color. |
 | Horizontal rules | A thin line. |
 | Footnotes | References appear as small raised labels like [1]; the notes themselves appear smaller and dimmed where they are defined. |
-| Images | Not loaded. Each image shows a picture symbol and its alt text, or its file name if it has no alt text. |
+| Images | Not loaded. Each image shows a picture symbol and its alt text, or its file name if it has no alt text. In notes, images from the vault are shown (see [Notes](notes.md#the-preview)). |
 | HTML | Shown as dimmed source text, not rendered. HTML comments are hidden, and `<br>` starts a new line. |
 
 Text sizes follow the editor's font size, and all colors come from the current color scheme.

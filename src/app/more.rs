@@ -29,6 +29,8 @@ pub(super) enum Choosing {
     Compare(Vec<super::compare_ui::CompareChoice>, egui::Id),
     /// Places a language server named (references, problems), in its positions.
     Locations(Vec<(PathBuf, (crate::lsp::position::Pos, crate::lsp::position::Pos), crate::lsp::position::Encoding)>),
+    /// A Notes list (see `notes_ui`).
+    Notes(super::notes_ui::NotesPick),
 }
 
 impl StrataApp {
@@ -138,6 +140,7 @@ impl StrataApp {
                     self.lsp_open_location(&p, range, enc);
                 }
             }
+            Choosing::Notes(pick) => self.notes_chose(pick, i),
         }
     }
 

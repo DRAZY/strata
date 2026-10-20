@@ -47,6 +47,7 @@ mod lsp;
 #[cfg(target_os = "macos")]
 mod mac_open;
 mod markdown;
+mod notes;
 mod palette;
 mod panes;
 mod pdf;
@@ -62,6 +63,7 @@ mod snippets;
 mod spell;
 mod shell_command;
 mod sidebar;
+mod swap;
 mod terminal;
 mod trash;
 mod update;

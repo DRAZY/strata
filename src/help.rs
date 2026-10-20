@@ -39,6 +39,7 @@ pub static PAGES: &[Page] = &[
     page!("Using Strata", "printing.md"),
     page!("Using Strata", "terminal.md"),
     page!("Using Strata", "markdown.md"),
+    page!("Using Strata", "notes.md"),
     page!("Using Strata", "build.md"),
     page!("Using Strata", "git.md"),
     page!("Using Strata", "review.md"),
@@ -132,7 +133,7 @@ pub fn expand_keys(src: &str) -> (String, Vec<String>) {
 
 /// Contents sections of the shortcuts page, by the prefix of command names.
 const CATEGORIES: &[&str] = &[
-    "File", "Edit", "Selection", "Find", "Goto", "LSP", "View", "Code Folding", "Layout", "Tools", "Review", "AI", "Markdown", "Terminal", "Project", "Preferences", "Help", "Strata",
+    "File", "Edit", "Selection", "Find", "Goto", "LSP", "View", "Code Folding", "Layout", "Tools", "Review", "AI", "Markdown", "Notes", "Terminal", "Project", "Preferences", "Help", "Strata",
 ];
 
 /// Keyboard Shortcuts, from the keymap in effect: defaults plus keybindings.json.
@@ -269,7 +270,7 @@ fn block_text(b: &Block, out: &mut String) {
         Block::Quote { blocks, .. } | Block::Footnote { blocks, .. } => blocks.iter().for_each(|b| block_text(b, out)),
         Block::List { items, .. } => items.iter().flat_map(|i| &i.blocks).for_each(|b| block_text(b, out)),
         Block::Table { head, rows, .. } => head.iter().chain(rows.iter().flatten()).for_each(|c| inline_text(c, out)),
-        Block::Html(h) => out.push_str(h),
+        Block::Html(h) | Block::Embed { target: h, .. } => out.push_str(h),
         Block::Rule => {}
     }
 }
@@ -397,7 +398,7 @@ mod tests {
 
     #[test]
     fn every_page_parses_with_a_title_and_known_shortcuts() {
-        assert_eq!(PAGES.len(), 23);
+        assert_eq!(PAGES.len(), 24);
         for p in PAGES {
             if let Some(src) = p.source {
                 let (_, unknown) = expand_keys(src);

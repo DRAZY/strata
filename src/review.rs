@@ -870,12 +870,14 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
     for dir in staged {
         let inside: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n != crate::claim::MARKER).collect();
         let rel = dir.strip_prefix(&top).unwrap_or(&dir).to_string_lossy().replace('\\', "/");
+        // An interrupted undo says what it was doing in its journal (see `swap`).
+        let undo = crate::swap::leftover(&dir).map(|l| if l.sealed { format!("{} Right-click for Put Back.", l.describe()) } else { l.describe() });
         let mut f = change(dir, &rel, Status::Added);
-        f.blocked = Some(format!(
+        f.blocked = Some(undo.unwrap_or_else(|| format!(
             "Left by an interrupted move to the Trash. Nothing was deleted: it holds {}. Move {} back where you want it, then remove this folder.",
             if inside.is_empty() { "nothing".to_owned() } else { inside.join(", ") },
             if inside.len() == 1 { "it" } else { "them" }
-        ));
+        )));
         found.push(f);
     }
     let mut todo: Vec<(String, Option<Stat>, Option<Src>)> = Vec::new();
@@ -1842,6 +1844,30 @@ pub(crate) mod tests {
         assert!(left.blocked.as_deref().is_some_and(|w| w.contains("work.rs") && !w.contains(crate::claim::MARKER) && w.contains("Nothing was deleted")), "{:?}", left.blocked);
         let notes = s.files.iter().find(|f| f.path == mine.join("notes.txt")).expect("the user's folder is scanned");
         assert_eq!((notes.status, notes.blocked.is_none()), (Status::Added, true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder an interrupted undo left is described as that (from its
+    /// journal), not as an interrupted Trash.
+    #[test]
+    fn a_leftover_from_an_interrupted_undo_says_what_it_was() {
+        let Some(dir) = temp_repo("undo-left") else { return };
+        std::fs::write(dir.join("notes.md"), "new\n").unwrap();
+        let item = crate::swap::Item::restore(dir.clone(), dir.join("notes.md"), std::sync::Arc::new(b"old\n".to_vec()), crate::swap::identity_of(b"new\n"));
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::swap::restore_all_with("Undo Replace in Files", &[item], &mut |s| {
+                if s == crate::swap::Step::BeforeInstall(0) {
+                    panic!("crash");
+                }
+            })
+        }));
+        assert!(r.is_err());
+        let s = scan(&dir, &Base::Head, &HashMap::new(), &mut Cache::default()).unwrap();
+        let left = s.files.iter().find(|f| f.blocked.is_some()).expect("the leftover is reported");
+        let why = left.blocked.as_deref().unwrap();
+        assert!(why.contains("interrupted Undo Replace in Files") && why.contains("Put Back") && !why.contains("Trash"), "{why}");
+        crate::swap::put_back_leftover(&dir, &left.path).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("notes.md")).unwrap(), "new\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
