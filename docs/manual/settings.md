@@ -87,6 +87,7 @@ Every setting is in the Settings window, and many also have a menu item:
 | View ▸ Window Opacity | `window_opacity` |
 | View ▸ Toggle Minimap, Toggle Tabs, Toggle Status Bar | `minimap`, `show_tabs`, `show_status_bar` |
 | View ▸ Markdown Preview | `markdown_preview` |
+| Tools ▸ Notes ▸ Backlinks, and the × in the backlinks panel | `notes_backlinks` |
 | View ▸ Word Wrap Column, View ▸ Ruler | `wrap_column`, `rulers` |
 | Tools ▸ Save All on Build | `save_all_on_build` |
 | Tools ▸ On Save | `trim_trailing_white_space_on_save`, `ensure_newline_at_eof_on_save`, `save_on_focus_lost` |
@@ -221,6 +222,7 @@ Every setting Strata reads, with its default value. Text values are written in q
 | `show_tabs` | true/false | `true` | Show the tab bar. |
 | `show_status_bar` | true/false | `true` | Show the status bar. |
 | `markdown_preview` | true/false | `false` | Show the live Markdown preview beside the editor. See [Markdown](markdown.md). |
+| `notes_backlinks` | text | `"auto"` | When the backlinks panel shows under a note: `"auto"` (notes in an Obsidian vault, or in a folder whose notes use wikilinks), `"always"` or `"never"`. See [Notes](notes.md#backlinks). |
 | `sidebar_respect_gitignore` | true/false | `true` | The side bar's tree hides files and folders that `.gitignore` (and `.ignore`, `.git/info/exclude` and your global Git excludes) ignore, as Goto Anything and Find in Files do. See [Projects and Side Bar](projects.md#what-the-tree-shows). |
 | `file_exclude_patterns` | list of text | `[".git", ".DS_Store"]` | Names the side bar never shows, files or folders, as globs: for example `["*.pyc", "node_modules", ".git", ".DS_Store"]`. |
 

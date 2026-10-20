@@ -137,6 +137,12 @@ pub struct EditorView {
     painted: (usize, usize),
     /// Column maps of long lines, for the text version and tab width they were made for.
     long_lines: std::cell::RefCell<LongLines>,
+    /// Note links and tags to mark (filled by the app, see `app/notes_ui.rs`).
+    pub note_marks: crate::notes::marks::NoteMarks,
+    /// A ⌘/Ctrl-click landed on a note link at this char position: the app follows it.
+    pub link_click: Option<usize>,
+    /// The link under the pointer while ⌘/Ctrl is held: (line, char range in it).
+    link_hover: Option<(usize, Range<usize>)>,
 }
 
 #[derive(Default)]
@@ -331,6 +337,9 @@ impl EditorView {
             pointer_gutter: None,
             painted: (0, 0),
             long_lines: Default::default(),
+            note_marks: Default::default(),
+            link_click: None,
+            link_hover: None,
         }
     }
 
@@ -655,7 +664,15 @@ impl EditorView {
             (row >= 0.0 && (row as usize) < self.total_rows(ed, &m)).then(|| (self.row_line(ed, &m, row as usize).0, p))
         });
         let on_sticky = hover.is_some_and(|p| self.sticky.iter().any(|(r, ..)| r.contains(p)));
-        if on_sticky || hover.is_some_and(|p| self.pills.iter().any(|(r, _)| r.contains(p))) {
+        // ⌘/Ctrl over a note link: it's clickable.
+        self.link_hover = None;
+        if !self.note_marks.is_empty() && ui.input(|i| i.modifiers.command) && let Some(p) = hover.filter(|p| m.text.contains(*p)) {
+            let pos = self.pos_to_char(ui, ed, &m, p);
+            let line = ed.buffer.line_of(pos);
+            let col = pos - ed.buffer.line_start(line);
+            self.link_hover = self.note_marks.link_at(line, &ed.buffer.line_text(line), col).map(|(r, _)| (line, r));
+        }
+        if on_sticky || self.link_hover.is_some() || hover.is_some_and(|p| self.pills.iter().any(|(r, _)| r.contains(p))) {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         } else if hover.is_some_and(|p| m.text.contains(p)) {
             ui.ctx().set_cursor_icon(CursorIcon::Text);
@@ -999,7 +1016,11 @@ impl EditorView {
                 self.preedit.clear();
                 ui.memory_mut(|mem| mem.interrupt_ime());
             }
-            if mods.command {
+            let line = ed.buffer.line_of(pos);
+            let on_link = mods.command && self.note_marks.link_at(line, &ed.buffer.line_text(line), pos - ed.buffer.line_start(line)).is_some();
+            if on_link {
+                self.link_click = Some(pos);
+            } else if mods.command {
                 ed.add_cursor(pos);
             } else {
                 ed.click(pos, mods.shift);
@@ -1312,6 +1333,7 @@ impl EditorView {
         let bracket_err = error_color(light);
         let sel_color = hl.selection();
         let caret_color = hl.caret();
+        let link_color = hl.accent();
         let first_char = ed.buffer.line_start(first);
         let mut next_match = matches.partition_point(|r| r.end < first_char);
         let caret_lines: Vec<usize> = ed.selections().iter().map(|s| ed.buffer.line_of(s.head)).collect();
@@ -1378,6 +1400,8 @@ impl EditorView {
             // Misspelled words, as line char ranges.
             // (Not on part of a long line: the marks are for the whole line.)
             let misspelled: Vec<Range<usize>> = if part { Vec::new() } else { self.spell.for_line(line, text).map(<[_]>::to_vec).unwrap_or_default() };
+            // Note links and tags, as line char ranges.
+            let note_marks = if part { Vec::new() } else { self.note_marks.for_line(line, text).to_vec() };
             // Chars to look through for whitespace marks.
             let ws_chars: Option<Vec<char>> = match self.show_whitespace {
                 Whitespace::None => None,
@@ -1521,6 +1545,33 @@ impl EditorView {
                         let bar = Rect::from_min_max(pos2(x_at(a), base - 3.5), pos2(x_at(b), base - 0.5));
                         text_painter.rect_filled(bar, 1.5, blend(bg, color.to_opaque(), color.a() as f32 / 255.0));
                         text_painter.rect_stroke(bar, 1.5, Stroke::new(0.5, fg.gamma_multiply(0.25)), egui::StrokeKind::Outside);
+                    }
+                }
+
+                // Tags sit on a tint; links are underlined (dashed when the note doesn't exist).
+                for (r, mark) in &note_marks {
+                    let (a, b) = ((line_start + r.start).max(row_start), (line_start + r.end).min(row_end));
+                    if b <= a {
+                        continue;
+                    }
+                    let (x0, x1) = (x_at(a), x_at(b));
+                    let base = y + m.pad + m.text_h - 1.0;
+                    match mark {
+                        crate::notes::marks::Mark::Tag => {
+                            text_painter.rect_filled(Rect::from_min_max(pos2(x0 - 1.0, y + m.pad + 1.0), pos2(x1 + 1.0, y + m.pad + m.text_h - 1.0)), 3.0, link_color.gamma_multiply(0.16));
+                        }
+                        crate::notes::marks::Mark::Link => {
+                            let hot = self.link_hover.as_ref().is_some_and(|(l, h)| *l == line && h.contains(&r.start));
+                            text_painter.hline(x0..=x1, base, Stroke::new(if hot { 2.0 } else { 1.0 }, link_color.gamma_multiply(if hot { 1.0 } else { 0.7 })));
+                        }
+                        crate::notes::marks::Mark::Broken => {
+                            let dash = (m.char_w * 0.5).max(2.0);
+                            let mut x = x0;
+                            while x < x1 {
+                                text_painter.hline(x..=(x + dash).min(x1), base, Stroke::new(1.0, fg.gamma_multiply(0.45)));
+                                x += dash * 2.0;
+                            }
+                        }
                     }
                 }
 

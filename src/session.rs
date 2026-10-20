@@ -162,6 +162,9 @@ pub struct Settings {
     pub ai_max_prompt_kb: u32,
     /// Give up when a provider sends nothing for this long.
     pub ai_timeout_seconds: u32,
+    /// The backlinks panel under a note: "auto" (in Obsidian vaults and
+    /// folders whose notes use wikilinks), "always" or "never".
+    pub notes_backlinks: String,
 }
 
 impl Default for Settings {
@@ -243,6 +246,7 @@ impl Default for Settings {
             ai_cli_model: String::new(),
             ai_max_prompt_kb: 200,
             ai_timeout_seconds: 180,
+            notes_backlinks: "auto".into(),
         }
     }
 }

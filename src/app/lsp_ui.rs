@@ -1656,7 +1656,8 @@ fn block(ui: &mut egui::Ui, b: &crate::markdown::Block, size: f32) {
         Block::Rule => {
             ui.separator();
         }
-        Block::Html(s) => {
+        // (Embeds come only from notes, never from a hover.)
+        Block::Html(s) | Block::Embed { target: s, .. } => {
             ui.label(egui::RichText::new(s).size(size).weak());
         }
     }

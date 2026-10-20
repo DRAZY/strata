@@ -992,7 +992,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
 
 /// Rename `from` to `to`; a change of case only goes through a temporary
 /// name, which file systems that ignore case need.
-fn rename(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(crate) fn rename(from: &Path, to: &Path) -> std::io::Result<()> {
     if !same_file(from, to) {
         return std::fs::rename(from, to);
     }

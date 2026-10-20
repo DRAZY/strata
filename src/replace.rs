@@ -20,19 +20,46 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 /// Originals kept for Undo Replace in Files, at most (bytes).
 const UNDO_BYTES: usize = 256 * 1024 * 1024;
 
+/// Edits worked out some other way than a search (a note rename's link
+/// updates, see `notes::rename`): for a file and its text, the byte ranges
+/// to replace and their new text, in order.
+pub trait Rewrite: Send + Sync {
+    fn edits(&self, path: &Path, text: &str) -> Vec<(Range<usize>, String)>;
+}
+
 /// One query + replacement text, ready to apply.
 #[derive(Clone)]
 pub struct Replacer {
     re: Regex,
     template: String,
     expand: bool,
+    /// Edits come from here instead of `re` (see `Rewrite`).
+    rewrite: Option<Arc<dyn Rewrite>>,
 }
 
 impl Replacer {
     pub fn new(q: &Query, replacement: &str) -> Result<Self, String> {
         let re = q.build().map_err(|e| e.to_string().lines().last().unwrap_or("invalid regex").trim().to_owned())?;
         let template = if q.regex { sublime_template(replacement) } else { replacement.to_owned() };
-        Ok(Replacer { re, template, expand: q.regex })
+        Ok(Replacer { re, template, expand: q.regex, rewrite: None })
+    }
+
+    /// A replacer whose edits come from `rewrite`.
+    pub fn rewriting(rewrite: Arc<dyn Rewrite>) -> Self {
+        // Never matches: only `rewrite` makes edits.
+        let re = Regex::new(r"[^\s\S]").expect("valid regex");
+        Replacer { re, template: String::new(), expand: false, rewrite: Some(rewrite) }
+    }
+
+    /// `apply` for the file at `path`.
+    pub fn apply_to(&self, path: &Path, text: &str, eol: &str) -> (String, usize) {
+        match &self.rewrite {
+            Some(rw) => {
+                let edits = rw.edits(path, text);
+                (crate::notes::rename::apply(text, &edits), edits.len())
+            }
+            None => self.apply(text, eol),
+        }
     }
 
     /// The search regex.
@@ -170,7 +197,7 @@ pub fn replace_file(job: &Job, r: &Replacer) -> Result<(usize, Vec<u8>), String>
     }
     let crlf = file.text.find('\n').is_some_and(|i| file.text[..i].ends_with('\r'));
     let eol = if crlf { "\r\n" } else { "\n" };
-    let (text, count) = r.apply(&file.text, eol);
+    let (text, count) = r.apply_to(path, &file.text, eol);
     // Same count as the search saw, or the file isn't what the user confirmed.
     if count != job.expected || count == 0 {
         return Err(CHANGED.into());

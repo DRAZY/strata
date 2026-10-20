@@ -77,6 +77,22 @@ All notable changes to Strata are recorded here. The format follows
   sends the selection, or the current line, to the terminal and presses
   Enter, starting a terminal if none is running. Multi-line text goes as one
   bracketed paste when the shell or REPL supports it.
+- **Notes**: Obsidian-compatible notes on plain Markdown files. Open your
+  vault folder and `[[wikilinks]]` work as in Obsidian (headings, block
+  references, aliases, embeds, Markdown links too): they're underlined in the
+  editor and ⌘-click (Ctrl+click) follows them, offering to create a note
+  that doesn't exist yet. Typing `[[` completes note names, aliases, headings
+  and block ids. A backlinks panel under each note lists the notes linking to
+  it, kept up to date as Obsidian or a sync tool changes files. `#tags` (and
+  frontmatter tags) are tinted and searchable with **Notes: Find Tag…**.
+  **Notes: Open Daily Note** and **Notes: New Note from Template…** follow
+  Obsidian's Daily notes and Templates settings. Renaming a note offers to
+  update every link to it, showing each change first; **Notes: Undo Rename**
+  puts the links and the name back. The Markdown preview shows wikilinks,
+  tags, frontmatter and embedded images and notes. Sync conflict copies
+  (Syncthing, Dropbox, Nextcloud) get a notice with a Compare button. Strata
+  reads the vault's `.obsidian` settings but never writes them. See
+  Help ▸ Documentation ▸ Notes.
 
 ### Changed
 

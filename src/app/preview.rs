@@ -9,6 +9,9 @@ impl StrataApp {
         if !self.settings.markdown_preview || self.distraction.is_some() {
             return;
         }
+        // A note in a vault: wikilinks, tags and embeds (see `notes_panel`).
+        let notes = self.preview_notes();
+        let notes = notes.map(|(vault, from, ready)| super::notes_panel::PreviewNotes { vault, from, ready, cache: &self.notes.embeds });
         let d = &mut self.docs[self.active];
         let bg = d.highlighter.background().gamma_multiply(self.settings.window_opacity.clamp(0.3, 1.0));
         let width = ui.available_width();
@@ -18,7 +21,7 @@ impl StrataApp {
             .default_size(width * 0.45)
             .min_size(180.0)
             .frame(egui::Frame::new().fill(bg))
-            .show(ui, |ui| self.markdown.show(ui, d));
+            .show(ui, |ui| self.markdown.show_with(ui, d, notes.as_ref().map(|n| n as &dyn crate::markdown::Notes)));
         self.preview_context_menu(&out.response);
         let action = out.inner;
         match action {
@@ -30,6 +33,8 @@ impl StrataApp {
                 }
             }
             Some(Action::Status(s)) => self.status = s,
+            Some(Action::Note { link, markdown }) => self.preview_note_link(&link, markdown),
+            Some(Action::Tag(tag)) => self.choose_tag(&ui.ctx().clone(), Some(&tag)),
             None => {}
         }
     }

@@ -158,6 +158,8 @@ pub struct StrataApp {
     lsp: lsp_ui::LspState,
     /// AI helpers (see `ai_ui`).
     ai: ai_ui::AiState,
+    /// Notes mode: the vault index, link completion, dialogs (see `notes_ui`).
+    notes: notes_ui::NotesState,
 }
 
 mod ai_ui;
@@ -188,6 +190,10 @@ mod lsp_ui;
 mod macro_files;
 pub(crate) mod menu_model;
 mod more;
+mod notes_panel;
+#[cfg(test)]
+mod notes_tests;
+mod notes_ui;
 mod terminal_ui;
 mod preview;
 mod printing;
@@ -332,6 +338,7 @@ impl StrataApp {
             review: Default::default(),
             lsp,
             ai: Default::default(),
+            notes: Default::default(),
         };
         app.keymap_startup_status();
         app.build = crate::build::Build::new(app.config.clone());
@@ -640,6 +647,7 @@ impl StrataApp {
                 }
                 self.snippet_saved(&path);
                 self.review_saved(&path);
+                self.notes_saved(&path);
                 true
             }
             Err(e) => {
@@ -1308,6 +1316,15 @@ impl StrataApp {
             Cmd::GotoSymbol => self.open_palette(ctx, palette::Mode::Files, "@"),
             Cmd::SelectTheme => self.open_palette(ctx, palette::Mode::Theme, ""),
             Cmd::SelectSyntax => self.open_palette(ctx, palette::Mode::Syntax, ""),
+            Cmd::NotesDailyNote
+            | Cmd::NotesNewNote
+            | Cmd::NotesNewFromTemplate
+            | Cmd::NotesFindTag
+            | Cmd::NotesRename
+            | Cmd::NotesToggleBacklinks
+            | Cmd::NotesFollowLink
+            | Cmd::NotesUndoRename
+            | Cmd::NotesCompareConflict => self.notes_command(ctx, cmd),
         }
     }
 
@@ -1315,7 +1332,7 @@ impl StrataApp {
     /// Files' question, Print), or a menu: window and editor commands wait,
     /// and the dialog alone sees Esc and Enter.
     fn modal_open(&self, ctx: &egui::Context) -> bool {
-        self.sidebar.modal_open() || self.print.is_open() || self.review.confirming() || self.lsp.renaming() || egui::Popup::is_any_open(ctx)
+        self.sidebar.modal_open() || self.print.is_open() || self.review.confirming() || self.lsp.renaming() || self.notes.dialog.is_some() || egui::Popup::is_any_open(ctx)
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -2611,6 +2628,10 @@ impl eframe::App for StrataApp {
         self.poll_lookup(ctx);
         let typed_word = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t.chars().all(|c| c.is_alphanumeric() || c == '_'))));
         let typed_text: String = ctx.input(|i| i.events.iter().filter_map(|e| if let egui::Event::Text(t) = e { Some(t.as_str()) } else { None }).collect());
+        // The `[[` list takes the keys first; word completions wait while it's up.
+        if self.notes_complete_keys(ctx) || self.notes_completing() {
+            self.completion.close();
+        }
         if self.completion.is_open() {
             let d = &mut self.docs[self.active];
             self.completion.keys(ctx, d);
@@ -2663,6 +2684,7 @@ impl eframe::App for StrataApp {
         self.update_git(ctx, now);
         self.review_frame(ctx, now);
         self.ai_frame(ctx);
+        self.notes_frame(ctx);
         // Save on focus lost (a setting, off by default like Sublime's).
         let focused = ctx.input(|i| i.focused);
         if self.window_focused && !focused && self.settings.save_on_focus_lost {
@@ -2817,6 +2839,7 @@ impl eframe::App for StrataApp {
                 Some(sidebar::Action::Renamed(from, to)) => {
                     self.follow_rename(&from, &to);
                     self.status = format!("Renamed to {}", to.display());
+                    self.notes_renamed(&from, &to);
                     // The other windows' tabs and trees follow too.
                     self.link.requests.renamed.push((from, to));
                 }
@@ -2836,10 +2859,12 @@ impl eframe::App for StrataApp {
             (d.editor.auto_indent, d.editor.smart_indent) = (d.local.effective.auto_indent, d.local.effective.smart_indent);
             d.editor.indent_rules = crate::indent::rules_for(d.highlighter.syntax_name());
         }
-        if self.sidebar.modal_open() || self.print.is_open() || self.lsp.renaming() {
+        if self.sidebar.modal_open() || self.print.is_open() || self.lsp.renaming() || self.notes.dialog.is_some() {
             // The dialog's field keeps the keyboard.
             self.cancel_editor_focus();
         }
+        self.notes_conflict_bar(ui);
+        self.notes_panel(ui);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.panes(ui));
         if self.sync_views() {
             ctx.request_repaint();
@@ -2855,16 +2880,20 @@ impl eframe::App for StrataApp {
             }
         }
         self.lsp_completion(&typed_text, false);
-        {
-            let d = &mut self.docs[self.active];
-            self.completion.show(ctx, d);
+        // The `[[` list, when it's up, takes the place of word and language server completions.
+        self.notes_complete_update();
+        if self.notes_completing() {
+            self.completion.close();
         }
+        self.completion.show(ctx, &mut self.docs[self.active]);
+        self.notes_complete_show(ctx);
         self.snippet_from_completion();
         self.lsp_insert_completion();
         self.lsp_popups(ctx);
         self.help_window(ctx);
         self.settings_window(ctx);
         self.print_dialog(ctx);
+        self.notes_dialogs(ctx);
         self.first_run_card(ctx);
         let dialog_open = self.palette.open || self.about_open || self.licenses_open || self.help.open || self.first_run.open;
         if self.docs.len() == 1 && self.docs[0].is_blank() && self.layout.groups() == 1 && !dialog_open {
