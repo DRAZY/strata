@@ -258,7 +258,7 @@ impl Fake {
         let (_, word) = self.word_at(p);
         let (start, end) = word.map(|(_, r)| r).unwrap_or((p["position"].clone(), p["position"].clone()));
         vec![
-            json!({"label": "fake_alpha", "kind": 3, "detail": "fn fake_alpha()", "sortText": "a"}),
+            json!({"label": "fake_alpha", "kind": 3, "detail": "fn fake_alpha(first: i32, second: &str, third: Vec<String>) -> Result<(), Error>", "sortText": "a"}),
             json!({"label": "fake_beta", "kind": 6, "insertText": "fake_beta", "sortText": "b"}),
             json!({"label": "fake_snippet", "kind": 15, "sortText": "c", "insertTextFormat": 2, "textEdit": {"range": {"start": start, "end": end}, "newText": "fake_snippet(${1:arg})$0"}}),
         ]

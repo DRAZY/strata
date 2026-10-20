@@ -983,6 +983,12 @@ impl StrataApp {
     }
 
     fn lsp_mouse_hover(&mut self, ctx: &egui::Context, now: f64) {
+        // A box or list that takes the keyboard (rename, the palette, a
+        // dialog) closes hover information and keeps new boxes away.
+        if self.lsp.rename_box.is_some() || self.palette.open || self.sidebar.modal_open() || self.print.is_open() {
+            self.lsp.hover = HoverState::default();
+            return;
+        }
         let typing = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_) | egui::Event::Key { pressed: true, .. } | egui::Event::Paste(_))));
         let clicked = ctx.input(|i| i.pointer.any_pressed());
         let pointer_pos = ctx.input(|i| i.pointer.hover_pos());
@@ -1757,6 +1763,76 @@ mod tests {
             eprintln!("definition of LspState: {:?} line {}", app.docs[app.active].path, app.docs[app.active].editor.cursor_line_col().0);
             shoot(&mut app, &ctx, "10-repo-definition");
         }
+    }
+
+    /// `STRATA_LSP_SHOTS=<folder>`: the popup tests below also save screenshots there.
+    fn maybe_shoot(app: &mut StrataApp, ctx: &Context, name: &str) {
+        let Some(dir) = std::env::var_os("STRATA_LSP_SHOTS").map(PathBuf::from) else { return };
+        let _ = std::fs::create_dir_all(&dir);
+        if let Some(mut s) = super::super::headless::Shooter::new(1000, 600, 2.0) {
+            s.shoot(ctx, app, 3, vec![], &dir.join(format!("{name}.ppm")));
+        }
+    }
+
+    #[test]
+    fn the_completion_list_stays_inside_the_window() {
+        let line = format!("{}fa", "x ".repeat(44));
+        let (mut app, ctx, _) = app_with("complete-edge", &[("a.fake", "start\n")], json!({}));
+        app.settings.auto_complete = true;
+        app.settings.minimap = false;
+        app.doc().wrap = Some(false);
+        app.doc().editor.insert_text(&line[..line.len() - 1]);
+        frame(&mut app, &ctx, vec![Event::Text("a".into())]);
+        wait(&mut app, &ctx, "server completions", |a| a.completion.labels().first().map(String::as_str) == Some("fake_alpha"));
+        frame(&mut app, &ctx, vec![]);
+        let caret = app.docs[0].view.caret_rect().unwrap();
+        assert!(caret.left() > 700.0, "the cursor is near the right edge ({caret:?})");
+        let list = ctx.memory(|m| m.area_rect(egui::Id::new("completions"))).unwrap();
+        assert!(list.right() <= 1000.0 - 4.0 && list.left() >= 0.0, "{list:?}");
+        // The long signature is cut short rather than clipped by the window.
+        let out = frame(&mut app, &ctx, vec![]);
+        let notes: Vec<String> = out.shapes.iter().filter_map(|c| match &c.shape {
+            egui::Shape::Text(t) if t.galley.text().starts_with("fn fake_alpha") => Some(t.galley.text().to_owned()),
+            _ => None,
+        }).collect();
+        assert!(notes.iter().any(|n| n.ends_with('…')), "{notes:?}");
+        maybe_shoot(&mut app, &ctx, "completion-at-edge");
+    }
+
+    #[test]
+    fn hover_closes_when_the_rename_box_or_palette_opens() {
+        let (mut app, ctx, _) = app_with("hover-modal", &[("a.fake", "let thing = 1;\n")], json!({}));
+        wait(&mut app, &ctx, "ready", |a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+        put_cursor(&mut app, 6);
+        frame(&mut app, &ctx, vec![]);
+        let over = app.docs[0].view.caret_rect().unwrap().center() + vec2(2.0, 0.0);
+        let hover_up = |app: &mut StrataApp, ctx: &Context| {
+            for _ in 0..4 {
+                frame(app, ctx, vec![Event::PointerMoved(over)]);
+            }
+            wait(app, ctx, "hover box", |a| a.lsp.hover.shown.as_ref().is_some_and(|b| b.info.is_some()));
+        };
+        hover_up(&mut app, &ctx);
+        app.run(&ctx, Cmd::LspRename);
+        frame(&mut app, &ctx, vec![]);
+        assert!(app.lsp.renaming());
+        assert!(app.lsp.hover.shown.is_none(), "the rename box replaces the hover box");
+        // Resting the pointer there while renaming doesn't bring it back.
+        for _ in 0..4 {
+            frame(&mut app, &ctx, vec![Event::PointerMoved(over)]);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        frame(&mut app, &ctx, vec![]);
+        assert!(app.lsp.hover.shown.is_none() && app.lsp.hover.pending.is_none());
+        maybe_shoot(&mut app, &ctx, "rename-without-hover");
+        frame(&mut app, &ctx, vec![press(egui::Key::Escape, Modifiers::NONE)]);
+        assert!(!app.lsp.renaming());
+        // The palette too.
+        frame(&mut app, &ctx, vec![Event::PointerMoved(Pos2::new(5.0, 590.0))]);
+        hover_up(&mut app, &ctx);
+        app.run(&ctx, Cmd::CommandPalette);
+        frame(&mut app, &ctx, vec![]);
+        assert!(app.lsp.hover.shown.is_none());
     }
 
     #[test]

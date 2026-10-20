@@ -13,6 +13,17 @@ use serde_json::Value;
 const MAX_ITEMS: usize = 12;
 /// A server can offer thousands; the list shows the best this many.
 const MAX_SERVER_ITEMS: usize = 100;
+/// Room kept between the list (with its frame) and the window's edges.
+const POPUP_EDGE: f32 = 16.0;
+
+/// `note` in at most `room` chars (cut with …); None when there's no room for any of it.
+fn fit(note: &str, room: usize) -> Option<String> {
+    let n = note.chars().count();
+    if n <= room {
+        return Some(note.to_owned());
+    }
+    (room >= 4).then(|| format!("{}…", note.chars().take(room - 1).collect::<String>()))
+}
 
 #[derive(Default)]
 pub struct Completion {
@@ -391,10 +402,19 @@ impl Completion {
         let (below, above) = (screen.bottom() - caret.bottom() - 4.0, caret.top() - screen.top() - 4.0);
         let up = wanted > below && above > below;
         let room = if up { above } else { below };
-        let (pivot, at) = if up { (egui::Align2::LEFT_BOTTOM, caret.left_top() + vec2(-4.0, -2.0)) } else { (egui::Align2::LEFT_TOP, caret.left_bottom() + vec2(-4.0, 2.0)) };
+        let (pivot, mut at) = if up { (egui::Align2::LEFT_BOTTOM, caret.left_top() + vec2(-4.0, -2.0)) } else { (egui::Align2::LEFT_TOP, caret.left_bottom() + vec2(-4.0, 2.0)) };
         let selected = self.selected;
-        let notes: Vec<Option<String>> = self.items.iter().map(|item| self.note(item)).collect();
         let texts: Vec<String> = self.items.iter().map(|item| self.text(item).to_owned()).collect();
+        // Width: the longest name and note, but never wider than the window;
+        // notes are cut short (…) to fit, and the list moves left to stay inside.
+        let char_w = ctx.fonts_mut(|f| f.glyph_width(&font, 'M'));
+        let text_w = texts.iter().map(|t| t.chars().count()).max().unwrap_or(8) as f32 * char_w;
+        let max_w = (screen.width() - 2.0 * POPUP_EDGE).max(140.0);
+        let note_room = ((max_w - text_w - 48.0) / char_w).floor().max(0.0) as usize;
+        let notes: Vec<Option<String>> = self.items.iter().map(|item| self.note(item).and_then(|n| fit(&n, note_room))).collect();
+        let note_w = notes.iter().flatten().map(|n| n.chars().count()).max().map_or(0.0, |n| n as f32 * char_w + 24.0);
+        let width = (text_w + note_w + 24.0).max(140.0).min(max_w);
+        at.x = at.x.min(screen.right() - POPUP_EDGE - width).max(screen.left() + POPUP_EDGE - 8.0);
         let doc = match self.items.get(selected) {
             Some(Item::Server(i)) => self.server.as_ref().and_then(|l| l.items[*i].documentation.clone()),
             _ => None,
@@ -407,13 +427,9 @@ impl Completion {
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).inner_margin(4.0).show(ui, |ui| {
                     egui::ScrollArea::vertical().max_height((room - 16.0).max(row_h).min(MAX_ITEMS as f32 * (row_h + spacing))).show(ui, |ui| {
-                    let char_w = font.size * 0.62;
-                    let text_w = texts.iter().map(|t| t.chars().count()).max().unwrap_or(8) as f32 * char_w;
-                    let note_w = notes.iter().flatten().map(|n| n.chars().count()).max().map_or(0.0, |n| n as f32 * char_w + 24.0);
-                    let width = text_w + note_w + 24.0;
                     let dim = ui.visuals().weak_text_color();
                     for (i, text) in texts.iter().enumerate() {
-                        let (rect, resp) = ui.allocate_exact_size(vec2(width.max(140.0), row_h), Sense::click());
+                        let (rect, resp) = ui.allocate_exact_size(vec2(width, row_h), Sense::click());
                         if i == self.selected {
                             ui.painter().rect_filled(rect, 3.0, ui.visuals().selection.bg_fill);
                         }
