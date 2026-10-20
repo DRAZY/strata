@@ -20,7 +20,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 /// Embedded images are scaled down to at most this many pixels a side.
-const EMBED_PIXELS: u32 = 2048;
+const EMBED_PIXELS: u32 = 1600;
+/// Images kept decoded (the least recently shown go first).
+const EMBED_IMAGES: usize = 24;
 /// Larger images and notes aren't embedded.
 const EMBED_IMAGE_BYTES: u64 = 64 << 20;
 const EMBED_NOTE_BYTES: u64 = 1 << 20;
@@ -119,6 +121,8 @@ enum ImageState {
 struct CachedImage {
     stamp: Option<Stamp>,
     checked: f64,
+    /// Last shown (input time).
+    used: f64,
     state: ImageState,
 }
 
@@ -151,8 +155,9 @@ impl EmbedCache {
         let mut images = self.images.borrow_mut();
         let stale = images.get(path).is_none_or(|c| now - c.checked > EMBED_CHECK_SECS && Stamp::of(path).ok() != c.stamp);
         if stale {
-            if images.len() > 64 {
-                images.clear();
+            while images.len() >= EMBED_IMAGES {
+                let Some(oldest) = images.iter().min_by(|a, b| a.1.used.total_cmp(&b.1.used)).map(|(p, _)| p.clone()) else { break };
+                images.remove(&oldest);
             }
             let stamp = Stamp::of(path).ok();
             let state = if stamp.is_some_and(|s| s.len > EMBED_IMAGE_BYTES) {
@@ -166,9 +171,10 @@ impl EmbedCache {
                 });
                 ImageState::Loading(rx)
             };
-            images.insert(path.to_owned(), CachedImage { stamp, checked: now, state });
+            images.insert(path.to_owned(), CachedImage { stamp, checked: now, used: now, state });
         }
         let Some(c) = images.get_mut(path) else { return Embed::Loading };
+        c.used = now;
         if now - c.checked > EMBED_CHECK_SECS {
             c.checked = now;
         }
@@ -337,34 +343,36 @@ impl StrataApp {
             let links: &[(u32, u32)] = me.map_or(&[], |i| vault.backlinks(i));
             let mut sources: Vec<u32> = links.iter().map(|&(n, _)| n).collect();
             sources.dedup();
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("BACKLINKS").small().weak());
-                if ready {
-                    let s = |n: usize| if n == 1 { "" } else { "s" };
-                    ui.label(RichText::new(format!("{} link{} from {} note{}", links.len(), s(links.len()), sources.len(), s(sources.len()))).small());
-                } else {
-                    ui.spinner();
-                    ui.label(RichText::new("Indexing notes…").small().weak());
+            // The buttons on the right first, so tags that don't fit can't push them out.
+            ui.horizontal(|ui| ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                hide = ui.small_button("×").on_hover_text("Hide backlinks (Notes: Toggle Backlinks shows them again)").clicked();
+                if can_undo {
+                    undo = ui.small_button("Undo Rename").on_hover_text("Put the links back as they were, and the old name").clicked();
                 }
-                if let Some(note) = me.and_then(|i| vault.note(i)) {
-                    let mut seen: Vec<String> = Vec::new();
-                    for (t, _) in &note.tags {
-                        if seen.iter().any(|s| s.eq_ignore_ascii_case(t)) {
-                            continue;
-                        }
-                        seen.push(t.clone());
-                        if ui.small_button(format!("#{t}")).on_hover_text("Notes with this tag").clicked() {
-                            tag_clicked = Some(t.clone());
-                        }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+                    ui.label(RichText::new("BACKLINKS").small().weak());
+                    if ready {
+                        let s = |n: usize| if n == 1 { "" } else { "s" };
+                        ui.label(RichText::new(format!("{} link{} from {} note{}", links.len(), s(links.len()), sources.len(), s(sources.len()))).small());
+                    } else {
+                        ui.spinner();
+                        ui.label(RichText::new("Indexing notes…").small().weak());
                     }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    hide = ui.small_button("×").on_hover_text("Hide backlinks (Notes: Toggle Backlinks shows them again)").clicked();
-                    if can_undo {
-                        undo = ui.small_button("Undo Rename").on_hover_text("Put the links back as they were, and the old name").clicked();
+                    if let Some(note) = me.and_then(|i| vault.note(i)) {
+                        let mut seen: Vec<String> = Vec::new();
+                        for (t, _) in &note.tags {
+                            if seen.iter().any(|s| s.eq_ignore_ascii_case(t)) {
+                                continue;
+                            }
+                            seen.push(t.clone());
+                            if ui.small_button(format!("#{t}")).on_hover_text("Notes with this tag").clicked() {
+                                tag_clicked = Some(t.clone());
+                            }
+                        }
                     }
                 });
-            });
+            }));
             ui.separator();
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 if ready && links.is_empty() {
@@ -384,9 +392,12 @@ impl StrataApp {
                         let mut job = egui::text::LayoutJob::default();
                         job.append(&format!("{:>5}  ", l.line + 1), 0.0, egui::TextFormat::simple(mono.clone(), ui.visuals().weak_text_color()));
                         job.append(&l.context, 0.0, egui::TextFormat::simple(mono.clone(), ui.visuals().text_color()));
-                        job.wrap.max_rows = 1;
-                        job.wrap.max_width = ui.available_width();
-                        if ui.add(egui::Button::new(job).frame(false)).clicked() {
+                        // One row per link, cut short with … (the tooltip has it all).
+                        let resp = ui.add(egui::Label::new(job).truncate().sense(egui::Sense::click()));
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if resp.clicked() {
                             open = Some((src_path.clone(), l.line as usize));
                         }
                     }

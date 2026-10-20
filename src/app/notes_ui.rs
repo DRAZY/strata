@@ -85,6 +85,8 @@ pub(super) struct NotesState {
     /// A link followed before the vault was indexed: (from, link, subpath).
     pending_follow: Option<(PathBuf, String, Option<String>)>,
     pub embeds: EmbedCache,
+    /// `[[` candidates of a vault, for the index generation they were listed at.
+    candidates: Option<(PathBuf, u64, Arc<Candidates>)>,
     /// For lists opened from a palette pick (which has no context at hand).
     ctx: Option<egui::Context>,
 }
@@ -146,22 +148,19 @@ impl StrataApp {
     }
 
     /// The vault folder of the file at `path`: the closest folder above it
-    /// with `.obsidian` (not above the side bar folder holding it), else that
-    /// side bar folder. A file outside the side bar's folders is in a vault
-    /// only when a folder above it has `.obsidian`.
+    /// with `.obsidian` (also above the side bar folder holding it, when
+    /// only part of a vault is open), else the side bar folder holding it.
+    /// A file outside the side bar's folders is in a vault only when a
+    /// folder above it has `.obsidian`.
     pub(super) fn vault_root(&mut self, path: &Path) -> Option<PathBuf> {
-        let folder = self.sidebar.root_of(path).map(Path::to_owned);
         let mut dir = path.parent();
         while let Some(d) = dir {
             if self.has_obsidian(d) {
                 return Some(d.to_owned());
             }
-            if folder.as_deref() == Some(d) {
-                return folder;
-            }
             dir = d.parent();
         }
-        folder
+        self.sidebar.root_of(path).map(Path::to_owned)
     }
 
     /// Tab `i` is a note in a vault: its vault folder.
@@ -184,7 +183,8 @@ impl StrataApp {
     /// side bar folder.
     fn command_root(&mut self) -> Option<PathBuf> {
         let from_doc = self.docs[self.active].path.clone().and_then(|p| self.vault_root(&p));
-        let root = from_doc.or_else(|| self.sidebar.root().map(Path::to_owned));
+        // A side bar folder in a vault (or one): as for a file in it.
+        let root = from_doc.or_else(|| self.sidebar.root().map(|r| r.join(".")).and_then(|p| self.vault_root(&p)));
         if root.is_none() {
             self.status = "Open your notes folder first (File ▸ Open Folder…)".into();
         }
@@ -342,6 +342,11 @@ impl StrataApp {
             }
             return;
         }
+        // A full path to a file (a Markdown link written that way) opens as it is.
+        if Path::new(link).is_absolute() && Path::new(link).is_file() {
+            self.push_jump();
+            return self.open_linked(PathBuf::from(link), subpath);
+        }
         let Some(vault) = self.vault_of(from) else {
             self.notes.index.request(&root, None);
             self.notes.pending_follow = Some((from.to_owned(), link.to_owned(), subpath.map(str::to_owned)));
@@ -494,7 +499,9 @@ impl StrataApp {
         if self.notes.complete.as_ref().is_some_and(|c| c.view == d.view.id && c.key == key) {
             return;
         }
-        let close = |s: &mut Self| s.notes.complete = None;
+        let view = d.view.id;
+        // "No list here", remembered for this text and cursor.
+        let close = |s: &mut Self| s.notes.complete = Some(Complete { view, start: 0, items: Vec::new(), selected: 0, key, markdown_links: false });
         if d.editor.selections().len() != 1 || !d.editor.primary().is_empty() || d.editor.buffer.len_chars() > MARK_CHARS {
             return close(self);
         }
@@ -515,10 +522,18 @@ impl StrataApp {
             return close(self);
         }
         let from = d.path.clone().unwrap_or_default();
-        let view = d.view.id;
         let query = query.to_owned();
         let Some(vault) = self.notes.index.vault(&root).cloned() else { return close(self) };
-        let items = completions(&vault, &from, &query, &text);
+        let generation = self.notes.index.generation();
+        let cands = match &self.notes.candidates {
+            Some((r, g, c)) if *r == root && *g == generation => c.clone(),
+            _ => {
+                let c = Arc::new(Candidates::of(&vault));
+                self.notes.candidates = Some((root, generation, c.clone()));
+                c
+            }
+        };
+        let items = completions(&vault, &cands, &from, &query, &text);
         self.notes.complete = Some(Complete { view, start, items, selected: 0, key, markdown_links: vault.config.markdown_links });
     }
 
@@ -821,6 +836,8 @@ impl StrataApp {
         if is_note(&to_rel) {
             candidates.push(to_rel.clone());
         }
+        // Open notes too: their unsaved links aren't in the index.
+        candidates.extend(self.docs.iter().filter_map(|d| vault.rel(d.path.as_deref()?)).filter(|r| is_note(r)));
         candidates.sort();
         candidates.dedup();
         let mut files = Vec::new();
@@ -861,6 +878,11 @@ impl StrataApp {
     /// job (atomic writes, originals kept for Notes: Undo Rename).
     pub(super) fn apply_link_plan(&mut self, plan: LinkPlan, ctx: Option<egui::Context>) {
         let Some(rename) = plan.rename.clone() else { return };
+        // Two jobs rewriting the same files at once could undo each other.
+        if self.notes.disk.running() {
+            self.status = "Still updating links from the last rename; links weren't updated for this one".into();
+            return;
+        }
         let rewriter = Arc::new(Rewriter { root: plan.root.clone(), rename: (*rename).clone() });
         let mut tabs = Vec::new();
         let mut jobs = Vec::new();
@@ -1022,8 +1044,34 @@ fn preview_lines(text: &str, edits: &[(Range<usize>, String)]) -> Vec<(usize, St
     out
 }
 
+/// What `[[` offers: notes (by path without .md) and their aliases, then other
+/// files, as (label, file, alias).
+pub(super) struct Candidates {
+    list: Vec<(String, u32, Option<String>)>,
+    /// Where the files that aren't notes start.
+    notes_end: usize,
+}
+
+impl Candidates {
+    fn of(vault: &Vault) -> Candidates {
+        let mut list: Vec<(String, u32, Option<String>)> = Vec::new();
+        for (i, rel) in vault.files.paths().iter().enumerate() {
+            let id = i as u32;
+            if is_note(rel) {
+                list.push((without_md(rel).to_owned(), id, None));
+                for a in vault.note(id).map(|n| n.aliases.as_slice()).unwrap_or(&[]) {
+                    list.push((a.clone(), id, Some(a.clone())));
+                }
+            }
+        }
+        let notes_end = list.len();
+        list.extend(vault.files.paths().iter().enumerate().filter(|(_, r)| !is_note(r)).map(|(i, r)| (r.clone(), i as u32, None)));
+        Candidates { list, notes_end }
+    }
+}
+
 /// The `[[` list for `query` typed in the note at `from` (whose text is `text`).
-fn completions(vault: &Vault, from: &Path, query: &str, text: &str) -> Vec<Choice> {
+fn completions(vault: &Vault, cands: &Candidates, from: &Path, query: &str, text: &str) -> Vec<Choice> {
     let from_rel = vault.rel(from).unwrap_or_default();
     let format = vault.config.link_format;
     let wiki_link = |id: u32| vault.files.link_path(id, &from_rel, format, false);
@@ -1060,27 +1108,15 @@ fn completions(vault: &Vault, from: &Path, query: &str, text: &str) -> Vec<Choic
             })
             .collect();
     }
-    // Notes (by path without .md) and their aliases, then other files.
-    let mut cands: Vec<(String, u32, Option<String>)> = Vec::new();
-    for (i, rel) in vault.files.paths().iter().enumerate() {
-        let id = i as u32;
-        if is_note(rel) {
-            cands.push((without_md(rel).to_owned(), id, None));
-            for a in vault.note(id).map(|n| n.aliases.as_slice()).unwrap_or(&[]) {
-                cands.push((a.clone(), id, Some(a.clone())));
-            }
-        }
-    }
-    let notes_end = cands.len();
-    cands.extend(vault.files.paths().iter().enumerate().filter(|(_, r)| !is_note(r)).map(|(i, r)| (r.clone(), i as u32, None)));
-    let ranked = crate::fuzzy::rank(query.trim(), &cands, |c| &c.0, COMPLETIONS * 4);
+    let (list, notes_end) = (&cands.list, cands.notes_end);
+    let ranked = crate::fuzzy::rank(query.trim(), list, |c| &c.0, COMPLETIONS * 4);
     let mut out: Vec<Choice> = ranked
         .into_iter()
         // With nothing typed, notes only (not every image in the vault).
         .filter(|(k, _, _)| !query.trim().is_empty() || *k < notes_end)
         .take(COMPLETIONS)
         .map(|(k, _, _)| {
-            let (label, id, alias) = &cands[k];
+            let (label, id, alias) = &list[k];
             let path = vault.files.path(*id);
             let name = without_md(path.rsplit('/').next().unwrap_or(path)).to_owned();
             let link = wiki_link(*id);

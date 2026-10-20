@@ -163,15 +163,27 @@ impl Vault {
         self.copy_of.get(&i).copied()
     }
 
-    /// Make the lookups from `files` and `entries`.
-    fn finish(root: PathBuf, config: Config, paths: Vec<String>, entries: Vec<Entry>, truncated: bool) -> Vault {
+    /// Make the lookups from `files` and `entries`. With `reuse` (the
+    /// previous snapshot of the same files, and which notes were read again)
+    /// only those notes' links are resolved again: resolving every link is
+    /// most of a rescan's work in a big vault.
+    fn finish(root: PathBuf, config: Config, paths: Vec<String>, entries: Vec<Entry>, truncated: bool, reuse: Option<(&Vault, &[bool])>) -> Vault {
         let files = Files::new(paths);
-        let mut backlinks: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+        let mut backlinks: HashMap<u32, Vec<(u32, u32)>> = match reuse {
+            Some((prev, changed)) => prev.backlinks.iter().map(|(&t, v)| (t, v.iter().filter(|(s, _)| !changed[*s as usize]).copied().collect())).collect(),
+            None => HashMap::new(),
+        };
         let mut tags: HashMap<String, TagUses> = HashMap::new();
         let mut wikilinks = false;
         for (i, e) in entries.iter().enumerate() {
             let Some(note) = &e.note else { continue };
             wikilinks |= note.links.iter().any(|l| !l.markdown);
+            for (name, line) in &note.tags {
+                tags.entry(name.to_lowercase()).or_insert_with(|| TagUses { name: name.clone(), uses: Vec::new() }).uses.push((i as u32, *line));
+            }
+            if reuse.is_some_and(|(_, changed)| !changed[i]) {
+                continue;
+            }
             let from = files.path(i as u32);
             for (k, l) in note.links.iter().enumerate() {
                 // A note's links to its own headings aren't backlinks.
@@ -182,9 +194,11 @@ impl Vault {
                     backlinks.entry(t).or_default().push((i as u32, k as u32));
                 }
             }
-            for (name, line) in &note.tags {
-                tags.entry(name.to_lowercase()).or_insert_with(|| TagUses { name: name.clone(), uses: Vec::new() }).uses.push((i as u32, *line));
-            }
+        }
+        if reuse.is_some() {
+            // Same order as a full scan: by linking note, then link.
+            backlinks.retain(|_, v| !v.is_empty());
+            backlinks.values_mut().for_each(|v| v.sort_unstable());
         }
         let mut tags: Vec<TagUses> = tags.into_values().collect();
         tags.sort_by_key(|t| t.name.to_lowercase());
@@ -282,11 +296,14 @@ pub fn scan(root: &Path, prev: Option<&Vault>, cancel: &AtomicBool) -> Outcome {
     if cancel.load(Ordering::Relaxed) {
         return Outcome::Cancelled;
     }
+    let mut changed = vec![false; entries.len()];
     for (i, info) in read {
         entries[i].note = info.map(Arc::new);
+        changed[i] = true;
     }
-    let paths = found.into_iter().map(|f| f.0).collect();
-    Outcome::New(Box::new(Vault::finish(root.to_owned(), config, paths, entries, truncated)))
+    let paths: Vec<String> = found.into_iter().map(|f| f.0).collect();
+    let reuse = prev.filter(|p| p.config == config && p.files.paths() == paths.as_slice()).map(|p| (p, changed.as_slice()));
+    Outcome::New(Box::new(Vault::finish(root.to_owned(), config, paths, entries, truncated, reuse)))
 }
 
 struct Job {
@@ -488,10 +505,19 @@ mod tests {
         std::fs::write(root.join("B.md"), "now links [[A]] and [[C]]\n").unwrap();
         std::fs::write(root.join("C.md"), "new\n").unwrap();
         let v2 = scanned(&root, Some(&v1)).unwrap();
+        // Only B changes, the files stay the same: its links are resolved again, the rest reused.
+        std::fs::write(root.join("B.md"), "links [[C]] only, and more text\n").unwrap();
+        let v3 = scanned(&root, Some(&v2)).unwrap();
+        let full = scanned(&root, None).unwrap();
+        for (k, rel) in full.files.paths().iter().enumerate() {
+            assert_eq!(v3.backlinks(k as u32), full.backlinks(k as u32), "{rel}");
+        }
+        assert!(v3.backlinks(v3.files.find("A.md").unwrap()).is_empty());
         let a = v1.files.find("A.md").unwrap();
         assert!(Arc::ptr_eq(v1.entries[a as usize].note.as_ref().unwrap(), v2.entries[v2.files.find("A.md").unwrap() as usize].note.as_ref().unwrap()), "A wasn't read again");
         assert_eq!(v2.backlinks(v2.files.find("A.md").unwrap()).len(), 1);
         assert_eq!(v2.backlinks(v2.files.find("C.md").unwrap()).len(), 1);
+        assert_eq!(v3.backlinks(v3.files.find("C.md").unwrap()).len(), 1);
         // The background index swaps the snapshot in.
         let mut index = Index::default();
         index.request(&root, None);

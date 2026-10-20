@@ -238,6 +238,9 @@ struct InlineState {
     /// to tell a paragraph that is only an embed.
     images: Vec<(String, bool)>,
     other: bool,
+    /// Text not yet added: the parser may split a run (at `_`, say), and a
+    /// note's tags are found in whole runs.
+    pending: String,
 }
 
 impl InlineState {
@@ -298,10 +301,28 @@ impl InlineState {
         self.text(&s[at..], |_| {});
     }
 
+    /// Add text held back by `event`.
+    fn flush(&mut self) {
+        if !self.pending.is_empty() {
+            let text = std::mem::take(&mut self.pending);
+            self.prose(&text);
+        }
+    }
+
+    /// The inline content so far, every piece of text added.
+    fn finish(mut self) -> Self {
+        self.flush();
+        self
+    }
+
     /// Feed one inline event; false if it isn't one.
     fn event(&mut self, ev: Event) -> bool {
+        if let Event::Text(t) = &ev {
+            self.pending.push_str(t);
+            return true;
+        }
+        self.flush();
         match ev {
-            Event::Text(t) => self.prose(&t),
             Event::Code(t) => self.text(&t, |s| s.code = true),
             Event::InlineMath(t) | Event::DisplayMath(t) => self.text(&t, |s| s.code = true),
             Event::SoftBreak => self.text(" ", |_| {}),
@@ -372,7 +393,7 @@ impl Builder<'_> {
                 }
             }
         }
-        st
+        st.finish()
     }
 
     fn set_task(&mut self, done: bool) {
@@ -389,7 +410,7 @@ impl Builder<'_> {
         let mut loose = InlineState::new(notes);
         let mut paragraphs = false;
         let flush = |loose: &mut InlineState, out: &mut Vec<Block>| {
-            let st = std::mem::replace(loose, InlineState::new(notes));
+            let st = std::mem::replace(loose, InlineState::new(notes)).finish();
             if !st.inline.text.is_empty() {
                 out.push(paragraph_block(st));
             }
@@ -768,7 +789,7 @@ impl Draw<'_> {
             } else if let Some(url) = run.link.map(|i| inline.links[i].as_str()).filter(|_| !run.style.note) {
                 // A wikilink to a note that doesn't exist yet is fainter, as in Obsidian.
                 let missing = url.strip_prefix(NOTE_LINK).is_some_and(|t| self.notes.is_some_and(|n| !n.resolves(t)));
-                f.color = if missing { mix(self.pal.link, self.pal.bg, 0.45) } else { self.pal.link };
+                f.color = if missing { mix(self.pal.link, self.pal.bg, 0.35) } else { self.pal.link };
             }
             job.append(&inline.text[run.range.clone()], 0.0, f);
         }
@@ -1667,6 +1688,27 @@ mod tests {
             let rows = &found.iter().find(|(t, _)| t.starts_with(&code[..5])).unwrap().1;
             assert!(!rows[0].intersects(label.shrink(0.5)), "label {label:?} overlaps {code:.12}… at {:?}", rows[0]);
         }
+    }
+
+    #[test]
+    fn notes_parse_wikilinks_tags_embeds_and_frontmatter() {
+        let src = "---\ntags: [a]\n---\nSee [[Other#Part|shown]], #tag_with_under/sub and `#code` or a#b.\n\n![[pic.png]]\n\nText ![[inline.png]] here\n";
+        let blocks = top_note(src);
+        assert!(matches!(&blocks[0], Block::Code { lang, code } if lang == "yaml" && code == "tags: [a]"), "{:?}", blocks[0]);
+        let Block::Paragraph(p) = &blocks[1] else { panic!("{:?}", blocks[1]) };
+        assert_eq!(p.link_at(p.text.find("shown").unwrap()), Some(format!("{NOTE_LINK}Other#Part").as_str()));
+        let tags: Vec<&str> = p.runs.iter().filter(|r| r.style.tag).map(|r| &p.text[r.range.clone()]).collect();
+        assert_eq!(tags, ["#tag_with_under/sub"], "whole runs, not in code or words");
+        assert_eq!(p.link_at(p.text.find("#tag").unwrap()), Some(format!("{TAG_LINK}tag_with_under/sub").as_str()));
+        assert_eq!(blocks[2], Block::Embed { target: "pic.png".into(), wiki: true }, "an embed alone is a block");
+        assert!(matches!(&blocks[3], Block::Paragraph(_)), "one inside text stays inline");
+        // Other Markdown is read as before: no wikilinks, frontmatter as text.
+        assert!(!matches!(top("[[x]]\n").first(), Some(Block::Embed { .. })));
+        assert!(matches!(&top("---\ntags: [a]\n---\n")[0], Block::Rule));
+    }
+
+    fn top_note(src: &str) -> Vec<Block> {
+        parse_note(src).into_iter().map(|b| b.block).collect()
     }
 
     #[test]
