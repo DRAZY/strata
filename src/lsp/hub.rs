@@ -55,7 +55,10 @@ pub enum State {
 
 struct Slot {
     config: ServerConfig,
+    /// The project folder's real path, where the server runs.
     root: PathBuf,
+    /// The same folder as the tab that started it named it (maybe through a link).
+    lexical: PathBuf,
     program: PathBuf,
     server: Option<Server>,
     /// Bumped each time a process starts: open files are sent to it again.
@@ -108,6 +111,10 @@ pub struct Hub {
     waiting: HashMap<PathBuf, (PathBuf, String)>,
     /// The file remembered folders are kept in (None in tests: nothing is written).
     trust_file: Option<PathBuf>,
+    /// The name each open file has for its server: its real path (the
+    /// server runs in the project's real folder), and back.
+    to_server: HashMap<PathBuf, PathBuf>,
+    from_server: HashMap<PathBuf, PathBuf>,
 }
 
 impl Hub {
@@ -130,6 +137,8 @@ impl Hub {
             asking: Vec::new(),
             waiting: HashMap::new(),
             trust_file: None,
+            to_server: HashMap::new(),
+            from_server: HashMap::new(),
         }
     }
 
@@ -139,20 +148,19 @@ impl Hub {
         let file = dir.join(TRUST_FILE);
         if let Ok(text) = std::fs::read_to_string(&file) {
             match serde_json::from_str::<Vec<PathBuf>>(&text) {
-                Ok(list) => self.trusted = list.iter().map(|p| real_path(p)).collect(),
+                // A folder that no longer resolves isn't trusted.
+                Ok(list) => self.trusted = list.iter().filter_map(|p| real_path(p)).collect(),
                 Err(e) => self.note(format!("{TRUST_FILE}: {e}")),
             }
         }
         self.trust_file = Some(file);
     }
 
-    /// Compared as real paths (links resolved), component by component: a
-    /// link inside a trusted folder to a project elsewhere isn't trusted.
-    fn may_run(&self, root: &Path) -> bool {
-        self.trust_all || {
-            let root = real_path(root);
-            self.trusted.iter().any(|t| root.starts_with(t))
-        }
+    /// `real` is a project folder's real path (links resolved); it's
+    /// compared with the trusted folders' real paths component by component,
+    /// so a link inside a trusted folder to a project elsewhere isn't trusted.
+    fn may_run(&self, real: &Path) -> bool {
+        self.trust_all || self.trusted.iter().any(|t| real.starts_with(t))
     }
 
     /// The folder this window should ask about, and the servers waiting on it.
@@ -164,13 +172,19 @@ impl Hub {
     pub fn answer_trust(&mut self, root: &Path, answer: Trust) {
         self.asking.retain(|a| a.0 != root);
         match answer {
-            Trust::Once | Trust::Always => {
-                let real = real_path(root);
-                if answer == Trust::Always {
-                    self.save_trusted(&real);
+            Trust::Once | Trust::Always => match real_path(root) {
+                Some(real) => {
+                    if answer == Trust::Always {
+                        self.save_trusted(&real);
+                    }
+                    self.trusted.push(real);
                 }
-                self.trusted.push(real);
-            }
+                // Trust needs a real folder: without one nothing starts (and isn't asked again).
+                None => {
+                    self.note(format!("Language servers not started: the folder {} can't be found", root.display()));
+                    self.declined.push(root.to_owned());
+                }
+            },
             Trust::NotNow => self.declined.push(root.to_owned()),
         }
         // Its files are looked at again on the next sync.
@@ -339,12 +353,18 @@ impl Hub {
         });
         let Some((config, program)) = found else { return Ok(None) };
         let root = config::find_root(path, &config.root_markers, roots);
-        if let Some(i) = self.slots.iter().position(|s| s.config.name == config.name && s.root == root) {
+        // The folder's real path: what's checked is what the server runs in
+        // (its working folder and rootUri), so swapping a link afterwards
+        // can't point it elsewhere. No real path, no trust.
+        let real = real_path(&root);
+        if let Some(r) = &real
+            && let Some(i) = self.slots.iter().position(|s| s.config.name == config.name && s.root == *r)
+        {
             return Ok(Some(i));
         }
         // Servers can run a project's code (build scripts, proc macros,
         // configured tools): only in folders the user trusts.
-        if !self.may_run(&root) {
+        let Some(real) = real.filter(|r| self.may_run(r)) else {
             let name = config.display_name();
             self.waiting.insert(path.to_owned(), (root.clone(), name.clone()));
             if !self.declined.contains(&root) {
@@ -358,8 +378,8 @@ impl Hub {
                 }
             }
             return Err(Untrusted);
-        }
-        self.slots.push(Slot { config, root, program, server: None, run: 0, crashes: Vec::new(), retry_at: None, last_error: None, failed: None, worked: false });
+        };
+        self.slots.push(Slot { config, root: real, lexical: root, program, server: None, run: 0, crashes: Vec::new(), retry_at: None, last_error: None, failed: None, worked: false });
         let i = self.slots.len() - 1;
         self.start(i);
         Ok(Some(i))
@@ -456,6 +476,7 @@ impl Hub {
             return;
         }
         let Some(i) = self.slot_for(&path, roots, window) else { return };
+        let spath = self.learn_server_path(&path);
         let slot = &self.slots[i];
         let Some(server) = slot.server.as_ref().filter(|s| !matches!(s.status(), Status::Stopped(_))) else { return };
         match self.docs.get_mut(&path) {
@@ -463,18 +484,18 @@ impl Hub {
                 if d.text_key != text_key {
                     d.text_key = text_key;
                     d.version += 1;
-                    server.change(&path, d.version, text());
+                    server.change(&spath, d.version, text());
                 }
                 if d.mtime != mtime {
                     d.mtime = mtime;
                     if mtime.is_some() {
-                        server.saved(&path);
+                        server.saved(&spath);
                     }
                 }
             }
             _ => {
                 let language = slot.config.language_id.clone().unwrap_or_else(|| config::language_id(&path, &slot.config.name));
-                server.open(&path, language, 1, text());
+                server.open(&spath, language, 1, text());
                 self.docs.insert(path, OpenDoc { slot: i, run: slot.run, version: 1, text_key, window, mtime });
             }
         }
@@ -505,8 +526,36 @@ impl Hub {
             && slot.run == d.run
             && let Some(s) = &slot.server
         {
-            s.close(path);
+            s.close(&self.server_path(path));
         }
+    }
+
+    /// The real path of `path` (a tab's), remembered both ways.
+    fn learn_server_path(&mut self, path: &Path) -> PathBuf {
+        if let Some(p) = self.to_server.get(path) {
+            return p.clone();
+        }
+        let real = path.parent().and_then(real_path).zip(path.file_name()).map_or_else(|| path.to_owned(), |(dir, name)| uri::normalize(&dir.join(name)));
+        self.to_server.insert(path.to_owned(), real.clone());
+        self.from_server.insert(real.clone(), path.to_owned());
+        real
+    }
+
+    /// The name the server knows a tab's file by (for requests about it).
+    pub fn server_path(&self, path: &Path) -> PathBuf {
+        let path = uri::normalize(path);
+        self.to_server.get(&path).cloned().unwrap_or(path)
+    }
+
+    /// The tab's name for a path from a server (locations, edits,
+    /// diagnostics); a file that isn't open keeps the server's name.
+    pub fn client_path(&self, path: &Path) -> PathBuf {
+        let path = uri::normalize(path);
+        if let Some(p) = self.from_server.get(&path) {
+            return p.clone();
+        }
+        // Not open: named as under the folder the user opened, not its real path.
+        self.slots.iter().find_map(|s| path.strip_prefix(&s.root).ok().map(|rest| s.lexical.join(rest))).unwrap_or(path)
     }
 
     /// The running server that has `path` open for this window, and the
@@ -522,7 +571,7 @@ impl Hub {
         let path = uri::normalize(path);
         let d = self.docs.get(&path).filter(|d| d.window == window)?;
         let slot = self.slots.get(d.slot).filter(|s| s.run == d.run)?;
-        slot.server.as_ref()?.diagnostics(&path)
+        slot.server.as_ref()?.diagnostics(&self.server_path(&path))
     }
 
     /// Every file with diagnostics, from every server, with the position
@@ -531,7 +580,7 @@ impl Hub {
         let mut out = Vec::new();
         for s in self.slots.iter().filter_map(|s| s.server.as_ref()) {
             let enc = s.caps().encoding;
-            out.extend(s.all_diagnostics().into_iter().map(|(p, d)| (p, d, enc)));
+            out.extend(s.all_diagnostics().into_iter().map(|(p, d)| (self.client_path(&p), d, enc)));
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
@@ -569,6 +618,13 @@ impl Hub {
         Some((name, state))
     }
 
+    /// The folder the server handling `path` runs in (tests).
+    #[cfg(test)]
+    pub fn root_for(&self, path: &Path) -> Option<PathBuf> {
+        let i = (*self.assigned.get(&uri::normalize(path))?)?;
+        Some(self.slots[i].root.clone())
+    }
+
     /// The process id of the server handling `path` (tests).
     #[cfg(test)]
     pub fn pid_for(&self, path: &Path) -> Option<u32> {
@@ -577,9 +633,18 @@ impl Hub {
     }
 }
 
-/// `path` with links resolved, or as it is if it can't be (it's gone).
-fn real_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned())
+/// `path` with links resolved; None if it can't be (it's gone). On
+/// Windows without the `\\?\` prefix canonicalizing adds (URIs and
+/// servers want plain drive paths).
+fn real_path(path: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(path).ok().map(|p| strip_verbatim(&p.to_string_lossy()))
+}
+
+fn strip_verbatim(p: &str) -> PathBuf {
+    if let Some(unc) = p.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{unc}"));
+    }
+    PathBuf::from(p.strip_prefix(r"\\?\").unwrap_or(p))
 }
 
 /// A server that waits for its folder to be trusted.

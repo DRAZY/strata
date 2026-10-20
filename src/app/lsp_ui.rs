@@ -423,7 +423,7 @@ impl StrataApp {
     /// `{"textDocument": …, "position": …}` for char `at` of tab `i`.
     fn lsp_position(&self, i: usize, path: &Path, at: usize, enc: Encoding) -> Value {
         let rope = self.docs[i].editor.buffer.snapshot();
-        json!({"textDocument": {"uri": uri::from_path(path)}, "position": position::to_lsp(&rope, at, enc).to_json()})
+        json!({"textDocument": {"uri": uri::from_path(&self.lsp.hub.borrow().server_path(path))}, "position": position::to_lsp(&rope, at, enc).to_json()})
     }
 
     fn lsp_error(&mut self, what: &str, e: &crate::lsp::server::RpcError) {
@@ -449,7 +449,7 @@ impl StrataApp {
             self.lsp_goto_answer(ctx, what, reply);
         }
         if let Some((what, reply)) = answered(&mut self.lsp.rename) {
-            match reply.map_err(|e| e.message).and_then(|v| edit::workspace_edit(&v)) {
+            match reply.map_err(|e| e.message).and_then(|v| edit::workspace_edit(&v)).map(|files| self.client_files(files)) {
                 Ok(files) if files.iter().all(|f| f.edits.is_empty()) => self.status = "Nothing to rename here".into(),
                 Ok(files) => match self.lsp_apply_workspace_edit(files, what.enc, Some(&what.texts)) {
                     Ok(msg) => self.status = msg,
@@ -579,7 +579,12 @@ impl StrataApp {
     /// text) in place of the word, a snippet through the snippet engine, and
     /// the edits that come with it (an import), as the server gave them.
     pub(super) fn lsp_insert_completion(&mut self) {
-        let Some(item) = self.completion.take_server_item() else { return };
+        if let Some(item) = self.completion.take_server_item() {
+            self.lsp_insert_server_item(item);
+        }
+    }
+
+    pub(super) fn lsp_insert_server_item(&mut self, item: ServerItem) {
         let i = self.active;
         let enc = self.docs[i].path.as_ref().and_then(|p| self.lsp.hub.borrow().server_for(self.lsp.window, p).map(|(s, _)| s.caps().encoding)).unwrap_or_default();
         let d = &mut self.docs[i];
@@ -588,12 +593,28 @@ impl StrataApp {
             // typed there (the server's ranges are for the primary cursor
             // only, and its extra edits would apply once, so they're left out).
             let insert = edit::normalize_breaks(&item.insert, d.editor.buffer.line_ending().as_str());
+            // Each cursor's own partial word goes (they may differ: `pr`, `pri`).
+            let b = &d.editor.buffer;
+            let words: Vec<(Range<usize>, String)> = d
+                .editor
+                .selections()
+                .iter()
+                .map(|s| {
+                    let mut a = s.start();
+                    let ls = b.line_start(b.line_of(a));
+                    while s.is_empty() && a > ls && (b.char(a - 1).is_alphanumeric() || b.char(a - 1) == '_') {
+                        a -= 1;
+                    }
+                    (a..s.end(), String::new())
+                })
+                .filter(|(r, _)| !r.is_empty())
+                .collect();
+            d.editor.apply_edits(words);
             if item.snippet {
-                let prefix = d.editor.word_prefix_at_cursor().map(|(_, p)| p).unwrap_or_default();
-                let snippet = crate::snippets::Snippet { trigger: prefix.clone(), description: String::new(), scope: String::new(), content: insert, path: None };
-                self.insert_snippet(&snippet, &prefix);
+                let snippet = crate::snippets::Snippet { trigger: String::new(), description: String::new(), scope: String::new(), content: insert, path: None };
+                self.insert_snippet(&snippet, "");
             } else {
-                d.editor.complete(&insert);
+                d.editor.insert_text(&insert);
             }
             return;
         }
@@ -759,7 +780,7 @@ impl StrataApp {
 
     fn lsp_goto_answer(&mut self, ctx: &egui::Context, what: GotoFor, reply: Reply) {
         let found = match reply {
-            Ok(v) => locations(&v),
+            Ok(v) => locations(&v).into_iter().map(|(p, r)| (self.lsp.hub.borrow().client_path(&p), r)).collect(),
             Err(e) if e.is_benign() => return,
             Err(_) => Vec::new(),
         };
@@ -909,6 +930,15 @@ impl StrataApp {
             self.lsp.rename = Some(Asked { pending, what: RenameFor { enc, texts } });
             self.status = format!("Renaming {} to {name}…", b.old);
         }
+    }
+
+    /// A server's edits by the tabs' names for their files.
+    fn client_files(&self, mut files: Vec<FileEdit>) -> Vec<FileEdit> {
+        let hub = self.lsp.hub.borrow();
+        for f in &mut files {
+            f.path = hub.client_path(&f.path);
+        }
+        files
     }
 
     /// (path, (editor id, editor version)) of every file open in this window.
@@ -1069,7 +1099,7 @@ impl StrataApp {
         let d = &self.docs[i];
         let options = json!({"tabSize": d.editor.tab_width, "insertSpaces": d.editor.use_spaces, "trimTrailingWhitespace": true, "insertFinalNewline": true});
         let what = FormatFor { view: d.view.id, version: d.editor.version(), enc };
-        let params = json!({"textDocument": {"uri": uri::from_path(&path)}, "options": options});
+        let params = json!({"textDocument": {"uri": uri::from_path(&self.lsp.hub.borrow().server_path(&path))}, "options": options});
         if let Some(pending) = self.lsp_request(i, "textDocument/formatting", params) {
             self.lsp.format = Some(Asked { pending, what });
         }
@@ -1711,6 +1741,30 @@ mod tests {
         // The first field (`text`) is selected at each cursor.
         let sels: Vec<String> = app.docs[0].editor.selections().iter().map(|s| app.docs[0].editor.buffer.slice(s.range())).collect();
         assert_eq!(sels, ["text", "text", "text"]);
+    }
+
+    #[test]
+    fn each_cursor_replaces_its_own_partial_word() {
+        // Cursors after `pr`, `pri` and `pri`: each word is replaced whole.
+        let (mut app, ctx, _) = app_with("snippet-prefixes", &[("a.fake", "pr\npri\npri\n")], json!({}));
+        app.settings.auto_complete = true;
+        app.doc().editor.select_ranges(&[2..2, 6..6, 10..10], 0);
+        frame(&mut app, &ctx, vec![Event::Text("i".into())]);
+        // The primary cursor now has `pri`, the others `prii`.
+        wait(&mut app, &ctx, "the println! item", |a| a.completion.labels().contains(&"println!".to_owned()));
+        let k = app.completion.labels().iter().position(|l| l == "println!").unwrap();
+        app.completion.choose(&mut app.docs[0], k);
+        app.lsp_insert_completion();
+        frame(&mut app, &ctx, vec![]);
+        let line = "println!(\"text\", value);";
+        assert_eq!(text(&app), format!("{line}\n{line}\n{line}\n"));
+        // A plain item too.
+        app.doc().editor.undo();
+        app.doc().editor.undo();
+        assert_eq!(text(&app), "pri\nprii\nprii\n");
+        app.doc().editor.select_ranges(&[3..3, 8..8, 13..13], 0);
+        app.lsp_insert_server_item(crate::app::completion::ServerItem::from_json(&json!({"label": "printer"})).unwrap());
+        assert_eq!(text(&app), "printer\nprinter\nprinter\n");
     }
 
     #[test]

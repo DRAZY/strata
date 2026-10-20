@@ -66,7 +66,7 @@ mod tests {
         // A request, answered off the UI thread.
         let (server, version) = hub.server_for(1, &file).unwrap();
         assert_eq!(version, 2);
-        let mut p = server.request("textDocument/hover", json!({"textDocument": {"uri": uri::from_path(&file)}, "position": {"line": 0, "character": 10}}));
+        let mut p = server.request("textDocument/hover", json!({"textDocument": {"uri": uri::from_path(&hub.server_path(&file))}, "position": {"line": 0, "character": 10}}));
         let r = p.wait(Duration::from_secs(10)).unwrap().unwrap();
         assert!(r["contents"]["value"].as_str().unwrap().contains("Hover for `bad`"), "{r}");
 
@@ -254,6 +254,43 @@ mod tests {
         assert!(hub.pid_for(&own).is_some());
         std::fs::remove_dir_all(base).ok();
         std::fs::remove_dir_all(config).ok();
+    }
+
+    #[test]
+    fn trust_fails_closed_when_a_folder_has_no_real_path() {
+        let base = std::fs::canonicalize(scratch("trust-closed")).unwrap();
+        let mut hub = Hub::new(false);
+        hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        hub.require_trust();
+        hub.answer_trust(&base, Trust::Once);
+        // A new file in a folder that doesn't exist (yet): its project folder can't be resolved.
+        let file = base.join("gone").join("new.fake");
+        hub.sync(1, &file, (1, 0), || Rope::from_str(""), None, &[]);
+        assert_eq!(hub.pid_for(&file), None, "not trusted without a real path");
+        let (root, _) = hub.trust_question(1).expect("asked instead");
+        hub.answer_trust(&root, Trust::Once);
+        assert!(hub.take_notes().iter().any(|n| n.contains("can't be found")));
+        hub.sync(1, &file, (1, 0), || Rope::from_str(""), None, &[]);
+        assert_eq!((hub.pid_for(&file), hub.trust_question(1)), (None, None), "still nothing, and no loop of questions");
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_server_runs_in_the_real_folder_that_was_trusted() {
+        let base = scratch("trust-bind");
+        let safe = base.join("safe");
+        std::fs::create_dir_all(&safe).unwrap();
+        std::os::unix::fs::symlink(&safe, base.join("alias")).unwrap();
+        let mut hub = Hub::new(false);
+        hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        hub.require_trust();
+        hub.answer_trust(&safe, Trust::Once);
+        let file = base.join("alias").join("x.fake");
+        hub.sync(1, &file, (1, 0), || Rope::from_str(""), None, &[]);
+        assert!(hub.pid_for(&file).is_some());
+        assert_eq!(hub.root_for(&file), Some(std::fs::canonicalize(&safe).unwrap()), "not the link it was reached through");
+        std::fs::remove_dir_all(base).ok();
     }
 
     #[test]
