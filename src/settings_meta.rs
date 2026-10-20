@@ -125,6 +125,7 @@ pub static SETTINGS: &[Meta] = &[
     m("highlight_trailing_whitespace", Editor, "Highlight trailing whitespace", Toggle),
     m("bracket_colors", Editor, "Bracket colors", Toggle),
     m("color_swatches", Editor, "Color swatches", Toggle),
+    m("show_hidden_characters", Editor, "Show hidden characters", Toggle),
     m("sticky_scroll", Editor, "Sticky scroll", Toggle),
     m("smooth_scroll", Editor, "Smooth scrolling", Toggle),
     m("git_gutter", Editor, "Git gutter", Toggle),

@@ -7,7 +7,7 @@
 use crate::document::Document;
 use crate::lsp::edit::TextEdit;
 use crate::snippets::{Library, Snippet};
-use egui::{Key, Modifiers, Sense, vec2};
+use egui::{Color32, Key, Modifiers, Sense, pos2, vec2};
 use serde_json::Value;
 
 const MAX_ITEMS: usize = 12;
@@ -408,11 +408,12 @@ impl Completion {
         // Width: the longest name and note, but never wider than the window;
         // notes are cut short (…) to fit, and the list moves left to stay inside.
         let char_w = ctx.fonts_mut(|f| f.glyph_width(&font, 'M'));
-        let text_w = texts.iter().map(|t| t.chars().count()).max().unwrap_or(8) as f32 * char_w;
+        // Hidden characters draw as markers a few letters wide (see `hidden::append`).
+        let text_w = texts.iter().map(|t| crate::hidden::plain(t).chars().count() + 2 * usize::from(crate::hidden::any(t))).max().unwrap_or(8) as f32 * char_w;
         let max_w = (screen.width() - 2.0 * POPUP_EDGE).max(140.0);
         let note_room = ((max_w - text_w - 48.0) / char_w).floor().max(0.0) as usize;
         let notes: Vec<Option<String>> = self.items.iter().map(|item| self.note(item).and_then(|n| fit(&n, note_room))).collect();
-        let note_w = notes.iter().flatten().map(|n| n.chars().count()).max().map_or(0.0, |n| n as f32 * char_w + 24.0);
+        let note_w = notes.iter().flatten().map(|n| crate::hidden::plain(n).chars().count()).max().map_or(0.0, |n| n as f32 * char_w + 24.0);
         let width = (text_w + note_w + 24.0).max(140.0).min(max_w);
         at.x = at.x.min(screen.right() - POPUP_EDGE - width).max(screen.left() + POPUP_EDGE - 8.0);
         let doc = match self.items.get(selected) {
@@ -433,10 +434,15 @@ impl Completion {
                         if i == self.selected {
                             ui.painter().rect_filled(rect, 3.0, ui.visuals().selection.bg_fill);
                         }
-                        ui.painter().text(rect.left_center() + vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, text, font.clone(), ui.visuals().text_color());
-                        if let Some(n) = &notes[i] {
-                            ui.painter().text(rect.right_center() - vec2(8.0, 0.0), egui::Align2::RIGHT_CENTER, n, font.clone(), dim);
+                        let (job, note) = row_jobs(text, notes[i].as_deref(), &font, ui.visuals().text_color(), dim);
+                        let g = ui.painter().layout_job(job);
+                        ui.painter().galley(pos2(rect.left() + 8.0, rect.center().y - g.size().y / 2.0), g, ui.visuals().text_color());
+                        if let Some(job) = note {
+                            let g = ui.painter().layout_job(job);
+                            ui.painter().galley(pos2(rect.right() - 8.0 - g.size().x, rect.center().y - g.size().y / 2.0), g, dim);
                         }
+                        // Accepting inserts the server's text as it is; say what's in it first.
+                        let resp = if crate::hidden::any(text) { resp.on_hover_text("This suggestion contains hidden or direction-changing characters, shown as boxes. Accepting it inserts them as they are.") } else { resp };
                         if resp.clicked() {
                             chosen = Some(i);
                         }
@@ -456,7 +462,7 @@ impl Completion {
                 egui::Frame::popup(ui.style()).inner_margin(8.0).show(ui, |ui| {
                     ui.set_max_width(360.0);
                     let text: String = doc.lines().take(14).collect::<Vec<_>>().join("\n");
-                    ui.label(egui::RichText::new(text).size(font.size));
+                    ui.label(crate::hidden::widget(&text, egui::FontId::proportional(font.size), ui.visuals().text_color()));
                 });
             });
         }
@@ -482,11 +488,34 @@ impl Completion {
     }
 }
 
+/// A completion row's name and note, laid out with hidden characters as
+/// markers. A name holding any starts with a warning sign, since a server
+/// could use them to pass off one identifier as another.
+fn row_jobs(text: &str, note: Option<&str>, font: &egui::FontId, color: Color32, dim: Color32) -> (egui::text::LayoutJob, Option<egui::text::LayoutJob>) {
+    let mut job = egui::text::LayoutJob::default();
+    if crate::hidden::any(text) {
+        let warn = crate::view::marker_color(2, color.r() as u32 + color.g() as u32 + color.b() as u32 <= 3 * 128).unwrap_or(color);
+        job.append("⚠ ", 0.0, egui::TextFormat::simple(font.clone(), warn));
+    }
+    crate::hidden::append(&mut job, text, 0.0, egui::TextFormat::simple(font.clone(), color));
+    (job, note.map(|n| crate::hidden::job(n, egui::TextFormat::simple(font.clone(), dim))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::buffer::Buffer;
     use serde_json::json;
+
+    #[test]
+    fn rows_with_hidden_characters_are_marked_and_warned() {
+        let font = egui::FontId::monospace(13.0);
+        let (job, note) = row_jobs("is\u{202E}Admin", Some("fn is\u{2066}Admin()"), &font, Color32::WHITE, Color32::GRAY);
+        assert_eq!(crate::hidden::shown(&job), "⚠ is\u{2009}RLO\u{2009}Admin");
+        assert_eq!(crate::hidden::shown(&note.unwrap()), "fn is\u{2009}LRI\u{2009}Admin()");
+        let (plain, _) = row_jobs("isAdmin", None, &font, Color32::WHITE, Color32::GRAY);
+        assert_eq!(plain.text, "isAdmin", "no warning sign on clean names");
+    }
 
     fn doc(text: &str, cursor: usize) -> Document {
         let mut d = Document::from_buffer(None, Buffer::from_str(text));

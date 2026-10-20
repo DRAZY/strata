@@ -116,6 +116,18 @@ All notable changes to Strata are recorded here. The format follows
   sends the selection, or the current line, to the terminal and presses
   Enter, starting a terminal if none is running. Multi-line text goes as one
   bracketed paste when the shell or REPL supports it.
+- Invisible and direction-changing characters (such as U+202E RIGHT-TO-LEFT
+  OVERRIDE, zero-width spaces and soft hyphens) are shown as small labeled
+  boxes in the editor, Compare and Review Changes, so a file can't make code
+  read differently from what it is ("Trojan Source"). Each box is one
+  character for the caret, selection and copying, and the file is never
+  changed; rest the pointer on it to see what it is. The status bar counts
+  them, and **Find: Find Hidden Characters** steps through them.
+  `show_hidden_characters` (View ▸ Editor Extras ▸ Hidden Characters) turns
+  the boxes off. The Markdown preview, help, language server hovers and
+  completions, tab titles, the side bar, the palette, Find in Files results,
+  the status bar and AI answers show them as named markers too, and a
+  completion holding one is marked with ⚠.
 
 ### Changed
 

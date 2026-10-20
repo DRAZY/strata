@@ -38,7 +38,7 @@ impl StrataApp {
         let answer = rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Warning)
             .set_title("Open file?")
-            .set_description(why)
+            .set_description(crate::hidden::plain(&why).into_owned())
             .set_buttons(rfd::MessageButtons::OkCancelCustom(open.clone(), "Cancel".into()))
             .show();
         let ok = matches!(answer, rfd::MessageDialogResult::Ok | rfd::MessageDialogResult::Yes) || answer == rfd::MessageDialogResult::Custom(open);

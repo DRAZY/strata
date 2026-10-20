@@ -469,7 +469,7 @@ impl Sidebar {
                                 crate::fonts::ensure_cjk(ui.ctx(), &f.name);
                                 ui.horizontal(|ui| {
                                     let label = if f.dirty { format!("● {}", f.name) } else { f.name.clone() };
-                                    if ui.selectable_label(f.active, label).clicked() {
+                                    if ui.selectable_label(f.active, crate::hidden::label(ui, &label)).clicked() {
                                         action = Some(Action::Activate(i));
                                     }
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -485,12 +485,12 @@ impl Sidebar {
                     for root in &roots {
                         let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
                         crate::fonts::ensure_cjk(ui.ctx(), &name);
-                        let mut header = egui::CollapsingHeader::new(RichText::new(name).strong()).id_salt(root).default_open(true);
+                        let mut header = egui::CollapsingHeader::new(RichText::new(crate::hidden::plain(&name)).strong()).id_salt(root).default_open(true);
                         if self.reveal.as_ref().is_some_and(|(r, _)| r.starts_with(root)) {
                             header = header.open(Some(true));
                         }
                         let header = header.show(ui, |ui| self.tree(ui, root, current, &mut action));
-                        header.header_response.on_hover_text(root.display().to_string()).context_menu(|ui| self.menu(ui, root, true, &mut action));
+                        header.header_response.on_hover_text(crate::hidden::plain(&root.display().to_string()).into_owned()).context_menu(|ui| self.menu(ui, root, true, &mut action));
                     }
                 });
                 if let Some((_, tries)) = &mut self.reveal {
@@ -571,7 +571,7 @@ impl Sidebar {
             let s = |n: usize| if n == 1 { "" } else { "s" };
             ui.label(format!("Replace {n} occurrence{} across {files} file{}?", s(n), s(files)));
             let with = if self.replacement.is_empty() { "nothing (matches are deleted)".to_owned() } else { format!("“{}”", self.replacement) };
-            ui.label(RichText::new(format!("“{}” → {with}", self.query.text)).monospace().small());
+            ui.label(RichText::new(crate::hidden::plain(&format!("“{}” → {with}", self.query.text))).monospace().small());
             let on_disk = files - in_tabs;
             let mut note = String::new();
             if in_tabs > 0 {
@@ -603,7 +603,7 @@ impl Sidebar {
             let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
             crate::fonts::ensure_cjk(ui.ctx(), &name);
             let what = if path.is_dir() { "the folder" } else { "" };
-            ui.label(RichText::new(format!("Move {what} “{name}” to the {}?", crate::trash::trash_name()).replace("  ", " ")).strong());
+            ui.label(RichText::new(format!("Move {what} “{}” to the {}?", crate::hidden::plain(&name), crate::trash::trash_name()).replace("  ", " ")).strong());
             ui.add_space(4.0);
             let more = if path.is_dir() { "Everything in it goes too. " } else { "" };
             ui.label(RichText::new(format!("{more}You can put it back from the {}. Open tabs of it close; any with unsaved changes stay open, marked deleted.", crate::trash::trash_name())).small().weak());
@@ -732,14 +732,15 @@ impl Sidebar {
             crate::fonts::ensure_cjk(ui.ctx(), &name);
             if is_dir {
                 // Children are listed only once the folder is expanded.
-                let mut header = egui::CollapsingHeader::new(&name).id_salt(&path).default_open(false);
+                // Names can hold hidden characters: markers, never raw (see `hidden`).
+                let mut header = egui::CollapsingHeader::new(crate::hidden::label(ui, &name)).id_salt(&path).default_open(false);
                 if self.reveal.as_ref().is_some_and(|(r, _)| r.starts_with(&path)) {
                     header = header.open(Some(true));
                 }
                 let header = header.show(ui, |ui| self.tree(ui, &path, current, action));
                 header.header_response.context_menu(|ui| self.menu(ui, &path, true, action));
             } else {
-                let r = ui.selectable_label(current == Some(path.as_path()), &name);
+                let r = ui.selectable_label(current == Some(path.as_path()), crate::hidden::label(ui, &name));
                 if self.reveal.as_ref().is_some_and(|(r, _)| *r == path) {
                     self.reveal = None;
                     r.scroll_to_me(Some(egui::Align::Center));
@@ -884,7 +885,7 @@ impl Sidebar {
                 match hi {
                     None => {
                         crate::fonts::ensure_cjk(ui.ctx(), &file.path.to_string_lossy());
-                        ui.label(RichText::new(self.display_path(&file.path)).strong()).on_hover_text(file.path.display().to_string());
+                        ui.label(RichText::new(crate::hidden::plain(&self.display_path(&file.path))).strong()).on_hover_text(crate::hidden::plain(&file.path.display().to_string()).into_owned());
                     }
                     Some(hi) => {
                         let hit = &file.hits[hi];
@@ -1029,15 +1030,31 @@ fn hit_text(ui: &Ui, line: usize, preview: &str, cols: &Range<usize>) -> LayoutJ
     let (a, b) = (byte(cols.start), byte(cols.end));
     let mut job = LayoutJob::default();
     job.append(&format!("{:>5}  ", line + 1), 0.0, dim);
-    job.append(&preview[..a], 0.0, normal.clone());
-    job.append(&preview[a..b], 0.0, hit);
-    job.append(&preview[b..], 0.0, normal);
+    crate::hidden::append(&mut job, &preview[..a], 0.0, normal.clone());
+    crate::hidden::append(&mut job, &preview[a..b], 0.0, hit);
+    crate::hidden::append(&mut job, &preview[b..], 0.0, normal);
     job
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_results_mark_hidden_characters() {
+        let ctx = egui::Context::default();
+        let mut job = None;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            // The match is "admin", after a hidden override.
+            job = Some(hit_text(ui, 4, "if\u{202E} admin {", &(4..9)));
+        })
+        .textures_delta
+        .clear();
+        let job = job.unwrap();
+        assert_eq!(crate::hidden::shown(&job), "    5  if\u{2009}RLO\u{2009} admin {");
+        let hit = job.sections.iter().find(|s| &job.text[s.byte_range.start.0..s.byte_range.end.0] == "admin").expect("the match keeps its own section");
+        assert_ne!(hit.format.background, egui::Color32::TRANSPARENT);
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("strata-sidebar-{tag}-{}", std::process::id()));

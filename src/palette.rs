@@ -403,13 +403,9 @@ impl Palette {
                             let galley = ui.painter().layout_job(highlighted(&row.label, &row.hits, base, fg, accent_text(&visuals)));
                             ui.painter().galley(egui::pos2(rect.left() + 8.0, rect.center().y - galley.size().y / 2.0), galley, fg);
                             if !row.detail.is_empty() {
-                                ui.painter().text(
-                                    egui::pos2(rect.right() - 8.0, rect.center().y),
-                                    egui::Align2::RIGHT_CENTER,
-                                    &row.detail,
-                                    FontId::proportional(crate::fonts::secondary_size(base)),
-                                    visuals.weak_text_color(),
-                                );
+                                let job = crate::hidden::job(&row.detail, TextFormat::simple(FontId::proportional(crate::fonts::secondary_size(base)), visuals.weak_text_color()));
+                                let g = ui.painter().layout_job(job);
+                                ui.painter().galley(egui::pos2(rect.right() - 8.0 - g.size().x, rect.center().y - g.size().y / 2.0), g, visuals.weak_text_color());
                             }
                             if resp.clicked() {
                                 picked = Some(i);
@@ -574,18 +570,27 @@ fn highlighted(label: &str, hits: &[usize], size: f32, fg: Color32, accent: Colo
     for (i, c) in label.chars().enumerate() {
         let h = hits.binary_search(&i).is_ok();
         if h != in_hit && !buf.is_empty() {
-            job.append(&std::mem::take(&mut buf), 0.0, if in_hit { hit.clone() } else { normal.clone() });
+            crate::hidden::append(&mut job, &std::mem::take(&mut buf), 0.0, if in_hit { hit.clone() } else { normal.clone() });
         }
         in_hit = h;
         buf.push(c);
     }
-    job.append(&buf, 0.0, if in_hit { hit } else { normal });
+    // File, symbol and choice names can hold hidden characters: markers, never raw.
+    crate::hidden::append(&mut job, &buf, 0.0, if in_hit { hit } else { normal });
     job
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rows_mark_hidden_characters_and_keep_match_highlights() {
+        let job = highlighted("evil\u{202E}gnp.rs", &[0, 1, 6], 14.0, Color32::WHITE, Color32::RED);
+        assert_eq!(crate::hidden::shown(&job), "evil\u{2009}RLO\u{2009}gnp.rs");
+        let red: String = job.sections.iter().filter(|s| s.format.color == Color32::RED).map(|s| &job.text[s.byte_range.start.0..s.byte_range.end.0]).collect();
+        assert_eq!(red, "evn", "matched chars stay highlighted");
+    }
 
     fn ctx(text: &str, syntax: &str) -> Context {
         Context {

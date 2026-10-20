@@ -185,6 +185,49 @@ mod tests {
         app.step_difference(true);
         shooter.shoot(&ctx, &mut app, 6, vec![], &dir.join("compare_cjk.ppm"));
 
+        // Trojan Source: direction-changing and invisible characters show as boxes,
+        // the status bar counts them, and Compare shows them too.
+        let trojan = "// Shown plainly, the check below looks commented out.\nfunction run(isAdmin) {\n    /*\u{202E} } \u{2066}if (isAdmin)\u{2069} \u{2066} begin admins only */\n        console.log(\"You are an admin.\");\n    /* end admins only \u{202E} { \u{2066}*/\n    let user\u{200B}Name = \"ad\u{00AD}min\"; // zero-width space, soft hyphen\n    const greeting = \"\u{2067}olleh\u{2069}\";\n}\n";
+        let tmp = std::env::temp_dir().join("strata-shot-trojan.js");
+        std::fs::write(&tmp, trojan).unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(Some(tmp.clone()), None);
+        app.settings.minimap = false;
+        shooter.run(&ctx, &mut app, 3, vec![]);
+        app.find_hidden_characters();
+        shooter.shoot(&ctx, &mut app, 6, vec![], &dir.join("hidden.ppm"));
+        let plain = std::env::temp_dir().join("strata-shot-trojan-plain.js");
+        std::fs::write(&plain, trojan.chars().filter(|&c| !crate::hidden::is_hidden(c)).collect::<String>()).unwrap();
+        app.compare_with_file(0, &plain);
+        shooter.shoot(&ctx, &mut app, 6, vec![], &dir.join("hidden_compare.ppm"));
+
+        // The same characters elsewhere: a tab title and side bar name, the
+        // Markdown preview, and a language server's completion.
+        let hdir = std::env::temp_dir().join("strata-shot-hidden-ui");
+        let _ = std::fs::remove_dir_all(&hdir);
+        std::fs::create_dir_all(&hdir).unwrap();
+        let md = hdir.join("evil\u{202E}dm.md");
+        std::fs::write(&md, "# Access\u{202E} check\n\nThe check `if (is\u{2066}Admin)` runs only for admins\u{200B}.\n\n```js\n/*\u{202E} } \u{2066}if (isAdmin)\u{2069} \u{2066} begin admins only */\n```\n\n| Name | Role |\n|--|--|\n| ad\u{00AD}min | owner\u{202E} |\n\nis").unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(None, None);
+        app.settings.minimap = false;
+        app.settings.markdown_preview = true;
+        std::fs::write(hdir.join("notes.md"), "# Notes\n").unwrap();
+        app.open_folder(hdir.clone());
+        app.open_path(hdir.join("notes.md"), false);
+        app.open_path(md, false);
+        let k = app.active;
+        shooter.run(&ctx, &mut app, 3, vec![]);
+        let end = app.docs[k].editor.buffer.len_chars();
+        app.docs[k].editor.click(end, false);
+        let item = |label: &str, detail: &str| crate::app::completion::ServerItem::from_json(&serde_json::json!({ "label": label, "filterText": "isAdmin", "detail": detail })).unwrap();
+        let list = crate::app::completion::ServerList { view: app.docs[k].view.id, start: end - 2, items: vec![item("is\u{202E}nimdA", "fn is\u{2066}Admin() -> bool"), item("isAdmin", "fn isAdmin() -> bool")], incomplete: false };
+        app.completion.set_server_items(&mut app.docs[k], list, &app.snippets.lib);
+        shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join("hidden_surfaces.ppm"));
+        app.completion.close();
+        app.settings.markdown_preview = false;
+        shooter.shoot(&ctx, &mut app, 4, vec![], &dir.join("hidden_tabs.ppm"));
+
         // Spell check: prose and comments are checked, code isn't.
         let tmp = std::env::temp_dir().join("strata-shot-spell.md");
         std::fs::write(&tmp, "# Notes\n\nThis paragraph has a mispelled word and anothr one.\n\n```rust\n// a coment in code\nlet varible = 1;\n```\n").unwrap();

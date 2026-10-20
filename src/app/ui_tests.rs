@@ -226,7 +226,7 @@ fn the_status_bar_drops_items_rather_than_overlap() {
         let mut fit = None;
         let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 100.0))), ..Default::default() };
         ctx.run_ui(raw, |ui| {
-            fit = Some(status_fit(ui, "Line 120, Column 40", true, false, false, None, (Some("main"), Some("3 to review")), Some("1,234 words")));
+            fit = Some(status_fit(ui, "Line 120, Column 40", true, false, false, None, None, (Some("main"), Some("3 to review")), Some("1,234 words")));
         })
         .textures_delta
         .clear();

@@ -33,6 +33,7 @@ mod help;
 mod devshot;
 mod diff;
 mod review;
+mod hidden;
 mod highlight;
 mod indent;
 mod jsonc;

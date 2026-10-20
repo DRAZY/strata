@@ -53,6 +53,9 @@ pub struct EditorView {
     pub font_size: f32,
     /// Line height multiple, extra points above and below each line.
     pub line_spacing: (f32, f32, f32),
+    /// Draw bidirectional controls and invisible characters as labeled
+    /// boxes (see `hidden`), instead of letting them vanish or reorder text.
+    pub show_hidden: bool,
     /// Widest line seen so far; bounds horizontal scrolling.
     max_width: f32,
     scroll_to_cursor: bool,
@@ -147,34 +150,45 @@ pub struct EditorView {
 
 #[derive(Default)]
 struct LongLines {
-    key: (u64, usize),
+    key: (u64, usize, bool),
     lines: std::collections::HashMap<usize, Arc<LongLine>>,
 }
 
-/// Where a long line's tabs are, so chars map to display columns (and back)
-/// without walking the line.
+/// Where a long line's tabs (and shown hidden characters) are, so chars
+/// map to display columns (and back) without walking the line.
 struct LongLine {
     /// Chars in the line.
     len: usize,
-    /// (char offset of a tab, extra columns of all tabs up to and including it).
+    /// (char offset of a tab or hidden character, extra columns of all of
+    /// them up to and including it).
     tabs: Vec<(usize, usize)>,
 }
 
 impl LongLine {
-    fn new<'a>(chunks: impl Iterator<Item = &'a str>, tab: usize) -> Self {
+    fn new<'a>(chunks: impl Iterator<Item = &'a str>, tab: usize, hidden: bool) -> Self {
         let (mut len, mut extra, mut tabs) = (0, 0, Vec::new());
         for chunk in chunks {
-            if !chunk.contains('\t') {
+            if !chunk.contains('\t') && (!hidden || chunk.is_ascii()) {
                 len += chunk.chars().count();
                 continue;
             }
-            for c in chunk.chars() {
-                if c == '\t' {
-                    let col = len + extra;
-                    extra += tab - col % tab - 1;
+            // Skip runs of plain ASCII a byte at a time: a minified line can
+            // hold millions of chars and this runs after every edit.
+            let bytes = chunk.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                let run = bytes[i..].iter().position(|&b| b == b'\t' || b >= 0x80).unwrap_or(bytes.len() - i);
+                len += run;
+                i += run;
+                let Some(c) = chunk[i..].chars().next() else { break };
+                let col = len + extra;
+                let wide = wrap::advance(c, col, tab, hidden) - col;
+                if wide != 1 {
+                    extra += wide - 1;
                     tabs.push((len, extra));
                 }
                 len += 1;
+                i += c.len_utf8();
             }
         }
         Self { len, tabs }
@@ -270,6 +284,8 @@ struct Metrics {
     minimap: Option<Rect>,
     /// Wrap width in columns while wrapping.
     wrap: Option<usize>,
+    /// Hidden characters are drawn as boxes (`EditorView::show_hidden`).
+    hidden: bool,
 }
 
 impl Metrics {
@@ -278,7 +294,7 @@ impl Metrics {
     }
 
     fn line_rows(&self, ed: &Editor, line: usize) -> LineRows {
-        LineRows::new(ed.buffer.line_chars(line), self.wrap, ed.tab_width)
+        LineRows::new(ed.buffer.line_chars(line), self.wrap, ed.tab_width, self.hidden)
     }
 }
 
@@ -289,6 +305,7 @@ impl EditorView {
             scroll: Vec2::ZERO,
             font_size: 14.0,
             line_spacing: (1.0, 0.0, 0.0),
+            show_hidden: true,
             max_width: 0.0,
             scroll_to_cursor: false,
             center_cursor: false,
@@ -538,7 +555,7 @@ impl EditorView {
     fn sync(&mut self, ed: &mut Editor, m: &Metrics) {
         self.sync_folds(ed);
         if let Some(cols) = m.wrap {
-            self.wrap_index.update(&ed.buffer, ed.version(), cols, ed.tab_width);
+            self.wrap_index.update(&ed.buffer, ed.version(), cols, ed.tab_width, m.hidden);
         }
         self.unfold_carets(ed);
         let (mut pos, mut cum) = (Vec::with_capacity(self.folds.list().len()), vec![0]);
@@ -659,6 +676,9 @@ impl EditorView {
         self.gutter_hover = hover.is_some_and(|p| m.gutter.contains(p));
         let resting = hover.filter(|_| !resp.dragged() && !ui.input(|i| i.pointer.any_down()));
         self.pointer_char = resting.filter(|p| m.text.contains(*p)).and_then(|p| self.char_under(ui, ed, &m, p).map(|c| (c, p)));
+        if self.show_hidden && let Some(tip) = self.pointer_char.and_then(|(c, _)| crate::hidden::describe(ed.buffer.char(c))) {
+            resp.clone().on_hover_text_at_pointer(tip);
+        }
         self.pointer_gutter = resting.filter(|p| m.gutter.contains(*p)).and_then(|p| {
             let row = self.row_at(&m, p.y);
             (row >= 0.0 && (row as usize) < self.total_rows(ed, &m)).then(|| (self.row_line(ed, &m, row as usize).0, p))
@@ -761,7 +781,7 @@ impl EditorView {
             self.wrap_column.map_or(fit, |n| fit.min(n.max(1)))
         });
         let scroll_x = if wrap.is_some() { 0.0 } else { self.scroll.x };
-        Metrics { full: rect, font, row_h, pad, text_h, char_w, gutter, text, origin_x: text.left() + char_w - scroll_x, minimap, wrap }
+        Metrics { full: rect, font, row_h, pad, text_h, char_w, gutter, text, origin_x: text.left() + char_w - scroll_x, minimap, wrap, hidden: self.show_hidden }
     }
 
     // ---- visual rows (one per line without wrap, none for folded lines) ----
@@ -825,7 +845,9 @@ impl EditorView {
     /// Move each caret by `n` visual rows, keeping its column within the row
     /// (by buffer lines when not wrapping); folded lines take no rows.
     fn move_rows(&self, ed: &mut Editor, m: &Metrics, n: isize, extend: bool) {
-        if m.wrap.is_none() && self.folds.is_empty() {
+        // Shown hidden characters are wider than the editor's own columns
+        // count them, so their rows keep the column as drawn.
+        if m.wrap.is_none() && self.folds.is_empty() && !m.hidden {
             return ed.move_vertical(n, extend);
         }
         let total = self.total_rows(ed, m) as isize;
@@ -1048,12 +1070,12 @@ impl EditorView {
 
     /// The column map of a long line, made once per edit.
     fn long_line(&self, ed: &Editor, line: usize) -> Arc<LongLine> {
-        let tab = ed.tab_width.max(1);
+        let (tab, hidden) = (ed.tab_width.max(1), self.show_hidden);
         let mut cache = self.long_lines.borrow_mut();
-        if cache.key != (ed.version(), tab) {
-            *cache = LongLines { key: (ed.version(), tab), lines: Default::default() };
+        if cache.key != (ed.version(), tab, hidden) {
+            *cache = LongLines { key: (ed.version(), tab, hidden), lines: Default::default() };
         }
-        cache.lines.entry(line).or_insert_with(|| Arc::new(LongLine::new(ed.buffer.chunks_in(ed.buffer.line_start(line)..ed.buffer.line_end(line)), tab))).clone()
+        cache.lines.entry(line).or_insert_with(|| Arc::new(LongLine::new(ed.buffer.chunks_in(ed.buffer.line_start(line)..ed.buffer.line_end(line)), tab, hidden))).clone()
     }
 
     /// What of `line` to lay out: the whole line, or (unwrapped and longer
@@ -1064,7 +1086,7 @@ impl EditorView {
         let len = ed.buffer.line_end(line) - start;
         if m.wrap.is_some() || len <= LONG_LINE {
             let text = ed.buffer.line_text(line);
-            let rows = LineRows::new(text.chars(), m.wrap, tab);
+            let rows = LineRows::new(text.chars(), m.wrap, tab, m.hidden);
             return Segment { start: 0, text, rows, width: None };
         }
         let ll = self.long_line(ed, line);
@@ -1074,7 +1096,7 @@ impl EditorView {
         let a = ll.off_at(first_col).saturating_sub(LONG_MARGIN) / LONG_MARGIN * LONG_MARGIN;
         let b = (ll.off_at(first_col + cols) + 2 * LONG_MARGIN).min(len);
         let text = ed.buffer.slice(start + a..start + b);
-        let rows = LineRows::starting_at(text.chars(), ll.dcol(a), tab);
+        let rows = LineRows::starting_at(text.chars(), ll.dcol(a), tab, m.hidden);
         Segment { start: a, text, rows, width: Some(ll.dcol(len)) }
     }
 
@@ -1087,7 +1109,7 @@ impl EditorView {
         let sub = sub.min(lr.rows() - 1);
         let r = lr.range(sub);
         let bytes = byte_offsets(&seg.text, &[r.start, r.end]);
-        let style = Styled { text: &seg.text, spans: None, font: &m.font, fg: Color32::WHITE, tab: ed.tab_width, colors: &[] };
+        let style = Styled { text: &seg.text, spans: None, font: &m.font, fg: Color32::WHITE, tab: ed.tab_width, hidden: m.hidden, colors: &[] };
         let galley = layout_segment(ui, &style, bytes[0]..bytes[1], lr.dcols[r.start], None);
         (line, seg, sub, galley)
     }
@@ -1176,8 +1198,9 @@ impl EditorView {
             (ll.dcol(head - ed.buffer.line_start(line)) as f32 * m.char_w, ll.dcol(ll.len) as f32 * m.char_w)
         } else {
             let text = ed.buffer.line_text(line);
-            let galley = layout_line(ui, &text, None, &m.font, hl.foreground(), ed.tab_width);
-            (galley.pos_from_cursor(CCursor::new(ed.display_col(head))).min.x, galley.size().x)
+            let galley = layout_line(ui, &text, None, &m.font, hl.foreground(), ed.tab_width, m.hidden);
+            let dcol = LineRows::new(text.chars(), None, ed.tab_width, m.hidden).dcols[head - ed.buffer.line_start(line)];
+            (galley.pos_from_cursor(CCursor::new(dcol)).min.x, galley.size().x)
         };
         let x = x + m.char_w;
         self.max_width = self.max_width.max(width);
@@ -1334,6 +1357,7 @@ impl EditorView {
         let sel_color = hl.selection();
         let caret_color = hl.caret();
         let link_color = hl.accent();
+        let warn_color = marker_color(2, light).unwrap_or(fg);
         let first_char = ed.buffer.line_start(first);
         let mut next_match = matches.partition_point(|r| r.end < first_char);
         let caret_lines: Vec<usize> = ed.selections().iter().map(|s| ed.buffer.line_of(s.head)).collect();
@@ -1370,7 +1394,7 @@ impl EditorView {
             crate::fonts::ensure_cjk(ui.ctx(), text);
             let spans = if part { None } else { hl.line(line) };
             let colors = if part { Vec::new() } else { bracket_colors(&self.brackets, line, &palette, bracket_err) };
-            let style = Styled { text, spans: spans.as_deref().map(|v| v.as_slice()), font: &m.font, fg, tab, colors: &colors };
+            let style = Styled { text, spans: spans.as_deref().map(|v| v.as_slice()), font: &m.font, fg, tab, hidden: m.hidden, colors: &colors };
             let mut bytes = byte_offsets(text, &lr.starts);
             bytes.push(text.len());
             let line_start = ed.buffer.line_start(line) + seg.start;
@@ -1400,6 +1424,12 @@ impl EditorView {
             // Misspelled words, as line char ranges.
             // (Not on part of a long line: the marks are for the whole line.)
             let misspelled: Vec<Range<usize>> = if part { Vec::new() } else { self.spell.for_line(line, text).map(<[_]>::to_vec).unwrap_or_default() };
+            // Hidden characters to box, as (line char offset, char).
+            let hidden_chars: Vec<(usize, char)> = if m.hidden && !text.is_ascii() {
+                text.chars().enumerate().filter(|(_, c)| crate::hidden::is_hidden(*c)).collect()
+            } else {
+                Vec::new()
+            };
             // Note links and tags, as line char ranges.
             let note_marks = if part { Vec::new() } else { self.note_marks.for_line(line, text).to_vec() };
             // Chars to look through for whitespace marks.
@@ -1576,6 +1606,14 @@ impl EditorView {
                 }
 
                 text_painter.galley(pos2(ox, y + m.pad), galley.clone(), fg);
+
+                for &(k, c) in &hidden_chars {
+                    let pos = line_start + k;
+                    if pos >= row_start && pos < row_end {
+                        let cell = Rect::from_min_max(pos2(x_at(pos), y + m.pad), pos2(x_at(pos + 1), y + m.pad + m.text_h));
+                        crate::hidden::paint(&text_painter, cell, c, warn_color, m.font.size);
+                    }
+                }
 
                 // Misspellings: a wavy underline.
                 for w in &misspelled {
@@ -1758,12 +1796,19 @@ impl EditorView {
             crate::fonts::ensure_cjk(ui.ctx(), &text);
             let spans = hl.line(line);
             let colors = bracket_colors(&self.brackets, line, palette, error_color(light));
-            let style = Styled { text: &text, spans: spans.as_deref().map(|v| v.as_slice()), font: &m.font, fg, tab, colors: &colors };
+            let style = Styled { text: &text, spans: spans.as_deref().map(|v| v.as_slice()), font: &m.font, fg, tab, hidden: m.hidden, colors: &colors };
             // Only the first row of a wrapped header.
-            let lr = LineRows::new(text.chars(), m.wrap, tab);
+            let lr = LineRows::new(text.chars(), m.wrap, tab, m.hidden);
             let end = byte_offsets(&text, &[lr.range(0).end])[0];
             let galley = layout_segment(ui, &style, 0..end, 0, None);
             text_painter.galley(pos2(m.origin_x, y + m.pad), galley, fg);
+            if m.hidden {
+                let warn = marker_color(2, light).unwrap_or(fg);
+                for (k, c) in text.chars().take(lr.range(0).end).enumerate().filter(|(_, c)| crate::hidden::is_hidden(*c)) {
+                    let cell = Rect::from_min_max(pos2(m.origin_x + lr.dcols[k] as f32 * m.char_w, y + m.pad), pos2(m.origin_x + lr.dcols[k + 1] as f32 * m.char_w, y + m.pad + m.text_h));
+                    crate::hidden::paint(&text_painter, cell, c, warn, m.font.size);
+                }
+            }
             painter.text(pos2(m.gutter.right() - m.char_w * 1.5, y + m.pad), Align2::RIGHT_TOP, (line + 1).to_string(), m.font.clone(), gutter_fg);
             self.sticky.push((row, line, slot));
         }
@@ -1872,7 +1917,7 @@ impl EditorView {
             let color_at = |byte: usize| {
                 spans.as_ref().and_then(|v| v.iter().find(|s| s.range.contains(&byte))).map_or(fg, |s| s.color)
             };
-            let starts = if m.wrap.is_some() { LineRows::new(text.chars(), m.wrap, tab).starts } else { vec![0] };
+            let starts = if m.wrap.is_some() { LineRows::new(text.chars(), m.wrap, tab, m.hidden).starts } else { vec![0] };
             let mut bytes = byte_offsets(&text, &starts);
             bytes.push(text.len());
             for sub in sub0..starts.len() {
@@ -1894,7 +1939,7 @@ impl EditorView {
                     if col >= max_cols {
                         break;
                     }
-                    let next = if c == '\t' { col + tab - col % tab } else { col + 1 };
+                    let next = wrap::advance(c, col, tab, m.hidden);
                     if c.is_whitespace() {
                         flush(&mut run, col);
                     } else {
@@ -2116,13 +2161,15 @@ struct Styled<'a> {
     font: &'a FontId,
     fg: Color32,
     tab: usize,
+    /// Hidden characters become spaces as wide as their boxes (see `wrap::advance`).
+    hidden: bool,
     /// Single-byte chars recolored (brackets), sorted by line byte.
     colors: &'a [(usize, Color32)],
 }
 
 /// Lay out one line with tabs expanded, colored by `spans` when available.
-fn layout_line(ui: &Ui, text: &str, spans: Option<&[Span]>, font: &FontId, fg: Color32, tab: usize) -> Arc<Galley> {
-    let style = Styled { text, spans, font, fg, tab, colors: &[] };
+fn layout_line(ui: &Ui, text: &str, spans: Option<&[Span]>, font: &FontId, fg: Color32, tab: usize, hidden: bool) -> Arc<Galley> {
+    let style = Styled { text, spans, font, fg, tab, hidden, colors: &[] };
     layout_segment(ui, &style, 0..text.len(), 0, None)
 }
 
@@ -2175,13 +2222,15 @@ fn layout_segment(ui: &Ui, s: &Styled, range: Range<usize>, col: usize, insert: 
     job.wrap.max_width = f32::INFINITY;
     let tab = s.tab.max(1);
     let mut col = col;
+    // The shaper never sees a bidirectional control (it becomes spaces), so
+    // nothing can reorder the line: glyphs stay in the order of the text.
     let mut push = |job: &mut LayoutJob, piece: &str, fmt: TextFormat| {
         let mut out = String::with_capacity(piece.len());
         for c in piece.chars() {
-            if c == '\t' {
-                let n = tab - col % tab;
-                out.extend(std::iter::repeat_n(' ', n));
-                col += n;
+            let next = wrap::advance(c, col, tab, s.hidden);
+            if c == '\t' || next - col > 1 {
+                out.extend(std::iter::repeat_n(' ', next - col));
+                col = next;
             } else {
                 out.push(c);
                 col += 1;
@@ -2423,7 +2472,7 @@ mod tests {
     }
 
     fn rows_of(h: &Harness, line: usize, cols: usize) -> LineRows {
-        LineRows::new(h.ed.buffer.line_chars(line), Some(cols), h.ed.tab_width)
+        LineRows::new(h.ed.buffer.line_chars(line), Some(cols), h.ed.tab_width, true)
     }
 
     fn long_line(words: usize) -> String {
@@ -2739,6 +2788,115 @@ mod tests {
         assert_eq!(tints(&mut h), 1);
         h.view.highlight_trailing_whitespace = false;
         assert_eq!(tints(&mut h), 0);
+    }
+
+    /// Labels of the hidden-character boxes one frame painted.
+    fn boxes(h: &mut Harness) -> Vec<String> {
+        h.shapes()
+            .into_iter()
+            .filter_map(|s| match s {
+                egui::Shape::Text(t) if ["RLO", "LRI", "PDI", "ZWSP", "ZWJ", "SHY", "BOM"].contains(&t.galley.text()) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hidden_characters_are_boxed_in_logical_order() {
+        // The classic Trojan Source line: shown plainly, the comment seems to end early.
+        let mut h = Harness::new("/*\u{202E} } \u{2066}if (isAdmin)\u{2069} \u{2066} begin admins only */\nx\u{200B}y\u{200D}z\u{00AD}w\u{FEFF}\n");
+        assert_eq!(boxes(&mut h), ["RLO", "LRI", "PDI", "LRI", "ZWSP", "ZWJ", "SHY", "BOM"]);
+        h.view.show_hidden = false;
+        assert!(boxes(&mut h).is_empty());
+
+        // Each line is laid out left to right in the order of its chars: a
+        // shown control is spaces, and even a raw one doesn't reorder egui's layout.
+        let text = "ab\u{202E}cd\u{2066}ef\u{2069}";
+        for hidden in [true, false] {
+            let mut glyphs = Vec::new();
+            h.ctx.run_ui(RawInput::default(), |ui| {
+                let font = FontId::monospace(14.0);
+                let style = Styled { text, spans: None, font: &font, fg: Color32::WHITE, tab: 4, hidden, colors: &[] };
+                let galley = layout_segment(ui, &style, 0..text.len(), 0, None);
+                glyphs = galley.rows.iter().flat_map(|r| r.glyphs.iter().map(|g| (g.chr, g.pos.x))).collect();
+            })
+            .textures_delta
+            .clear();
+            let want: String = if hidden { "ab   cd   ef   ".into() } else { text.into() };
+            assert_eq!(glyphs.iter().map(|g| g.0).collect::<String>(), want, "hidden: {hidden}");
+            assert!(glyphs.windows(2).all(|w| w[1].1 >= w[0].1), "x never goes back: {glyphs:?}");
+            if hidden {
+                assert!(glyphs.windows(2).all(|w| w[1].1 > w[0].1));
+            }
+        }
+    }
+
+    #[test]
+    fn long_lines_agree_with_short_ones_on_hidden_columns() {
+        let text = "ab\u{202E}c\td\u{200B}\u{200B}é\tf\u{2069}g";
+        for hidden in [true, false] {
+            let want = LineRows::new(text.chars(), None, 4, hidden).dcols;
+            // Split into chunks anywhere on char boundaries, as a rope would.
+            for cut in 0..=text.chars().count() {
+                let b = text.char_indices().nth(cut).map_or(text.len(), |(b, _)| b);
+                let ll = LongLine::new([&text[..b], &text[b..]].into_iter(), 4, hidden);
+                assert_eq!(ll.len, want.len() - 1);
+                assert_eq!((0..=ll.len).map(|k| ll.dcol(k)).collect::<Vec<_>>(), want, "hidden {hidden}, cut {cut}");
+            }
+        }
+    }
+
+    #[test]
+    fn hidden_characters_move_select_copy_and_delete_as_one_char() {
+        let text = "x\u{202E}yz\u{200B}w";
+        let mut h = Harness::new(text);
+        h.ed.click(0, false);
+        // One arrow press steps over each hidden character, never into its box.
+        let mut heads = Vec::new();
+        for _ in 0..6 {
+            h.frame(vec![key(Key::ArrowRight, Modifiers::NONE)]);
+            heads.push(h.ed.primary().head);
+        }
+        assert_eq!(heads, [1, 2, 3, 4, 5, 6]);
+        // Selecting across them and copying gives back the exact bytes.
+        h.ed.click(0, false);
+        for _ in 0..6 {
+            h.frame(vec![key(Key::ArrowRight, Modifiers::SHIFT)]);
+        }
+        assert_eq!(h.ed.copy().as_bytes(), text.as_bytes());
+        h.ed.select_ranges(&[1..2], 0);
+        assert_eq!(h.ed.copy(), "\u{202E}");
+        // Pasting it back over itself changes nothing; deleting takes one char.
+        h.ed.paste("\u{202E}");
+        assert_eq!(h.text(), text);
+        h.ed.click(2, false);
+        h.frame(vec![key(Key::Backspace, Modifiers::NONE)]);
+        assert_eq!(h.text(), "xyz\u{200B}w");
+        h.ed.undo();
+        assert_eq!(h.text(), text);
+
+        // A click on the right half of the box lands after it, on the left half before it.
+        let char_w = h.ctx.fonts_mut(|f| f.glyph_width(&FontId::monospace(14.0), 'M'));
+        let label = h.shapes().into_iter().find_map(|s| match s {
+            egui::Shape::Text(t) if t.galley.text() == "RLO" => Some(t.visual_bounding_rect().center()),
+            _ => None,
+        });
+        let c = label.expect("the RLO box is painted");
+        click(&mut h, pos2(c.x + char_w * 0.6, c.y), Modifiers::NONE);
+        assert_eq!(h.ed.primary().head, 2, "right half of the box");
+        click(&mut h, pos2(c.x - char_w * 0.6, c.y), Modifiers::NONE);
+        assert_eq!(h.ed.primary().head, 1, "left half of the box");
+        click(&mut h, pos2(c.x + char_w * 1.8, c.y), Modifiers::NONE);
+        assert_eq!(h.ed.primary().head, 2, "the start of the y after it");
+        assert_eq!(h.text(), text, "nothing typed, nothing changed");
+
+        // Up and down keep the column as drawn: below the y (after the box) is column 4.
+        let mut h = Harness::new("x\u{202E}yz\nabcdefgh");
+        h.ed.click(2, false);
+        h.frame(vec![key(Key::ArrowDown, Modifiers::NONE)]);
+        assert_eq!(h.ed.primary().head, 5 + 4);
+        h.frame(vec![key(Key::ArrowUp, Modifiers::NONE)]);
+        assert_eq!(h.ed.primary().head, 2);
     }
 
     #[test]

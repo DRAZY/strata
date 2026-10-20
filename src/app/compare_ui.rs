@@ -30,6 +30,7 @@ pub(super) fn show(c: &mut Compare, ui: &mut egui::Ui, ed: &mut Editor, hl: &mut
     if view.take_focus_request() {
         c.focus();
     }
+    c.show_hidden = view.show_hidden;
     c.show(ui, ed, hl, view.id, view.font_size)
 }
 

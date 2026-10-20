@@ -95,6 +95,8 @@ pub struct Compare {
     pub review: Option<std::path::PathBuf>,
     /// Header buttons pressed this frame.
     pub actions: Vec<HeaderAction>,
+    /// Draw hidden characters as boxes, like the editor (`EditorView::show_hidden`).
+    pub show_hidden: bool,
 }
 
 /// Changed words of a row: (fixed side, editable side) char ranges.
@@ -154,6 +156,7 @@ impl Compare {
             review: None,
             wants_focus: true,
             actions: Vec::new(),
+            show_hidden: true,
         }
     }
 
@@ -344,7 +347,7 @@ impl Compare {
         let (fixed_rect, edit_rect) = if self.swapped { (right_rect, left_rect) } else { (left_rect, right_rect) };
         let digits = ed.buffer.len_lines().max(self.base.len_lines()).to_string().len().max(3);
         let gutter_w = (digits as f32 + 2.0) * char_w;
-        let geo = Geo { row_h, char_w, gutter_w, font: font.clone(), tab: ed.tab_width.max(1) };
+        let geo = Geo { row_h, char_w, gutter_w, font: font.clone(), tab: ed.tab_width.max(1), hidden: self.show_hidden };
 
         if resp.has_focus() {
             self.handle_keys(ui, ed);
@@ -378,7 +381,7 @@ impl Compare {
                 self.scroll.y = y + row_h - body.height();
             }
             let text = ed.buffer.line_text(line);
-            let (_, cols) = expand(&text, geo.tab);
+            let (_, cols) = expand(&text, geo.tab, geo.hidden);
             let x = cols[head - ed.buffer.line_start(line)] as f32 * char_w;
             let width = edit_rect.width() - gutter_w - char_w;
             if x < self.scroll.x {
@@ -421,6 +424,9 @@ impl Compare {
         }
         let focused = resp.has_focus();
         let mut widest: f32 = 0.0;
+        let warn = crate::view::marker_color(2, light).unwrap_or(fg);
+        let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|_| resp.hovered());
+        let mut tip = None;
         for (fixed, rect) in [(true, fixed_rect), (false, edit_rect)] {
             let side = SideCtx { rect, fixed, swapped: self.swapped };
             let painter = painter.with_clip_rect(rect);
@@ -449,7 +455,18 @@ impl Compare {
                 if !fixed {
                     paint_selections(&painter, ed, line, &galley, &cols, pos2(text_x, y), row_h, hl.selection(), focused.then(|| hl.caret()));
                 }
-                painter.galley(pos2(text_x, text_y), galley, fg);
+                painter.galley(pos2(text_x, text_y), galley.clone(), fg);
+                // After the text: changed-word tints are part of the galley and would cover the boxes.
+                if geo.hidden && !text.is_ascii() {
+                    for (k, c) in text.chars().enumerate().filter(|(_, c)| crate::hidden::is_hidden(*c)) {
+                        let (x0, x1) = (galley.pos_from_cursor(CCursor::new(cols[k])).min.x, galley.pos_from_cursor(CCursor::new(cols[k + 1])).min.x);
+                        let cell = Rect::from_min_max(pos2(text_x + x0, text_y), pos2(text_x + x1, text_y + text_h));
+                        crate::hidden::paint(&painter, cell, c, warn, font_size);
+                        if pointer.is_some_and(|p| cell.contains(p) && rect.contains(p)) {
+                            tip = crate::hidden::describe(c);
+                        }
+                    }
+                }
                 // Gutter over the text (it scrolls under it horizontally).
                 let gutter = Rect::from_min_size(row_rect.min, vec2(geo.gutter_w, row_h));
                 painter.rect_filled(gutter, 0.0, kind_bg.map_or(bg, |c| blend_over(bg, c)));
@@ -471,6 +488,9 @@ impl Compare {
             }
         }
         self.max_width = self.max_width.max(widest);
+        if let Some(tip) = tip {
+            resp.clone().on_hover_text_at_pointer(tip);
+        }
         // Divider, with a tick per changed row band.
         let divider = Rect::from_min_max(pos2(left_rect.right(), body.top()), pos2(right_rect.left(), body.bottom()));
         painter.rect_filled(divider, 0.0, blend(bg, fg, 0.06));
@@ -495,7 +515,7 @@ impl Compare {
     fn caret_rect(&self, ed: &Editor, rect: Rect, geo: &Geo) -> Rect {
         let head = ed.primary().head;
         let line = ed.buffer.line_of(head);
-        let (_, cols) = expand(&ed.buffer.line_text(line), geo.tab);
+        let (_, cols) = expand(&ed.buffer.line_text(line), geo.tab, geo.hidden);
         let y = rect.top() + self.right_row(line) as f32 * geo.row_h - self.scroll.y;
         let x = rect.left() + geo.gutter_w + geo.char_w - self.scroll.x + cols[head - ed.buffer.line_start(line)] as f32 * geo.char_w;
         Rect::from_min_size(pos2(x, y), vec2(2.0, geo.row_h))
@@ -690,7 +710,7 @@ impl Compare {
             },
         };
         let text = ed.buffer.line_text(line);
-        let (expanded, cols) = expand(&text, geo.tab);
+        let (expanded, cols) = expand(&text, geo.tab, geo.hidden);
         let galley = ui.fonts_mut(|f| f.layout_job(LayoutJob::simple_singleline(expanded, geo.font.clone(), Color32::WHITE)));
         let x = p.x - (rect.left() + geo.gutter_w + geo.char_w - self.scroll.x);
         let idx = galley.cursor_from_pos(vec2(x, geo.row_h / 2.0)).index.0;
@@ -740,6 +760,7 @@ struct Geo {
     gutter_w: f32,
     font: FontId,
     tab: usize,
+    hidden: bool,
 }
 
 /// Which side is being painted, and where.
@@ -828,17 +849,18 @@ fn line_span(lines: impl Iterator<Item = usize>) -> (Option<usize>, Option<usize
     lines.fold((None, None), |(a, b): (Option<usize>, Option<usize>), l| (Some(a.map_or(l, |a| a.min(l))), Some(b.map_or(l, |b| b.max(l)))))
 }
 
-/// `text` with tabs expanded, and the expanded column of each char (plus the end).
-fn expand(text: &str, tab: usize) -> (String, Vec<usize>) {
+/// `text` with tabs (and shown hidden characters, see `wrap::advance`)
+/// expanded to spaces, and the expanded column of each char (plus the end).
+fn expand(text: &str, tab: usize, hidden: bool) -> (String, Vec<usize>) {
     let mut out = String::with_capacity(text.len());
     let mut cols = Vec::with_capacity(text.len() + 1);
     let mut col = 0;
     for c in text.chars() {
         cols.push(col);
-        if c == '\t' {
-            let n = tab - col % tab;
-            out.extend(std::iter::repeat_n(' ', n));
-            col += n;
+        let next = crate::wrap::advance(c, col, tab, hidden);
+        if c == '\t' || next - col > 1 {
+            out.extend(std::iter::repeat_n(' ', next - col));
+            col = next;
         } else {
             out.push(c);
             col += 1;
@@ -882,10 +904,10 @@ fn line_job(text: &str, spans: Option<&[Span]>, geo: &Geo, fg: Color32, words: &
             }
             run_fmt = Some(fmt);
         }
-        if c == '\t' {
-            let n = geo.tab - col % geo.tab;
-            run.extend(std::iter::repeat_n(' ', n));
-            col += n;
+        let next = crate::wrap::advance(c, col, geo.tab, geo.hidden);
+        if c == '\t' || next - col > 1 {
+            run.extend(std::iter::repeat_n(' ', next - col));
+            col = next;
         } else {
             run.push(c);
             col += 1;
@@ -1006,10 +1028,15 @@ mod tests {
 
     #[test]
     fn tabs_expand_to_tab_stops() {
-        let (s, cols) = expand("a\tb", 4);
+        let (s, cols) = expand("a\tb", 4, true);
         assert_eq!(s, "a   b");
         assert_eq!(cols, [0, 1, 4, 5]);
-        let geo = Geo { row_h: 10.0, char_w: 5.0, gutter_w: 20.0, font: FontId::monospace(10.0), tab: 4 };
+        // A hidden character becomes spaces as wide as its box, and never reaches the shaper.
+        let (s, cols) = expand("a\u{202E}b", 4, true);
+        assert_eq!(s, "a   b");
+        assert_eq!(cols, [0, 1, 4, 5]);
+        assert_eq!(expand("a\u{202E}b", 4, false).0, "a\u{202E}b");
+        let geo = Geo { row_h: 10.0, char_w: 5.0, gutter_w: 20.0, font: FontId::monospace(10.0), tab: 4, hidden: true };
         let (job, cols) = line_job("é\tx", None, &geo, Color32::WHITE, &[2..3], Color32::RED);
         assert_eq!(job.text, "é   x");
         assert_eq!(cols, [0, 1, 4, 5]);

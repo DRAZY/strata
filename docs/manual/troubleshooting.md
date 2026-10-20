@@ -172,6 +172,12 @@ Strata checks the files you're looking at about once a second, and other open fi
 - If you save over a file that changed on disk, Strata asks first.
 - If a file is deleted on disk, its tab stays open and the status bar says **Deleted on disk (save to recreate)**. Saving writes it back.
 
+## Boxes like RLO or ZWSP appear in the text
+
+The file contains invisible or direction-changing characters, and Strata shows each one as a labeled box instead of hiding it. They are in the file, not added by Strata. Rest the pointer on a box to see what it is, and see [Hidden and direction-changing characters](editing.md#hidden-and-direction-changing-characters) for how to find and remove them. If you trust the file and prefer not to see the boxes, set `"show_hidden_characters": false`.
+
+In code you didn't write yourself, treat direction-changing characters (RLO, LRI, PDI and the others) with suspicion: they can make the code that runs look different from the code you read.
+
 ## Very large files
 
 Strata stays responsive on files of hundreds of megabytes and on minified files whose whole text is one line. Opening a 50 MB file takes a fraction of a second, and typing, scrolling and jumping to the end stay instant.
@@ -186,6 +192,7 @@ Strata stays responsive on files of hundreds of megabytes and on minified files 
 - Very long lines are laid out only where you're looking, so a 5 MB line scrolls and edits as quickly as a short one.
 - Unsaved changes are backed up for hot exit on a background thread, and a tab's backup is only rewritten when that tab changed.
 - The status bar's word count appears for files up to 1 million characters and selections up to 4 million.
+- Hidden characters are boxed only on the lines you see. The status bar's count of them is made on a background thread for files over 1 million characters, so typing never waits for it.
 - Undo keeps up to 256 MB of changed text. Past that, the oldest steps are dropped (the newest step is always kept, however big).
 
 **Limits that remain:**

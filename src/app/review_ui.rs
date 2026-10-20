@@ -648,14 +648,14 @@ impl StrataApp {
             let trash = crate::trash::trash_name();
             match &c.restore {
                 None => {
-                    ui.label(RichText::new(format!("Move the new file “{name}” to the {trash}?")).strong());
+                    ui.label(RichText::new(crate::hidden::plain(&format!("Move the new file “{name}” to the {trash}?")).into_owned()).strong());
                     ui.add_space(4.0);
                     ui.label(RichText::new(format!("It wasn't there before, so reverting it removes it. You can put it back from the {trash}.")).small().weak());
                 }
                 Some((old, _, _)) => {
-                    ui.label(RichText::new(format!("Move “{name}” back to “{}”?", Self::review_name(old))).strong());
+                    ui.label(RichText::new(crate::hidden::plain(&format!("Move “{name}” back to “{}”?", Self::review_name(old))).into_owned()).strong());
                     ui.add_space(4.0);
-                    ui.label(RichText::new(format!("“{name}” goes to the {trash}, and the old file opens with its earlier text, unsaved: save it to finish.")).small().weak());
+                    ui.label(RichText::new(crate::hidden::plain(&format!("“{name}” goes to the {trash}, and the old file opens with its earlier text, unsaved: save it to finish.")).into_owned()).small().weak());
                 }
             }
             ui.add_space(6.0);
@@ -1009,7 +1009,7 @@ impl StrataApp {
                 }
                 // The heading takes what's left (cut short with … if it must).
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add(egui::Label::new(RichText::new(what).strong()).truncate()).on_hover_text(hint);
+                    ui.add(egui::Label::new(RichText::new(crate::hidden::plain(what).into_owned()).strong()).truncate()).on_hover_text(hint);
                 });
             });
         });
@@ -1096,9 +1096,9 @@ impl StrataApp {
                     let mut job = egui::text::LayoutJob::default();
                     let body = egui::TextStyle::Body.resolve(ui.style());
                     let fg = ui.visuals().text_color();
-                    job.append(&format!("{mark}{name}"), 0.0, egui::TextFormat::simple(body.clone(), if self.review.is_done(f) { weak } else { fg }));
+                    crate::hidden::append(&mut job, &format!("{mark}{name}"), 0.0, egui::TextFormat::simple(body.clone(), if self.review.is_done(f) { weak } else { fg }));
                     if !dir.is_empty() {
-                        job.append(&format!("  {dir}"), 0.0, egui::TextFormat::simple(egui::FontId::proportional(small), weak));
+                        crate::hidden::append(&mut job, &format!("  {dir}"), 0.0, egui::TextFormat::simple(egui::FontId::proportional(small), weak));
                     }
                     job.wrap.max_rows = 1;
                     job.wrap.break_anywhere = true;
@@ -1119,7 +1119,7 @@ impl StrataApp {
                             hover.push_str("\nUnsaved edits in Strata: the list shows the file on disk");
                         }
                     }
-                    let resp = ui.selectable_label(selected, job).on_hover_text(hover);
+                    let resp = ui.selectable_label(selected, job).on_hover_text(crate::hidden::plain(&hover).into_owned());
                     if resp.clicked() {
                         action = Some(ListAction::Open(f.path.clone()));
                     }
