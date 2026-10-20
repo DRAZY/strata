@@ -547,6 +547,32 @@ fn status_items_are_limited_and_checked() {
     std::fs::remove_dir_all(config).ok();
 }
 
+/// A plugin without read_document never hears which document is in front,
+/// and can't show an item for one: an open document's id gets the same
+/// answer as a made-up one, so ids can't be probed.
+#[test]
+fn status_items_for_a_document_need_read_permission() {
+    let config = temp("mgr-front-blind");
+    install_fake(&config, "blind", &[], &["notify"], json!({}));
+    let mut m = Manager::new(Some(&config), None);
+    let doc = DocInfo { id: 7, path: None, name: "doc7".into(), version: 1, syntax: "Plain Text".into() };
+    m.sync_window(1, vec![doc], Vec::new(), true, Some(7));
+    start_granted(&mut m, "blind");
+    for _ in 0..10 {
+        m.tick();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let r = command(&mut m, "blind", "events", json!({}), |_, _, _, _| {}).unwrap();
+    assert!(r.as_array().unwrap().iter().all(|e| !e["method"].as_str().unwrap().starts_with("document/")), "{r}");
+    let open = m.set_status_item("blind", &json!({"id": "x", "document": 7, "text": "guessed"})).unwrap_err();
+    let made_up = m.set_status_item("blind", &json!({"id": "x", "document": 8, "text": "guessed"})).unwrap_err();
+    assert_eq!((open.code, open.message.replace('7', "N")), (made_up.code, made_up.message.replace('8', "N")));
+    assert_eq!(open.code, api::NO_DOCUMENT);
+    assert!(m.status_items(1).is_empty(), "nothing shows in the window");
+    drop(m);
+    std::fs::remove_dir_all(config).ok();
+}
+
 /// Each window hears which tab is in front (a new window, a tab switched
 /// to) and shows the status items for its own front document.
 #[test]

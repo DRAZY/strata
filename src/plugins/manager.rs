@@ -957,17 +957,21 @@ impl Manager {
         let text = clean(params.get("text").and_then(Value::as_str).unwrap_or_default(), STATUS_TEXT);
         let tooltip = clean(params.get("tooltip").and_then(Value::as_str).unwrap_or_default(), 300);
         let command = params.get("command").and_then(Value::as_str).map(str::to_owned);
+        let i = self.index(name).ok_or_else(|| RpcError::new(api::INTERNAL_ERROR, "no such plugin"))?;
         let document = match params.get("document") {
             None | Some(Value::Null) => None,
             Some(v) => {
                 let d = v.as_u64().ok_or_else(|| RpcError::params("\"document\" must be a document id"))?;
-                if !self.all_docs().iter().any(|o| o.id == d) {
+                // Only a document the plugin was told of (which takes
+                // read_document) and that's still open; one it may not know
+                // of gets the same answer as one that doesn't exist, so ids
+                // can't be probed.
+                if !self.plugins[i].told.contains_key(&d) || !self.all_docs().iter().any(|o| o.id == d) {
                     return Err(RpcError::new(api::NO_DOCUMENT, format!("no open document has the id {d}")));
                 }
                 Some(d)
             }
         };
-        let i = self.index(name).ok_or_else(|| RpcError::new(api::INTERNAL_ERROR, "no such plugin"))?;
         let p = &mut self.plugins[i];
         if let Some(c) = &command
             && !p.manifest.as_ref().is_ok_and(|m| m.commands.iter().any(|k| &k.id == c))

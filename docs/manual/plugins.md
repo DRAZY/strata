@@ -245,7 +245,7 @@ Permission: `notify`. Params: `message` (its first line, up to 300 characters, i
 
 #### ui/statusItem
 
-Permission: `notify`. Params: `id` (the plugin's own name for the item), `text` (one line, up to 60 characters; empty removes the item), `tooltip`, `command` (one of the plugin's command ids, run when the item is clicked), and `document` (an id; leave it out for an item every window shows). An item with a `document` shows only in windows with that document in front, in place of the plugin's item with the same `id` for every document, and goes away when the document is closed; set one per document to show, say, each file's word count in its own window. A plugin may use up to 4 item ids; items are removed when it stops. Result: `null`. Errors: `-32015` (a fifth id), `-32602` (a `command` that isn't the plugin's), `-32012` (a `document` that isn't open).
+Permission: `notify`. Params: `id` (the plugin's own name for the item), `text` (one line, up to 60 characters; empty removes the item), `tooltip`, `command` (one of the plugin's command ids, run when the item is clicked), and `document` (the id of a document the plugin was told of, which takes `read_document`; leave it out for an item every window shows). An item with a `document` shows only in windows with that document in front, in place of the plugin's item with the same `id` for every document, and goes away when the document is closed; set one per document to show, say, each file's word count in its own window. A plugin may use up to 4 item ids; items are removed when it stops. Result: `null`. Errors: `-32015` (a fifth id), `-32602` (a `command` that isn't the plugin's), `-32012` (a `document` that isn't open, or that the plugin wasn't told of).
 
 #### ui/pick
 
