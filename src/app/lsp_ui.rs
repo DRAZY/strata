@@ -34,6 +34,8 @@ const NO_INFO: &str = "No information here";
 type Problems = Vec<(u8, String)>;
 /// Char-range edits for one file.
 type CharEdits = Vec<(Range<usize>, String)>;
+/// Lines read for a location list: (row, text).
+type LineTexts = Vec<(usize, String)>;
 
 /// A request in flight and what its answer is for.
 struct Asked<T> {
@@ -145,6 +147,8 @@ pub(super) struct LspState {
     /// A problem Next/Previous Problem just selected: its box shows at the
     /// caret on the next frame, once the view has scrolled to it.
     pending_problem: Option<(egui::Id, usize, Problems)>,
+    /// A location list's lines being read off the UI thread, and its labels so far.
+    labels: Option<(std::sync::mpsc::Receiver<LineTexts>, Vec<String>)>,
 }
 
 fn next_window() -> u64 {
@@ -175,6 +179,7 @@ impl LspState {
             signature_box: None,
             last_edit: (egui::Id::NULL, 0, 0),
             pending_problem: None,
+            labels: None,
         }
     }
 
@@ -438,6 +443,19 @@ impl StrataApp {
             } else if !at.by_mouse && self.lsp.hover.shown.is_none() {
                 self.status = NO_INFO.into();
             }
+        }
+        if let Some((rx, labels)) = &mut self.lsp.labels
+            && let Ok(lines) = rx.try_recv()
+        {
+            for (k, text) in lines {
+                if let Some(l) = labels.get_mut(k).filter(|_| !text.is_empty()) {
+                    l.push_str("  ");
+                    l.push_str(&text);
+                }
+            }
+            let labels = std::mem::take(labels);
+            self.lsp.labels = None;
+            self.palette.update_choices(labels);
         }
         if let Some(((view, line), reply)) = answered(&mut self.lsp.signature) {
             self.lsp_signature_answer(view, line, reply);
@@ -721,33 +739,53 @@ impl StrataApp {
         let kind = if what.definition { "Definitions" } else { "References" };
         let hint = if what.word.is_empty() { kind.to_owned() } else { format!("{kind} of {}", what.word) };
         let spots: Vec<(PathBuf, (Pos, Pos), Encoding)> = found.into_iter().take(MAX_LOCATIONS).map(|(p, r)| (p, r, what.enc)).collect();
-        let labels = self.location_labels(&spots, None);
-        self.choose(ctx, Choosing::Locations(spots), &hint, labels);
+        self.show_locations(ctx, spots, &hint);
     }
 
-    /// "file.rs:12:5  the line's text" for each location (files that aren't
-    /// open are read once each), with `notes` in front when given.
-    fn location_labels(&self, spots: &[(PathBuf, (Pos, Pos), Encoding)], notes: Option<&[String]>) -> Vec<String> {
-        let mut files: HashMap<PathBuf, Vec<String>> = HashMap::new();
-        spots
-            .iter()
-            .enumerate()
-            .map(|(k, (p, r, _))| {
-                let line = r.0.line as usize;
-                let open = self.docs.iter().find(|d| d.path.as_deref().is_some_and(|dp| uri::normalize(dp) == *p));
-                let text = match open {
-                    Some(d) if line < d.editor.buffer.len_lines() => d.editor.buffer.line_text(line),
-                    Some(_) => String::new(),
-                    None => files.entry(p.clone()).or_insert_with(|| std::fs::read_to_string(p).map(|t| t.lines().map(str::to_owned).collect()).unwrap_or_default()).get(line).cloned().unwrap_or_default(),
-                };
-                let text: String = text.trim().chars().take(100).collect();
-                let place = format!("{}:{}:{}", self.sidebar.display_path(p), line + 1, r.0.col + 1);
-                match notes.and_then(|n| n.get(k)) {
-                    Some(n) => format!("{n}  ·  {place}"),
-                    None => format!("{place}  {text}"),
+    /// "file.rs:12:5" for a location.
+    fn place(&self, p: &Path, r: (Pos, Pos)) -> String {
+        format!("{}:{}:{}", self.sidebar.display_path(p), r.0.line + 1, r.0.col + 1)
+    }
+
+    /// List locations in the palette as "file.rs:12:5  the line's text". The
+    /// lines of open files are there at once; files that aren't open are
+    /// read on a worker thread and their lines filled in when it's done.
+    fn show_locations(&mut self, ctx: &egui::Context, spots: Vec<(PathBuf, (Pos, Pos), Encoding)>, hint: &str) {
+        let mut labels = Vec::with_capacity(spots.len());
+        let mut unread: Vec<(usize, PathBuf, usize)> = Vec::new();
+        for (k, (p, r, _)) in spots.iter().enumerate() {
+            let line = r.0.line as usize;
+            let place = self.place(p, *r);
+            match self.docs.iter().find(|d| d.path.as_deref().is_some_and(|dp| uri::normalize(dp) == *p)) {
+                Some(d) if line < d.editor.buffer.len_lines() => labels.push(format!("{place}  {}", label_text(&d.editor.buffer.line_text(line)))),
+                Some(_) => labels.push(place),
+                None => {
+                    labels.push(place);
+                    unread.push((k, p.clone(), line));
                 }
-            })
-            .collect()
+            }
+        }
+        self.lsp.labels = None;
+        if !unread.is_empty() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let ctx2 = ctx.clone();
+            let spawned = std::thread::Builder::new().name("lsp-labels".into()).spawn(move || {
+                let mut files: HashMap<PathBuf, Vec<String>> = HashMap::new();
+                let lines: Vec<(usize, String)> = unread
+                    .into_iter()
+                    .map(|(k, p, line)| {
+                        let text = files.entry(p.clone()).or_insert_with(|| std::fs::read(&p).map(|b| crate::encoding::detect(&b).text.lines().map(str::to_owned).collect()).unwrap_or_default());
+                        (k, text.get(line).map(|t| label_text(t)).unwrap_or_default())
+                    })
+                    .collect();
+                let _ = tx.send(lines);
+                ctx2.request_repaint();
+            });
+            if spawned.is_ok() {
+                self.lsp.labels = Some((rx, labels.clone()));
+            }
+        }
+        self.choose(ctx, Choosing::Locations(spots), hint, labels);
     }
 
     /// Open `path` and select `range` (server positions in `enc`).
@@ -975,7 +1013,7 @@ impl StrataApp {
         rows.truncate(MAX_LOCATIONS);
         let notes: Vec<String> = rows.iter().map(|(_, d, _)| format!("{}: {}", severity_name(d.severity), d.message.lines().next().unwrap_or_default())).collect();
         let spots: Vec<(PathBuf, (Pos, Pos), Encoding)> = rows.into_iter().map(|(p, d, enc)| (p, d.range, enc)).collect();
-        let labels = self.location_labels(&spots, Some(&notes));
+        let labels: Vec<String> = spots.iter().zip(&notes).map(|((p, r, _), n)| format!("{n}  ·  {}", self.place(p, *r))).collect();
         let errors = notes.iter().filter(|n| n.starts_with("error")).count();
         let hint = format!("Problems: {errors} {}, {} other", if errors == 1 { "error" } else { "errors" }, notes.len() - errors);
         self.choose(ctx, Choosing::Locations(spots), &hint, labels);
@@ -1268,6 +1306,11 @@ impl StrataApp {
     }
 }
 
+/// A line of code as a list label: trimmed, at most 100 chars.
+fn label_text(line: &str) -> String {
+    line.trim().chars().take(100).collect()
+}
+
 /// A diagnostic's message with its source and code.
 fn describe(d: &Diagnostic) -> String {
     match (&d.source, &d.code) {
@@ -1550,6 +1593,20 @@ mod tests {
         assert!(app.lsp_goto(true));
         wait(&mut app, &ctx, "the jump", |a| a.lsp.goto.is_none());
         assert_eq!(app.docs[0].editor.primary().range(), 3..9, "the server knew the new line");
+    }
+
+    #[test]
+    fn reference_lines_of_unopened_files_are_read_off_the_ui_thread() {
+        let (mut app, ctx, _) = app_with("refs-bg", &[("a.fake", "fn target() {}\n"), ("b.fake", "// other\n    target();\n")], json!({}));
+        wait(&mut app, &ctx, "ready", |a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
+        put_cursor(&mut app, 4);
+        app.run(&ctx, Cmd::GotoReference);
+        wait(&mut app, &ctx, "the list", |a| a.palette.open);
+        // The open file's line is there at once; the other file's follows.
+        let first = app.palette.choice_labels().to_vec();
+        assert!(first.iter().any(|l| l.contains("a.fake:1:4  fn target() {}")), "{first:?}");
+        wait(&mut app, &ctx, "the other file's line", |a| a.palette.choice_labels().iter().any(|l| l.contains("b.fake:2:5  target();")));
+        assert!(app.lsp.labels.is_none());
     }
 
     #[test]

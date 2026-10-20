@@ -177,12 +177,12 @@ impl Fake {
                 reply(found.unwrap_or(Value::Null));
             }
             "textDocument/references" => {
-                let (_, word) = self.word_at(p);
+                let (uri, word) = self.word_at(p);
                 let mut out = Vec::new();
                 if let Some((w, _)) = word {
-                    for (uri, doc) in &self.docs {
-                        for at in find_words(doc, &w) {
-                            out.push(json!({"uri": uri, "range": self.range_of(doc, at, at + w.len())}));
+                    for (uri, doc) in self.project_texts(&uri) {
+                        for at in find_words(&doc, &w) {
+                            out.push(json!({"uri": uri, "range": self.range_of(&doc, at, at + w.len())}));
                         }
                     }
                 }
@@ -196,23 +196,7 @@ impl Fake {
                     return true;
                 };
                 let mut changes = serde_json::Map::new();
-                let mut texts: Vec<(String, String)> = self.docs.iter().map(|(u, t)| (u.clone(), t.clone())).collect();
-                // Files of the same type in the project that aren't open: from disk.
-                let ext = uri.rsplit('.').next().unwrap_or_default().to_owned();
-                if let Some(root) = &self.root
-                    && let Ok(dir) = std::fs::read_dir(root)
-                {
-                    for e in dir.flatten() {
-                        let path = e.path();
-                        let u = super::uri::from_path(&path);
-                        if path.extension().is_some_and(|x| x.to_string_lossy() == ext) && !self.docs.contains_key(&u)
-                            && let Ok(t) = std::fs::read(&path).map(|b| String::from_utf8_lossy(&b).into_owned())
-                        {
-                            // A byte order mark isn't text (real servers skip it too).
-                            texts.push((u, t.strip_prefix('\u{feff}').map_or(t.clone(), str::to_owned)));
-                        }
-                    }
-                }
+                let texts = self.project_texts(&uri);
                 for (u, t) in texts {
                     let edits: Vec<Value> = find_words(&t, &w).into_iter().map(|at| json!({"range": self.range_of(&t, at, at + w.len()), "newText": new_name})).collect();
                     if !edits.is_empty() {
@@ -240,6 +224,31 @@ impl Fake {
             _ => {}
         }
         true
+    }
+
+    /// The open documents, plus the files of `uri`'s type in the project
+    /// folder that aren't open (read from disk).
+    fn project_texts(&self, uri: &str) -> Vec<(String, String)> {
+        let mut texts: Vec<(String, String)> = self.docs.iter().map(|(u, t)| (u.clone(), t.clone())).collect();
+        let ext = uri.rsplit('.').next().unwrap_or_default().to_owned();
+        if let Some(root) = &self.root
+            && let Ok(dir) = std::fs::read_dir(root)
+        {
+            let mut found: Vec<(String, String)> = Vec::new();
+            for e in dir.flatten() {
+                let path = e.path();
+                let u = super::uri::from_path(&path);
+                if path.extension().is_some_and(|x| x.to_string_lossy() == ext) && !self.docs.contains_key(&u)
+                    && let Ok(t) = std::fs::read(&path).map(|b| String::from_utf8_lossy(&b).into_owned())
+                {
+                    // A byte order mark isn't text (real servers skip it too).
+                    found.push((u, t.strip_prefix('\u{feff}').map_or(t.clone(), str::to_owned)));
+                }
+            }
+            found.sort();
+            texts.extend(found);
+        }
+        texts
     }
 
     /// A document changed: maybe crash, then publish its diagnostics.
