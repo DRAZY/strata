@@ -135,6 +135,8 @@ pub struct Settings {
     pub editorconfig: bool,
     /// Use language servers (see `lsp`) for the files they handle.
     pub lsp_enabled: bool,
+    /// Start language servers in any project folder without asking first.
+    pub lsp_trust_all: bool,
     /// Language servers by name: changes to the built-in ones and servers of
     /// the user's own (see `lsp::config::ServerSetting`).
     pub lsp_servers: std::collections::BTreeMap<String, crate::lsp::config::ServerSetting>,
@@ -213,6 +215,7 @@ impl Default for Settings {
             syntax_settings: Default::default(),
             editorconfig: true,
             lsp_enabled: true,
+            lsp_trust_all: false,
             lsp_servers: Default::default(),
             update_check: "ask".into(),
             update_check_interval_hours: 4,

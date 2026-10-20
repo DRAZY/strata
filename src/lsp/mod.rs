@@ -13,7 +13,7 @@ pub mod position;
 pub mod server;
 pub mod uri;
 
-pub use hub::{Hub, State};
+pub use hub::{Hub, State, Trust};
 
 #[cfg(test)]
 mod tests {
@@ -168,6 +168,57 @@ mod tests {
         });
         until("the process to be gone", || (!process_alive(pid)).then_some(()));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn servers_start_only_in_trusted_folders() {
+        let dir = scratch("trust");
+        let config = scratch("trust-config");
+        let file = dir.join("a.fake");
+        let sync = |hub: &mut Hub| hub.sync(1, &file, (1, 0), || Rope::from_str("bad"), None, std::slice::from_ref(&dir));
+        let mut hub = Hub::new(false);
+        hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        hub.require_trust();
+        hub.set_config_dir(&config);
+        sync(&mut hub);
+        assert_eq!(hub.pid_for(&file), None, "nothing runs before the user says");
+        let (root, names) = hub.trust_question(1).expect("a question");
+        assert_eq!(root, dir);
+        assert_eq!(names.len(), 1);
+        assert_eq!(hub.trust_question(2), None, "asked in the window that opened the file");
+        assert!(matches!(hub.state_for(&file), Some((_, State::NotTrusted))));
+        // Not Now: no server, no more asking (this session), until asked again.
+        hub.answer_trust(&root, Trust::NotNow);
+        sync(&mut hub);
+        assert_eq!((hub.pid_for(&file), hub.trust_question(1)), (None, None));
+        hub.ask_again(&file);
+        sync(&mut hub);
+        assert!(hub.trust_question(1).is_some());
+        // Always: it starts, and the folder is remembered in Strata's config folder.
+        hub.answer_trust(&root, Trust::Always);
+        sync(&mut hub);
+        assert!(hub.pid_for(&file).is_some());
+        let saved: Vec<PathBuf> = serde_json::from_str(&std::fs::read_to_string(config.join(hub::TRUST_FILE)).unwrap()).unwrap();
+        assert_eq!(saved, std::slice::from_ref(&dir));
+        drop(hub);
+        // Next time (another Strata): no question.
+        let mut hub = Hub::new(false);
+        hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        hub.require_trust();
+        hub.set_config_dir(&config);
+        sync(&mut hub);
+        assert!(hub.pid_for(&file).is_some() && hub.trust_question(1).is_none());
+        // `lsp_trust_all` skips the question everywhere.
+        let other = scratch("trust-other");
+        let mut hub = Hub::new(false);
+        hub.use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        hub.require_trust();
+        hub.configure(true, &Default::default(), true);
+        hub.sync(1, &other.join("x.fake"), (1, 0), || Rope::from_str(""), None, &[]);
+        assert!(hub.trust_question(1).is_none());
+        for d in [dir, config, other] {
+            std::fs::remove_dir_all(d).ok();
+        }
     }
 
     #[test]

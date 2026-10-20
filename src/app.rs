@@ -250,7 +250,7 @@ impl StrataApp {
     fn with_settings(config: Option<PathBuf>, settings: Settings, status: String) -> Self {
         let settings_mtime = config.as_deref().and_then(|d| std::fs::metadata(Settings::path(d)).and_then(|m| m.modified()).ok());
         // No settings folder means a test: no language server starts unless the test asks.
-        let lsp = lsp_ui::LspState::new(config.is_some());
+        let lsp = lsp_ui::LspState::new(config.as_deref());
         let mut app = Self {
             docs: Vec::new(),
             active: 0,

@@ -24,6 +24,20 @@ const MAX_PAUSE: Duration = Duration::from_secs(30);
 /// How long quitting waits for servers to exit before ending them.
 const QUIT_WAIT: Duration = Duration::from_millis(1500);
 
+/// Where trusted project folders are remembered, in Strata's config folder.
+pub const TRUST_FILE: &str = "lsp_trusted_folders.json";
+
+/// An answer to "Start language servers for this folder?".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trust {
+    /// This time (until Strata quits).
+    Once,
+    /// And remember the folder.
+    Always,
+    /// Not this session.
+    NotNow,
+}
+
 /// What the status bar says about a file's server.
 #[derive(Clone, Debug, PartialEq)]
 pub enum State {
@@ -35,6 +49,8 @@ pub enum State {
     Restarting { why: String, secs: u64 },
     /// Stopped too often, or couldn't start: waiting for LSP: Restart Language Servers.
     Failed(String),
+    /// Not started: the project folder isn't trusted (yet).
+    NotTrusted,
 }
 
 struct Slot {
@@ -80,6 +96,18 @@ pub struct Hub {
     /// Problems for the status bar, said once each.
     notes: Vec<String>,
     said: Vec<String>,
+    /// Start servers in any folder without asking (`lsp_trust_all`).
+    trust_all: bool,
+    /// Project folders whose servers may run: remembered ones and this session's.
+    trusted: Vec<PathBuf>,
+    /// Folders the user said Not Now to, this session.
+    declined: Vec<PathBuf>,
+    /// Folders waiting for an answer: (folder, server names, the window asking).
+    asking: Vec<(PathBuf, Vec<String>, u64)>,
+    /// Files whose server waits on their folder's trust: (folder, server name).
+    waiting: HashMap<PathBuf, (PathBuf, String)>,
+    /// The file remembered folders are kept in (None in tests: nothing is written).
+    trust_file: Option<PathBuf>,
 }
 
 impl Hub {
@@ -96,7 +124,81 @@ impl Hub {
             path_env: crate::build::augmented_path(),
             notes: Vec::new(),
             said: Vec::new(),
+            trust_all: false,
+            trusted: Vec::new(),
+            declined: Vec::new(),
+            asking: Vec::new(),
+            waiting: HashMap::new(),
+            trust_file: None,
         }
+    }
+
+    /// Remember trusted folders in `dir` (Strata's config folder), and read
+    /// the ones remembered before.
+    pub fn set_config_dir(&mut self, dir: &Path) {
+        let file = dir.join(TRUST_FILE);
+        if let Ok(text) = std::fs::read_to_string(&file) {
+            match serde_json::from_str::<Vec<PathBuf>>(&text) {
+                Ok(list) => self.trusted = list,
+                Err(e) => self.note(format!("{TRUST_FILE}: {e}")),
+            }
+        }
+        self.trust_file = Some(file);
+    }
+
+    fn may_run(&self, root: &Path) -> bool {
+        self.trust_all || self.trusted.iter().any(|t| root.starts_with(t))
+    }
+
+    /// The folder this window should ask about, and the servers waiting on it.
+    pub fn trust_question(&self, window: u64) -> Option<(PathBuf, Vec<String>)> {
+        self.asking.iter().find(|a| a.2 == window).map(|a| (a.0.clone(), a.1.clone()))
+    }
+
+    /// The answer to `trust_question` for `root`.
+    pub fn answer_trust(&mut self, root: &Path, answer: Trust) {
+        self.asking.retain(|a| a.0 != root);
+        match answer {
+            Trust::Once | Trust::Always => {
+                self.trusted.push(root.to_owned());
+                if answer == Trust::Always {
+                    self.save_trusted(root);
+                }
+            }
+            Trust::NotNow => self.declined.push(root.to_owned()),
+        }
+        // Its files are looked at again on the next sync.
+        self.waiting.retain(|_, w| w.0 != root);
+    }
+
+    /// Add `root` to the remembered folders (re-read first, so other Strata
+    /// processes' additions aren't lost).
+    fn save_trusted(&mut self, root: &Path) {
+        let Some(file) = self.trust_file.clone() else { return };
+        let mut list: Vec<PathBuf> = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        if !list.iter().any(|p| p == root) {
+            list.push(root.to_owned());
+        }
+        let text = serde_json::to_string_pretty(&list).unwrap_or_default() + "\n";
+        let written = file.parent().map_or(Ok(()), crate::private::create_dir_all).and_then(|_| crate::buffer::write_atomic(&file, |out| std::io::Write::write_all(out, text.as_bytes())));
+        if let Err(e) = written {
+            self.note(format!("Couldn't remember the folder in {}: {e}", file.display()));
+        }
+    }
+
+    /// Ask again about the folder of `path` (after Not Now: the status bar was clicked).
+    pub fn ask_again(&mut self, path: &Path) {
+        let path = uri::normalize(path);
+        if let Some((root, _)) = self.waiting.get(&path).cloned() {
+            self.declined.retain(|d| *d != root);
+            self.waiting.retain(|_, w| w.0 != root);
+        }
+    }
+
+    /// Ask before starting servers (tests; `use_servers` trusts every folder).
+    #[cfg(test)]
+    pub fn require_trust(&mut self) {
+        self.trust_all = false;
     }
 
     pub fn set_context(&mut self, ctx: &egui::Context) {
@@ -107,7 +209,12 @@ impl Hub {
 
     /// Follow the `lsp_enabled` and `lsp_servers` settings. A change stops
     /// the running servers; files start the right ones again as they're seen.
-    pub fn configure(&mut self, enabled: bool, user: &BTreeMap<String, ServerSetting>) {
+    pub fn configure(&mut self, enabled: bool, user: &BTreeMap<String, ServerSetting>, trust_all: bool) {
+        if trust_all != self.trust_all {
+            self.trust_all = trust_all;
+            self.waiting.clear();
+            self.asking.clear();
+        }
         if self.settings_seen.as_ref().is_some_and(|(e, u)| *e == enabled && u == user) {
             return;
         }
@@ -132,6 +239,7 @@ impl Hub {
         self.enabled = true;
         self.settings_seen = Some((true, BTreeMap::new()));
         self.configs = configs;
+        self.trust_all = true;
     }
 
     /// Use the configured (real) servers, as Strata does with a settings folder (tests).
@@ -156,6 +264,8 @@ impl Hub {
         self.slots.clear();
         self.docs.clear();
         self.assigned.clear();
+        self.waiting.clear();
+        self.asking.clear();
     }
 
     /// LSP: Restart Language Servers: stop them all and start afresh,
@@ -163,6 +273,7 @@ impl Hub {
     pub fn restart_all(&mut self) {
         self.stop_all();
         self.said.clear();
+        self.declined.clear();
     }
 
     fn note(&mut self, text: String) {
@@ -187,34 +298,60 @@ impl Hub {
 
     /// The server slot for a file, starting its server if this is the
     /// first file it handles in that project. None: no server for it.
-    fn slot_for(&mut self, path: &Path, roots: &[PathBuf]) -> Option<usize> {
+    /// None also while the file's folder waits to be trusted.
+    fn slot_for(&mut self, path: &Path, roots: &[PathBuf], window: u64) -> Option<usize> {
         if let Some(a) = self.assigned.get(path) {
             return *a;
         }
-        let found = self.find_slot(path, roots);
-        self.assigned.insert(path.to_owned(), found);
-        found
+        if self.waiting.contains_key(path) {
+            return None;
+        }
+        match self.find_slot(path, roots, window) {
+            Ok(found) => {
+                self.assigned.insert(path.to_owned(), found);
+                found
+            }
+            Err(Untrusted) => None,
+        }
     }
 
-    fn find_slot(&mut self, path: &Path, roots: &[PathBuf]) -> Option<usize> {
+    fn find_slot(&mut self, path: &Path, roots: &[PathBuf], window: u64) -> Result<Option<usize>, Untrusted> {
         let path_env = self.path_env.clone().or_else(|| std::env::var_os("PATH")).unwrap_or_default();
         // The first server for the file type whose program is there.
-        let (config, program) = self.configs.iter().filter(|c| c.handles(path)).find_map(|c| config::find_executable(&c.command, &path_env).map(|p| (c.clone(), p))).or_else(|| {
+        let found = self.configs.iter().filter(|c| c.handles(path)).find_map(|c| config::find_executable(&c.command, &path_env).map(|p| (c.clone(), p))).or_else(|| {
             // A server the user set up whose program is missing: worth saying (built-ins aren't).
             let wanted = self.configs.iter().find(|c| c.handles(path) && !c.builtin).cloned();
             if let Some(c) = wanted {
                 self.note(format!("Language server “{}” not found (lsp_servers ▸ {})", c.command, c.name));
             }
             None
-        })?;
+        });
+        let Some((config, program)) = found else { return Ok(None) };
         let root = config::find_root(path, &config.root_markers, roots);
         if let Some(i) = self.slots.iter().position(|s| s.config.name == config.name && s.root == root) {
-            return Some(i);
+            return Ok(Some(i));
+        }
+        // Servers can run a project's code (build scripts, proc macros,
+        // configured tools): only in folders the user trusts.
+        if !self.may_run(&root) {
+            let name = config.display_name();
+            self.waiting.insert(path.to_owned(), (root.clone(), name.clone()));
+            if !self.declined.contains(&root) {
+                match self.asking.iter_mut().find(|a| a.0 == root) {
+                    Some(a) if !a.1.contains(&name) => a.1.push(name),
+                    Some(_) => {}
+                    None => self.asking.push((root, vec![name], window)),
+                }
+                if let Some(ctx) = &self.ctx {
+                    ctx.request_repaint();
+                }
+            }
+            return Err(Untrusted);
         }
         self.slots.push(Slot { config, root, program, server: None, run: 0, crashes: Vec::new(), retry_at: None, last_error: None, failed: None, worked: false });
         let i = self.slots.len() - 1;
         self.start(i);
-        Some(i)
+        Ok(Some(i))
     }
 
     fn start(&mut self, i: usize) {
@@ -307,7 +444,7 @@ impl Hub {
         if self.docs.get(&path).is_some_and(|d| d.window != window) {
             return;
         }
-        let Some(i) = self.slot_for(&path, roots) else { return };
+        let Some(i) = self.slot_for(&path, roots, window) else { return };
         let slot = &self.slots[i];
         let Some(server) = slot.server.as_ref().filter(|s| !matches!(s.status(), Status::Stopped(_))) else { return };
         match self.docs.get_mut(&path) {
@@ -345,6 +482,10 @@ impl Hub {
     /// A window closed: its files are closed in their servers.
     pub fn forget_window(&mut self, window: u64) {
         self.end_frame(window, &[]);
+        // Its question goes; another window's files ask again.
+        let roots: Vec<PathBuf> = self.asking.iter().filter(|a| a.2 == window).map(|a| a.0.clone()).collect();
+        self.asking.retain(|a| a.2 != window);
+        self.waiting.retain(|_, w| !roots.contains(&w.0));
     }
 
     fn close(&mut self, path: &Path) {
@@ -391,6 +532,9 @@ impl Hub {
         if !self.on() {
             return None;
         }
+        if let Some((_, name)) = self.waiting.get(&uri::normalize(path)) {
+            return Some((name.clone(), State::NotTrusted));
+        }
         let i = (*self.assigned.get(&uri::normalize(path))?)?;
         let slot = self.slots.get(i)?;
         // A built-in server that never started is as good as not installed:
@@ -421,6 +565,9 @@ impl Hub {
         self.slots[i].server.as_ref()?.pid()
     }
 }
+
+/// A server that waits for its folder to be trusted.
+struct Untrusted;
 
 /// Wait for a server we asked to stop, off the UI thread; end it if it dawdles.
 fn reap(s: Server) {

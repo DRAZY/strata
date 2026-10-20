@@ -128,6 +128,7 @@ pub static SETTINGS: &[Meta] = &[
     m("git_gutter", Editor, "Git gutter", Toggle),
     m("markdown_preview", Editor, "Markdown preview", Toggle),
     m("lsp_enabled", Editor, "Language servers", Toggle),
+    m("lsp_trust_all", Editor, "Start language servers without asking", Toggle),
     // Files & Saving
     m("hot_exit", Files, "Hot exit", Toggle),
     m("trim_trailing_white_space_on_save", Files, "Trim trailing whitespace on save", Toggle),

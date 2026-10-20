@@ -251,6 +251,7 @@ Every setting Strata reads, with its default value. Text values are written in q
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `lsp_enabled` | true/false | `true` | Use language servers for completions, problems, hover information, rename and formatting, when one is installed for the file's language. Strata never downloads or installs a server. See [Language Servers](languages.md#language-servers). |
+| `lsp_trust_all` | true/false | `false` | Start language servers in any project folder without asking. Servers can run a project's own code (build scripts, procedural macros, configured tools), so by default Strata asks once per folder. See [Trusting a project](languages.md#trusting-a-project). |
 | `lsp_servers` | object | `{}` | Changes to the built-in language servers, and servers of your own, by name: for example `{"rust": {"args": ["--log-file", "/tmp/ra.log"]}, "go": {"enabled": false}}`. See [Setting up servers](languages.md#setting-up-servers). |
 
 ### Find and spelling

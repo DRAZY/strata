@@ -13,7 +13,7 @@ use crate::editor::Marker;
 use crate::lsp::edit::{self, FileEdit};
 use crate::lsp::position::{self, Encoding, Pos};
 use crate::lsp::server::{Diagnostic, Pending, Reply};
-use crate::lsp::{Hub, State, uri};
+use crate::lsp::{Hub, State, Trust, uri};
 use egui::{Color32, Key, Pos2, Rect, vec2};
 use serde_json::{Value, json};
 use std::cell::RefCell;
@@ -29,6 +29,15 @@ const HOVER_DELAY: f64 = 0.5;
 const MAX_LOCATIONS: usize = 500;
 /// What the status bar says when hover finds nothing.
 const NO_INFO: &str = "No information here";
+
+/// What clicking the status bar's server item does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StatusClick {
+    Problems,
+    Restart,
+    /// Show the trust notice again.
+    Ask,
+}
 
 /// Problems at a spot: (severity, message).
 type Problems = Vec<(u8, String)>;
@@ -157,9 +166,14 @@ fn next_window() -> u64 {
 }
 
 impl LspState {
-    /// The first window's: servers start only with a settings folder (not in tests).
-    pub fn new(active: bool) -> Self {
-        Self::sharing(Rc::new(RefCell::new(Hub::new(active))))
+    /// The first window's: servers start only with a settings folder (not
+    /// in tests), where trusted project folders are also remembered.
+    pub fn new(config: Option<&Path>) -> Self {
+        let mut hub = Hub::new(config.is_some());
+        if let Some(dir) = config {
+            hub.set_config_dir(dir);
+        }
+        Self::sharing(Rc::new(RefCell::new(hub)))
     }
 
     /// Another window's, sharing the servers.
@@ -276,7 +290,7 @@ impl StrataApp {
         let hub_rc = self.lsp.hub.clone();
         let mut hub = hub_rc.borrow_mut();
         hub.set_context(ctx);
-        hub.configure(self.settings.lsp_enabled, &self.settings.lsp_servers);
+        hub.configure(self.settings.lsp_enabled, &self.settings.lsp_servers, self.settings.lsp_trust_all);
         hub.tick();
         let window = self.lsp.window;
         let roots = self.sidebar.roots.clone();
@@ -692,6 +706,7 @@ impl StrataApp {
             None => format!("{what}: no language server for this file"),
             Some((name, State::Starting)) => format!("{what}: {name} is still starting"),
             Some((name, State::Ready | State::Busy(_))) => format!("{what}: {name} doesn't offer this"),
+            Some((name, State::NotTrusted)) => format!("{what}: {name} isn't started for this folder (see the notice, or click the status bar)"),
             Some((name, _)) => format!("{what}: {name} isn't running"),
         }
     }
@@ -1060,6 +1075,7 @@ impl StrataApp {
             let at = HoverAt { view, at, word: word_around(&d.editor, at), anchor: caret.left_bottom(), by_mouse: false, key: (d.editor.version(), d.editor.primary().head) };
             self.lsp.hover.shown = Some(HoverBox { at, problems, info: None, rect: None });
         }
+        self.lsp_trust_notice(ctx);
         self.lsp_mouse_hover(ctx, now);
         self.lsp_draw_hover(ctx);
         self.lsp_draw_signature(ctx);
@@ -1267,14 +1283,14 @@ impl StrataApp {
     // ---- status bar ---------------------------------------------------------------------
 
     /// The current file's server for the status bar: text, color, tooltip,
-    /// and whether a click restarts it (else it lists the problems).
-    pub(super) fn lsp_status(&self) -> Option<(String, Option<Color32>, String, bool)> {
+    /// and what a click does.
+    pub(super) fn lsp_status(&self) -> Option<(String, Option<Color32>, String, StatusClick)> {
         let d = &self.docs[self.active];
         let (name, state) = self.lsp.hub.borrow().state_for(d.path.as_ref()?)?;
         let amber = Color32::from_rgb(0xe5, 0x9e, 0x40);
         Some(match state {
-            State::Starting => (format!("{name}: starting…"), None, format!("{name} is starting"), false),
-            State::Busy(work) => (format!("{name}: {work}"), None, format!("{name} is working: {work}"), false),
+            State::Starting => (format!("{name}: starting…"), None, format!("{name} is starting"), StatusClick::Problems),
+            State::Busy(work) => (format!("{name}: {work}"), None, format!("{name} is working: {work}"), StatusClick::Problems),
             State::Ready => {
                 let counts = |sev: u8| d.editor.markers().iter().filter(|m| m.style == sev).count();
                 let (e, w) = (counts(1), counts(2));
@@ -1286,22 +1302,75 @@ impl StrataApp {
                     parts.push(format!("{w} {}", if w == 1 { "warning" } else { "warnings" }));
                 }
                 let text = if parts.is_empty() { name.clone() } else { format!("{name}: {}", parts.join(", ")) };
-                (text, None, format!("{name} is running. Click to list the problems."), false)
+                (text, None, format!("{name} is running. Click to list the problems."), StatusClick::Problems)
             }
             State::Restarting { why, secs } => {
                 let when = if secs > 0 { format!("restarting in {secs} s") } else { "restarting".into() };
-                (format!("{name}: {when}"), Some(amber), format!("{name} stopped ({why})"), false)
+                (format!("{name}: {when}"), Some(amber), format!("{name} stopped ({why})"), StatusClick::Problems)
             }
-            State::Failed(why) => (format!("{name}: stopped"), Some(amber), format!("{name} stopped ({why}). Click to try again."), true),
+            State::Failed(why) => (format!("{name}: stopped"), Some(amber), format!("{name} stopped ({why}). Click to try again."), StatusClick::Restart),
+            State::NotTrusted => (format!("{name}: not started"), None, "Language servers can run this project's code, so Strata asks first. Click to choose.".into(), StatusClick::Ask),
         })
     }
 
     /// The status bar item was clicked.
-    pub(super) fn lsp_status_clicked(&mut self, ctx: &egui::Context, restart: bool) {
-        if restart {
-            self.lsp_command(ctx, Cmd::LspRestart);
-        } else {
-            self.lsp_problems(ctx);
+    pub(super) fn lsp_status_clicked(&mut self, ctx: &egui::Context, click: StatusClick) {
+        match click {
+            StatusClick::Restart => self.lsp_command(ctx, Cmd::LspRestart),
+            StatusClick::Problems => self.lsp_problems(ctx),
+            StatusClick::Ask => {
+                if let Some(path) = self.docs[self.active].path.clone() {
+                    self.lsp.hub.borrow_mut().ask_again(&path);
+                }
+            }
+        }
+    }
+
+    /// The answer to the trust notice for `root`.
+    pub(super) fn lsp_answer_trust(&mut self, root: &Path, answer: Trust) {
+        self.lsp.hub.borrow_mut().answer_trust(root, answer);
+        let folder = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
+        self.status = match answer {
+            Trust::Once => format!("Starting language servers for {folder}"),
+            Trust::Always => format!("Starting language servers for {folder}; Strata won't ask again for it"),
+            Trust::NotNow => format!("Language servers not started for {folder} (click the status bar to change your mind)"),
+        };
+    }
+
+    /// "Start language servers for this folder?", in the corner: servers
+    /// can run a project's own code, so nothing starts until the user says.
+    fn lsp_trust_notice(&mut self, ctx: &egui::Context) {
+        let Some((root, names)) = self.lsp.hub.borrow().trust_question(self.lsp.window) else { return };
+        let folder = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let who = match names.as_slice() {
+            [one] => one.clone(),
+            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+            [] => "Language servers".into(),
+        };
+        let mut answer = None;
+        egui::Window::new("Start language servers?")
+            .id(self.link.id("lsp-trust"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -40.0])
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .show(ctx, |ui| {
+                let size = egui::TextStyle::Body.resolve(ui.style()).size;
+                ui.set_max_width((size * 30.0).max(400.0));
+                ui.strong(format!("Start language servers for “{folder}”?"));
+                ui.label(format!("{who} can run code from this project, such as build scripts and the tools it configures. Start {} only for projects you trust.", if names.len() == 1 { "it" } else { "them" }));
+                ui.label(egui::RichText::new(root.display().to_string()).weak());
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    for (label, a) in [("Start", Trust::Once), ("Always for This Folder", Trust::Always), ("Not Now", Trust::NotNow)] {
+                        if ui.button(label).clicked() {
+                            answer = Some(a);
+                        }
+                    }
+                });
+            });
+        if let Some(a) = answer {
+            self.lsp_answer_trust(&root, a);
         }
     }
 }
@@ -1410,6 +1479,8 @@ mod tests {
         let ctx = Context::default();
         let mut app = StrataApp::new(None, None);
         app.lsp.hub.borrow_mut().use_servers(vec![fake::config("fake", &["*.fake"], options)]);
+        // These tests are about the features; the trust notice has its own.
+        app.settings.lsp_trust_all = true;
         app.open_folder(dir.clone());
         app.open_path(dir.join(files[0].0), false);
         wait(&mut app, &ctx, "the server to start", |a| matches!(a.lsp_status(), Some((t, ..)) if !t.contains("starting")));
@@ -1804,6 +1875,13 @@ mod tests {
         app.lsp.hub.borrow_mut().activate();
         app.open_folder(dir.clone());
         app.open_path(dir.join("src/main.rs"), false);
+        // Nothing starts until the folder is trusted.
+        wait_long(&mut app, &ctx, 10, "the trust notice", &|a| a.lsp.hub.borrow().trust_question(a.lsp.window).is_some());
+        assert!(app.lsp.hub.borrow().pid_for(&dir.join("src/main.rs")).is_none());
+        shoot(&mut app, &ctx, "0-trust-notice");
+        let (root, names) = app.lsp.hub.borrow().trust_question(app.lsp.window).unwrap();
+        eprintln!("asked about {} for {names:?}", root.display());
+        app.lsp_answer_trust(&root, Trust::Once);
         wait_long(&mut app, &ctx, 180, "rust-analyzer's diagnostics", &|a| a.docs[a.active].editor.markers().iter().any(|m| m.style == 1));
         let name = app.lsp_status().unwrap().0;
         assert!(name.starts_with("rust-analyzer"), "{name}");
@@ -1886,6 +1964,7 @@ mod tests {
             let ctx = Context::default();
             let mut app = StrataApp::new(None, None);
             app.settings.minimap = false;
+            app.settings.lsp_trust_all = true;
             app.lsp.hub.borrow_mut().activate();
             app.open_folder(cdir.clone());
             app.open_path(cdir.join("main.c"), false);
@@ -1905,6 +1984,7 @@ mod tests {
             let ctx = Context::default();
             let mut app = StrataApp::new(None, None);
             app.settings.minimap = false;
+            app.settings.lsp_trust_all = true;
             app.lsp.hub.borrow_mut().activate();
             app.open_path(file.clone(), false);
             wait_long(&mut app, &ctx, 120, "the big project's server", &|a| a.lsp_status().is_some_and(|s| !s.0.contains("starting")));
@@ -2001,6 +2081,32 @@ mod tests {
         app.run(&ctx, Cmd::CommandPalette);
         frame(&mut app, &ctx, vec![]);
         assert!(app.lsp.hover.shown.is_none());
+    }
+
+    #[test]
+    fn the_trust_notice_asks_before_a_server_starts() {
+        let dir = temp_dir("lsp-trust-ui");
+        std::fs::write(dir.join("a.fake"), "let bad = 1;\n").unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(None, None);
+        app.lsp.hub.borrow_mut().use_servers(vec![fake::config("fake", &["*.fake"], json!({}))]);
+        app.lsp.hub.borrow_mut().require_trust();
+        app.open_folder(dir.clone());
+        app.open_path(dir.join("a.fake"), false);
+        for _ in 0..3 {
+            frame(&mut app, &ctx, vec![]);
+        }
+        assert!(app.lsp.hub.borrow().pid_for(&dir.join("a.fake")).is_none());
+        let notice = ctx.memory(|m| m.area_rect(app.link.id("lsp-trust")));
+        assert!(notice.is_some(), "the notice is up");
+        assert_eq!(app.lsp_status().map(|s| (s.0.ends_with("not started"), s.3)), Some((true, StatusClick::Ask)));
+        maybe_shoot(&mut app, &ctx, "trust-notice");
+        // Typing goes on meanwhile: the notice doesn't take the keyboard.
+        frame(&mut app, &ctx, vec![Event::Text("x".into())]);
+        assert!(text(&app).starts_with('x'));
+        app.lsp_answer_trust(&dir, Trust::Once);
+        wait(&mut app, &ctx, "diagnostics", |a| !markers(a).is_empty());
+        assert!(ctx.memory(|m| m.area_rect(app.link.id("lsp-trust"))).is_none() || app.lsp.hub.borrow().trust_question(app.lsp.window).is_none());
     }
 
     #[test]

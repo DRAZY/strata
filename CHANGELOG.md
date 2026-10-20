@@ -42,10 +42,12 @@ All notable changes to Strata are recorded here. The format follows
   / Ctrl+K Ctrl+P elsewhere) and **LSP: Restart Language Servers**, also in
   Tools ▸ Language Server. The status bar shows the server for the current
   file and its error and warning counts. A server that stops is restarted
-  after a pause. Strata never downloads or installs servers. `lsp_servers` in
-  settings.json changes the built-in servers or adds others, and
-  `lsp_enabled` turns the feature off. See Languages and Syntaxes ▸ Language
-  servers in the manual.
+  after a pause. Servers start only in project folders you trust: the first
+  time, Strata asks (Start, Always for This Folder, Not Now), and
+  `lsp_trust_all` skips the question. Strata never downloads or installs
+  servers. `lsp_servers` in settings.json changes the built-in servers or adds
+  others, and `lsp_enabled` turns the feature off. See Languages and Syntaxes
+  ▸ Language servers in the manual.
 
 ## [1.0.2] - 2026-10-15
 

@@ -136,6 +136,16 @@ The status bar shows the server for the current file and how it's doing: "starti
 
 Strata talks to servers only on your computer, through their input and output: it doesn't download servers, and makes no network connections for them. Large files opened in [large-file mode](troubleshooting.md#very-large-files) aren't sent to servers.
 
+### Trusting a project
+
+Language servers can run code from the project they work on: rust-analyzer runs build scripts and procedural macros and the tools a project's `.cargo/config.toml` names, and other servers may load plugins from the project. So the first time a server would start for a project folder, Strata asks in the corner of the window: "Start language servers for “folder”?"
+
+- **Start** starts them until you quit Strata.
+- **Always for This Folder** starts them and remembers the folder (and the folders inside it) in Strata's own settings folder, in `lsp_trusted_folders.json`, never in the project.
+- **Not Now** leaves them off for this session. The status bar shows the server as "not started"; click it to be asked again.
+
+You can keep typing while the question is up; until you answer, completions are words from the file and Go to Definition uses Strata's own search. Servers you add in `lsp_servers` are asked about the same way. To start servers everywhere without being asked, set `lsp_trust_all` to `true` (**Start language servers without asking** in the Settings window).
+
 ### Built-in servers
 
 Strata knows these servers and uses them when their program is installed (on your `PATH`, or in a usual place such as `~/.cargo/bin`, `/opt/homebrew/bin` or `~/go/bin`; apps opened from the Finder on macOS don't see your shell's `PATH`, so Strata adds those folders itself):
