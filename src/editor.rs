@@ -175,6 +175,9 @@ pub struct Editor {
     /// follow edits like `tracked`, so they stay on their text until the
     /// server sends new ones.
     markers: Vec<Marker>,
+    /// Ranges the app follows by id (a code block whose captured output is
+    /// still to come); they follow edits like `tracked`.
+    pins: Vec<(u64, Range<usize>)>,
     /// Edits are ignored (views like Show Unsaved Changes); selection still works.
     pub read_only: bool,
 }
@@ -522,6 +525,7 @@ impl Editor {
             tracked: Vec::new(),
             find_scope: None,
             markers: Vec::new(),
+            pins: Vec::new(),
             read_only: false,
         }
     }
@@ -591,6 +595,25 @@ impl Editor {
 
     pub fn markers(&self) -> &[Marker] {
         &self.markers
+    }
+
+    /// Follow `range` through every later edit, as `set_tracked` does;
+    /// returns an id for `pinned` and `unpin`. Text deleted around it
+    /// shrinks it, so a caller compares the text there with what it pinned.
+    pub fn pin(&mut self, range: Range<usize>) -> u64 {
+        let id = next_key();
+        let len = self.buffer.len_chars();
+        self.pins.push((id, range.start.min(len)..range.end.min(len)));
+        id
+    }
+
+    /// Where a pinned range is now.
+    pub fn pinned(&self, id: u64) -> Option<Range<usize>> {
+        self.pins.iter().find(|p| p.0 == id).map(|p| p.1.clone())
+    }
+
+    pub fn unpin(&mut self, id: u64) {
+        self.pins.retain(|p| p.0 != id);
     }
 
     /// Whole text as one string, cached until the next edit (for regex search).
@@ -864,7 +887,7 @@ impl Editor {
         self.buffer.remove(at..at + remove);
         self.buffer.insert(at, text);
         let n = text.chars().count();
-        for r in self.tracked.iter_mut().chain(self.find_scope.iter_mut().flatten()).chain(self.markers.iter_mut().map(|m| &mut m.range)) {
+        for r in self.tracked.iter_mut().chain(self.find_scope.iter_mut().flatten()).chain(self.markers.iter_mut().map(|m| &mut m.range)).chain(self.pins.iter_mut().map(|p| &mut p.1)) {
             *r = track_edit(r, at, remove, n);
         }
         if self.bookmarks.is_empty() && self.marks.is_empty() {

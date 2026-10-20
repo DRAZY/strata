@@ -50,8 +50,9 @@ All notable changes to Strata are recorded here. The format follows
   file opens or the preview draws. Before a file's first block runs, Strata
   shows exactly what will run and where, and asks; **Don't ask again for
   this file** is remembered in Strata's settings folder, never in the file,
-  and a different file at the same path asks again. Files outside the open
-  folders ask every time. See Notes ▸ Running code blocks in the manual.
+  and a different file at the same path, or a change made outside Strata,
+  asks again. Files outside the open folders ask every time, and a block
+  with invisible or text-reordering characters never runs. See Notes ▸ Running code blocks in the manual.
 - Optional AI helpers with a model you choose (Tools ▸ AI and the command
   palette): **Summarize Changes** (the whole review or one file), **Explain
   Change**, **Flag Risks**, **Draft Commit Message** and **Explain

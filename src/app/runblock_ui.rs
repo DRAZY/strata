@@ -64,6 +64,7 @@ struct Ask {
     /// open in the side bar).
     key: Option<FileKey>,
     dont_ask: bool,
+    hidden: Vec<char>,
 }
 
 /// A capture running on its own thread.
@@ -71,6 +72,9 @@ struct Running {
     doc: u64,
     block: CodeBlock,
     notes: bool,
+    /// The block's text in the editor (`Editor::pin`), from its opening
+    /// fence to the end of its closing one, and that text as it was.
+    pin: Option<(u64, String)>,
     rx: Receiver<Result<runblock::Captured, String>>,
 }
 
@@ -188,12 +192,16 @@ impl StrataApp {
         // Remembered only for a file on disk in a folder open in the side bar;
         // anything else (an untitled tab, a file from elsewhere) asks every time.
         let key = req.path.as_deref().and_then(runblock::file_key).filter(|k| self.in_open_folder(&k.path));
+        // A block with characters that hide or reorder text always gets the
+        // dialog, which spells them out and won't run it.
+        let hidden = runblock::hidden(&req.block.code);
         if let Some(k) = &key
+            && hidden.is_empty()
             && self.allowed().allowed(k)
         {
             return self.execute(ctx, req);
         }
-        self.code_run.asking = Some(Ask { req, key, dont_ask: false });
+        self.code_run.asking = Some(Ask { req, key, dont_ask: false, hidden });
         ctx.request_repaint();
     }
 
@@ -224,6 +232,10 @@ impl StrataApp {
     }
 
     fn execute(&mut self, ctx: &egui::Context, req: Request) {
+        if !runblock::hidden(&req.block.code).is_empty() {
+            self.status = "Strata doesn't run a code block with hidden or reordering characters".into();
+            return;
+        }
         let code = req.block.code.clone();
         let name = req.lang.name;
         let tab = match req.dest {
@@ -268,7 +280,19 @@ impl StrataApp {
             ctx2.request_repaint();
         });
         self.status = format!("Running the {} block…", lang.name);
-        self.code_run.running = Some(Running { doc, block, notes, rx });
+        // Follow the block through edits made while it runs, so the output
+        // goes under this block or nowhere (never under an identical one).
+        // The closing fence's line break is left out: typing at the start of
+        // the next line mustn't count as changing the block.
+        let pin = self.docs.iter_mut().find(|d| d.editor.id() == doc).map(|d| {
+            let text = d.editor.text_snapshot();
+            let b = &d.editor.buffer;
+            let end = block.lines.start + text[block.lines.clone()].trim_end_matches(['\r', '\n']).len();
+            let range = b.byte_to_char(block.lines.start)..b.byte_to_char(end);
+            let shown = b.slice(range.clone());
+            (d.editor.pin(range), shown)
+        });
+        self.code_run.running = Some(Running { doc, block, notes, pin, rx });
     }
 
     /// Each frame: the confirmation, finished captures, REPLs that didn't start.
@@ -291,6 +315,15 @@ impl StrataApp {
 
     fn insert_output(&mut self, r: Running, result: Result<runblock::Captured, String>) {
         let lang = r.block.lang.clone();
+        let doc = self.docs.iter().position(|d| d.editor.id() == r.doc);
+        // Where the block is now, if it's still there exactly as it ran.
+        let place = doc.and_then(|i| {
+            let d = &mut self.docs[i];
+            let (pin, shown) = r.pin.as_ref()?;
+            let range = d.editor.pinned(*pin)?;
+            d.editor.unpin(*pin);
+            (d.editor.buffer.slice(range.clone()) == *shown).then_some((i, range.start))
+        });
         let out = match result {
             Ok(out) => out,
             Err(e) => {
@@ -298,21 +331,25 @@ impl StrataApp {
                 return;
             }
         };
-        let Some(i) = self.docs.iter().position(|d| d.editor.id() == r.doc) else {
-            self.status = format!("The {lang} block finished, but its tab was closed");
+        let edit = place.and_then(|(i, start)| {
+            let d = &mut self.docs[i];
+            let text = d.editor.text_snapshot();
+            let start = d.editor.buffer.char_to_byte(start);
+            let blocks = runblock::code_blocks(&text, r.notes);
+            let k = blocks.iter().position(|b| b.lines.start == start && b.code == r.block.code && b.lang == r.block.lang)?;
+            runblock::output_edit(&text, &blocks, k, &out.text, d.editor.buffer.line_ending().as_str()).map(|e| (i, e))
+        });
+        let Some((i, (range, new))) = edit else {
+            // Not under a block that may not be the one that ran: the output
+            // goes to a tab of its own instead.
+            let why = if doc.is_none() { "its tab was closed" } else { "it changed while it ran" };
+            self.push_doc(crate::document::Document::untitled());
+            let t = self.active;
+            self.docs[t].editor.insert_text(&out.text);
+            self.status = format!("The {lang} block finished, but {why}, so its output is in this new tab instead of the note");
             return;
         };
-        // The text may have changed while it ran: find the block again (the
-        // same code, the nearest to where it was).
         let d = &mut self.docs[i];
-        let text = d.editor.text_snapshot();
-        let blocks = runblock::code_blocks(&text, r.notes);
-        let found = blocks.iter().enumerate().filter(|(_, b)| b.code == r.block.code && b.lang == r.block.lang).min_by_key(|(_, b)| b.at.abs_diff(r.block.at)).map(|(k, _)| k);
-        let edit = found.and_then(|k| runblock::output_edit(&text, &blocks, k, &out.text, d.editor.buffer.line_ending().as_str()));
-        let Some((range, new)) = edit else {
-            self.status = format!("The {lang} block changed while it ran, so its output wasn't inserted");
-            return;
-        };
         let b = &d.editor.buffer;
         let chars = b.byte_to_char(range.start)..b.byte_to_char(range.end);
         // One edit, so one Undo takes it back.
@@ -348,17 +385,27 @@ impl StrataApp {
             ui.label(egui::RichText::new(format!("Exactly this ({} block):", ask.req.lang.name)).size(small));
             egui::Frame::new().fill(ui.visuals().extreme_bg_color).corner_radius(4).inner_margin(8).show(ui, |ui| {
                 egui::ScrollArea::vertical().max_height((screen.height() * 0.45).max(120.0)).auto_shrink([false, true]).show(ui, |ui| {
-                    let mut shown = ask.req.block.code.as_str();
+                    let shown = runblock::visible(&ask.req.block.code);
+                    let mut shown = shown.as_str();
                     ui.add(egui::TextEdit::multiline(&mut shown).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
                 });
             });
             ui.add_space(6.0);
-            if ask.key.is_some() {
+            let blocked = !ask.hidden.is_empty();
+            if blocked {
+                let names: Vec<String> = ask.hidden.iter().map(|c| format!("U+{:04X}", *c as u32)).collect();
+                let why = format!(
+                    "Strata won't run this block: it holds characters that are invisible or change the order text is shown in ({}), so what you see above may not be what would run. Above, each is spelled out by its code. Remove them in the editor first.",
+                    names.join(", ")
+                );
+                ui.add(egui::Label::new(egui::RichText::new(why).size(small).color(ui.visuals().error_fg_color)).wrap());
+                ui.add_space(4.0);
+            } else if ask.key.is_some() {
                 ui.checkbox(&mut ask.dont_ask, "Don't ask again for this file").on_hover_text("Remembered in Strata's settings folder, not in the file (Notes: Forget Files Allowed to Run Code Blocks undoes it)");
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                run = ui.button("Run").clicked();
+                run = ui.add_enabled(!blocked, egui::Button::new("Run")).clicked();
                 cancel = ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape));
             });
         });
@@ -366,7 +413,7 @@ impl StrataApp {
             self.code_run.asking = None;
             self.status = "Nothing was run".into();
         } else if run {
-            let Ask { req, key, dont_ask } = self.code_run.asking.take().expect("checked");
+            let Ask { req, key, dont_ask, .. } = self.code_run.asking.take().expect("checked");
             if let Some(key) = key {
                 // Confirmed once: the rest of this session doesn't ask again for this file.
                 if dont_ask {
@@ -630,6 +677,16 @@ mod tests {
         assert!(!app.code_run.asking(), "remembered across windows and Strata's own saves");
         let s = wait_for(&mut app, &ctx, "two words");
         assert!(s.contains("two words"), "{s} / {} / tabs {}", app.status, app.terminal.tabs.len());
+        // Another program rewrites it in place, through a hard link: same
+        // path and identity, different text, so it asks again.
+        let alias = dir.join("alias.md");
+        std::fs::hard_link(&file, &alias).unwrap();
+        let rewritten = std::fs::read_to_string(&file).unwrap() + "\n<!-- changed elsewhere -->\n";
+        std::fs::write(&alias, rewritten).unwrap();
+        std::fs::remove_file(&alias).unwrap();
+        click(&mut app, &ctx, "▶ Run");
+        assert!(app.code_run.asking(), "a rewrite in place asks again");
+        click(&mut app, &ctx, "Cancel");
         drop(app);
         // Another file put at the same path (a download, a checkout) asks again.
         let other = dir.join("incoming.md");
@@ -780,5 +837,125 @@ mod tests {
         assert_eq!(app.terminal.tabs.len(), 2);
         assert_eq!(app.terminal.active_terminal().unwrap().repl(), Some("python3"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `STRATA_RUN_SHOTS=<folder> cargo test --release run_block_shots`: whole
+    /// frames rendered off screen (wgpu): a Python block run in its REPL tab,
+    /// and the dialog refusing a block with a hidden character.
+    #[test]
+    fn run_block_shots() {
+        let Some(out) = std::env::var_os("STRATA_RUN_SHOTS").map(PathBuf::from) else { return };
+        let Some(mut shooter) = crate::app::headless::Shooter::new(1100, 720, 2.0) else { return };
+        let dir = temp_dir("run-shots");
+        let file = dir.join("Runbook.md");
+        std::fs::write(&file, "# Runbook\n\n```python\nfor i in range(3):\n    print(\"step\", i * 7)\n```\n\n```sh\necho safe \u{202E}txt.hs\n```\n").unwrap();
+        let ctx = Context::default();
+        let mut app = StrataApp::new(Some(dir.clone()), None);
+        app.settings.markdown_preview = true;
+        app.terminal_started = true;
+        app.open_path(file, false);
+        frame(&mut app, &ctx, vec![]);
+        app.docs[app.active].editor.select_ranges(&[25..25], 0);
+        app.run(&ctx, Cmd::NotesRunCodeBlock);
+        click(&mut app, &ctx, "Run");
+        let s = wait_for(&mut app, &ctx, "step 14");
+        assert!(s.contains("step 14"), "{s}");
+        wait_for(&mut app, &ctx, ">>> ");
+        shooter.shoot(&ctx, &mut app, 4, vec![], &out.join("run-python-tab.ppm"));
+        let sh = app.docs[app.active].editor.buffer.byte_to_char(80);
+        app.docs[app.active].editor.select_ranges(&[sh..sh], 0);
+        app.run(&ctx, Cmd::NotesRunCodeBlock);
+        assert!(app.code_run.asking());
+        shooter.shoot(&ctx, &mut app, 6, vec![], &out.join("run-hidden-refused.ppm"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blocks_with_hidden_characters_never_run() {
+        let dir = temp_dir("run-hidden");
+        let file = dir.join("runbook.md");
+        // The first block looks like `echo safe` but a right-to-left override
+        // reorders what follows it on screen.
+        let src = "```sh\necho safe \u{202E}txt.hs\n```\n\n```sh\necho fine\n```\n";
+        std::fs::write(&file, src).unwrap();
+        let ctx = Context::default();
+        let mut app = app_with_terminal(&ctx, &dir, &file, "echo READY; cat -v", None);
+        // Confirm the ordinary block, so the file doesn't ask again this session.
+        let fine = src.find("echo fine").unwrap();
+        app.docs[app.active].editor.select_ranges(&[fine..fine], 0);
+        app.run(&ctx, Cmd::NotesRunCodeBlock);
+        click(&mut app, &ctx, "Run");
+        wait_for(&mut app, &ctx, "echo fine");
+        // The other still shows the dialog, with the character spelled out and Run refused.
+        for capture in [false, true] {
+            app.docs[app.active].editor.select_ranges(&[8..8], 0);
+            app.run(&ctx, if capture { Cmd::NotesRunCodeBlockCapture } else { Cmd::NotesRunCodeBlock });
+            let ask = app.code_run.asking.as_ref().expect("it shows what's wrong");
+            assert_eq!(ask.hidden, vec!['\u{202E}']);
+            assert_eq!(runblock::visible(&ask.req.block.code), "echo safe ⟨U+202E⟩txt.hs");
+            click(&mut app, &ctx, "Run");
+            assert!(app.code_run.asking(), "Run does nothing");
+            click(&mut app, &ctx, "Cancel");
+            assert!(app.code_run.running.is_none());
+        }
+        idle(&mut app, &ctx);
+        assert!(!screen(&app).contains("safe"), "nothing was sent: {}", screen(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Start capturing the first block of `src` (confirmed), returning the app.
+    fn capturing(ctx: &Context, tag: &str, src: &str) -> (PathBuf, StrataApp) {
+        let dir = temp_dir(tag);
+        let file = dir.join("steps.md");
+        std::fs::write(&file, src).unwrap();
+        let mut app = StrataApp::new(Some(dir.clone()), None);
+        app.open_path(file, false);
+        frame(&mut app, ctx, vec![]);
+        app.docs[app.active].editor.select_ranges(&[8..8], 0);
+        app.run(ctx, Cmd::NotesRunCodeBlockCapture);
+        click(&mut app, ctx, "Run");
+        assert!(app.code_run.running.is_some());
+        (dir, app)
+    }
+
+    const TWINS: &str = "```sh\nsleep 0.5; echo twin\n```\n\nBetween.\n\n```sh\nsleep 0.5; echo twin\n```\n";
+
+    #[test]
+    fn capture_output_lands_under_its_own_block_among_twins() {
+        let ctx = Context::default();
+        let (dir, mut app) = capturing(&ctx, "run-twins", TWINS);
+        // Text added above both while it runs: the block moves, and is still found.
+        app.docs[app.active].editor.select_ranges(&[0..0], 0);
+        app.docs[app.active].editor.insert_text("Intro\n\n");
+        wait_capture(&mut app, &ctx);
+        assert_eq!(text(&app), format!("Intro\n\n```sh\nsleep 0.5; echo twin\n```\n```output\ntwin\n```\n{}", &TWINS[31..]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_never_lands_under_a_twin_when_its_block_is_gone_or_changed() {
+        for change in ["delete", "edit"] {
+            let ctx = Context::default();
+            let (dir, mut app) = capturing(&ctx, "run-twins-gone", TWINS);
+            let e = &mut app.docs[app.active].editor;
+            if change == "delete" {
+                // The first block (and the blank line after it) removed while it runs.
+                e.select_ranges(&[0..32], 0);
+                e.insert_text("");
+            } else {
+                e.select_ranges(&[17..17], 0);
+                e.insert_text(" changed");
+            }
+            let before = text(&app);
+            let tabs = app.docs.len();
+            wait_capture(&mut app, &ctx);
+            assert_eq!(app.docs.len(), tabs + 1, "{change}: the output went to a tab of its own");
+            assert_eq!(text(&app), "twin", "{change}");
+            let note = app.docs.iter().position(|d| d.path.as_ref().is_some_and(|p| p.ends_with("steps.md"))).unwrap();
+            let b = &app.docs[note].editor.buffer;
+            assert_eq!(b.slice(0..b.len_chars()), before, "{change}: the note wasn't touched");
+            assert!(app.status.contains("changed while it ran"), "{change}: {}", app.status);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }
