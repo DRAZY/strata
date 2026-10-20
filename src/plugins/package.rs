@@ -461,25 +461,58 @@ pub fn snapshot(config: &Path, dir: &Path) -> Result<(String, Manifest), String>
         // The marker first: whatever happens next, the folder is Strata's to remove.
         imp::write_new_mode(&d, MARKER, MARKER_TEXT, 0o400).map_err(|e| format!("couldn't make a copy of it: {e}"))?;
         imp::write_new_mode(&d, LOCK, b"", 0o400).map_err(|e| format!("couldn't make a copy of it: {e}"))?;
+        // Held until it has its name and is sealed again (see below).
+        let lock = imp::open_file_at(&d, LOCK).map_err(|e| format!("couldn't make a copy of it: {e}"))?;
+        lock.try_lock().map_err(|e| format!("couldn't make a copy of it: {e}"))?;
         let package = real.join(&tmp).join(PACKAGE);
         copy_tree(dir, &package)?;
         let found = identity(&package)?;
         seal(config, &package)?;
         seal(config, &real.join(&tmp))?;
         check_sealed(&real.join(&tmp))?;
-        Ok(found)
+        Ok((found, d, lock))
     })();
-    let (sha, manifest) = match made {
+    let ((sha, manifest), d, lock) = match made {
         Ok(r) => r,
         Err(e) => {
             remove_snapshot(&root, &real, &tmp);
             return Err(e);
         }
     };
-    if imp::move_noreplace(&root, &tmp, &root, &sha) != crate::claim::Moved::Done {
-        // One for this identity is there already (an earlier start, or
-        // another window just now); `open_snapshot` checks it before it runs.
+    let (moved, why, resealed, made_id) = name_sealed(&root, &tmp, &sha, d, lock);
+    #[cfg(test)]
+    if moved == crate::claim::Moved::Done && swap_after_naming().lock().unwrap_or_else(|e| e.into_inner()).iter().any(|c| c == config) {
+        // Another folder takes the name the moment it's given. (Opened up
+        // first: macOS 14 won't rename a read-only folder.)
+        #[cfg(unix)]
+        let _ = std::fs::set_permissions(real.join(&sha), std::os::unix::fs::PermissionsExt::from_mode(0o700));
+        std::fs::rename(real.join(&sha), real.join(format!("{sha}-moved-away"))).expect("the test moves the snapshot away");
+        std::fs::create_dir(real.join(&sha)).expect("the test puts another folder there");
+    }
+    if moved != crate::claim::Moved::Done {
         remove_snapshot(&root, &real, &tmp);
+        // Else one for this identity is there already (an earlier start, or
+        // another window just now); `open_snapshot` checks it before it runs.
+        if imp::open_dir(&root, &sha).is_err() {
+            return Err(format!("couldn't keep its approved copy ({why}), so it wasn't started"));
+        }
+    } else {
+        // What now has the name must be the very folder made and sealed
+        // above (reopened without following a link), still sealed. If not,
+        // nothing is removed (what's there isn't known to be Strata's) and
+        // it doesn't run. This ties the name to the copy at the moment it's
+        // given; a plugin of the same user swapping folders later is the
+        // accepted risk of plugins running unsandboxed (docs/manual/plugins.md).
+        let named = imp::open_dir(&root, &sha).ok();
+        let same = named.as_ref().is_some_and(|n| made_id.is_some() && imp::dir_id(n) == made_id);
+        if !same {
+            return Err("its approved copy was replaced by another folder as Strata named it, so it wasn't started".into());
+        }
+        if let Err(e) = resealed.and_then(|()| if named.as_ref().is_some_and(dir_sealed) { Ok(()) } else { Err(std::io::Error::other("still writable")) }) {
+            drop(named);
+            remove_snapshot(&root, &real, &sha);
+            return Err(format!("couldn't make its approved copy read-only ({e}), so it wasn't started"));
+        }
     }
     Ok((sha, manifest))
 }
@@ -601,6 +634,52 @@ fn writable_dir(d: &imp::Dir) {
 #[cfg(not(unix))]
 fn writable_dir(_d: &imp::Dir) {}
 
+/// Give the sealed snapshot `tmp` (open as `d`, its `lock` held) its name
+/// `sha`, never replacing one: how the move went, the error if it didn't,
+/// and whether the folder is sealed again.
+///
+/// Some systems (macOS 14) won't rename a folder its owner can't write to,
+/// so the folder is opened up for the move and sealed again through its
+/// handle; meanwhile the lock keeps any other Strata from running (or
+/// pruning) it unsealed.
+///
+/// Also returns which folder `d` is, to check that the name now leads to it.
+#[cfg(unix)]
+fn name_sealed(root: &imp::Dir, tmp: &str, sha: &str, d: imp::Dir, lock: std::fs::File) -> (crate::claim::Moved, std::io::Error, std::io::Result<()>, Option<(u64, u64)>) {
+    use std::os::fd::AsRawFd;
+    let id = imp::dir_id(&d);
+    writable_dir(&d);
+    let moved = imp::move_noreplace(root, tmp, root, sha);
+    let why = std::io::Error::last_os_error();
+    // SAFETY: changing our own folder's permissions through its descriptor.
+    let resealed = if unsafe { libc::fchmod(d.as_raw_fd(), 0o500) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) };
+    drop(lock);
+    (moved, why, resealed, id)
+}
+
+/// A snapshot folder's handle shows it read-and-enter only.
+#[cfg(unix)]
+fn dir_sealed(d: &imp::Dir) -> bool {
+    imp::dir_mode(d).is_some_and(|m| m & 0o222 == 0)
+}
+
+/// Windows seals files only.
+#[cfg(not(unix))]
+fn dir_sealed(_d: &imp::Dir) -> bool {
+    true
+}
+
+/// Windows seals files only, and an open handle in a folder keeps it from
+/// being renamed: both are let go first.
+#[cfg(not(unix))]
+fn name_sealed(root: &imp::Dir, tmp: &str, sha: &str, d: imp::Dir, lock: std::fs::File) -> (crate::claim::Moved, std::io::Error, std::io::Result<()>, Option<(u64, u64)>) {
+    let id = imp::dir_id(&d);
+    drop(lock);
+    drop(d);
+    let moved = imp::move_noreplace(root, tmp, root, sha);
+    (moved, std::io::Error::last_os_error(), Ok(()), id)
+}
+
 #[cfg(unix)]
 fn clear_read_only(_d: &imp::Dir, _name: &str) {
     // Unix removes a name by its folder's permissions, not the file's.
@@ -646,6 +725,14 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Tests: settings folders where a folder is swapped in as soon as a
+/// snapshot is given its name.
+#[cfg(test)]
+fn swap_after_naming() -> &'static std::sync::Mutex<Vec<PathBuf>> {
+    static F: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();
+    F.get_or_init(Default::default)
 }
 
 /// Tests: settings folders whose snapshots can't be sealed.
@@ -786,7 +873,7 @@ pub fn unseal_for_tests(dir: &Path) {
 
 /// Tests: sealing snapshots under `config` fails, as a refused
 /// `set_permissions` would.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub fn fail_seal_for_tests(config: &Path) {
     seal_fails().lock().unwrap_or_else(|e| e.into_inner()).push(config.to_path_buf());
 }
@@ -969,6 +1056,32 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(src).ok();
     }
 
+    /// The folder at the snapshot's name once it's named must be the very
+    /// one Strata made and sealed: one swapped in there is refused, and
+    /// left alone (it isn't Strata's to remove).
+    #[test]
+    fn a_folder_swapped_in_as_the_snapshot_is_named_is_refused() {
+        let config = temp("swap-named");
+        let src = source("swap-named-src");
+        let sha = hash_dir(&src).unwrap();
+        super::swap_after_naming().lock().unwrap().push(config.clone());
+        let err = snapshot(&config, &src).unwrap_err();
+        assert!(err.contains("wasn't started"), "{err}");
+        let snaps = config.join(DIR).join(SNAPSHOTS);
+        assert!(snaps.join(&sha).is_dir(), "the stranger's folder is left alone");
+        assert!(!snaps.join(&sha).join(MARKER).exists(), "and it's the stranger's");
+        // Unswapped, the same package is kept and opens.
+        super::swap_after_naming().lock().unwrap().clear();
+        super::unseal_for_tests(&config);
+        std::fs::remove_dir_all(snaps.join(&sha)).unwrap();
+        let (again, _) = snapshot(&config, &src).unwrap();
+        assert_eq!(again, sha);
+        assert!(open_snapshot(&config, &sha).is_ok());
+        super::unseal_for_tests(&config);
+        std::fs::remove_dir_all(config).ok();
+        std::fs::remove_dir_all(src).ok();
+    }
+
     #[test]
     fn a_folder_whose_manifest_disagrees_with_its_name_is_listed_as_broken() {
         let config = temp("broken");
@@ -982,7 +1095,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(config.join("Plugins/.installing-2")).unwrap();
         // One left two hours ago; one another Strata may be using now.
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
-        std::fs::File::open(config.join("Plugins/.installing-1")).unwrap().set_modified(old).unwrap();
+        crate::paths::set_modified(&config.join("Plugins/.installing-1"), old);
         tidy(&config);
         assert!(!config.join("Plugins/.installing-1").exists());
         assert!(config.join("Plugins/.installing-2").exists(), "a fresh one is left alone");

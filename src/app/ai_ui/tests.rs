@@ -36,13 +36,21 @@ fn select_file(app: &mut StrataApp, dir: &Path, name: &str, text: &str) {
     app.docs[i].editor.select_all();
 }
 
+/// The longest a frame may take. A debug build on a busy CI machine can
+/// take over half a second for a frame (a fresh context lays out its fonts
+/// in the first), so this is generous; what it must catch is the window
+/// waiting on the provider, and these tests make that wait long: the fake
+/// servers hold their connections for 20 seconds, and the fake `claude`
+/// won't answer until the window has drawn a frame while it runs.
+const FRAME_LIMIT: Duration = Duration::from_secs(5);
+
 /// Draw frames until `done` (each frame runs the app as a window would).
 fn until(app: &mut StrataApp, ctx: &egui::Context, what: &str, done: impl Fn(&StrataApp) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while !done(app) {
         let t = Instant::now();
         frame(app, ctx, vec![]);
-        assert!(t.elapsed() < Duration::from_millis(500), "a frame took {:?}: the UI waited on something", t.elapsed());
+        assert!(t.elapsed() < FRAME_LIMIT, "a frame took {:?}: the UI waited on something", t.elapsed());
         assert!(Instant::now() < deadline, "timed out waiting for {what}: {:?}", app.ai.answer());
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -301,7 +309,9 @@ fn the_settings_window_shows_the_ai_row() {
 }
 
 /// A fake `claude` on PATH: it records its arguments and what it read, and
-/// prints an answer. Nothing runs before consent.
+/// prints an answer, but only once the window has drawn a frame while it
+/// runs (so a window that waited for it fails here, however fast the
+/// machine). Nothing runs before consent.
 #[cfg(unix)]
 #[test]
 fn command_line_provider_with_a_fake_claude() {
@@ -309,7 +319,16 @@ fn command_line_provider_with_a_fake_claude() {
     let bin = temp_dir("fake-bin");
     let script = bin.join("claude");
     let log = bin.join("ran.txt");
-    std::fs::write(&script, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{0}.args'\ncat > '{0}'\npwd > '{0}.cwd'\necho 'Fake **answer**'\n", log.display())).unwrap();
+    let go = bin.join("go");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{0}.args'\ncat > '{0}'\npwd > '{0}.cwd'\ni=0\nwhile [ ! -e '{1}' ]; do i=$((i+1)); if [ $i -gt 300 ]; then echo 'the window waited for claude' >&2; exit 9; fi; sleep 0.05; done\necho 'Fake **answer**'\n",
+            log.display(),
+            go.display()
+        ),
+    )
+    .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     // Found on a PATH the way build systems find programs.
     assert_eq!(crate::ai::cli::find_program("claude", Some(bin.clone().into_os_string())), Some(script.clone()));
@@ -325,6 +344,10 @@ fn command_line_provider_with_a_fake_claude() {
     std::thread::sleep(Duration::from_millis(200));
     assert!(!log.exists(), "the tool doesn't run before consent");
     app.ai_answer(&ctx, true, false);
+    // A frame while it runs (it waits for this); only then may it answer.
+    frame(&mut app, &ctx, vec![]);
+    assert!(app.ai.busy(), "{:?}", app.ai.answer());
+    std::fs::write(&go, "").unwrap();
     until(&mut app, &ctx, "the answer", finished);
     assert_eq!(app.ai.answer(), ("Fake **answer**\n", None, None));
     let stdin = std::fs::read_to_string(&log).unwrap();

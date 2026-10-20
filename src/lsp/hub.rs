@@ -774,7 +774,7 @@ impl Hub {
     }
 
     /// The folder the server handling `path` runs in (tests).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn root_for(&self, path: &Path) -> Option<PathBuf> {
         let i = (*self.assigned.get(&uri::normalize(path))?)?;
         Some(self.slots[i].root.clone())
@@ -792,14 +792,7 @@ impl Hub {
 /// Windows without the `\\?\` prefix canonicalizing adds (URIs and
 /// servers want plain drive paths).
 fn real_path(path: &Path) -> Option<PathBuf> {
-    std::fs::canonicalize(path).ok().map(|p| strip_verbatim(&p.to_string_lossy()))
-}
-
-fn strip_verbatim(p: &str) -> PathBuf {
-    if let Some(unc) = p.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{unc}"));
-    }
-    PathBuf::from(p.strip_prefix(r"\\?\").unwrap_or(p))
+    crate::paths::canonical(path).ok()
 }
 
 /// A missing file's real path: its folder's, plus its name.

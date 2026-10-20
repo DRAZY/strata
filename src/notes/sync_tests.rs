@@ -42,6 +42,24 @@ pub(crate) fn g(f: &Fixture, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
+/// Remove a clone. On Windows a folder can't go while a program works in
+/// it, and the window runs Git in the background now and then (a file's
+/// committed text, the branch): so it's tried again for a while. What
+/// couldn't be removed is named.
+pub(crate) fn remove_clone(dir: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return,
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => {
+                let left: Vec<String> = ignore::WalkBuilder::new(dir).hidden(false).ignore(false).git_ignore(false).build().flatten().take(10).map(|e| e.path().display().to_string()).collect();
+                panic!("couldn't remove {}: {e}; still there: {left:?}", dir.display());
+            }
+        }
+    }
+}
+
 pub(crate) fn write(dir: &Path, rel: &str, text: &str) {
     let p = dir.join(rel);
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -59,7 +77,7 @@ pub(crate) fn fixture(tag: &str) -> Option<Fixture> {
     let base = std::env::temp_dir().join(format!("strata-sync-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let base = std::fs::canonicalize(&base).unwrap();
+    let base = crate::paths::canonical(&base).unwrap();
     let config = base.join("gitconfig");
     std::fs::write(&config, "[user]\n\tname = Tester\n\temail = t@example.com\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n").unwrap();
     let f = Fixture { remote: base.join("remote.git"), here: base.join("here"), there: base.join("there"), config, base };
@@ -964,7 +982,7 @@ fn backups_older_than_30_days_are_removed() {
     write(&old, "worktree/vault/x.md", "old\n");
     write(&old, "README.txt", "a backup\n");
     let month_ago = std::time::SystemTime::now() - Duration::from_secs(31 * 24 * 3600);
-    std::fs::File::open(&old).unwrap().set_modified(month_ago).unwrap();
+    crate::paths::set_modified(&old, month_ago);
     let recent = f.backups().join("0123456789abcdef/2026-10-19_00-00-00-new");
     write(&recent, "worktree/vault/x.md", "new\n");
     write(&recent, "README.txt", "a backup\n");

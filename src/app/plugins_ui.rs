@@ -206,7 +206,7 @@ impl StrataApp {
     }
 
     /// Whether an install is still being read (tests).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn plugin_installing_now(&self) -> bool {
         self.plugins.installing.is_some()
     }

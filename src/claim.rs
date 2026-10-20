@@ -475,6 +475,17 @@ pub(crate) mod imp {
         file.metadata().ok().map(|m| (m.dev(), m.ino()))
     }
 
+    /// Which folder a handle is (device and inode).
+    pub fn dir_id(dir: &Dir) -> Option<(u64, u64)> {
+        id_of(&std::fs::File::from(dir.try_clone().ok()?))
+    }
+
+    /// A folder handle's permission bits.
+    pub fn dir_mode(dir: &Dir) -> Option<u32> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::File::from(dir.try_clone().ok()?).metadata().ok().map(|m| m.permissions().mode() & 0o7777)
+    }
+
     /// Where a folder handle really is.
     pub fn real_path(dir: &Dir) -> io::Result<PathBuf> {
         #[cfg(target_os = "macos")]
@@ -514,7 +525,24 @@ pub(crate) mod imp {
         _held: Vec<Arc<std::fs::File>>,
     }
 
+    /// A path for the Win32 calls made directly, NUL-terminated. One of
+    /// `MAX_PATH` or more gets the `\\?\` spelling (made whole first, since
+    /// that spelling is taken literally), as std does for its own calls.
     fn wide(p: &Path) -> Vec<u16> {
+        let long = p.as_os_str().encode_wide().count() >= 260;
+        let p = match std::path::absolute(p) {
+            Ok(full) if long => {
+                let s = full.to_string_lossy().into_owned();
+                if s.starts_with(r"\\?\") {
+                    full
+                } else if let Some(unc) = s.strip_prefix(r"\\") {
+                    PathBuf::from(format!(r"\\?\UNC\{unc}"))
+                } else {
+                    PathBuf::from(format!(r"\\?\{s}"))
+                }
+            }
+            _ => p.to_path_buf(),
+        };
         p.as_os_str().encode_wide().chain([0]).collect()
     }
 
@@ -644,6 +672,11 @@ pub(crate) mod imp {
     }
 
     /// Volume serial number and file index.
+    /// Which folder a handle is (volume and file index).
+    pub fn dir_id(dir: &Dir) -> Option<(u64, u64)> {
+        id_of(dir._held.last()?)
+    }
+
     pub fn id_of(file: &std::fs::File) -> Option<(u64, u64)> {
         // SAFETY: plain data, filled in by the call.
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
@@ -723,6 +756,9 @@ pub(crate) mod imp {
         no()
     }
     pub fn id_of(_: &std::fs::File) -> Option<(u64, u64)> {
+        None
+    }
+    pub fn dir_id(_: &Dir) -> Option<(u64, u64)> {
         None
     }
     pub fn real_path(_: &Dir) -> io::Result<PathBuf> {
@@ -909,6 +945,26 @@ mod tests {
     }
 
     /// The listed file itself goes to the Trash, and no staging folder stays.
+    /// A file the Recycle Bin can't take (its path is too long) is put back
+    /// as it was, with nothing left over, and the reason given.
+    #[cfg(windows)]
+    #[test]
+    fn a_path_too_long_for_the_recycle_bin_is_put_back() {
+        let dir = temp("long");
+        let deep = (0..6).fold(dir.join("sub"), |p, i| p.join(format!("{i}{}", "d".repeat(40))));
+        std::fs::create_dir_all(&deep).unwrap();
+        let file = deep.join("new.txt");
+        std::fs::write(&file, "listed\n").unwrap();
+        let listed = expect(&file);
+        match trash_listed(&dir, &file, None, &listed) {
+            Err(Refused::Failed(why)) => assert!(why.contains("too long for the Recycle Bin"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "listed\n", "put back as it was");
+        assert!(leftovers(&deep).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_listed_file_goes_to_the_trash() {
         let dir = temp("ok");

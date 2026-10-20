@@ -559,6 +559,7 @@ mod tests {
     }
 
     /// A secret outside the repository, for links to point at.
+    #[cfg(unix)]
     fn outside_secret(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("strata-ai-outside-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

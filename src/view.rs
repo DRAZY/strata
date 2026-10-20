@@ -3071,7 +3071,10 @@ mod tests {
         let start = std::time::Instant::now();
         h.view.fold_all(&mut h.ed);
         let took = start.elapsed();
-        assert!(took.as_secs_f64() < 1.0, "fold_all took {took:?}");
+        // About 0.2 s in a debug build on a quiet machine, over 1 s on a
+        // busy CI runner: this catches work that grows much faster than the
+        // file (57,000 regions), not a slow machine.
+        assert!(took.as_secs_f64() < 5.0, "fold_all took {took:?}");
         assert!(h.view.is_folded_line(4) && !h.view.is_folded_line(5) && h.view.is_fold_header(7));
         h.frame(vec![key(Key::End, Modifiers::COMMAND)]);
         h.frame(vec![]);

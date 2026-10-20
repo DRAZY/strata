@@ -1129,6 +1129,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     fn sh() -> Lang {
         lang("sh").unwrap()
     }

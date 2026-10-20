@@ -992,7 +992,7 @@ fn snap_of(config: &Path, sha: &str) -> PathBuf {
 #[cfg(unix)]
 fn age(dir: &Path) {
     let old = std::time::SystemTime::now() - Duration::from_secs(3 * 86_400);
-    std::fs::File::open(dir).unwrap().set_modified(old).unwrap();
+    crate::paths::set_modified(dir, old);
 }
 
 #[cfg(unix)]
