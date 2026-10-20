@@ -68,7 +68,7 @@ Type `[[` and a list of notes appears under the cursor. Keep typing to narrow it
 
 Under a note, the backlinks panel lists the other notes that link to it, each with the line that holds the link. Click a note's name to open it, or a line to open it there. The panel also shows the note's tags; click one to see the notes with that tag.
 
-The panel shows for notes in an Obsidian vault, and in any folder whose notes use wikilinks. Hide it with the × at its right or **Notes: Toggle Backlinks** (also Tools ▸ Notes ▸ Backlinks), which shows it again. Drag its top edge to resize it. Backlinks count the notes open in tabs as they are now, saved or not (so a link you've just typed, or one a rename has just updated, shows up at once), and the other notes as they are on disk.
+The panel shows for notes in an Obsidian vault, and in any folder whose notes use wikilinks. Hide it with the × at its right or **Notes: Toggle Backlinks** (also Tools ▸ Notes ▸ Backlinks), which shows it again. Drag its top edge to resize it. Backlinks count the notes open in tabs as they are now, saved or not (so a link you've just typed, or one a rename has just updated, shows up right away, or in a very long note once you pause typing), and the other notes as they are on disk.
 
 ## Tags
 

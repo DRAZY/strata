@@ -346,8 +346,23 @@ pub(super) struct Backlink {
     context: Box<str>,
 }
 
+/// An open note's links as the backlinks panel last read them.
+pub(super) struct LiveNote {
+    /// The edit version they were read at.
+    parsed: u64,
+    info: Arc<notes::index::NoteInfo>,
+    /// The latest version seen, and when (input time) it was first seen.
+    seen: u64,
+    changed_at: f64,
+}
+
+/// Notes up to this many characters are read again on every edit; bigger
+/// ones once typing pauses for `LIVE_PAUSE` seconds.
+const LIVE_AT_ONCE: usize = 64 * 1024;
+const LIVE_PAUSE: f64 = 0.3;
+
 /// What a backlinks list was made from: the vault, the note, the index
-/// generation and each open tab's (editor id, edit version).
+/// generation and each open note's (editor id, version its links were read at).
 #[derive(PartialEq)]
 pub(super) struct BacklinksKey(PathBuf, u32, u64, Vec<(u64, u64)>);
 
@@ -356,34 +371,57 @@ impl StrataApp {
     /// note's own text in place of its file's, so links a rename just
     /// updated in unsaved tabs (or typed and not saved) count at once.
     /// By linking note, then in text order.
-    fn live_backlinks(&mut self, vault: &Vault, me: u32) -> Arc<Vec<Backlink>> {
-        let tabs = self.docs.iter().filter(|d| d.compare.is_none()).map(|d| (d.editor.id(), d.editor.version())).collect();
+    fn live_backlinks(&mut self, ctx: &egui::Context, vault: &Vault, me: u32) -> Arc<Vec<Backlink>> {
+        let now = ctx.input(|i| i.time);
+        // Each open note's links, read again once its edits pause (a big
+        // note isn't read on every keystroke).
+        let mut live: HashMap<u32, Arc<notes::index::NoteInfo>> = HashMap::new();
+        let mut tabs = Vec::new();
+        for d in self.docs.iter_mut().filter(|d| d.compare.is_none()) {
+            // Only notes the index reads (not attachments, nor notes too big to read).
+            let Some(src) = d.path.as_deref().and_then(|p| vault.find(p)).filter(|&s| vault.note(s).is_some()) else { continue };
+            if live.contains_key(&src) {
+                continue;
+            }
+            let (id, version) = (d.editor.id(), d.editor.version());
+            let small = d.editor.buffer.len_chars() <= LIVE_AT_ONCE;
+            let note = match self.notes.live.remove(&id) {
+                Some(mut n) => {
+                    if n.seen != version {
+                        (n.seen, n.changed_at) = (version, now);
+                    }
+                    let wait = n.changed_at + LIVE_PAUSE - now;
+                    if n.parsed != version && !small && wait > 0.0 {
+                        ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
+                    } else if n.parsed != version {
+                        n.info = Arc::new(notes::index::NoteInfo::from_text(&d.editor.text_snapshot()));
+                        n.parsed = version;
+                        #[cfg(test)]
+                        {
+                            self.notes.live_reads += 1;
+                        }
+                    }
+                    n
+                }
+                None => {
+                    #[cfg(test)]
+                    {
+                        self.notes.live_reads += 1;
+                    }
+                    LiveNote { parsed: version, seen: version, changed_at: now, info: Arc::new(notes::index::NoteInfo::from_text(&d.editor.text_snapshot())) }
+                }
+            };
+            tabs.push((id, note.parsed));
+            live.insert(src, note.info.clone());
+            self.notes.live.insert(id, note);
+        }
+        self.notes.live.retain(|id, _| tabs.iter().any(|(t, _)| t == id));
         let key = BacklinksKey(vault.root.clone(), me, self.notes.index.generation(), tabs);
         if let Some((k, list)) = &self.notes.backlinks
             && *k == key
         {
             return list.clone();
         }
-        let mut live: HashMap<u32, Arc<notes::index::NoteInfo>> = HashMap::new();
-        for d in self.docs.iter_mut().filter(|d| d.compare.is_none()) {
-            let id = d.editor.id();
-            // Only notes the index reads (not attachments, nor notes too big to read).
-            let Some(src) = d.path.as_deref().and_then(|p| vault.find(p)).filter(|&s| vault.note(s).is_some()) else { continue };
-            if live.contains_key(&src) {
-                continue;
-            }
-            let version = d.editor.version();
-            let info = match self.notes.live.get(&id) {
-                Some((v, info)) if *v == version => info.clone(),
-                _ => {
-                    let info = Arc::new(notes::index::NoteInfo::from_text(&d.editor.text_snapshot()));
-                    self.notes.live.insert(id, (version, info.clone()));
-                    info
-                }
-            };
-            live.insert(src, info);
-        }
-        self.notes.live.retain(|id, _| key.3.iter().any(|(t, _)| t == id));
         let mut out: Vec<Backlink> = vault
             .backlinks(me)
             .iter()
@@ -445,7 +483,7 @@ impl StrataApp {
         let (mut hide, mut undo) = (false, false);
         let can_undo = self.notes.last_rename.as_ref().is_some_and(super::notes_ui::UndoRename::undoable) && !self.notes.disk.running();
         let size = self.ui_size();
-        let links = me.map_or_else(Default::default, |i| self.live_backlinks(&vault, i));
+        let links = me.map_or_else(Default::default, |i| self.live_backlinks(&ui.ctx().clone(), &vault, i));
         egui::Panel::bottom(self.link.id("notes-backlinks")).resizable(true).default_size((size * 9.0).max(120.0)).min_size(44.0).show(ui, |ui| {
             let mut sources: Vec<u32> = links.iter().map(|b| b.src).collect();
             sources.dedup();
