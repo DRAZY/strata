@@ -102,6 +102,9 @@ pub struct FileChange {
     pub hash: u64,
     /// Every change in it was kept: it matches the text kept for it.
     pub kept: bool,
+    /// What the file looked like on disk when listed (None: not there).
+    /// Trashing it checks it still does.
+    pub stat: Option<Stat>,
 }
 
 /// What the changes are measured against.
@@ -145,6 +148,18 @@ pub enum Outcome {
     Snapshot(Result<Snapshot, String>),
     /// A review tab's base: its file, and the bytes (None: not in the base).
     Base(PathBuf, Option<Vec<u8>>),
+    /// A file moved to the Trash, or why not.
+    Trashed(PathBuf, Result<(), TrashRefused>),
+}
+
+/// Why a file wasn't moved to the Trash.
+#[derive(Debug, PartialEq)]
+pub enum TrashRefused {
+    /// It changed (or was replaced) since it was listed.
+    Changed,
+    /// It isn't really inside the repository (a link on the way).
+    Outside,
+    Failed(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +371,7 @@ fn read_small(path: &Path) -> Option<Vec<u8>> {
 /// status-change time where there are such things, so a rewrite of the same
 /// size within one modification-time tick still shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct Stat {
+pub struct Stat {
     len: u64,
     mtime: Option<SystemTime>,
     change: u64,
@@ -419,12 +434,15 @@ impl Src {
     }
 }
 
+/// A commit, its files and the paths of those with non-UTF-8 names (see `read_tree`).
+type CachedTree = (String, Arc<HashMap<String, String>>, Arc<Vec<PathBuf>>);
+
 /// Remembered between scans of one repository.
 struct Cache {
     /// The repository this is about: anything else starts afresh.
     top: Option<PathBuf>,
     /// The base commit's files: relative path → blob id.
-    tree: Option<(String, Arc<HashMap<String, String>>)>,
+    tree: Option<CachedTree>,
     /// Per file: its stat and base when last looked at, and what was found
     /// (None: same as the base).
     seen: HashMap<String, (Option<Stat>, u64, Option<FileChange>)>,
@@ -462,24 +480,34 @@ fn head_commit(top: &Path) -> Option<String> {
     crate::git::git_line(top, &["rev-parse", "-q", "--verify", "HEAD^{commit}"])
 }
 
-/// Blob ids of `commit`'s files (symlinks and submodules left out).
-fn read_tree(top: &Path, commit: &str) -> Result<HashMap<String, String>, String> {
+/// A commit's files: relative path → blob id (symlinks and submodules left
+/// out), and the paths of those whose names aren't valid UTF-8.
+type Tree = (HashMap<String, String>, Vec<PathBuf>);
+
+fn read_tree(top: &Path, commit: &str) -> Result<Tree, String> {
     let out = crate::git::git_io(top, &["ls-tree", "-r", "-z", "--full-tree", commit], None, BATCH_BYTES, BATCH_TIMEOUT).ok_or("Could not list the files in the last commit")?;
     if out.len() > BATCH_BYTES {
         return Err("The repository has too many files to review".into());
     }
-    let mut files = HashMap::new();
+    let (mut files, mut bad) = (HashMap::new(), Vec::new());
     for rec in out.split(|&b| b == 0).filter(|r| !r.is_empty()) {
         // "<mode> <type> <id>\t<path>"
         let Some(tab) = rec.iter().position(|&b| b == b'\t') else { continue };
-        let (head, path) = (String::from_utf8_lossy(&rec[..tab]), String::from_utf8_lossy(&rec[tab + 1..]));
+        let head = String::from_utf8_lossy(&rec[..tab]);
         let mut parts = head.split(' ');
         let (Some(mode), Some(kind), Some(id)) = (parts.next(), parts.next(), parts.next()) else { continue };
-        if kind == "blob" && mode != "120000" {
-            files.insert(path.into_owned(), id.to_owned());
+        if kind != "blob" || mode == "120000" {
+            continue;
+        }
+        // Names are bytes: one that isn't UTF-8 never gets a lossy key.
+        match std::str::from_utf8(&rec[tab + 1..]) {
+            Ok(path) => {
+                files.insert(path.to_owned(), id.to_owned());
+            }
+            Err(_) => bad.push(path_from_bytes(top, &rec[tab + 1..])),
         }
     }
-    Ok(files)
+    Ok((files, bad))
 }
 
 /// Blob contents by id (`git cat-file --batch`); blobs that can't be read
@@ -609,7 +637,7 @@ fn attributes(top: &Path, rels: &[&str], system: Option<&Path>) -> HashMap<Strin
 
 /// The working tree's files: relative path → stat. Respects .gitignore
 /// like Git does, and leaves out `.git`, nested repositories and links.
-fn walk(top: &Path) -> Result<HashMap<String, Stat>, String> {
+fn walk(top: &Path, bad: &mut Vec<PathBuf>) -> Result<HashMap<String, Stat>, String> {
     let mut files = HashMap::new();
     let walker = ignore::WalkBuilder::new(top)
         .hidden(false)
@@ -623,7 +651,10 @@ fn walk(top: &Path) -> Result<HashMap<String, Stat>, String> {
         if !e.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
-        let Some(rel) = rel_of(top, e.path()) else { continue };
+        let Some(rel) = rel_of(top, e.path()) else {
+            bad.push(e.into_path());
+            continue;
+        };
         let Ok(meta) = e.metadata() else { continue };
         files.insert(rel, stat_of(&meta));
         if files.len() > MAX_FILES {
@@ -633,12 +664,27 @@ fn walk(top: &Path) -> Result<HashMap<String, Stat>, String> {
     Ok(files)
 }
 
-/// `path` relative to `top`, with `/`.
+/// `path` relative to `top`, with `/`. None for a name that isn't valid
+/// UTF-8: a lossy spelling could match another, real file.
 fn rel_of(top: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(top).ok()?;
-    let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    let parts: Vec<&str> = rel.components().map(|c| c.as_os_str().to_str()).collect::<Option<_>>()?;
     (!parts.is_empty()).then(|| parts.join("/"))
 }
+
+/// A path from git's bytes, exactly (Unix names are bytes, not text).
+fn path_from_bytes(top: &Path, bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        top.join(std::ffi::OsStr::from_bytes(bytes))
+    }
+    #[cfg(not(unix))]
+    top.join(String::from_utf8_lossy(bytes).as_ref())
+}
+
+/// Files whose names aren't valid UTF-8 are listed, never acted on.
+const BAD_NAME: &str = "Its name isn't valid UTF-8, so Strata leaves it alone: use Git to look at it or put it back.";
 
 /// Some part of `rel`, from `top` down, is a symbolic link (or, on Windows,
 /// a junction): opening the path would reach somewhere else.
@@ -711,7 +757,7 @@ pub fn tracked_twin<'a>(top: &Path, path: &Path, tracked: impl Iterator<Item = &
 }
 
 fn change(path: PathBuf, rel: &str, status: Status) -> FileChange {
-    FileChange { path, rel: rel.to_owned(), old: None, status, lines: None, binary: false, blocked: None, filtered: false, crlf: false, alias: false, hash: 1, kept: false }
+    FileChange { path, rel: rel.to_owned(), old: None, status, lines: None, binary: false, blocked: None, filtered: false, crlf: false, alias: false, hash: 1, kept: false, stat: None }
 }
 
 /// Find the files under `folder`'s repository that differ from `base`.
@@ -734,18 +780,22 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
         Some(s) => s.commit.clone(),
         None => head_commit(&top),
     };
-    let tree = match &commit {
+    let (tree, tree_bad) = match &commit {
         Some(c) => match &cache.tree {
-            Some((have, tree)) if have == c => tree.clone(),
+            Some((have, tree, bad)) if have == c => (tree.clone(), bad.clone()),
             _ => {
-                let tree = Arc::new(read_tree(&top, c)?);
-                cache.tree = Some((c.clone(), tree.clone()));
-                tree
+                let (files, bad) = read_tree(&top, c)?;
+                let (tree, bad) = (Arc::new(files), Arc::new(bad));
+                cache.tree = Some((c.clone(), tree.clone(), bad.clone()));
+                (tree, bad)
             }
         },
-        None => Arc::default(),
+        None => (Arc::default(), Arc::default()),
     };
-    let mut work = walk(&top)?;
+    let mut bad_names: Vec<PathBuf> = tree_bad.to_vec();
+    let mut work = walk(&top, &mut bad_names)?;
+    bad_names.sort();
+    bad_names.dedup();
     let mut in_base: Vec<&String> = tree.keys().collect();
     if let Some(s) = &snapshot {
         in_base.extend(s.files.iter().filter(|(_, b)| b.is_some()).map(|(r, _)| r));
@@ -795,7 +845,15 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
     };
 
     // Reuse what's known; hash the rest that could be unchanged.
-    let mut found: Vec<FileChange> = Vec::new();
+    let mut found: Vec<FileChange> = bad_names
+        .into_iter()
+        .map(|path| {
+            let rel = path.strip_prefix(&top).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+            let mut f = change(path, &rel, Status::Modified);
+            f.blocked = Some(BAD_NAME.into());
+            f
+        })
+        .collect();
     let mut todo: Vec<(String, Option<Stat>, Option<Src>)> = Vec::new();
     let mut seen = HashMap::with_capacity(paths.len());
     for rel in paths {
@@ -909,6 +967,7 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
             };
             if let Some(f) = &mut f {
                 f.crlf = a.crlf;
+                f.stat = *st;
                 if let Some(name) = &blob_filter {
                     f.blocked = Some(format!("Git converts this file ({name}), and Strata doesn't run Git's filters: use Git to look at it or put it back."));
                 }
@@ -1036,6 +1095,33 @@ struct Job {
     generation: u64,
 }
 
+/// Move one file to the Trash, if it's still what was listed.
+struct TrashJob {
+    path: PathBuf,
+    top: PathBuf,
+    listed: Option<Stat>,
+    hash: u64,
+}
+
+/// The file at `path` is still the one listed: the same file (device,
+/// inode, size, times) with the same bytes.
+pub fn unchanged_since(path: &Path, listed: Option<Stat>, hash: u64) -> bool {
+    listed.is_some() && stat(path) == listed && file_hash(path) == hash
+}
+
+/// Move `path` to the Trash, checking right before that it's inside `top`
+/// (no link on the way) and still the file listed: an agent may have
+/// replaced it with new work since.
+fn trash_if_unchanged(top: &Path, path: &Path, listed: Option<Stat>, hash: u64) -> Result<(), TrashRefused> {
+    if !inside(top, path) {
+        return Err(TrashRefused::Outside);
+    }
+    if !unchanged_since(path, listed, hash) {
+        return Err(TrashRefused::Changed);
+    }
+    crate::trash::move_to_trash(path).map_err(|e| TrashRefused::Failed(e.to_string()))
+}
+
 /// Fetch one file's base for a review tab.
 struct BaseJob {
     path: PathBuf,
@@ -1051,6 +1137,7 @@ struct State {
     scan: Option<Job>,
     snapshot: Option<PathBuf>,
     bases: Vec<BaseJob>,
+    trash: Vec<TrashJob>,
     quit: bool,
 }
 
@@ -1098,6 +1185,14 @@ impl Scanner {
         self.shared.wake.notify_one();
     }
 
+    /// Queue moving `path` to the Trash if it's still as listed (`listed`,
+    /// `hash` from its `FileChange`); the answer is an `Outcome::Trashed`.
+    pub fn trash(&self, path: &Path, top: &Path, listed: Option<Stat>, hash: u64) {
+        let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.trash.push(TrashJob { path: path.to_owned(), top: top.to_owned(), listed, hash });
+        self.shared.wake.notify_one();
+    }
+
     pub fn poll(&self) -> Option<Outcome> {
         self.rx.try_recv().ok()
     }
@@ -1113,24 +1208,30 @@ impl Drop for Scanner {
 fn work(shared: &Shared, tx: &Sender<Outcome>, ctx: Option<&egui::Context>) {
     let mut cache = Cache::default();
     loop {
-        let (base, snap, job) = {
+        let (trash, base, snap, job) = {
             let mut st = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-            while st.scan.is_none() && st.snapshot.is_none() && st.bases.is_empty() && !st.quit {
+            while st.scan.is_none() && st.snapshot.is_none() && st.bases.is_empty() && st.trash.is_empty() && !st.quit {
                 st = shared.wake.wait(st).unwrap_or_else(|e| e.into_inner());
             }
             if st.quit {
                 return;
             }
-            // Someone waits on a base; a scan queued with a snapshot may depend on it.
-            if !st.bases.is_empty() {
-                (Some(st.bases.remove(0)), None, None)
+            // The user waits on a Trash or a base; a scan queued with a
+            // snapshot may depend on it.
+            if !st.trash.is_empty() {
+                (Some(st.trash.remove(0)), None, None, None)
+            } else if !st.bases.is_empty() {
+                (None, Some(st.bases.remove(0)), None, None)
             } else if let Some(s) = st.snapshot.take() {
-                (None, Some(s), None)
+                (None, None, Some(s), None)
             } else {
-                (None, None, st.scan.take())
+                (None, None, None, st.scan.take())
             }
         };
-        let outcome = if let Some(b) = base {
+        let outcome = if let Some(t) = trash {
+            let result = trash_if_unchanged(&t.top, &t.path, t.listed, t.hash);
+            Outcome::Trashed(t.path, result)
+        } else if let Some(b) = base {
             let bytes = base_bytes(&b.top, &b.base, b.commit.as_deref(), &b.rel);
             Outcome::Base(b.path, bytes)
         } else if let Some(folder) = snap {
@@ -1253,6 +1354,8 @@ pub(crate) mod tests {
     }
 
     // ---- against real repositories ----
+
+    const GIT_WAIT: Duration = Duration::from_secs(60);
 
     pub(crate) fn run(dir: &Path, args: &[&str]) {
         let mut all = vec!["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"];
@@ -1675,6 +1778,32 @@ pub(crate) mod tests {
         assert!(cache.hashed > 0);
         let again = scan(&dir, &Base::Head, &HashMap::new(), &mut cache).unwrap();
         assert_eq!((again.files.len(), cache.hashed), (1, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name that isn't valid UTF-8 (`a\xff.txt`) next to a real file named
+    /// with U+FFFD (`a�.txt`, which a lossy spelling of the other would give):
+    /// the real file keeps its own base, the other is listed and left alone.
+    #[cfg(unix)]
+    #[test]
+    fn names_that_are_not_utf8_never_stand_for_another_file() {
+        use std::os::unix::ffi::OsStrExt;
+        let Some(dir) = temp_repo("badname") else { return };
+        std::fs::write(dir.join("a\u{FFFD}.txt"), "real\n").unwrap();
+        run(&dir, &["add", "."]);
+        // The other one only in the index (macOS disks refuse such names).
+        let blob = crate::git::git_io(&dir, &["hash-object", "-w", "--stdin"], Some(b"other\n".to_vec()), 1 << 10, GIT_WAIT).unwrap();
+        let blob = String::from_utf8(blob).unwrap();
+        let mut info = format!("100644 {}\t", blob.trim()).into_bytes();
+        info.extend_from_slice(b"a\xff.txt\n");
+        assert!(crate::git::git_io(&dir, &["update-index", "--index-info"], Some(info), 1 << 10, GIT_WAIT).is_some());
+        run(&dir, &["commit", "-q", "-m", "names"]);
+        let mut cache = Cache::default();
+        let s = scan(&dir, &Base::Head, &HashMap::new(), &mut cache).unwrap();
+        assert!(!s.files.iter().any(|f| f.path == dir.join("a\u{FFFD}.txt")), "the real file is unchanged: {:?}", s.files);
+        let bad = s.files.iter().find(|f| f.path.as_os_str().as_bytes().ends_with(b"a\xff.txt")).expect("listed");
+        assert_eq!(bad.blocked.as_deref(), Some(BAD_NAME));
+        assert!(!inside(&s.top, &bad.path), "never acted on");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

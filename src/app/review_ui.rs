@@ -21,11 +21,23 @@ use std::sync::Arc;
 /// four times as long as the last scan took, whichever is longer.
 const RESCAN: f64 = 2.0;
 
+/// A renamed file's old path, text and encoding, put back in a tab.
+type Restore = (PathBuf, String, Encoding);
+
 /// "Move the new file to the Trash?" before reverting a new or renamed file.
 struct Confirm {
     path: PathBuf,
     /// A renamed file: its old path, text and encoding, put back in a tab.
-    restore: Option<(PathBuf, String, Encoding)>,
+    restore: Option<Restore>,
+    /// The file as listed when asked: what's trashed must still be it.
+    listed: Option<review::Stat>,
+    hash: u64,
+}
+
+impl Confirm {
+    fn of(f: &FileChange, restore: Option<Restore>) -> Self {
+        Self { path: f.path.clone(), restore, listed: f.stat, hash: f.hash }
+    }
 }
 
 /// A file's base, as far as it's known.
@@ -69,6 +81,8 @@ pub(super) struct ReviewState {
     asked: std::collections::HashSet<PathBuf>,
     /// Open this file's review tab once its base arrives.
     pub pending_open: Option<PathBuf>,
+    /// A file on its way to the Trash (with a renamed file's old path to reopen).
+    pub pending_trash: Option<(PathBuf, Option<Restore>)>,
     /// The encoding each review tab's base was read with (Revert File and
     /// restored files use it, so the bytes come back as they were).
     base_enc: HashMap<PathBuf, Encoding>,
@@ -209,6 +223,7 @@ impl StrataApp {
                         Err(e) => self.status = e,
                     }
                 }
+                Outcome::Trashed(path, result) => self.review_trashed(path, result),
                 Outcome::Base(path, bytes) => {
                     if !self.review.asked.remove(&path) {
                         continue; // asked for an earlier base
@@ -557,13 +572,13 @@ impl StrataApp {
                 if let Some(twin) = self.review_twin(&path) {
                     self.status = format!("{} is the same file as {twin} under another spelling: rename it back in the side bar, or with Git", f.rel);
                 } else {
-                    self.review.confirm = Some(Confirm { path, restore: None });
+                    self.review.confirm = Some(Confirm::of(&f, None));
                 }
                 return;
             }
             (Status::Renamed, Some((old, _))) => {
                 let base = self.docs[i].compare.as_ref().expect("review tab").base_text().to_owned();
-                self.review.confirm = Some(Confirm { path, restore: Some((old, base, enc)) });
+                self.review.confirm = Some(Confirm::of(&f, Some((old, base, enc))));
                 return;
             }
             _ => {}
@@ -655,13 +670,27 @@ impl StrataApp {
 
     /// The new file goes to the Trash; a renamed file's old path opens with its text.
     pub(super) fn review_confirmed(&mut self) {
-        let Some(Confirm { path, restore }) = self.review.confirm.take() else { return };
+        let Some(Confirm { path, restore, listed, hash }) = self.review.confirm.take() else { return };
+        if self.review.pending_trash.is_some() {
+            return; // one at a time
+        }
         // Still the file the list showed, inside this repository, and not one
         // that is the same file as a tracked one under another spelling.
         let Some(f) = self.review.file(&path).cloned() else {
             self.status = format!("{} is no longer in the list: nothing was moved", Self::review_name(&path));
             return;
         };
+        let renamed_from = restore.as_ref().map(|(old, _, _)| old.clone());
+        if f.stat != listed || f.hash != hash || f.old.as_ref().map(|(p, _)| p.clone()) != renamed_from {
+            self.status = format!("{} changed since it was listed; look again", f.rel);
+            return;
+        }
+        if let Some(old) = &renamed_from
+            && std::fs::symlink_metadata(old).is_ok()
+        {
+            self.status = format!("{} exists again: nothing was moved", Self::review_name(old));
+            return;
+        }
         if !matches!(f.status, Status::Added | Status::Renamed) || f.alias || !self.review_path_ok(&f) {
             if f.alias {
                 self.status = format!("{} is the same file as before, only respelled: nothing was moved", f.rel);
@@ -674,13 +703,38 @@ impl StrataApp {
             self.status = format!("{} is the same file as {twin}: nothing was moved", f.rel);
             return;
         }
-        if let Err(e) = crate::trash::move_to_trash(&path) {
-            self.status = format!("Could not move {} to the {}: {e}", path.display(), crate::trash::trash_name());
-            return;
+        // Off this thread; the worker checks once more, right before, that
+        // the file is still the one listed and still inside the repository.
+        let Some(top) = self.review.scan.as_ref().map(|s| s.top.clone()) else { return };
+        self.review_scanner(None).trash(&path, &top, listed, hash);
+        self.review.pending_trash = Some((path.clone(), restore));
+        self.status = format!("Moving {} to the {}…", Self::review_name(&path), crate::trash::trash_name());
+    }
+
+    /// The Trash's answer for `path`.
+    fn review_trashed(&mut self, path: PathBuf, result: Result<(), review::TrashRefused>) {
+        let restore = match self.review.pending_trash.take() {
+            Some((p, restore)) if p == path => restore,
+            other => {
+                self.review.pending_trash = other;
+                None
+            }
+        };
+        self.review.next_scan = 0.0;
+        let name = Self::review_name(&path);
+        match result {
+            Ok(()) => {}
+            Err(review::TrashRefused::Changed) => return self.status = format!("{name} changed since it was listed; look again"),
+            Err(review::TrashRefused::Outside) => return self.status = format!("{name} isn't inside the repository (a link leads elsewhere): nothing was moved"),
+            Err(review::TrashRefused::Failed(e)) => return self.status = format!("Could not move {name} to the {}: {e}", crate::trash::trash_name()),
         }
         self.follow_delete(&path);
-        self.status = format!("Moved {} to the {}", Self::review_name(&path), crate::trash::trash_name());
+        self.status = format!("Moved {name} to the {}", crate::trash::trash_name());
         if let Some((old, text, enc)) = restore {
+            if std::fs::symlink_metadata(&old).is_ok() {
+                self.status = format!("Moved {name} to the {}; {} exists again, so it wasn't reopened", crate::trash::trash_name(), Self::review_name(&old));
+                return;
+            }
             self.open_path(old.clone(), false);
             let d = self.doc();
             if d.path.as_ref() == Some(&old) {
@@ -1117,10 +1171,10 @@ mod tests {
         }
     }
 
-    /// Wait for a review tab waiting on its base to open.
+    /// Wait for a review tab waiting on its base to open, and for the Trash.
     fn settle(app: &mut StrataApp) {
         let deadline = Instant::now() + Duration::from_secs(30);
-        while app.review.pending_open.is_some() {
+        while app.review.pending_open.is_some() || app.review.pending_trash.is_some() {
             app.review_poll();
             assert!(Instant::now() < deadline, "the base never came");
             std::thread::sleep(Duration::from_millis(5));
@@ -1214,6 +1268,7 @@ mod tests {
         app.review_revert_file(t);
         assert!(app.review.confirm.is_some());
         app.review_confirmed();
+        settle(&mut app);
         assert!(!new.exists());
 
         rescan(&mut app);
@@ -1293,8 +1348,9 @@ mod tests {
                 assert!(app.review.confirm.is_none(), "no Trash question for {new}");
                 assert!(app.status.contains("respelled"), "{}", app.status);
                 // Even if asked somehow, nothing moves.
-                app.review.confirm = Some(Confirm { path: path.clone(), restore: None });
+                app.review.confirm = Some(Confirm::of(&app.review.file(&path).unwrap().clone(), None));
                 app.review_confirmed();
+                settle(&mut app);
             }
             assert!(path.exists() || dir.join(old).exists(), "{new}: the only copy went");
             if f.alias {
@@ -1302,6 +1358,74 @@ mod tests {
             }
             app.review.confirm = None;
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Between the question and the answer, the agent writes new work into
+    /// the file (or brings a renamed file's old name back): nothing moves.
+    #[test]
+    fn nothing_is_trashed_that_changed_after_the_question() {
+        let Some(dir) = temp_repo("ui-toctou") else { return };
+        let mut app = app_for(&dir);
+        let new = dir.join("new.txt");
+        std::fs::write(&new, "first draft\n").unwrap();
+        std::fs::rename(dir.join("moved.txt"), dir.join("moved2.txt")).unwrap();
+        rescan(&mut app);
+        assert!(open(&mut app, &new));
+        let t = app.active;
+        app.review_revert_file(t);
+        assert!(app.review.confirm.is_some());
+        // The agent's new work lands while the question is up.
+        std::fs::write(&new, "the agent's second draft, longer\n").unwrap();
+        app.review_confirmed();
+        settle(&mut app);
+        assert!(app.status.contains("changed since it was listed"), "{}", app.status);
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "the agent's second draft, longer\n");
+        // Same size, same second: the bytes still decide.
+        rescan(&mut app);
+        assert!(open(&mut app, &new));
+        let t = app.active;
+        app.review_revert_file(t);
+        std::fs::write(&new, "the agent's second draft, LONGER\n").unwrap();
+        app.review_confirmed();
+        settle(&mut app);
+        assert!(new.exists(), "a same-size rewrite was trashed");
+
+        // A rename whose old name comes back meanwhile.
+        let moved = dir.join("moved2.txt");
+        assert!(open(&mut app, &moved));
+        let t = app.active;
+        app.review_revert_file(t);
+        assert!(app.review.confirm.is_some());
+        std::fs::write(dir.join("moved.txt"), "someone else's new file\n").unwrap();
+        app.review_confirmed();
+        settle(&mut app);
+        assert!(moved.exists());
+        assert_eq!(std::fs::read_to_string(dir.join("moved.txt")).unwrap(), "someone else's new file\n");
+        assert!(app.status.contains("exists again"), "{}", app.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Trashing happens off the UI thread, one file at a time.
+    #[test]
+    fn the_trash_runs_in_the_background_once() {
+        let Some(dir) = temp_repo("ui-bgtrash") else { return };
+        let mut app = app_for(&dir);
+        let new = dir.join("new.txt");
+        std::fs::write(&new, "new\n").unwrap();
+        rescan(&mut app);
+        assert!(open(&mut app, &new));
+        let t = app.active;
+        app.review_revert_file(t);
+        app.review_confirmed();
+        assert!(app.review.pending_trash.is_some(), "the Trash is the worker's job");
+        assert!(app.status.starts_with("Moving new.txt"), "{}", app.status);
+        // Asking again while it's on its way does nothing.
+        app.review_revert_file(t);
+        app.review_confirmed();
+        settle(&mut app);
+        assert!(!new.exists());
+        assert!(app.status.starts_with("Moved new.txt"), "{}", app.status);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1322,8 +1446,9 @@ mod tests {
         app.review_revert_file(t);
         assert!(app.review.confirm.is_none(), "no Trash question");
         assert!(app.status.contains("same file as README.md"), "{}", app.status);
-        app.review.confirm = Some(Confirm { path: twin.clone(), restore: None });
+        app.review.confirm = Some(Confirm::of(&app.review.file(&twin).unwrap().clone(), None));
         app.review_confirmed();
+        settle(&mut app);
         assert!(twin.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
