@@ -451,6 +451,17 @@ pub(crate) mod imp {
         ok(unsafe { libc::renameat(dir.as_raw_fd(), a.as_ptr(), dir.as_raw_fd(), b.as_ptr()) })
     }
 
+    /// Flush a folder's entries (names made, renamed or removed) to disk.
+    pub fn sync_dir(dir: &Dir) -> io::Result<()> {
+        // SAFETY: a valid descriptor.
+        ok(unsafe { libc::fsync(dir.as_raw_fd()) })
+    }
+
+    /// Which file `name` is (device and inode), not following a link.
+    pub fn id_at(dir: &Dir, name: &str) -> Option<(u64, u64)> {
+        id_of(&open_file_at(dir, name).ok()?)
+    }
+
     pub fn open_file(path: &Path) -> io::Result<std::fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)
@@ -610,6 +621,20 @@ pub(crate) mod imp {
         std::fs::rename(dir.path.join(a), dir.path.join(b))
     }
 
+    /// Flush a folder's entries to disk (FlushFileBuffers on the folder,
+    /// opened for writing with backup semantics). Some file systems don't
+    /// allow it on folders; NTFS journals its folder changes anyway.
+    pub fn sync_dir(dir: &Dir) -> io::Result<()> {
+        match std::fs::OpenOptions::new().write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(&dir.path).and_then(|f| f.sync_all()) {
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(1) => Ok(()),
+            r => r,
+        }
+    }
+
+    pub fn id_at(dir: &Dir, name: &str) -> Option<(u64, u64)> {
+        id_of(&open_file_at(dir, name).ok()?)
+    }
+
     /// Opened without following a link at the end.
     pub fn open_file(path: &Path) -> io::Result<std::fs::File> {
         std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).open(path)
@@ -684,6 +709,12 @@ pub(crate) mod imp {
     }
     pub fn rename_replace(_: &Dir, _: &str, _: &str) -> io::Result<()> {
         no()
+    }
+    pub fn sync_dir(_: &Dir) -> io::Result<()> {
+        no()
+    }
+    pub fn id_at(_: &Dir, _: &str) -> Option<(u64, u64)> {
+        None
     }
     pub fn open_file(_: &Path) -> io::Result<std::fs::File> {
         no()

@@ -871,7 +871,7 @@ fn scan(folder: &Path, base: &Base, kept: &HashMap<PathBuf, Arc<String>>, cache:
         let inside: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n != crate::claim::MARKER).collect();
         let rel = dir.strip_prefix(&top).unwrap_or(&dir).to_string_lossy().replace('\\', "/");
         // An interrupted undo says what it was doing in its journal (see `swap`).
-        let undo = crate::swap::leftover(&dir).map(|l| format!("{} Right-click for Put Back.", l.describe()));
+        let undo = crate::swap::leftover(&dir).map(|l| if l.sealed { format!("{} Right-click for Put Back.", l.describe()) } else { l.describe() });
         let mut f = change(dir, &rel, Status::Added);
         f.blocked = Some(undo.unwrap_or_else(|| format!(
             "Left by an interrupted move to the Trash. Nothing was deleted: it holds {}. Move {} back where you want it, then remove this folder.",
@@ -1866,7 +1866,7 @@ pub(crate) mod tests {
         let left = s.files.iter().find(|f| f.blocked.is_some()).expect("the leftover is reported");
         let why = left.blocked.as_deref().unwrap();
         assert!(why.contains("interrupted Undo Replace in Files") && why.contains("Put Back") && !why.contains("Trash"), "{why}");
-        crate::swap::put_back_leftover(&left.path).unwrap();
+        crate::swap::put_back_leftover(&dir, &left.path).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("notes.md")).unwrap(), "new\n");
         let _ = std::fs::remove_dir_all(&dir);
     }

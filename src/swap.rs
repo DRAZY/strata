@@ -11,29 +11,146 @@
 //!    opened without following links) and checked: size and every byte must
 //!    be what the change left. If any file fails, every claimed file goes
 //!    back where it was and nothing has changed.
-//! 2. Commit, for every file: the claimed file itself is rewritten with the
-//!    old bytes (so it keeps its permissions, owner, extended attributes and
-//!    other hard links), then moved back to its name with a no-replace
-//!    rename (a file that appeared there meanwhile is never replaced), and
-//!    the recovery copy goes. If a step fails here, the files after it are
-//!    put back too and the report says which file is in which state.
+//! 2. Commit, for every file: its current bytes are copied aside too, then
+//!    the claimed file itself is rewritten with the old bytes (so it keeps
+//!    its permissions, owner, extended attributes and other hard links; if
+//!    the write fails it's rewritten back from that copy at once), then moved
+//!    back to its name with a no-replace rename (a file that appeared there
+//!    meanwhile is never replaced). If a step fails here, the files after it
+//!    are put back too and the report says which file is in which state.
 //!
+//! Every name made, renamed or removed is flushed to disk with its folder.
 //! Each staging folder's marker holds a journal (what's being undone, the
-//! file, its destination and how far it got), updated at every step, so a
-//! crash leaves folders that Review Changes and Notes can explain and put
-//! back (`leftover`, `put_back_leftover`). Nothing a user wrote is ever
-//! deleted.
+//! file, its destination, how far it got, the fingerprints to check), sealed
+//! with this installation's key and updated at every step: after a crash,
+//! Review Changes and Notes explain such folders and put them back
+//! (`leftover`, `put_back_leftover`). A folder whose seal doesn't check out
+//! was made by something else and is never acted on. Nothing a user wrote
+//! is ever deleted.
 
 use crate::claim::{self, Moved, imp};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 /// The old bytes, in the staging folder until the file has them again.
 const TEMP: &str = ".strata-restore";
+/// The file's bytes just before it was rewritten (to undo a failed rewrite).
+const BEFORE: &str = ".strata-before";
 /// The marker is rewritten through this name (never half-written).
 const MARKER_NEW: &str = ".strata-claim.new";
+/// Markers are small; anything bigger isn't one of Strata's.
+const MARKER_MAX: u64 = 64 * 1024;
+
+// ---- the journal's seal ---------------------------------------------------------
+
+/// This installation's key for sealing journals: 32 random bytes in an
+/// owner-only file in the config folder (made on first use). Tests use a
+/// key of their own, in memory.
+fn key() -> &'static [u8; 32] {
+    static KEY: OnceLock<[u8; 32]> = OnceLock::new();
+    KEY.get_or_init(load_key)
+}
+
+#[cfg(test)]
+fn load_key() -> [u8; 32] {
+    random_bytes()
+}
+
+#[cfg(not(test))]
+fn load_key() -> [u8; 32] {
+    let Some(dir) = crate::session::config_dir() else { return random_bytes() };
+    let path = dir.join(KEY_FILE);
+    let read = |p: &Path| std::fs::read(p).ok().and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
+    if let Some(k) = read(&path) {
+        return k;
+    }
+    let k = random_bytes();
+    let _ = crate::private::create_dir_all(&dir);
+    // A new file only: two Strata starting at once settle on one key.
+    match crate::private::options().write(true).create_new(true).open(&path) {
+        Ok(mut f) => {
+            let _ = f.write_all(&k).and_then(|()| f.sync_all());
+            k
+        }
+        Err(_) => read(&path).unwrap_or(k),
+    }
+}
+
+/// The key's file name in the config folder.
+pub const KEY_FILE: &str = "claim.key";
+
+#[cfg(unix)]
+fn random_bytes() -> [u8; 32] {
+    let mut k = [0u8; 32];
+    if std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut k)).is_err() {
+        k = mixed_bytes();
+    }
+    k
+}
+
+#[cfg(not(unix))]
+fn random_bytes() -> [u8; 32] {
+    mixed_bytes()
+}
+
+/// 256 bits from `RandomState` keys (the OS random source, see `ipc`), hashed.
+fn mixed_bytes() -> [u8; 32] {
+    use sha2::Digest;
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = sha2::Sha256::new();
+    for i in 0..8u64 {
+        let mut s = std::collections::hash_map::RandomState::new().build_hasher();
+        s.write_u64(i);
+        s.write_u128(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+        h.update(s.finish().to_le_bytes());
+    }
+    h.finalize().into()
+}
+
+/// HMAC-SHA256 (RFC 2104) of `msg` under `key`.
+fn hmac(key: &[u8; 32], msg: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    let (mut ipad, mut opad) = ([0x36u8; 64], [0x5cu8; 64]);
+    for (i, b) in key.iter().enumerate() {
+        ipad[i] ^= b;
+        opad[i] ^= b;
+    }
+    let inner: [u8; 32] = sha2::Sha256::new().chain_update(ipad).chain_update(msg).finalize().into();
+    sha2::Sha256::new().chain_update(opad).chain_update(inner).finalize().into()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A marker's text: the claim line, the journal, and their seal.
+fn marker_text(stamp: &str, journal: &serde_json::Value) -> Vec<u8> {
+    let body = format!("strata-claim {stamp}\n{journal}\n");
+    let seal = hex(&hmac(key(), body.as_bytes()));
+    format!("{body}{seal}\n").into_bytes()
+}
+
+/// A marker's journal, and whether its seal is this installation's.
+fn read_marker(stage: &Path) -> Option<(serde_json::Value, bool)> {
+    let f = claim::open_plain(&stage.join(claim::MARKER)).ok()?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::Read::take(f, MARKER_MAX), &mut text).ok()?;
+    let mut lines = text.split_inclusive('\n');
+    let (head, json) = (lines.next()?, lines.next()?);
+    if !head.starts_with("strata-claim ") {
+        return None;
+    }
+    let journal: serde_json::Value = serde_json::from_str(json.trim()).ok()?;
+    let seal = lines.next().map(str::trim).unwrap_or("");
+    let body = format!("{head}{json}");
+    // Compared whole; a forged seal is as wrong as a missing one.
+    let sealed = seal.len() == 64 && seal == hex(&hmac(key(), body.as_bytes()));
+    Some((journal, sealed))
+}
+
+// ---- restoring ------------------------------------------------------------------
 
 /// One file to put back.
 #[derive(Clone, Debug)]
@@ -103,6 +220,12 @@ const REWRITING: &str = "rewriting";
 const REWRITTEN: &str = "rewritten";
 const MOVING: &str = "moving";
 
+#[cfg(test)]
+thread_local! {
+    /// Tests: the next in-place rewrite fails after truncating the file.
+    pub static FAIL_REWRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 struct Prepared {
     /// Its index in the items given.
     index: usize,
@@ -117,17 +240,14 @@ struct Prepared {
     install: String,
     bytes: Option<Arc<Vec<u8>>>,
     has_temp: bool,
+    has_before: bool,
     /// The file matched `unchanged`: it only has to go back.
     untouched: bool,
 }
 
-fn marker_text(stamp: &str, journal: &serde_json::Value) -> Vec<u8> {
-    format!("strata-claim {stamp}\n{journal}\n").into_bytes()
-}
-
 impl Prepared {
     fn staged(&self, name: &str) -> PathBuf {
-        self.path.parent().unwrap_or(Path::new("")).join(&self.stage_name).join(name)
+        self.stage_path().join(name)
     }
 
     fn stage(&self) -> &imp::Dir {
@@ -138,44 +258,53 @@ impl Prepared {
         self.path.parent().unwrap_or(Path::new("")).join(&self.stage_name)
     }
 
-    /// Record how far this file has got, in the marker (written whole, then renamed over it).
-    fn phase(&mut self, phase: &str) {
+    /// Record how far this file has got: the sealed marker is written whole
+    /// to a new name, flushed, renamed over the old one and the folder
+    /// flushed. Err: the journal couldn't be kept, so the next step mustn't start.
+    fn phase(&mut self, phase: &str) -> std::io::Result<()> {
         self.journal["phase"] = phase.into();
         let stamp = self.stage_name.trim_start_matches(claim::STAGING).to_owned();
         let text = marker_text(&stamp, &self.journal);
         let _ = imp::remove_file_at(self.stage(), MARKER_NEW);
-        if imp::write_new(self.stage(), MARKER_NEW, &text).is_ok() && imp::rename_replace(self.stage(), MARKER_NEW, claim::MARKER).is_ok() {
-            self.marker = text;
-        }
+        imp::write_new_mode(self.stage(), MARKER_NEW, &text, 0o600)?;
+        imp::rename_replace(self.stage(), MARKER_NEW, claim::MARKER)?;
+        imp::sync_dir(self.stage())?;
+        self.marker = text;
+        Ok(())
     }
 
     /// The emptied staging folder goes (its handle first, then the marker);
     /// if it can't, its marker stays so a scan still recognizes it. True if it went.
     fn finish(mut self) -> bool {
-        if self.has_temp {
-            let _ = imp::remove_file_at(self.stage(), TEMP);
+        for (has, name) in [(self.has_temp, TEMP), (self.has_before, BEFORE)] {
+            if has {
+                let _ = imp::remove_file_at(self.stage(), name);
+            }
         }
         drop(self.stage.take());
         let _ = imp::remove_in(&self.parent, &self.stage_name, claim::MARKER);
-        if imp::remove_empty_dir(&self.parent, &self.stage_name).is_err() {
+        let gone = imp::remove_empty_dir(&self.parent, &self.stage_name).is_ok();
+        if !gone {
             let _ = imp::write_in(&self.parent, &self.stage_name, claim::MARKER, &self.marker);
-            return false;
         }
-        true
+        let _ = imp::sync_dir(&self.parent);
+        gone
     }
 
     /// Put the claimed file back at its name: Unchanged, or where it stays.
     fn put_back(self) -> State {
-        match imp::move_noreplace(self.stage(), &self.name, &self.parent, &self.name) {
-            Moved::Done => {
+        let state = match imp::move_noreplace(self.stage(), &self.name, &self.parent, &self.name) {
+            Moved::Done => None,
+            Moved::Both if imp::drop_extra_link(&self.parent, &self.name, self.stage(), &self.name) => None,
+            _ => Some(State::KeptAt(self.staged(&self.name))),
+        };
+        let _ = imp::sync_dir(&self.parent);
+        match state {
+            None => {
                 self.finish();
                 State::Unchanged
             }
-            Moved::Both if imp::drop_extra_link(&self.parent, &self.name, self.stage(), &self.name) => {
-                self.finish();
-                State::Unchanged
-            }
-            _ => State::KeptAt(self.staged(&self.name)),
+            Some(s) => s,
         }
     }
 }
@@ -194,12 +323,40 @@ fn matches(file: &mut std::fs::File, want: (u64, u64)) -> bool {
     file.metadata().is_ok_and(|m| m.is_file() && m.len() == want.0) && claim::fingerprint_file(file) == Some(want.1)
 }
 
+fn pair(v: Option<&serde_json::Value>) -> Option<(u64, u64)> {
+    let a = v?.as_array()?;
+    Some((a.first()?.as_u64()?, a.get(1)?.as_u64()?))
+}
+
+/// Copy `from` to the new file `to` in `dir`, streamed, flushed to disk.
+fn copy_in(dir: &imp::Dir, from: &str, to: &str) -> std::io::Result<()> {
+    let mut src = imp::open_file_at(dir, from)?;
+    imp::write_new_mode(dir, to, &[], 0o600)?;
+    let mut dst = imp::open_write_at(dir, to)?;
+    std::io::copy(&mut src, &mut dst)?;
+    dst.sync_all()?;
+    imp::sync_dir(dir)
+}
+
+/// Rewrite `name` in `dir` in place with `bytes`, flushed.
+fn write_in_place(dir: &imp::Dir, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let mut f = imp::open_write_at(dir, name)?;
+    f.set_len(0)?;
+    #[cfg(test)]
+    if FAIL_REWRITE.with(|c| c.replace(false)) {
+        f.write_all(&bytes[..bytes.len() / 2])?;
+        return Err(std::io::Error::other("disk full (test)"));
+    }
+    f.write_all(bytes)?;
+    f.sync_all()
+}
+
 /// Claim and check one file. Err: why not (and where it is if it couldn't go back).
 fn prepare(op: &str, item: &Item, i: usize, total: usize, hook: &mut dyn FnMut(Step)) -> Result<Prepared, (String, Option<State>)> {
     let fail = |why: &str| (why.to_owned(), None);
     let (dirs, name) = parts(&item.top, &item.path).ok_or_else(|| fail("isn't inside its folder"))?;
     let install = item.install_as.file_name().and_then(|n| n.to_str()).map(str::to_owned).ok_or_else(|| fail("has no usable name"))?;
-    if item.install_as.parent() != item.path.parent() || name == claim::MARKER || name == TEMP || name == MARKER_NEW {
+    if item.install_as.parent() != item.path.parent() || [claim::MARKER, TEMP, BEFORE, MARKER_NEW].contains(&name.as_str()) {
         return Err(fail("can't be put back there"));
     }
     hook(Step::BeforeClaim(i));
@@ -232,17 +389,18 @@ fn prepare(op: &str, item: &Item, i: usize, total: usize, hook: &mut dyn FnMut(S
     });
     let marker = marker_text(&stamp, &journal);
     let bytes = item.original.clone();
-    let mut p = Prepared { index: i, path: item.path.clone(), parent, stage: Some(stage), stage_name, marker, journal, name, install, bytes, has_temp: false, untouched: false };
-    if let Err(e) = imp::write_new(p.stage(), claim::MARKER, &p.marker) {
+    let mut p = Prepared { index: i, path: item.path.clone(), parent, stage: Some(stage), stage_name, marker, journal, name, install, bytes, has_temp: false, has_before: false, untouched: false };
+    let persisted = imp::write_new_mode(p.stage(), claim::MARKER, &p.marker, 0o600).and_then(|()| imp::sync_dir(p.stage())).and_then(|()| imp::sync_dir(&p.parent));
+    if let Err(e) = persisted {
         p.finish();
         return Err((format!("couldn't set it aside: {e}"), None));
     }
     if let Some(bytes) = &item.original {
-        if let Err(e) = imp::write_new_mode(p.stage(), TEMP, bytes, 0o600) {
+        p.has_temp = true;
+        if let Err(e) = imp::write_new_mode(p.stage(), TEMP, bytes, 0o600).and_then(|()| imp::sync_dir(p.stage())) {
             p.finish();
             return Err((format!("couldn't write its old text: {e}"), None));
         }
-        p.has_temp = true;
     }
     match imp::move_noreplace(&p.parent, &p.name, p.stage(), &p.name) {
         Moved::Done => {}
@@ -259,6 +417,9 @@ fn prepare(op: &str, item: &Item, i: usize, total: usize, hook: &mut dyn FnMut(S
             return Err(("it couldn't be set aside".into(), Some(State::KeptAt(at))));
         }
     }
+    if let Err(e) = imp::sync_dir(&p.parent).and_then(|()| imp::sync_dir(p.stage())) {
+        return Err((format!("couldn't flush it to disk: {e}"), Some(p.put_back())));
+    }
     hook(Step::Claimed(i));
     let mut claimed = match imp::open_file_at(p.stage(), &p.name) {
         Ok(f) => f,
@@ -270,26 +431,21 @@ fn prepare(op: &str, item: &Item, i: usize, total: usize, hook: &mut dyn FnMut(S
         drop(claimed);
         if item.unchanged.is_some_and(|u| imp::open_file_at(p.stage(), &p.name).is_ok_and(|mut f| matches(&mut f, u))) {
             p.untouched = true;
-            p.phase(PREPARED);
-            return Ok(p);
+            p.journal["expected"] = item.unchanged.map(|(l, h)| vec![l, h]).into();
+        } else {
+            return Err(("changed since the change".into(), Some(p.put_back())));
         }
-        return Err(("changed since the change".into(), Some(p.put_back())));
     }
     // It's rewritten in place: it must be writable (a read-only file is refused here, before anything changes).
-    if item.original.is_some() && imp::open_write_at(p.stage(), &p.name).is_err() {
+    if item.original.is_some() && !p.untouched && imp::open_write_at(p.stage(), &p.name).is_err() {
         return Err(("can't be written (it's read-only)".into(), Some(p.put_back())));
     }
-    p.phase(PREPARED);
+    // Which file this is, for recovery to check before it writes anything.
+    p.journal["id"] = imp::id_at(p.stage(), &p.name).map(|(a, b)| vec![a, b]).into();
+    if let Err(e) = p.phase(PREPARED) {
+        return Err((format!("couldn't record its progress: {e}"), Some(p.put_back())));
+    }
     Ok(p)
-}
-
-/// The claimed file gets its old bytes back, in place.
-fn rewrite(p: &Prepared) -> std::io::Result<()> {
-    let bytes = p.bytes.as_deref().ok_or(std::io::ErrorKind::InvalidInput)?;
-    let mut f = imp::open_write_at(p.stage(), &p.name)?;
-    f.set_len(0)?;
-    f.write_all(bytes)?;
-    f.sync_all()
 }
 
 /// Install one prepared file. Ok(state), or Err(state, why) when it couldn't.
@@ -303,18 +459,43 @@ fn commit(mut p: Prepared, hook: &mut dyn FnMut(Step)) -> Result<State, (State, 
     }
     let rewriting = p.has_temp && !p.untouched;
     if rewriting {
-        p.phase(REWRITING);
-        if let Err(e) = rewrite(&p) {
-            // The recovery copy has the old bytes; the journal says to finish from it.
-            let at = p.staged(&p.name);
-            return Err((State::KeptAt(at), format!("couldn't write it back ({e}); its old text is kept beside it")));
+        // Its current bytes go aside first: a failed rewrite is undone from them.
+        if let Err(e) = copy_in(p.stage(), &p.name, BEFORE) {
+            let _ = imp::remove_file_at(p.stage(), BEFORE);
+            return Err((p.put_back(), format!("couldn't keep a copy of it ({e})")));
         }
-        p.phase(REWRITTEN);
+        p.has_before = true;
+        p.journal["before"] = p.journal["expected"].clone();
+        if let Err(e) = p.phase(REWRITING) {
+            return Err((p.put_back(), format!("couldn't record its progress ({e})")));
+        }
+        let bytes = p.bytes.clone().unwrap_or_default();
+        if let Err(e) = write_in_place(p.stage(), &p.name, &bytes) {
+            // Back as it was, from the copy, for every name the file has.
+            let mut kept = Vec::new();
+            let back = imp::open_file_at(p.stage(), BEFORE).and_then(|mut f| std::io::Read::read_to_end(&mut f, &mut kept)).and_then(|_| write_in_place(p.stage(), &p.name, &kept));
+            return match back {
+                Ok(()) => {
+                    let _ = p.phase(PREPARED);
+                    Err((p.put_back(), format!("couldn't write it back ({e}); it was left as it was")))
+                }
+                Err(e2) => {
+                    let at = p.staged(&p.name);
+                    Err((State::KeptAt(at), format!("couldn't write it back ({e}) or restore it ({e2}); both versions are kept beside it")))
+                }
+            };
+        }
+        if let Err(e) = p.phase(REWRITTEN) {
+            let at = p.staged(&p.name);
+            return Err((State::KeptAt(at), format!("couldn't record its progress ({e}); it has its old text, kept beside its copies")));
+        }
         hook(Step::Rewritten(p.index));
-    } else {
-        p.phase(MOVING);
+    } else if let Err(e) = p.phase(MOVING) {
+        return Err((p.put_back(), format!("couldn't record its progress ({e})")));
     }
-    match imp::move_noreplace(p.stage(), &p.name, &p.parent, &p.install) {
+    let moved = imp::move_noreplace(p.stage(), &p.name, &p.parent, &p.install);
+    let _ = imp::sync_dir(&p.parent).and_then(|()| imp::sync_dir(p.stage()));
+    match moved {
         Moved::Done => {
             let stage = p.stage_path();
             if p.finish() { Ok(State::Restored) } else { Ok(State::RestoredWithLeftover(stage)) }
@@ -390,11 +571,14 @@ pub fn restore_all_with(op: &str, items: &[Item], hook: &mut dyn FnMut(Step)) ->
 
 // ---- after a crash -------------------------------------------------------------
 
-/// A staging folder an interrupted undo left, as its journal tells it.
+/// A staging folder with a journal: one an interrupted undo of this
+/// installation left (`sealed`), or one something else made.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Leftover {
     pub stage: PathBuf,
-    /// "Undo Replace in Files", "Undo Rename".
+    /// The seal is this installation's: the rest can be acted on.
+    pub sealed: bool,
+    /// "Undo Replace in Files", "Undo Rename" (only when sealed).
     pub op: String,
     /// Where the file was, and where the undo was putting it.
     pub source: PathBuf,
@@ -405,6 +589,9 @@ pub struct Leftover {
 impl Leftover {
     /// What happened, and what Put Back does, in a sentence or two.
     pub fn describe(&self) -> String {
+        if !self.sealed {
+            return "Left by another program or another copy of Strata. Strata won't act on it: look inside and move what you need yourself.".into();
+        }
         let file = |p: &Path| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
         let (what, put) = match self.phase.as_str() {
             CLAIMING | PREPARED => ("was set aside while its undo was being checked; it's as it was before the undo", format!("puts it back as {}", file(&self.source))),
@@ -416,64 +603,99 @@ impl Leftover {
     }
 }
 
-fn journal_of(stage: &Path) -> Option<serde_json::Value> {
-    let text = std::fs::read_to_string(stage.join(claim::MARKER)).ok()?;
-    let (head, json) = text.split_once('\n')?;
-    if !head.starts_with("strata-claim") {
-        return None;
+/// The undo `stage` (a staging folder) was part of, if it has a journal.
+pub fn leftover(stage: &Path) -> Option<Leftover> {
+    let (j, sealed) = read_marker(stage)?;
+    if !sealed {
+        return Some(Leftover { stage: stage.to_owned(), sealed, op: String::new(), source: PathBuf::new(), dest: PathBuf::new(), phase: String::new() });
     }
-    serde_json::from_str(json.trim()).ok()
+    let s = |k: &str| j.get(k).and_then(|v| v.as_str()).map(str::to_owned);
+    Some(Leftover { stage: stage.to_owned(), sealed, op: s("op")?, source: PathBuf::from(s("source")?), dest: PathBuf::from(s("dest")?), phase: s("phase")? })
 }
 
-/// The undo `stage` (a staging folder) was part of, if it was one.
-pub fn leftover(stage: &Path) -> Option<Leftover> {
-    let j = journal_of(stage)?;
-    let s = |k: &str| j.get(k).and_then(|v| v.as_str()).map(str::to_owned);
-    Some(Leftover { stage: stage.to_owned(), op: s("op")?, source: PathBuf::from(s("source")?), dest: PathBuf::from(s("dest")?), phase: s("phase")? })
+/// One plain file or folder name: no separators, not `.`/`..`, no NUL, no
+/// drive or root (and no `:` on Windows, which would name a stream).
+fn plain_name(s: &str) -> bool {
+    let mut c = Path::new(s).components();
+    !s.is_empty()
+        && !s.contains(['/', '\\', '\0'])
+        && !(cfg!(windows) && s.contains(':'))
+        && matches!((c.next(), c.next()), (Some(std::path::Component::Normal(n)), None) if n == std::ffi::OsStr::new(s))
 }
 
 /// Put back what an interrupted undo left in `stage`, as its journal says.
-/// Returns where the file went.
-pub fn put_back_leftover(stage: &Path) -> Result<PathBuf, String> {
-    let j = journal_of(stage).ok_or("its journal can't be read")?;
-    let left = leftover(stage).ok_or("its journal can't be read")?;
-    let name = j.get("name").and_then(|v| v.as_str()).ok_or("its journal names no file")?.to_owned();
-    let (parent_path, stage_name) = (stage.parent().ok_or("no folder")?, stage.file_name().and_then(|n| n.to_str()).ok_or("no name")?);
-    let parent = imp::open_parent(parent_path, &[]).map_err(|e| e.to_string())?;
-    let st = imp::open_dir(&parent, stage_name).map_err(|e| e.to_string())?;
-    let claimed = imp::open_file_at(&st, &name).is_ok();
-    let target = match left.phase.as_str() {
-        REWRITING | REWRITTEN => &left.dest,
-        _ => &left.source,
-    };
-    let target_name = target.file_name().and_then(|n| n.to_str()).ok_or("no name")?.to_owned();
-    if target.parent() != Some(parent_path) {
-        return Err("its journal points elsewhere".into());
+/// `top` is the folder being looked at (the repository, the vault): the
+/// staging folder must be inside it, and everything is reached from it
+/// without following links. Only a journal sealed by this installation is
+/// acted on, every name in it must be a plain name in the staging folder's
+/// own folder, and the files are checked against the journal's fingerprints
+/// before anything is written. Returns where the file went.
+pub fn put_back_leftover(top: &Path, stage: &Path) -> Result<PathBuf, String> {
+    let (j, sealed) = read_marker(stage).ok_or("its journal can't be read")?;
+    if !sealed {
+        return Err("it wasn't left by this copy of Strata, so Strata won't act on it".into());
     }
+    let left = leftover(stage).ok_or("its journal is incomplete")?;
+    let (dirs, stage_name) = parts(top, stage).ok_or("it isn't inside the folder being looked at")?;
+    if !stage_name.starts_with(claim::STAGING) || !dirs.iter().all(|d| plain_name(d)) {
+        return Err("it isn't one of Strata's staging folders".into());
+    }
+    let name = j.get("name").and_then(|v| v.as_str()).filter(|n| plain_name(n)).ok_or("its journal names no plain file")?.to_owned();
+    let folder = stage.parent().ok_or("no folder")?;
+    let own = |p: &Path| p.parent() == Some(folder) && p.file_name().and_then(|n| n.to_str()).is_some_and(plain_name);
+    if !own(&left.source) || !own(&left.dest) || [claim::MARKER, TEMP, BEFORE, MARKER_NEW].contains(&name.as_str()) {
+        return Err("its journal points outside its own folder".into());
+    }
+    let target = if matches!(left.phase.as_str(), REWRITING | REWRITTEN) { &left.dest } else { &left.source };
+    let target_name = target.file_name().and_then(|n| n.to_str()).ok_or("no name")?.to_owned();
+    let dirs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+    let parent = imp::open_parent(top, &dirs).map_err(|_| "a folder on the way is gone or is a link".to_owned())?;
+    let st = imp::open_dir(&parent, &stage_name).map_err(|_| "it isn't a plain folder".to_owned())?;
+    let claimed = imp::open_file_at(&st, &name).is_ok();
     if claimed {
-        if left.phase == REWRITING {
-            // Finish the rewrite from the recovery copy, if it's whole.
-            let want = j.get("original").and_then(|v| v.as_array()).and_then(|a| Some((a.first()?.as_u64()?, a.get(1)?.as_u64()?)));
-            let mut copy = imp::open_file_at(&st, TEMP).map_err(|_| "its old text isn't there".to_owned())?;
-            if want.is_none_or(|w| !matches(&mut copy, w)) {
-                return Err("the copy of its old text isn't whole".into());
+        // The file must be the one the journal describes before anything is done to it.
+        let id = pair(j.get("id"));
+        if id.is_some() && imp::id_at(&st, &name) != id {
+            return Err("the file in it isn't the one its journal names".into());
+        }
+        let check = |key: &str| -> Result<(), String> {
+            match pair(j.get(key)) {
+                Some(want) if imp::open_file_at(&st, &name).is_ok_and(|mut f| matches(&mut f, want)) => Ok(()),
+                Some(_) => Err("the file in it has changed since".into()),
+                None => Ok(()),
             }
-            let mut bytes = Vec::new();
-            let mut copy = imp::open_file_at(&st, TEMP).map_err(|e| e.to_string())?;
-            std::io::Read::read_to_end(&mut copy, &mut bytes).map_err(|e| e.to_string())?;
-            let mut f = imp::open_write_at(&st, &name).map_err(|e| e.to_string())?;
-            f.set_len(0).and_then(|()| f.write_all(&bytes)).and_then(|()| f.sync_all()).map_err(|e| e.to_string())?;
+        };
+        match left.phase.as_str() {
+            PREPARED => check("expected")?,
+            REWRITTEN => check("original")?,
+            REWRITING => {
+                if id.is_none() {
+                    return Err("its journal doesn't say which file to finish".into());
+                }
+                // Finish the rewrite from the recovery copy, if it's whole.
+                let want = pair(j.get("original")).ok_or("its journal has no fingerprint for the old text")?;
+                let mut bytes = Vec::new();
+                let mut copy = imp::open_file_at(&st, TEMP).map_err(|_| "its old text isn't there".to_owned())?;
+                std::io::Read::read_to_end(&mut copy, &mut bytes).map_err(|e| e.to_string())?;
+                if identity_of(&bytes) != want {
+                    return Err("the copy of its old text isn't whole".into());
+                }
+                write_in_place(&st, &name, &bytes).map_err(|e| e.to_string())?;
+            }
+            _ => {}
         }
         match imp::move_noreplace(&st, &name, &parent, &target_name) {
             Moved::Done => {}
             _ => return Err(format!("“{target_name}” is taken: move it away first")),
         }
+        let _ = imp::sync_dir(&parent).and_then(|()| imp::sync_dir(&st));
     }
-    let _ = imp::remove_file_at(&st, TEMP);
-    let _ = imp::remove_file_at(&st, MARKER_NEW);
-    let _ = imp::remove_file_at(&st, claim::MARKER);
+    for n in [TEMP, BEFORE, MARKER_NEW, claim::MARKER] {
+        let _ = imp::remove_file_at(&st, n);
+    }
     drop(st);
-    let _ = imp::remove_empty_dir(&parent, stage_name);
+    let _ = imp::remove_empty_dir(&parent, &stage_name);
+    let _ = imp::sync_dir(&parent);
     Ok(target.clone())
 }
 
@@ -488,6 +710,7 @@ pub fn identity(path: &Path) -> Option<(u64, u64)> {
 pub fn identity_of(bytes: &[u8]) -> (u64, u64) {
     (bytes.len() as u64, claim::fingerprint(bytes))
 }
+
 
 // ---- making notes inside a vault, through pinned folders ---------------------
 
@@ -782,7 +1005,7 @@ mod tests {
             let l = leftover(stage).unwrap();
             assert_eq!((l.op.as_str(), l.phase.as_str()), ("Undo Replace in Files", "prepared"));
             assert!(l.describe().contains("interrupted Undo Replace in Files") && !l.describe().contains("Trash"), "{}", l.describe());
-            put_back_leftover(stage).unwrap();
+            put_back_leftover(&d, stage).unwrap();
         }
         assert_eq!(fs::read_to_string(&a).unwrap(), "new a", "exactly as before the undo");
         assert_eq!(fs::read_to_string(&b).unwrap(), "new b");
@@ -802,7 +1025,7 @@ mod tests {
         assert_eq!(phases.len(), 2);
         assert!(phases.contains(&"rewritten".to_owned()) && phases.contains(&"prepared".to_owned()), "{phases:?}");
         for stage in stages(&d) {
-            put_back_leftover(&stage).unwrap();
+            put_back_leftover(&d, &stage).unwrap();
         }
         assert_eq!(fs::read_to_string(&b).unwrap(), "old b");
         assert_eq!(fs::read_to_string(&c).unwrap(), "new c");
@@ -811,12 +1034,152 @@ mod tests {
         let e = d.join("e.txt");
         crash_at(&[item(&d, &e, "old e, the whole of it", "new e")], Step::BeforeInstall(0));
         let stage = stages(&d).pop().unwrap();
-        let marker = fs::read_to_string(stage.join(claim::MARKER)).unwrap().replace("\"prepared\"", "\"rewriting\"");
-        fs::write(stage.join(claim::MARKER), marker).unwrap();
+        reseal(&stage, |j| j["phase"] = "rewriting".into());
         fs::write(stage.join("e.txt"), "old e, the wh").unwrap();
         assert!(leftover(&stage).unwrap().describe().contains("finishes that"));
-        assert_eq!(put_back_leftover(&stage).unwrap(), e);
+        assert_eq!(put_back_leftover(&d, &stage).unwrap(), e);
         assert_eq!(fs::read_to_string(&e).unwrap(), "old e, the whole of it");
+        fs::remove_dir_all(d).ok();
+    }
+
+    /// Rewrite a leftover's journal and seal it again, as Strata would have.
+    fn reseal(stage: &Path, change: impl FnOnce(&mut serde_json::Value)) {
+        let (mut j, sealed) = read_marker(stage).unwrap();
+        assert!(sealed);
+        change(&mut j);
+        let stamp = stage.file_name().unwrap().to_str().unwrap().trim_start_matches(claim::STAGING).to_owned();
+        fs::write(stage.join(claim::MARKER), marker_text(&stamp, &j)).unwrap();
+    }
+
+    /// A staging folder in `d` with a journal (as a planted one would be),
+    /// holding `x.md` and a recovery copy; `seal` decides how it's sealed.
+    fn plant(d: &Path, journal: &serde_json::Value, seal: &str) -> PathBuf {
+        let stage = d.join(format!("{}666-1-0", claim::STAGING));
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(stage.join(TEMP), "evil\n").unwrap();
+        fs::write(stage.join("x.md"), "staged\n").unwrap();
+        let body = format!("strata-claim 666-1-0\n{journal}\n");
+        let text = match seal {
+            "none" => body,
+            "forged" => format!("{body}{}\n", hex(&hmac(&[7u8; 32], body.as_bytes()))),
+            _ => String::from_utf8(marker_text("666-1-0", journal)).unwrap(),
+        };
+        fs::write(stage.join(claim::MARKER), text).unwrap();
+        stage
+    }
+
+    /// A staging folder planted by someone else (a repository, a download)
+    /// with a journal naming a file elsewhere: Put Back never touches
+    /// anything, whether the journal is unsealed, forged, or sealed (as if
+    /// the key had leaked) with names that leave its folder.
+    #[test]
+    fn a_planted_journal_never_touches_a_file_elsewhere() {
+        let d = temp("planted");
+        let outside = temp("planted-out");
+        let victim = outside.join("document.txt");
+        let x = d.join("x.md").to_string_lossy().into_owned();
+        let evil = serde_json::json!([5, claim::fingerprint(b"evil\n")]);
+        let v = victim.to_string_lossy().into_owned();
+        let up = d.join("..").join(outside.file_name().unwrap()).join("document.txt").to_string_lossy().into_owned();
+        let cases = [
+            ("none", serde_json::json!({"op": "Undo Rename", "source": x, "dest": x, "name": v, "phase": "rewriting", "original": evil})),
+            ("forged", serde_json::json!({"op": "Undo Rename", "source": x, "dest": x, "name": "x.md", "phase": "rewriting", "original": evil, "id": [0, 0]})),
+            ("sealed", serde_json::json!({"op": "Undo Rename", "source": x, "dest": x, "name": v, "phase": "rewriting", "original": evil})),
+            ("sealed", serde_json::json!({"op": "Undo Rename", "source": x, "dest": x, "name": "../document.txt", "phase": "rewriting", "original": evil})),
+            ("sealed", serde_json::json!({"op": "Undo Rename", "source": x, "dest": x, "name": "a/x.md", "phase": "rewriting", "original": evil})),
+            ("sealed", serde_json::json!({"op": "Undo Rename", "source": x, "dest": x, "name": "a\\x.md", "phase": "rewriting", "original": evil})),
+            ("sealed", serde_json::json!({"op": "Undo Rename", "source": x, "dest": v, "name": "x.md", "phase": "rewritten"})),
+            ("sealed", serde_json::json!({"op": "Undo Rename", "source": up, "dest": x, "name": "x.md", "phase": "moving"})),
+            ("sealed", serde_json::json!({"op": "Undo Rename", "source": x, "dest": x, "name": "x.md", "phase": "rewriting", "original": evil})),
+        ];
+        for (seal, journal) in &cases {
+            fs::write(&victim, "precious\n").unwrap();
+            let stage = plant(&d, journal, seal);
+            let l = leftover(&stage).unwrap();
+            assert_eq!(l.sealed, *seal == "sealed", "{journal}");
+            if !l.sealed {
+                assert!(l.describe().contains("another program or another copy of Strata"), "{}", l.describe());
+            }
+            assert!(put_back_leftover(&d, &stage).is_err(), "{seal} {journal}");
+            assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n", "never written: {journal}");
+            assert_eq!(fs::read_to_string(stage.join("x.md")).unwrap(), "staged\n", "left as it was: {journal}");
+            assert!(!d.join("x.md").exists() && !d.join("document.txt").exists(), "never moved: {journal}");
+            fs::remove_dir_all(&stage).unwrap();
+        }
+        // A sealed journal edited afterwards no longer checks out.
+        let fine = serde_json::json!({"op": "Undo Rename", "source": x, "dest": x, "name": "x.md", "phase": "moving"});
+        let stage = plant(&d, &fine, "sealed");
+        let text = fs::read_to_string(stage.join(claim::MARKER)).unwrap().replace("\"moving\"", "\"prepared\"");
+        fs::write(stage.join(claim::MARKER), text).unwrap();
+        assert!(!leftover(&stage).unwrap().sealed);
+        assert!(put_back_leftover(&d, &stage).is_err());
+        assert!(!d.join("x.md").exists());
+        // Looked at from a folder it isn't in: refused.
+        fs::remove_dir_all(&stage).unwrap();
+        let stage = plant(&d, &fine, "sealed");
+        assert!(put_back_leftover(&outside, &stage).is_err());
+        assert!(!d.join("x.md").exists());
+        fs::remove_dir_all(d).ok();
+        fs::remove_dir_all(outside).ok();
+    }
+
+    /// The journal names the file by identity: one swapped in under its name
+    /// (same text, another file) is never written or moved.
+    #[test]
+    fn put_back_checks_it_is_the_same_file() {
+        let d = temp("swapped");
+        let a = d.join("a.txt");
+        crash_at(&[item(&d, &a, "old a", "new a")], Step::BeforeInstall(0));
+        let stage = stages(&d).pop().unwrap();
+        fs::remove_file(stage.join("a.txt")).unwrap();
+        fs::write(stage.join("a.txt"), "new a").unwrap();
+        assert!(put_back_leftover(&d, &stage).unwrap_err().contains("isn't the one"));
+        assert!(!a.exists());
+        // Rewritten, but changed since: refused too.
+        let b = d.join("b.txt");
+        crash_at(&[item(&d, &b, "old b", "new b")], Step::Rewritten(0));
+        let stage = stages(&d).into_iter().find(|s| s.join("b.txt").exists()).unwrap();
+        fs::write(stage.join("b.txt"), "someone else's").unwrap();
+        assert!(put_back_leftover(&d, &stage).is_err());
+        assert!(!b.exists());
+        fs::remove_dir_all(d).ok();
+    }
+
+    /// If the journal can't be written, the next step never starts.
+    #[test]
+    fn a_journal_that_cant_be_kept_stops_before_the_next_step() {
+        let d = temp("no-journal");
+        let a = d.join("a.txt");
+        let out = restore_all_with("Undo", &[item(&d, &a, "old a", "new a")], &mut |s| {
+            if s == Step::Claimed(0) {
+                // Something in the way of the marker's new name.
+                fs::create_dir(stages(&d)[0].join(MARKER_NEW)).unwrap();
+            }
+        });
+        let Outcome::Refused(why, kept) = out else { panic!("{out:?}") };
+        assert!(why[0].1.contains("progress"), "{why:?}");
+        assert!(kept.is_empty(), "{kept:?}");
+        assert_eq!(fs::read_to_string(&a).unwrap(), "new a", "never rewritten");
+        fs::remove_dir_all(d).ok();
+    }
+
+    /// A rewrite that fails partway is undone at once from the copy taken
+    /// just before: every name of the file has its text back.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_rewrite_puts_the_file_back_for_every_name() {
+        let d = temp("failed-rewrite");
+        let (a, other) = (d.join("a.txt"), d.join("other-name.txt"));
+        fs::write(&a, "new text of a").unwrap();
+        fs::hard_link(&a, &other).unwrap();
+        FAIL_REWRITE.with(|c| c.set(true));
+        let out = restore_all(&[item(&d, &a, "old a", "new text of a")]);
+        let Outcome::Partial(states, why) = out else { panic!("{out:?}") };
+        assert!(why.contains("left as it was"), "{why}");
+        assert_eq!(states[0].1, State::Unchanged);
+        assert_eq!(fs::read_to_string(&a).unwrap(), "new text of a");
+        assert_eq!(fs::read_to_string(&other).unwrap(), "new text of a", "the other name too");
+        assert!(stages(&d).is_empty());
         fs::remove_dir_all(d).ok();
     }
 

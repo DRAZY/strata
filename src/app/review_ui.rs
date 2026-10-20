@@ -948,9 +948,11 @@ impl StrataApp {
             Some(ListAction::KeepFile(p)) => self.review_on_file(&p, Self::review_keep_file),
             Some(ListAction::RevertFile(p)) => self.review_on_file(&p, Self::review_revert_file),
             Some(ListAction::PutBack(stage)) => {
-                self.status = match crate::swap::put_back_leftover(&stage) {
-                    Ok(to) => format!("Put back {}", to.display()),
-                    Err(e) => format!("Couldn't put it back: {e}"),
+                let top = self.review.scan.as_ref().map(|s| s.top.clone());
+                self.status = match top.as_deref().map(|top| crate::swap::put_back_leftover(top, &stage)) {
+                    None => "Looking for changes first…".into(),
+                    Some(Ok(to)) => format!("Put back {}", to.display()),
+                    Some(Err(e)) => format!("Couldn't put it back: {e}"),
                 };
                 self.review.next_scan = 0.0;
             }
@@ -1141,9 +1143,9 @@ impl StrataApp {
                             ui.close();
                         }
                         // What an interrupted undo left: put it back, or look at it.
-                        if crate::swap::leftover(&f.path).is_some() {
+                        if let Some(left) = crate::swap::leftover(&f.path) {
                             ui.separator();
-                            if ui.button("Put Back").on_hover_text("Return the file to where the undo found it, as its journal says").clicked() {
+                            if left.sealed && ui.button("Put Back").on_hover_text("Return the file to where the undo found it, as its journal says").clicked() {
                                 action = Some(ListAction::PutBack(f.path.clone()));
                                 ui.close();
                             }

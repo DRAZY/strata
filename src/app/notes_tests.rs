@@ -590,7 +590,7 @@ fn an_interrupted_undo_in_a_vault_is_shown_with_put_back() {
     assert!(shown.contains("Left by an interrupted Undo Rename: Plan.md"), "{shown}");
     assert!(shown.contains("Put Back"));
     let stage = app.notes.index.vault_for(&dir.join("Home.md")).unwrap().leftovers[0].clone();
-    crate::swap::put_back_leftover(&stage).unwrap();
+    crate::swap::put_back_leftover(&dir, &stage).unwrap();
     assert_eq!(std::fs::read_to_string(dir.join("Plan.md")).unwrap(), "new text\n");
     std::fs::remove_dir_all(dir).ok();
 }

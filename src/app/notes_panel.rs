@@ -500,7 +500,7 @@ impl StrataApp {
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(WARN, "⚠");
                     ui.label(left.describe());
-                    if ui.small_button("Put Back").clicked() {
+                    if left.sealed && ui.small_button("Put Back").clicked() {
                         act = Some((3, left.stage.clone(), path.clone()));
                     }
                     if ui.small_button(crate::ctxmenu::reveal_label()).clicked() {
@@ -529,7 +529,7 @@ impl StrataApp {
             Some((0, other, _)) => self.compare_conflict(Some(other)),
             Some((1, other, _)) => self.open_path(other, false),
             Some((3, stage, _)) => {
-                self.status = match crate::swap::put_back_leftover(&stage) {
+                self.status = match crate::swap::put_back_leftover(&vault.root, &stage) {
                     Ok(to) => format!("Put back {}", to.display()),
                     Err(e) => format!("Couldn't put it back: {e}"),
                 };
