@@ -3,7 +3,10 @@
 //! A query matches when its chars appear in order in the candidate
 //! (case-insensitively). Among all such alignments a small DP picks the
 //! best-scoring one, rewarding runs and word starts and charging for gaps.
-//! Space-separated query terms must each match, in any order.
+//! Space-separated query terms must each match, in any order; when the
+//! candidate holds the words themselves in the order typed, they are also
+//! scored as one phrase, which ranks it higher ("rename note" prefers
+//! "Rename Note" to "Note … Rename").
 
 use std::cmp::Reverse;
 
@@ -78,6 +81,8 @@ struct Term {
 
 struct Pattern {
     terms: Vec<Term>,
+    /// The terms joined by single spaces, when there are several.
+    phrase: Option<Term>,
 }
 
 /// Buffers reused across candidates so scoring doesn't allocate per item.
@@ -88,6 +93,9 @@ struct Scratch {
     bonus: Vec<i32>,
     table: Vec<i32>,
     term_positions: Vec<usize>,
+    /// Phrase alignments run (tests).
+    #[cfg(test)]
+    phrase_runs: usize,
 }
 
 fn fold(c: char) -> char {
@@ -100,11 +108,22 @@ fn is_path_sep(c: char) -> bool {
 
 impl Pattern {
     fn new(query: &str) -> Self {
-        let terms = query
-            .split_whitespace()
-            .map(|t| Term { chars: t.chars().collect(), folded: t.chars().map(fold).collect() })
-            .collect();
-        Self { terms }
+        let term = |t: &str| Term { chars: t.chars().collect(), folded: t.chars().map(fold).collect() };
+        let words: Vec<&str> = query.split_whitespace().collect();
+        let phrase = (words.len() > 1).then(|| term(&words.join(" ")));
+        Self { terms: words.into_iter().map(term).collect(), phrase }
+    }
+
+    /// Does `folded` contain each term whole, one after another, as typed?
+    fn words_in_order(&self, folded: &[char]) -> bool {
+        let mut at = 0;
+        self.terms.iter().all(|t| match folded[at..].windows(t.folded.len()).position(|w| w == t.folded.as_slice()) {
+            Some(i) => {
+                at += i + t.folded.len();
+                true
+            }
+            None => false,
+        })
     }
 
     fn score(&self, candidate: &str, s: &mut Scratch, mut positions: Option<&mut Vec<usize>>) -> Option<i32> {
@@ -120,12 +139,26 @@ impl Pattern {
         if let Some(p) = positions.as_deref_mut() {
             p.clear();
         }
+        let want = positions.is_some();
         let mut total = 0;
         for term in &self.terms {
-            let want = positions.is_some();
             total += match_term(term, s, want)?;
             if let Some(p) = positions.as_deref_mut() {
                 p.extend_from_slice(&s.term_positions);
+            }
+        }
+        // The whole query in order: its spaces must match whitespace too, so
+        // words that follow each other in the candidate earn the run bonuses.
+        // Only tried when the candidate holds the words themselves in this
+        // order: a second alignment for every candidate would slow big folders.
+        if let Some(phrase) = self.phrase.as_ref().filter(|_| self.words_in_order(&s.folded))
+            && let Some(best) = match_phrase(phrase, s, want).filter(|&b| b > total)
+        {
+            total = best;
+            if let Some(p) = positions.as_deref_mut() {
+                p.clear();
+                // The spaces between the words aren't highlighted.
+                p.extend(s.term_positions.iter().filter(|&&j| !s.chars[j].is_whitespace()));
             }
         }
         if let Some(p) = positions {
@@ -134,6 +167,14 @@ impl Pattern {
         }
         Some(total - s.chars.len() as i32 / LENGTH_DIVISOR)
     }
+}
+
+fn match_phrase(phrase: &Term, s: &mut Scratch, want: bool) -> Option<i32> {
+    #[cfg(test)]
+    {
+        s.phrase_runs += 1;
+    }
+    match_term(phrase, s, want)
 }
 
 fn is_subsequence(query: &[char], candidate: &str) -> bool {
@@ -311,6 +352,33 @@ mod tests {
         assert!(score("main zz", "src/main.rs").is_none());
         let (_, p) = score("main rs", "src/main.rs").unwrap();
         assert_eq!(p, vec![4, 5, 6, 7, 9, 10]);
+    }
+
+    #[test]
+    fn terms_in_order_as_a_phrase_win() {
+        assert_eq!(top("rename note", &["Notes: Undo Rename", "Notes: Rename Note…"])[0], "Notes: Rename Note…");
+        assert_eq!(top("new term", &["Terminal: New Terminal", "Terminal: Send to Terminal (new)"])[0], "Terminal: New Terminal");
+        // The space between the words isn't highlighted.
+        assert_eq!(positions("rename note", "Notes: Rename Note…"), vec![7, 8, 9, 10, 11, 12, 14, 15, 16, 17]);
+    }
+
+    /// The phrase pass is a second alignment per candidate, so it runs only
+    /// for names holding the words themselves, in the order typed. A big
+    /// folder whose paths have every letter and space in order (but not the
+    /// words) costs only the words' own passes.
+    #[test]
+    fn the_phrase_pass_runs_only_for_the_words_in_order() {
+        let runs = |query: &str, items: &[String]| {
+            let pattern = Pattern::new(query);
+            let mut s = Scratch::default();
+            let matched = items.iter().filter(|c| pattern.score(c, &mut s, None).is_some()).count();
+            (matched, s.phrase_runs)
+        };
+        let items: Vec<String> = (0..100_000).map(|i| format!("docs {i}/f-i t-e m-e n-o.md")).collect();
+        assert_eq!(runs("fi te me no", &items), (100_000, 0));
+        assert_eq!(runs("t-e m-e", &items), (100_000, 100_000));
+        let names = ["Notes: Rename Note…", "Notes: Undo Rename", "Rename the Note"].map(String::from);
+        assert_eq!(runs("rename note", &names), (3, 2), "words apart still count, in order");
     }
 
     #[test]

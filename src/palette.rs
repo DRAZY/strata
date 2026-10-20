@@ -219,6 +219,12 @@ impl Palette {
         &self.choices
     }
 
+    /// The highlighted row's label (tests).
+    #[cfg(test)]
+    pub fn selected_label(&self) -> Option<&str> {
+        self.rows.get(self.selected).map(|r| r.label.as_str())
+    }
+
     pub fn mode(&self) -> Mode {
         self.mode
     }
@@ -399,7 +405,13 @@ impl Palette {
                     }
                     ui.add_space(4.0);
                     let row_h = (base + 14.0).max(26.0);
-                    egui::ScrollArea::vertical().max_height(row_h * 12.0).auto_shrink([false, true]).show(ui, |ui| {
+                    // The area lays out within last frame's size, so ask for
+                    // this query's height outright: a list that had fewer
+                    // rows would otherwise stay that short and scroll.
+                    let max_h = row_h * 12.0;
+                    let shown = self.rows.len().clamp(1, MAX_ROWS) as f32;
+                    let list_h = (shown * (row_h + ui.spacing().item_spacing.y)).min(max_h);
+                    egui::ScrollArea::vertical().max_height(max_h).min_scrolled_height(list_h).auto_shrink([false, true]).show(ui, |ui| {
                         for (i, row) in self.rows.iter().take(MAX_ROWS).enumerate() {
                             crate::fonts::ensure_cjk(ui.ctx(), &row.label);
                             crate::fonts::ensure_cjk(ui.ctx(), &row.detail);
@@ -641,6 +653,57 @@ mod tests {
         p.text = "set syntax rust".into();
         p.rebuild();
         assert!(p.rows[0].label.starts_with("Set Syntax: Rust"));
+    }
+
+    /// The list is as tall as its rows (up to its limit) every frame, also
+    /// after a query with fewer results: it never keeps an earlier height.
+    #[test]
+    fn list_height_follows_the_results() {
+        let ectx = egui::Context::default();
+        let mut p = Palette::new(vec![]);
+        p.show_mode(Mode::Commands, "", ctx("", "Plain Text"), &ectx);
+        let height = |p: &mut Palette, query: &str| {
+            p.text = query.into();
+            for _ in 0..3 {
+                let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0))), ..Default::default() };
+                ectx.run_ui(raw, |ui| {
+                    p.show(ui.ctx());
+                })
+                .textures_delta
+                .clear();
+            }
+            (p.rows.len(), ectx.memory(|m| m.area_rect(egui::Id::new("palette"))).unwrap().height())
+        };
+        // Rows as the panel draws them, with spacing between; the list is at
+        // most twelve rows tall (and scrolls past that).
+        let style = ectx.global_style();
+        let row = (style.text_styles[&egui::TextStyle::Body].size + 14.0).max(26.0);
+        let shown = |n: usize| (n as f32 * (row + style.spacing.item_spacing.y) - style.spacing.item_spacing.y).min(row * 12.0);
+        let (n_few, few) = height(&mut p, "documentation");
+        for query in ["split", "help", "", "wrap"] {
+            let (n, h) = height(&mut p, query);
+            assert!((h - few - (shown(n) - shown(n_few))).abs() < 0.5, "{query:?}: {h} for {n} rows, {few} for {n_few}");
+        }
+        assert_eq!(height(&mut p, "documentation").1, few, "and back down");
+    }
+
+    /// Words typed in the order the command names them beat the same words
+    /// found apart ("rename note" is Rename Note, not Notes … Rename).
+    #[test]
+    fn words_in_order_rank_first() {
+        let mut p = palette(Mode::Commands, "", ctx("", "Plain Text"));
+        for (query, best) in [
+            ("rename note", "Notes: Rename Note…"),
+            ("undo rename", "Notes: Undo Rename"),
+            ("new terminal", "Terminal: New Terminal"),
+            ("new note", "Notes: New Note…"),
+            ("find tag", "Notes: Find Tag…"),
+            ("save all", "File: Save All"),
+        ] {
+            p.text = query.into();
+            p.rebuild();
+            assert_eq!(p.rows[0].label, best, "{query}");
+        }
     }
 
     #[test]

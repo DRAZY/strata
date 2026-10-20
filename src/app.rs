@@ -1487,7 +1487,11 @@ impl StrataApp {
             }
             if !self.palette.open {
                 self.palette_restore = None;
-                self.doc().view.focus();
+                // Back to the editor, unless the command gave the keyboard
+                // to a terminal (Terminal: New Terminal, View: Toggle Terminal).
+                if !self.terminal_takes_focus() {
+                    self.doc().view.focus();
+                }
             }
         }
     }
@@ -1886,7 +1890,7 @@ impl StrataApp {
                 ui.add_sized([field_w, ui.spacing().interact_size.y], egui::TextEdit::singleline(text).id(id).hint_text("Find").font(egui::TextStyle::Monospace))
             });
             if std::mem::take(&mut self.find.focus_query) {
-                field.request_focus();
+                crate::ctxmenu::focus_selecting_all(ui.ctx(), id, &q.text);
             }
             if field.lost_focus() && enter {
                 action = Some(if mods.alt { "all" } else if mods.shift { "prev" } else { "next" });

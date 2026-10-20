@@ -793,13 +793,17 @@ mod tests {
         frame(&mut app, &ctx, vec![]);
         let field = ctx.read_response(Id::new("find-query")).unwrap().rect;
         let menu = open_menu(&mut app, &ctx, field.center());
-        assert!(!item(&menu, "Copy").2, "nothing selected yet");
+        assert!(item(&menu, "Copy").2, "the bar opens with its text selected");
+        choose(&mut app, &ctx, &menu, "Copy");
+        assert_eq!(copied(&ctx).as_deref(), Some("needle"));
+        let mut state = egui::TextEdit::load_state(&ctx, Id::new("find-query")).unwrap();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(6))));
+        egui::TextEdit::store_state(&ctx, Id::new("find-query"), state);
+        let menu = open_menu(&mut app, &ctx, field.center());
+        assert!(!item(&menu, "Copy").2, "nothing selected");
         choose(&mut app, &ctx, &menu, "Select All");
         let menu = open_menu(&mut app, &ctx, field.center());
         assert!(item(&menu, "Copy").2, "right-click kept the selection");
-        choose(&mut app, &ctx, &menu, "Copy");
-        assert_eq!(copied(&ctx).as_deref(), Some("needle"));
-        let menu = open_menu(&mut app, &ctx, field.center());
         choose(&mut app, &ctx, &menu, "Cut");
         assert_eq!(app.find.query.text, "");
     }

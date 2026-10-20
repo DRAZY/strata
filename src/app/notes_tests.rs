@@ -242,6 +242,22 @@ fn backlinks_follow_changes_made_outside_strata() {
 }
 
 #[test]
+fn rename_note_opens_with_the_name_selected() {
+    let dir = temp_dir("notes-rename-select");
+    write(&dir, "Old.md", "# H\n");
+    let ctx = Context::default();
+    let mut app = open_vault(&dir, "Old.md", &ctx);
+    app.run(&ctx, Cmd::NotesRename);
+    frame(&mut app, &ctx, vec![]);
+    frame(&mut app, &ctx, vec![Event::Text("New".into())]);
+    match app.notes.dialog.as_ref() {
+        Some(super::notes_panel::Dialog::Name { name, .. }) => assert_eq!(name, "New", "typing replaced the old name"),
+        _ => panic!("the name dialog is up"),
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn rename_updates_links_and_undo_restores_them_byte_for_byte() {
     let dir = temp_dir("notes-rename");
     let a_bytes = b"Two links: [[Old]] and [[Old#H|shown]]\r\nNot this: `[[Old]]`\r\n![[Old]] [md](Old.md#H)\r\n".to_vec();

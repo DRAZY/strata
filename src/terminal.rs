@@ -1154,6 +1154,32 @@ impl Panel {
         self.focus_next = true;
     }
 
+    /// Is the terminal about to take the keyboard (`focus` since its last frame)?
+    pub fn focus_pending(&self) -> bool {
+        self.focus_next && self.visible
+    }
+
+    /// The panel isn't drawn this frame: forget a `focus` it can't take, and
+    /// if a shell had the keyboard, it loses it (reported to programs that
+    /// asked). Returns whether one had it, so the keyboard can go elsewhere.
+    pub fn not_drawn(&mut self) -> bool {
+        self.focus_next = false;
+        let mut had = false;
+        for t in &mut self.tabs {
+            if std::mem::take(&mut t.focused) {
+                had = true;
+                let mut term = t.term.lock();
+                term.is_focused = false;
+                let report = term.mode().contains(TermMode::FOCUS_IN_OUT);
+                drop(term);
+                if report {
+                    t.write(b"\x1b[O".to_vec());
+                }
+            }
+        }
+        had
+    }
+
     pub fn open(&mut self, ctx: &egui::Context, cwd: &Path) -> Result<(), String> {
         let (cols, rows) = self.tabs.get(self.active).map(|t| (t.size.cols, t.size.rows)).unwrap_or((80, 12));
         let t = Terminal::spawn(Some(ctx.clone()), cwd, None, cols, rows).map_err(|e| format!("Terminal: {e}"))?;

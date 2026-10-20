@@ -641,8 +641,14 @@ impl Sidebar {
             ui.set_width(320.0);
             ui.label(RichText::new(title).strong());
             crate::fonts::ensure_cjk(ui.ctx(), &p.name);
-            let field = ui.add(egui::TextEdit::singleline(&mut p.name).desired_width(f32::INFINITY));
-            field.request_focus();
+            let id = egui::Id::new("sidebar-prompt-name");
+            let field = ui.add(egui::TextEdit::singleline(&mut p.name).id(id).desired_width(f32::INFINITY));
+            // The field keeps the keyboard. A rename opens with the name
+            // selected up to the extension, ready to be typed over.
+            if !field.has_focus() {
+                let range = if p.kind == PromptKind::Rename { rename_selection(&p.name, p.target.is_dir()) } else { 0..p.name.chars().count() };
+                crate::ctxmenu::focus_selecting(ui.ctx(), id, range);
+            }
             if let Some(e) = &p.error {
                 ui.colored_label(Color32::LIGHT_RED, e);
             }
@@ -775,10 +781,12 @@ impl Sidebar {
                     ui.add(egui::TextEdit::singleline(text).id(id).hint_text(hint).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY))
                 });
                 if focus {
-                    r.request_focus();
+                    crate::ctxmenu::focus_selecting_all(ui.ctx(), id, text);
                 }
+                // Return searches and keeps the keyboard here, like the find bar.
                 if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     find = true;
+                    r.request_focus();
                 }
             });
         };
@@ -941,6 +949,18 @@ const RESERVED: &[&str] = &[
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
+/// What Rename selects of a name (in chars), like Finder and VS Code: a
+/// file's name up to its last dot, so typing keeps the extension; all of a
+/// folder's name or a dotfile's (".gitignore").
+fn rename_selection(name: &str, is_dir: bool) -> std::ops::Range<usize> {
+    let n = name.chars().count();
+    let dot = name.rfind('.').map(|b| name[..b].chars().count());
+    match dot {
+        Some(d) if !is_dir && d > 0 => 0..d,
+        _ => 0..n,
+    }
+}
+
 /// A name typed for a new file or folder (`nested`: `a/b/c` makes the
 /// folders in between) or for a rename (one name only).
 fn check_name(name: &str, nested: bool) -> Result<(), String> {
@@ -1039,6 +1059,17 @@ fn hit_text(ui: &Ui, line: usize, preview: &str, cols: &Range<usize>) -> LayoutJ
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rename_selects_the_name_before_the_extension() {
+        assert_eq!(rename_selection("b.txt", false), 0..1);
+        assert_eq!(rename_selection("archive.tar.gz", false), 0..11, "up to the last dot");
+        assert_eq!(rename_selection("ünï.md", false), 0..3, "in chars");
+        assert_eq!(rename_selection(".gitignore", false), 0..10, "a dotfile is all name");
+        assert_eq!(rename_selection("Makefile", false), 0..8);
+        assert_eq!(rename_selection("src.d", true), 0..5, "folders: the whole name");
+        assert_eq!(rename_selection("", false), 0..0);
+    }
 
     #[test]
     fn find_results_mark_hidden_characters() {

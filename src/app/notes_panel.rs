@@ -651,7 +651,13 @@ impl StrataApp {
                     ui.set_width(360.0);
                     ui.label(RichText::new(title).strong());
                     crate::fonts::ensure_cjk(ui.ctx(), &name);
-                    ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY)).request_focus();
+                    let id = egui::Id::new("notes-name-field");
+                    let field = ui.add(egui::TextEdit::singleline(&mut name).id(id).desired_width(f32::INFINITY));
+                    // The field keeps the keyboard; the name it opens with is
+                    // selected, ready to be typed over.
+                    if !field.has_focus() {
+                        crate::ctxmenu::focus_selecting_all(ui.ctx(), id, &name);
+                    }
                     if let Some(e) = &error {
                         ui.colored_label(Color32::LIGHT_RED, e);
                     }

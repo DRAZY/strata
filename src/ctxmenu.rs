@@ -68,6 +68,20 @@ pub fn text_field(ui: &mut Ui, id: Id, text: &mut String, add: impl FnOnce(&mut 
     resp
 }
 
+/// Focus the text field `id` with all of `text` selected, so typing
+/// replaces it: for fields that open with something already in them.
+pub fn focus_selecting_all(ctx: &egui::Context, id: Id, text: &str) {
+    focus_selecting(ctx, id, 0..text.chars().count());
+}
+
+/// Focus the text field `id` with the chars in `range` selected.
+pub fn focus_selecting(ctx: &egui::Context, id: Id, range: std::ops::Range<usize>) {
+    let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+    state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(range.start), CCursor::new(range.end))));
+    egui::TextEdit::store_state(ctx, id, state);
+    ctx.memory_mut(|m| m.request_focus(id));
+}
+
 /// The field's selection in chars (empty at the caret; the end with no state).
 fn selection(ctx: &egui::Context, id: Id, text: &str) -> std::ops::Range<usize> {
     let n = text.chars().count();
