@@ -6,6 +6,40 @@ All notable changes to Strata are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-10-20
+
+### Fixed
+
+- **View ▸ Side Bar ▸ Toggle Side Bar** works with no folder open. It used to
+  show only a status message; now the side bar lists your open files, with a
+  button that opens the current file's folder and **Open Folder…**. **Toggle
+  Show Open Files** lists even a single tab, and turning it on shows the side
+  bar.
+- Status messages show as a short notice at the bottom of the window while
+  the status bar is hidden or Distraction Free is on, so commands no longer
+  look like they did nothing.
+- Leaving full screen (the green button, Esc or the system) also leaves
+  Distraction Free, and showing the minimap, tabs, status bar, terminal,
+  Build Results, Markdown Preview or the AI panel from Distraction Free leaves
+  it so the panel appears.
+- Commands that did nothing now say why or do the expected thing: Find Next
+  with no matches, Quick Find and Use Selection for Find with only a caret
+  (they use the word under it), Build and Build With… for a file with no build
+  system (the Build Results panel explains), Next Modification outside Git,
+  Next Result before a build, Show Problems and Show Completions with nothing
+  to show, Backlinks outside a notes folder, and a minimap too narrow to draw.
+- Goto Anything with no folder open offers recent files.
+- Commands the menu disables are refused with a reason from the command
+  palette and shortcuts too (for example Export as HTML on a file that isn't
+  Markdown).
+- Incremental Find is incremental: Return keeps the match and goes back to
+  the editor.
+- A **● REC** marker shows in the status bar while a macro records.
+- View ▸ Focus Group items are disabled for groups that don't exist, and the
+  Ruler, Word Wrap Column and whitespace check marks follow the current
+  file's own settings (from `.editorconfig` or syntax settings).
+- Open Recent ▸ Clear Items no longer empties Reopen Closed File.
+
 ## [2.0.0] - 2026-10-20
 
 This release adds Obsidian-compatible notes (with runnable code blocks
@@ -435,7 +469,8 @@ The first public release candidate. Everything below is new.
   Indic and other shaped scripts) and right-to-left text are not fully laid
   out.
 
-[Unreleased]: https://github.com/DRAZY/strata/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/DRAZY/strata/compare/v2.0.1...HEAD
+[2.0.1]: https://github.com/DRAZY/strata/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/DRAZY/strata/compare/v1.0.2...v2.0.0
 [1.0.2]: https://github.com/DRAZY/strata/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/DRAZY/strata/compare/v1.0.0...v1.0.1
