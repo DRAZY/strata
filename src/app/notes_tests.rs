@@ -284,12 +284,16 @@ fn rename_updates_links_and_undo_restores_them_byte_for_byte() {
     assert!(dir.join("New Name.md").exists() && !dir.join("Old.md").exists());
     assert!(app.docs[app.active].path.as_ref().unwrap().ends_with("New Name.md"), "the tab follows");
     // The update is planned once the index is fresh, and every change is shown.
-    for _ in 0..4 {
+    // Slow machines (Windows CI) can take a few more frames to finish looking.
+    let mut shown = Vec::new();
+    for _ in 0..200 {
         app.notes.index.wait();
-        frame(&mut app, &ctx, vec![]);
+        shown = texts(&frame(&mut app, &ctx, vec![]));
+        if shown.iter().any(|t| t.contains("Update 7 links in 4 notes")) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    let out = frame(&mut app, &ctx, vec![]);
-    let shown = texts(&out);
     assert!(shown.iter().any(|t| t.contains("Update 7 links in 4 notes")), "{shown:?}");
     assert!(shown.iter().any(|t| t.contains("Two links: [[New Name]] and [[New Name#H|shown]]")));
     frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
