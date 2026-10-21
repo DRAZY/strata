@@ -194,7 +194,7 @@ Distraction-free mode hides the side bar, tabs, status bar, minimap and build re
 
 | Command | Shortcut | What it does |
 |---|---|---|
-| View ▸ Side Bar ▸ Toggle Side Bar | {{key:toggle_side_bar}} | Show or hide the side bar. |
+| View ▸ Side Bar ▸ Toggle Side Bar | {{key:toggle_side_bar}}, or ⌘K ⌘B (Ctrl+K Ctrl+B on Windows) | Show or hide the side bar. |
 | View ▸ Side Bar ▸ Toggle Show Open Files | {{key:toggle_open_files}} | Show or hide the Open Files list in the side bar. |
 | View ▸ Toggle Tabs | {{key:toggle_tabs}} | Show or hide the tab bars. |
 | View ▸ Toggle Status Bar | {{key:toggle_status_bar}} | Show or hide the status bar. |

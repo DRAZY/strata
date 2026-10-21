@@ -332,7 +332,7 @@ command palette, which shows its shortcut.
 | Next / previous tab | ⌃Tab, ⌥⌘→, ⇧⌘] | Ctrl+Tab, Ctrl+PgDn |
 | Tab 1–9 | ⌘1…⌘9 | Alt+1…Alt+9 |
 | Open / open folder / save / save as / save all | ⌘O / ⇧⌘O / ⌘S / ⇧⌘S / ⌥⌘S | Ctrl+… |
-| Toggle side bar / full screen | ⌘\\ / ⌃⌘F | Ctrl+\\ / F11 |
+| Toggle side bar / full screen | ⌘\\ or ⌘K ⌘B / ⌃⌘F | Ctrl+\\ or Ctrl+K Ctrl+B / F11 |
 | Settings | ⌘, | Ctrl+, |
 | Add next occurrence / all occurrences | ⌘D / ⌃⌘G | Ctrl+D / Alt+F3 |
 | Add cursor / cursor above, below | ⌘click / ⌃⇧↑↓ | Ctrl+click / Ctrl+Alt+↑↓ |

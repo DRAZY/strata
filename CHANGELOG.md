@@ -6,6 +6,8 @@ All notable changes to Strata are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-10-21
+
 ### Added
 
 - **⌘K ⌘B** (Ctrl+K Ctrl+B on Windows) toggles the side bar too, as in
@@ -483,7 +485,8 @@ The first public release candidate. Everything below is new.
   Indic and other shaped scripts) and right-to-left text are not fully laid
   out.
 
-[Unreleased]: https://github.com/DRAZY/strata/compare/v2.0.2...HEAD
+[Unreleased]: https://github.com/DRAZY/strata/compare/v2.0.3...HEAD
+[2.0.3]: https://github.com/DRAZY/strata/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/DRAZY/strata/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/DRAZY/strata/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/DRAZY/strata/compare/v1.0.2...v2.0.0

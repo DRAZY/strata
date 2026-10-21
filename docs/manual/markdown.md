@@ -44,7 +44,7 @@ Text sizes follow the editor's font size, and all colors come from the current c
 
 ## Scrolling
 
-As you scroll the editor, the preview follows, keeping the part of the document at the top of the editor at the top of the preview. You can scroll the preview on its own too; the editor doesn't follow it.
+As you scroll the editor, the preview follows smoothly, keeping the part of the document at the top of the editor at the top of the preview. You can scroll the preview on its own too; the editor doesn't follow it.
 
 The preview updates on every edit. Very large files (more than about a quarter of a million characters) update a moment after you pause typing, to keep the editor responsive.
 
