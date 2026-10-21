@@ -1300,8 +1300,8 @@ pub struct Preview {
     tops: Vec<f32>,
     code: HashMap<u64, Option<Arc<Vec<Span>>>>,
     code_theme: String,
-    /// Editor top line the preview last followed.
-    synced: Option<(egui::Id, usize)>,
+    /// Editor position (fractional top line, see `View::top_pos`) the preview last followed.
+    synced: Option<(egui::Id, f32)>,
     scroll_to: Option<f32>,
     font_attempt: u64,
 }
@@ -1402,11 +1402,12 @@ impl Preview {
         let (family, variable) = body_font(&ctx, &mut self.font_attempt);
         let view_id = doc.view.id;
 
-        // Follow the editor: put the block holding its top line at the top.
-        let top_line = doc.view.top_line();
-        if self.synced != Some((view_id, top_line)) {
-            self.synced = Some((view_id, top_line));
-            if let Some(y) = self.y_for_line(top_line) {
+        // Follow the editor: put the block holding its top line at the top,
+        // moving with it as its rows scroll by (not a jump per line).
+        let top = doc.view.top_pos();
+        if self.synced != Some((view_id, top)) {
+            self.synced = Some((view_id, top));
+            if let Some(y) = self.y_for_line(top) {
                 self.scroll_to = Some(y);
             }
         }
@@ -1457,8 +1458,11 @@ impl Preview {
                 run_clicked: None,
             };
             let mut changed = false;
+            // A block drawn for the first time can be taller than its estimate
+            // (an image, a long table); never let it overlap the next one.
+            let mut bottom = f32::NEG_INFINITY;
             for i in first..blocks.len() {
-                let top = self.tops[i];
+                let top = self.tops[i].max(bottom);
                 if top > viewport.max.y {
                     break;
                 }
@@ -1467,6 +1471,7 @@ impl Preview {
                 let mut child = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)).id_salt(("md-block", i)));
                 block(&mut child, &mut d, &b.block, 0, false, i);
                 let h = child.min_rect().height();
+                bottom = top + h + gap;
                 let known = self.heights.get(&b.hash).copied();
                 if known.is_none_or(|k| (k - h).abs() > 0.5) {
                     self.heights.insert(b.hash, h);
@@ -1487,19 +1492,23 @@ impl Preview {
         self.follow(&ctx, &url, doc.path.as_deref())
     }
 
-    /// Content y for buffer `line`, interpolated within its block.
-    fn y_for_line(&self, line: usize) -> Option<f32> {
+    /// Content y for buffer `line` (fractional), interpolated within its block.
+    fn y_for_line(&self, line: f32) -> Option<f32> {
         if self.tops.len() != self.blocks.len() || self.blocks.is_empty() {
             return None;
         }
-        let i = self.blocks.partition_point(|b| b.line <= line).checked_sub(1)?;
+        // Line 0 shows the very top; the first line scrolls from there to line 1's place.
+        if line < 1.0 {
+            return Some(self.y_for_line(1.0).unwrap_or(0.0) * line.max(0.0));
+        }
+        let i = self.blocks.partition_point(|b| b.line as f32 <= line).checked_sub(1)?;
         let (l0, y0) = (self.blocks[i].line, self.tops[i]);
         let (l1, y1) = match self.blocks.get(i + 1) {
             Some(b) => (b.line, self.tops[i + 1]),
             None => (l0 + self.blocks[i].lines, y0 + self.heights.get(&self.blocks[i].hash).copied().unwrap_or(0.0)),
         };
-        let t = if l1 > l0 { ((line - l0) as f32 / (l1 - l0) as f32).min(1.0) } else { 0.0 };
-        Some(if line == 0 { 0.0 } else { y0 + (y1 - y0) * t - MARGIN * 0.5 })
+        let t = if l1 > l0 { ((line - l0 as f32) / (l1 - l0) as f32).min(1.0) } else { 0.0 };
+        Some(y0 + (y1 - y0) * t - MARGIN * 0.5)
     }
 
     fn follow(&mut self, ctx: &egui::Context, url: &str, base: Option<&Path>) -> Option<Action> {
@@ -1784,6 +1793,38 @@ mod tests {
         assert_eq!(d_inline.link_at(byte), Some("https://x.dev/\u{202E}"));
     }
 
+    #[test]
+    fn blocks_never_overlap_even_before_they_are_measured() {
+        // Long prose in a narrow panel wraps far more than the estimate guesses.
+        let para = "word ".repeat(120);
+        let src = (0..6).map(|n| format!("Para {n} {para}\n\n| a | b |\n|---|---|\n| {n} | x |\n\n")).collect::<String>();
+        let mut doc = Document::from_buffer(Some(PathBuf::from("/tmp/narrow.md")), crate::buffer::Buffer::from_str(&src));
+        doc.highlighter.set_syntax("Markdown");
+        let mut preview = Preview::default();
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(260.0, 2000.0))), ..Default::default() };
+        // The very first frame: nothing measured yet.
+        let mut out = ctx.run_ui(raw, |ui| {
+            preview.show(ui, &mut doc);
+        });
+        out.textures_delta.clear();
+        let mut rows: Vec<(String, Rect)> = Vec::new();
+        fn walk(shape: &egui::Shape, out: &mut Vec<(String, Rect)>) {
+            match shape {
+                egui::Shape::Text(t) => out.extend(t.galley.rows.iter().map(|r| (t.galley.text().to_owned(), r.rect().translate(t.pos.to_vec2())))),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut rows));
+        assert!(rows.len() > 20, "{}", rows.len());
+        for (i, (a, ra)) in rows.iter().enumerate() {
+            for (b, rb) in &rows[i + 1..] {
+                assert!(a == b || !ra.shrink(1.0).intersects(rb.shrink(1.0)), "{a:.20} at {ra:?} overlaps {b:.20} at {rb:?}");
+            }
+        }
+    }
+
     /// Every text drawn into `shapes`.
     fn drawn(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
         fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
@@ -1884,10 +1925,14 @@ mod tests {
         assert!(preview.tops.windows(2).all(|w| w[0] < w[1]));
         assert!(preview.heights.len() >= 10, "visible blocks were measured");
         // Scroll sync: line 0 is the top; a block's first line maps near its top.
-        assert_eq!(preview.y_for_line(0), Some(0.0));
+        assert_eq!(preview.y_for_line(0.0), Some(0.0));
         let b = &preview.blocks()[6];
-        assert_eq!(preview.y_for_line(b.line), Some(preview.tops[6] - MARGIN * 0.5));
-        assert!(preview.y_for_line(b.line + 1).unwrap() > preview.tops[6] - MARGIN * 0.5);
+        assert_eq!(preview.y_for_line(b.line as f32), Some(preview.tops[6] - MARGIN * 0.5));
+        assert!(preview.y_for_line(b.line as f32 + 1.0).unwrap() > preview.tops[6] - MARGIN * 0.5);
+        // Between lines it moves smoothly: halfway through a line is between them.
+        let (a, h, c) = (preview.y_for_line(b.line as f32).unwrap(), preview.y_for_line(b.line as f32 + 0.5).unwrap(), preview.y_for_line(b.line as f32 + 1.0).unwrap());
+        assert!(a < h && h < c, "{a} {h} {c}");
+        assert!(preview.y_for_line(0.5).unwrap() > 0.0 && preview.y_for_line(0.5).unwrap() < preview.y_for_line(1.0).unwrap());
         assert_eq!(preview.follow(&ctx, "other.md#x", Some(&path)), Some(Action::Open(dir.join("other.md"))));
         assert!(matches!(preview.follow(&ctx, "missing.md", Some(&path)), Some(Action::Status(_))));
         assert_eq!(preview.follow(&ctx, "#lists", Some(&path)), None);

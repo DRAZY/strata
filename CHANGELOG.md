@@ -6,6 +6,13 @@ All notable changes to Strata are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The **Markdown preview** follows the editor smoothly as you scroll. It used
+  to stand still until the editor's top line changed and then jump a whole
+  block, which looked like ghosting on 120 Hz displays. A block drawn for the
+  first time can no longer overlap the one below it for a frame.
+
 ## [2.0.1] - 2026-10-20
 
 ### Fixed

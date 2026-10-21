@@ -738,3 +738,77 @@ fn view_settings_checks_follow_the_file() {
     }
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// Text rows drawn inside `area`: (text, row rect).
+fn rows_in(out: &egui::FullOutput, area: Rect) -> Vec<(String, Rect)> {
+    fn walk(shape: &egui::Shape, area: Rect, out: &mut Vec<(String, Rect)>) {
+        match shape {
+            egui::Shape::Text(t) => {
+                for r in &t.galley.rows {
+                    let r = r.rect().translate(t.pos.to_vec2());
+                    if area.contains_rect(r) {
+                        out.push((t.galley.text().to_owned(), r));
+                    }
+                }
+            }
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, area, out)),
+            _ => {}
+        }
+    }
+    let mut rows = Vec::new();
+    out.shapes.iter().for_each(|c| walk(&c.shape, area, &mut rows));
+    rows
+}
+
+/// Prose, lists and tables, for scrolling the preview through.
+fn long_markdown() -> String {
+    let mut src = String::new();
+    for n in 0..40 {
+        src.push_str(&format!("## Part {n}\n\nParagraph {n} has a few sentences of plain prose so it wraps onto more than one row in the preview, the way real notes do.\n\n- item {n}a\n- item {n}b\n\n| col {n} | value |\n|---|---|\n| a{n} | 1 |\n| b{n} | 2 |\n| c{n} | 3 |\n\n"));
+    }
+    src
+}
+
+#[test]
+fn the_markdown_preview_scrolls_smoothly_with_the_editor() {
+    let dir = temp_dir("preview-smooth");
+    let file = dir.join("long.md");
+    std::fs::write(&file, long_markdown()).unwrap();
+    let ctx = Context::default();
+    let mut app = StrataApp::new(Some(file), None);
+    app.run(&ctx, crate::commands::Cmd::ToggleMarkdownPreview);
+    for _ in 0..3 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    let preview = Rect::from_min_max(egui::pos2(560.0, 30.0), egui::pos2(1000.0, 570.0));
+    // Each line of text once, by where it's drawn.
+    let ys = |out: &egui::FullOutput| {
+        let mut seen: std::collections::HashMap<String, Option<f32>> = Default::default();
+        for (t, r) in rows_in(out, preview) {
+            seen.entry(t).and_modify(|y| *y = None).or_insert(Some(r.min.y));
+        }
+        seen.into_iter().filter_map(|(t, y)| Some((t, y?))).collect::<std::collections::HashMap<_, _>>()
+    };
+    let mut last = ys(&frame(&mut app, &ctx, vec![]));
+    let (mut still, mut biggest) = (0, 0.0f32);
+    for _ in 0..200 {
+        // A trackpad's few points a frame, over the editor.
+        let wheel = Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -4.0), phase: egui::TouchPhase::Move, modifiers: Modifiers::NONE };
+        let now = ys(&frame(&mut app, &ctx, vec![Event::PointerMoved(egui::pos2(250.0, 300.0)), wheel]));
+        let mut moved: Vec<f32> = now.iter().filter_map(|(t, y)| last.get(t).map(|l| y - l)).collect();
+        moved.sort_by(f32::total_cmp);
+        assert!(!moved.is_empty(), "the same text stays in view from frame to frame");
+        let dy = moved[moved.len() / 2];
+        assert!(dy <= 0.25, "the preview moved back down by {dy}");
+        if dy.abs() < 0.25 {
+            still += 1;
+        }
+        biggest = biggest.max(-dy);
+        last = now;
+    }
+    assert!(app.doc().view.top_line() > 20, "the editor scrolled");
+    // It used to sit still until the editor's top line changed, then jump a
+    // whole block: on a 120 Hz display that reads as ghosting.
+    assert!(still < 10, "the preview sat still for {still} of 200 frames");
+    assert!(biggest < 24.0, "the preview jumped {biggest}px in one frame");
+}

@@ -91,6 +91,8 @@ pub struct EditorView {
     last_wrap: Option<usize>,
     /// First line shown last frame.
     top_line: usize,
+    /// `top_line` plus how far its rows are scrolled past, 0..1 (preview sync).
+    top_pos: f32,
     /// Wrap at this column when it's narrower than the window.
     pub wrap_column: Option<usize>,
     /// Columns to draw vertical rulers at.
@@ -330,6 +332,7 @@ impl EditorView {
             wrap_index: WrapIndex::default(),
             last_wrap: None,
             top_line: 0,
+            top_pos: 0.0,
             wrap_column: None,
             rulers: Vec::new(),
             folds: Folds::default(),
@@ -419,6 +422,12 @@ impl EditorView {
     #[allow(dead_code)]
     pub fn top_line(&self) -> usize {
         self.top_line
+    }
+
+    /// First line in view and how far it's scrolled past, as a fractional line
+    /// (Markdown preview scroll sync follows this smoothly).
+    pub fn top_pos(&self) -> f32 {
+        self.top_pos
     }
 
     /// Scroll the view by `n` lines (negative = up), leaving the cursor alone.
@@ -716,7 +725,11 @@ impl EditorView {
         self.clamp_scroll(ed, &m);
         self.animate(ui, shown, target, m.row_h);
         m.origin_x = m.text.left() + m.char_w - self.scroll.x;
-        self.top_line = self.row_line(ed, &m, (self.scroll.y / m.row_h) as usize).0;
+        let row = self.scroll.y / m.row_h;
+        self.top_line = self.row_line(ed, &m, row as usize).0;
+        let (r0, r1) = (self.line_row(ed, &m, self.top_line), self.line_row(ed, &m, self.top_line + 1));
+        let through = if r1 > r0 { ((row - r0 as f32) / (r1 - r0) as f32).clamp(0.0, 1.0) } else { 0.0 };
+        self.top_pos = self.top_line as f32 + through;
         self.blink(ui, ed, resp.has_focus());
 
         self.flush_changes(hl);
