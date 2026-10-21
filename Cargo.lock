@@ -3419,7 +3419,7 @@ checksum = "d08889ec5408683408db66ad89e0e1f93dff55c73a4ccc71c427d5b277ee47e6"
 
 [[package]]
 name = "strata"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "alacritty_terminal",
  "arboard",

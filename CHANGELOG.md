@@ -6,6 +6,8 @@ All notable changes to Strata are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-10-20
+
 ### Fixed
 
 - The **Markdown preview** follows the editor smoothly as you scroll. It used
@@ -476,7 +478,8 @@ The first public release candidate. Everything below is new.
   Indic and other shaped scripts) and right-to-left text are not fully laid
   out.
 
-[Unreleased]: https://github.com/DRAZY/strata/compare/v2.0.1...HEAD
+[Unreleased]: https://github.com/DRAZY/strata/compare/v2.0.2...HEAD
+[2.0.2]: https://github.com/DRAZY/strata/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/DRAZY/strata/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/DRAZY/strata/compare/v1.0.2...v2.0.0
 [1.0.2]: https://github.com/DRAZY/strata/compare/v1.0.1...v1.0.2
