@@ -21,6 +21,9 @@ pub struct KeymapState {
     pub pasted: Option<String>,
     /// Modifiers held at the end of the last frame.
     last_mods: egui::Modifiers,
+    /// Tests: record what keys would run instead of running it.
+    #[cfg(test)]
+    pub dry_run: Option<Vec<Target>>,
 }
 
 impl KeymapState {
@@ -28,7 +31,15 @@ impl KeymapState {
     pub fn new(config: Option<&Path>) -> Self {
         let mut file = KeymapFile::new(config);
         let startup = file.load(true);
-        Self { file, chord: Chord::default(), startup, pasted: None, last_mods: egui::Modifiers::NONE }
+        Self {
+            file,
+            chord: Chord::default(),
+            startup,
+            pasted: None,
+            last_mods: egui::Modifiers::NONE,
+            #[cfg(test)]
+            dry_run: None,
+        }
     }
 
     /// A dialog has the keyboard this frame: no bindings run, a half-typed
@@ -123,6 +134,11 @@ impl StrataApp {
         let keymap = keybindings::current();
         for fired in keymap.dispatch(ctx, &kc, &mut self.keymap.chord) {
             let Some(target) = fired.action else { continue };
+            #[cfg(test)]
+            if let Some(ran) = self.keymap.dry_run.as_mut() {
+                ran.push(target);
+                continue;
+            }
             // Macros record the editor's keys; window commands aren't part of them.
             if target.needs_editor()
                 && let Some(rec) = self.macro_recording.as_mut()

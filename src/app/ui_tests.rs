@@ -812,3 +812,50 @@ fn the_markdown_preview_scrolls_smoothly_with_the_editor() {
     assert!(still < 10, "the preview sat still for {still} of 200 frames");
     assert!(biggest < 24.0, "the preview jumped {biggest}px in one frame");
 }
+
+#[test]
+fn every_default_shortcut_reaches_its_command() {
+    let dir = temp_dir("shortcut-audit");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/main.rs"), "fn main() {\n    println!(\"hi\");\n}\n").unwrap();
+    let ctx = Context::default();
+    let mut app = StrataApp::new(Some(dir.clone()), None);
+    app.open_path(dir.join("src/main.rs"), false);
+    for _ in 0..3 {
+        frame(&mut app, &ctx, vec![]);
+    }
+    app.keymap.dry_run = Some(Vec::new());
+    let keymap = crate::keybindings::current();
+    let mut failures = Vec::new();
+    let mut checked = 0;
+    for b in keymap.bindings().iter().filter(|b| b.conds.is_empty()) {
+        let Some(want) = b.action else { continue };
+        // Editor commands need the editor focused; window commands work anywhere.
+        let anywhere = matches!(want, crate::keybindings::Target::Cmd(_) | crate::keybindings::Target::Tab(_));
+        for focus_editor in [true, false].into_iter().filter(|&f| f || anywhere) {
+            if focus_editor {
+                app.doc().view.focus();
+            } else {
+                ctx.memory_mut(|m| m.stop_text_input());
+                ctx.memory_mut(|m| m.surrender_focus(m.focused().unwrap_or(egui::Id::NULL)));
+            }
+            frame(&mut app, &ctx, vec![]);
+            app.keymap.dry_run = Some(Vec::new());
+            for s in &b.keys {
+                // As winit sends them: `command` is ⌘ on a Mac, Ctrl elsewhere.
+                let mut mods = s.mods;
+                if mods.command {
+                    mods |= if cfg!(target_os = "macos") { Modifiers::MAC_CMD } else { Modifiers::CTRL };
+                }
+                frame(&mut app, &ctx, vec![press(s.key, mods)]);
+            }
+            let ran = app.keymap.dry_run.replace(Vec::new()).unwrap();
+            checked += 1;
+            if ran != [want] {
+                failures.push(format!("{} (editor focused: {focus_editor}) → {ran:?}, wanted {want:?}", b.keys.iter().map(|s| s.label()).collect::<Vec<_>>().join(" ")));
+            }
+        }
+    }
+    assert!(checked > 250, "{checked}");
+    assert!(failures.is_empty(), "{} of {checked} shortcuts didn't run their command:\n{}", failures.len(), failures.join("\n"));
+}

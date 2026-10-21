@@ -6,6 +6,11 @@ All notable changes to Strata are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **⌘K ⌘B** (Ctrl+K Ctrl+B on Windows) toggles the side bar too, as in
+  Sublime Text. ⌘\ still works.
+
 ## [2.0.2] - 2026-10-20
 
 ### Fixed

@@ -727,6 +727,8 @@ impl Keymap {
         add(k_then(Key::M), Target::Cmd(Cmd::LspProblems));
         add(k_then(Key::N), Target::Cmd(Cmd::LspNextProblem));
         add(k_then(Key::P), Target::Cmd(Cmd::LspPrevProblem));
+        // Sublime's side bar chord, alongside Cmd+\.
+        add(k_then(Key::B), Target::Cmd(Cmd::ToggleSidebar));
         add(k_then(Key::Num1), Target::View("fold_all"));
         add(k_then(Key::J), Target::View("unfold_all"));
         add(k_then(Key::Num0), Target::View("unfold_all"));
@@ -1594,6 +1596,9 @@ mod tests {
         // Editor commands need the editor; window commands don't.
         let field = KeyContext::default();
         assert_eq!(run(vec![key(Key::D, cmd), key(Key::S, cmd)], field, &mut chord), [Some(Target::Cmd(Cmd::Save))]);
+        // Sublime's Cmd+K Cmd+B shows the side bar, from the editor or not.
+        assert_eq!(run(vec![key(Key::K, cmd), key(Key::B, cmd)], editor, &mut chord), [Some(Target::Cmd(Cmd::ToggleSidebar))]);
+        assert_eq!(run(vec![key(Key::K, cmd), key(Key::B, cmd)], KeyContext::default(), &mut chord), [Some(Target::Cmd(Cmd::ToggleSidebar))]);
         // Escape cancels a chord.
         assert_eq!(run(vec![key(Key::K, cmd), key(Key::Escape, Modifiers::NONE), key(Key::U, cmd)], editor, &mut chord), [Some(Target::Editor("soft_undo"))]);
     }

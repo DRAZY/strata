@@ -18,7 +18,7 @@ Every folder in the side bar counts everywhere a folder does: Find in Files and 
 
 ## The side bar
 
-The side bar sits on the left of the window. It appears while a folder is open, and also for Find in Files when no folder is open. Show or hide it with {{key:toggle_side_bar}} (View ▸ Side Bar ▸ Toggle Side Bar). With no folder open it lists your open files, with a button that opens the current file's folder and an **Open Folder…** button. Drag its right edge to make it wider or narrower.
+The side bar sits on the left of the window. It appears while a folder is open, and also for Find in Files when no folder is open. Show or hide it with {{key:toggle_side_bar}} or Sublime Text's chord ⌘K ⌘B (Ctrl+K Ctrl+B on Windows), or with View ▸ Side Bar ▸ Toggle Side Bar. With no folder open it lists your open files, with a button that opens the current file's folder and an **Open Folder…** button. Drag its right edge to make it wider or narrower.
 
 At the top are two tabs:
 
