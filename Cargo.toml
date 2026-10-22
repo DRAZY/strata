@@ -10,8 +10,8 @@ keywords = ["editor", "text-editor", "code-editor", "egui"]
 categories = ["text-editors"]
 
 [dependencies]
-eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11", "links"] }
-egui = "0.36.2"
+eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11", "links"] }
+egui = "0.37.0"
 ignore = "0.4.33"
 regex = "1.13.1"
 globset = "0.4.20"
